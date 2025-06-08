@@ -110,4 +110,42 @@ pub enum MatcherEventType {
     Reduce,
     // Custom binary data attached
     BinaryEvent,
+    Cancel,
+}
+
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    TryFromPrimitive,
+    Serialize,
+    Deserialize,
+    BorshSerialize,
+    BorshDeserialize,
+)]
+#[borsh(use_discriminant = true)]
+#[repr(u8)]
+pub enum PositionDirection {
+    Empty = 0,
+    Long = 1,
+    Short = 2,
+}
+
+impl PositionDirection {
+    pub fn of(action: OrderAction) -> Self {
+        match action {
+            OrderAction::Bid => Self::Long,
+            OrderAction::Ask => Self::Short,
+        }
+    }
+
+    pub fn multiplier(&self) -> i8 {
+        match self {
+            PositionDirection::Empty => 0,
+            PositionDirection::Long => 1,
+            PositionDirection::Short => -1,
+        }
+    }
 } 

@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-borsh = { version = "1.5.7", features = ["derive"] }
+borsh.workspace = true
+hashbrown.workspace = true
 num_enum = "0.7.2"
 serde = { version = "1.0.203", features = ["derive"] }
 tracing = "0.1.40"

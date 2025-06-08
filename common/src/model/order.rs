@@ -1,8 +1,7 @@
 use super::enums::OrderAction;
 use borsh::{BorshDeserialize, BorshSerialize};
-use serde::{Deserialize, Serialize};
 
-pub trait IOrder {
+pub trait OrderTrait {
     fn price(&self) -> i64;
     fn size(&self) -> i64;
     fn filled(&self) -> i64;
@@ -19,8 +18,6 @@ pub trait IOrder {
     Copy,
     PartialEq,
     Eq,
-    Serialize,
-    Deserialize,
     BorshSerialize,
     BorshDeserialize,
 )]
@@ -35,7 +32,7 @@ pub struct Order {
     pub timestamp: i64,
 }
 
-impl IOrder for Order {
+impl OrderTrait for Order {
     fn price(&self) -> i64 {
         self.price
     }
