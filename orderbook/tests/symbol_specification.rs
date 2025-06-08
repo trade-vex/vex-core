@@ -64,7 +64,7 @@ fn should_not_enforce_risk_limits_for_futures() {
 
     // Ensure the order was moved
     assert!(order_book.get_order_by_id(1).is_some());
-    assert_eq!(order_book.get_order_by_id(1).unwrap().price, 12000);
+    assert_eq!(order_book.get_order_by_id(1).unwrap().price(), 12000);
 }
 
 #[test]
@@ -100,4 +100,30 @@ fn should_calculate_state_hash() {
     let symbol_spec3 = TestConstants::symbol_spec_eur_usd();
     let hash3 = symbol_spec3.state_hash();
     assert_ne!(hash1, hash3);
+}
+
+#[test]
+fn should_get_orders_num() {
+    let symbol_spec = TestConstants::symbol_spec_eth_xbt();
+    let mut order_book = OrderBookNaiveImpl::new(symbol_spec);
+
+    // Add some orders
+    let mut cmd = OrderCommand::new_order(OrderType::Gtc, 1, 100, 50000, 0, 10, OrderAction::Ask);
+    order_book.new_order(&mut cmd).unwrap();
+
+    assert_eq!(order_book.get_orders_num(OrderAction::Ask), 1);
+    assert_eq!(order_book.get_orders_num(OrderAction::Bid), 0);
+}
+
+#[test]
+fn should_get_l2_market_data_snapshot() {
+    let symbol_spec = TestConstants::symbol_spec_eth_xbt();
+    let mut order_book = OrderBookNaiveImpl::new(symbol_spec);
+
+    // Add some orders
+    let mut cmd = OrderCommand::new_order(OrderType::Gtc, 1, 100, 50000, 0, 10, OrderAction::Ask);
+    order_book.new_order(&mut cmd).unwrap();
+
+    let l2_data = order_book.get_l2_market_data_snapshot(10);
+    assert_eq!(l2_data.ask_prices.len(), 1);
 } 
