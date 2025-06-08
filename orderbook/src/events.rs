@@ -1,7 +1,9 @@
 //! This module contains helpers for creating and managing matcher events.
-use common::model::enums::MatcherEventType;
-use common::model::order::IOrder;
-use crate::{MatcherTradeEvent, OrderCommand};
+use common::cmd::MatcherTradeEvent;
+use common::model::enums::{MatcherEventType, OrderAction};
+use common::model::order::OrderTrait;
+use crate::OrderCommand;
+use common::model::symbol_specification::CoreSymbolSpecification;
 
 pub struct EventHelper;
 
@@ -24,35 +26,52 @@ impl EventHelper {
 
     /// Creates and attaches a REDUCE event to the command.
     /// This is used when an order is cancelled or reduced in size.
-    pub fn send_reduce_event<T: IOrder>(order: &T, reduced_size: i64, order_completed: bool) -> MatcherTradeEvent {
-        MatcherTradeEvent {
-            event_type: MatcherEventType::Reduce,
-            active_order_completed: order_completed,
+    pub fn send_reduce_event(
+        order: &dyn OrderTrait,
+        reduced_size: i64,
+        is_cancel: bool,
+    ) -> Box<MatcherTradeEvent> {
+        Box::new(MatcherTradeEvent {
+            event_type: if is_cancel {
+                MatcherEventType::Cancel
+            } else {
+                MatcherEventType::Reduce
+            },
+            active_order_completed: is_cancel,
             matched_order_id: order.order_id(),
             matched_order_uid: order.uid(),
-            matched_order_completed: order_completed,
             price: order.price(),
             size: reduced_size,
             ..MatcherTradeEvent::default()
-        }
+        })
     }
-}
 
-impl Default for MatcherTradeEvent {
-    fn default() -> Self {
-        Self {
+    pub fn create_trade_event(
+        active_order_cmd: &OrderCommand,
+        matched_order_id: i64,
+        matched_order_uid: i64,
+        maker_filled: bool,
+        price: i64,
+        size: i64,
+        spec: &CoreSymbolSpecification,
+    ) -> Box<MatcherTradeEvent> {
+        Box::new(MatcherTradeEvent {
             event_type: MatcherEventType::Trade,
-            section: 0, // TODO: What is section?
-            active_order_completed: false,
-            matched_order_id: 0,
-            matched_order_uid: 0,
-            matched_order_completed: false,
-            price: 0,
-            size: 0,
-            bidder_hold_price: 0,
-            taker_fee: 0,
-            maker_fee: 0,
+            section: 0, // TODO
+            active_order_completed: active_order_cmd.size == size, // Simplified
+            matched_order_id,
+            matched_order_uid,
+            matched_order_completed: maker_filled,
+            price,
+            size,
+            bidder_hold_price: if active_order_cmd.action == OrderAction::Ask {
+                active_order_cmd.reserve_bid_price
+            } else {
+                0 // In naive impl, maker order is not available to get reserve price
+            },
+            taker_fee: size * spec.taker_fee,
+            maker_fee: size * spec.maker_fee,
             next_event: None,
-        }
+        })
     }
 } 
