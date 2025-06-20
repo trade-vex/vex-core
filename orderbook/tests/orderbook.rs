@@ -1,9 +1,7 @@
 use common::model::enums::{OrderAction, OrderType};
-use common::model::order::OrderTrait;
-use common::model::symbol_specification::{CoreSymbolSpecification, TestConstants};
+use common::model::symbol_specification::TestConstants;
 use orderbook::naive_impl::OrderBookNaiveImpl;
-use orderbook::{OrderBook, OrderBookError, OrderCommand, OrderCommandType, SymbolType};
-use rand::Rng;
+use orderbook::{OrderBook, OrderCommand};
 
 fn create_order_book() -> OrderBookNaiveImpl {
     OrderBookNaiveImpl::new(TestConstants::symbol_spec_eth_xbt())
@@ -53,13 +51,15 @@ fn test_move_order() {
 #[test]
 fn test_simple_matching() {
     let mut order_book = create_order_book();
-    let mut ask_cmd = OrderCommand::new_order(OrderType::Gtc, 1, 100, 50000, 0, 10, OrderAction::Ask);
+    let mut ask_cmd =
+        OrderCommand::new_order(OrderType::Gtc, 1, 100, 50000, 0, 10, OrderAction::Ask);
     order_book.new_order(&mut ask_cmd).unwrap();
-    let mut bid_cmd = OrderCommand::new_order(OrderType::Gtc, 2, 101, 50000, 0, 5, OrderAction::Bid);
+    let mut bid_cmd =
+        OrderCommand::new_order(OrderType::Gtc, 2, 101, 50000, 0, 5, OrderAction::Bid);
     order_book.new_order(&mut bid_cmd).unwrap();
     assert_eq!(order_book.get_orders_num(OrderAction::Ask), 1);
     assert_eq!(order_book.get_orders_num(OrderAction::Bid), 0);
     assert_eq!(order_book.get_order_by_id(1).unwrap().filled(), 5);
 }
 
-// TODO: translate all other tests from OrderBookBaseTest.java 
+// TODO: translate all other tests from OrderBookBaseTest.java
