@@ -453,21 +453,21 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
 
             order.price = cmd.price;
             cmd.action = order.action;
-
+            cmd.uid = order.uid;
+            cmd.order_id = order.order_id;
+            
             // Try matching after price change
             let total_filled = self.try_match(cmd, order.filled);
-            order.filled = total_filled;
+            order.filled = total_filled;        
 
             // Insert into new bucket only if partially filled or not filled at all
             if order.size > order.filled {
-                let new_buckets = self.get_buckets_mut(order.action);
-                let bucket = new_buckets
-                    .entry(order.price)
-                    .or_insert_with(|| OrdersBucketNaive::new(order.price));
+                let new_buckets = if order.action == OrderAction::Ask { &mut self.ask_buckets } else { &mut self.bid_buckets };
+                let bucket = new_buckets.entry(order.price).or_insert_with(|| OrdersBucketNaive::new(order.price));
                 bucket.put(&order);
                 self.order_id_map.insert(order.order_id, order);
             }
-
+            
             Ok(())
         } else {
             Err(OrderBookError::UnknownOrderId)
