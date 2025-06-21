@@ -455,7 +455,8 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
             cmd.action = order.action;
             cmd.uid = order.uid;
             cmd.order_id = order.order_id;
-            
+            cmd.size = order.size;
+
             // Try matching after price change
             let total_filled = self.try_match(cmd, order.filled);
             order.filled = total_filled;        
