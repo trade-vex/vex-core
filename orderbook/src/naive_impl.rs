@@ -318,36 +318,56 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
     }
 
     fn reduce_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError> {
-        if let Some(order) = self.order_id_map.get_mut(&cmd.order_id) {
-            if order.uid != cmd.uid {
+        let requested_reduce_size = cmd.size();
+        if requested_reduce_size <= 0 {
+            return Err(OrderBookError::ReduceFailedWrongSize);
+        }
+
+        let order_id = cmd.order_id();
+        let order_uid = cmd.uid();
+
+        let (reduce_by, can_remove, price, action) = {
+            let order = self.order_id_map.get(&order_id)
+                .ok_or(OrderBookError::UnknownOrderId)?;
+
+            if order.uid != order_uid {
                 return Err(OrderBookError::UnknownOrderId);
             }
-            if cmd.size <= 0 || cmd.size >= order.size {
-                return Err(OrderBookError::ReduceFailedWrongSize);
-            }
 
-            let reduced_by = order.size - cmd.size;
-            order.size = cmd.size;
+            let remaining_size = order.size - order.filled;
+            let reduce_by = std::cmp::min(remaining_size, requested_reduce_size);
+            let can_remove = reduce_by == remaining_size;
 
-            let buckets = if order.action == OrderAction::Ask {
-                &mut self.ask_buckets
-            } else {
-                &mut self.bid_buckets
-            };
+            (reduce_by, can_remove, order.price, order.action)
+        };
 
-            if let Some(bucket) = buckets.get_mut(&order.price) {
-                if let Some(o) = bucket.entries.get_mut(&order.order_id) {
-                    o.size = cmd.size;
-                }
-                bucket.reduce_size(reduced_by);
-            }
+        let order = self.order_id_map.get_mut(&order_id).unwrap();
+        cmd.action = action;
+        cmd.matcher_event = Some(EventHelper::send_reduce_event(order, reduce_by, can_remove));
 
-            cmd.attach_matcher_event(EventHelper::send_reduce_event(order, reduced_by, false));
-
-            Ok(())
+        let buckets = if action == OrderAction::Ask {
+            &mut self.ask_buckets
         } else {
-            Err(OrderBookError::UnknownOrderId)
+            &mut self.bid_buckets
+        };
+
+        if let Some(bucket) = buckets.get_mut(&price) {
+            bucket.reduce_size(reduce_by);
+            if can_remove {
+                bucket.remove(order_id, order_uid);
+                if bucket.get_num_orders() == 0 {
+                    buckets.remove(&price);
+                }
+                self.order_id_map.remove(&order_id);
+            } else {
+                order.size -= reduce_by;
+            }
+        } else {
+            return Err(OrderBookError::UnknownOrderId);
         }
+
+        Ok(())
+
     }
 
     fn move_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError> {
