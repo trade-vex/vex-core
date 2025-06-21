@@ -38,6 +38,20 @@ fn test_reduce_order() {
 }
 
 #[test]
+fn test_reduce_order_to_zero_passes() {
+    let mut order_book = create_order_book();
+    let mut cmd = OrderCommand::new_order(OrderType::Gtc, 1, 100, 50000, 0, 10, OrderAction::Ask);
+    order_book.new_order(&mut cmd).unwrap();
+
+    let mut reduce_cmd = OrderCommand::reduce(1, 100, 10); // Reduce size BY 10
+
+    order_book.reduce_order(&mut reduce_cmd).unwrap(); 
+
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Ask), 0);
+    assert!(order_book.get_order_by_id(1).is_none()); // The order should be gone
+}
+
+#[test]
 fn test_move_order() {
     let mut order_book = create_order_book();
     let mut cmd = OrderCommand::new_order(OrderType::Gtc, 1, 100, 50000, 0, 10, OrderAction::Ask);
@@ -61,5 +75,10 @@ fn test_simple_matching() {
     assert_eq!(order_book.get_orders_num(OrderAction::Bid), 0);
     assert_eq!(order_book.get_order_by_id(1).unwrap().filled(), 5);
 }
+
+
+
+
+
 
 // TODO: translate all other tests from OrderBookBaseTest.java
