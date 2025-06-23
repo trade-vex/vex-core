@@ -232,6 +232,16 @@ impl OrderBookDirectImpl {
                 if maker_filled {
                     self.remove_order(maker_key);
                 }
+                else {
+                    let buckets = if maker_action == OrderAction::Ask {
+                        &mut self.ask_price_buckets
+                    } else {
+                        &mut self.bid_price_buckets
+                    };
+                    if let Some(bucket) = buckets.get_mut(&maker_order_price) {
+                        bucket.volume -= trade_size;
+                    }
+                }
             }
 
             maker_key_opt = maker_order_prev;
