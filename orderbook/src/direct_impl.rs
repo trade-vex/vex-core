@@ -637,7 +637,16 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
 
         order_to_move.price = cmd.price();
 
-        self.insert_order(order_to_move);
+        cmd.action = order_to_move.action;
+        cmd.size = order_to_move.size; 
+        
+        let total_filled = self.try_match_instantly(cmd, order_to_move.filled);
+        order_to_move.filled = total_filled;
+        
+        // If not fully filled, insert the remainder back onto the book.
+        if order_to_move.size > order_to_move.filled {
+            self.insert_order(order_to_move);
+        }
 
         Ok(())
     }
