@@ -54,8 +54,18 @@ impl OrderBookDirectImpl {
         let num_orders = self.orders.len() as u32;
         num_orders.serialize(&mut writer)?;
 
-        for (_, order) in self.orders.iter() {
-            order.serialize(&mut writer)?;
+        // Serialize ASK orders from best price to worst.
+        let mut current_key = self.best_ask_order;
+        while let Some(key) = current_key {
+            self.orders[key].serialize(&mut writer)?;
+            current_key = self.orders[key].prev;
+        }
+
+        // Serialize BID orders from best price to worst.
+        let mut current_key = self.best_bid_order;
+        while let Some(key) = current_key {
+            self.orders[key].serialize(&mut writer)?;
+            current_key = self.orders[key].prev;
         }
 
         Ok(writer)
