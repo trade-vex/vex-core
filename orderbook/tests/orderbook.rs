@@ -2,9 +2,13 @@ use common::model::enums::{MatcherEventType, OrderAction, OrderType};
 use common::model::symbol_specification::TestConstants;
 use orderbook::naive_impl::OrderBookNaiveImpl;
 use orderbook::{OrderBook, OrderCommand};
-
+use orderbook::direct_impl::OrderBookDirectImpl;
 fn create_order_book() -> OrderBookNaiveImpl {
     OrderBookNaiveImpl::new(TestConstants::symbol_spec_eth_xbt())
+}
+
+fn create_order_book_direct() -> OrderBookDirectImpl {
+    OrderBookDirectImpl::new(TestConstants::symbol_spec_eth_xbt())
 }
 
 #[test]
@@ -126,6 +130,36 @@ fn test_simple_matching() {
     assert_eq!(order_book.get_orders_num(OrderAction::Ask), 1);
     assert_eq!(order_book.get_orders_num(OrderAction::Bid), 0);
     assert_eq!(order_book.get_order_by_id(1).unwrap().filled(), 5);
+}
+
+#[test]
+fn test_partial_match_updates_bucket_volume() {
+    let mut order_book = create_order_book_direct();
+
+    // Place a large BID order (the maker). Size 100 at price 50000.
+    let mut maker_cmd = OrderCommand::new_order(OrderType::Gtc, 1, 100, 50000, 0, 100, OrderAction::Bid);
+    order_book.new_order(&mut maker_cmd).unwrap();
+
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Bid), 100);
+
+    let maker_order = order_book.get_order_by_id(1).unwrap();
+    assert_eq!(maker_order.size(), 100);
+    assert_eq!(maker_order.filled(), 0);
+
+    // Place a smaller ASK order (the taker) at a marketable price. Size 30.
+    let mut taker_cmd = OrderCommand::new_order(OrderType::Gtc, 2, 200, 49900, 0, 30, OrderAction::Ask);
+    order_book.new_order(&mut taker_cmd).unwrap();
+
+    // The taker (ASK) order should be completely filled and gone.
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Ask), 0);
+    assert!(order_book.get_order_by_id(2).is_none());
+    
+    // The maker (BID) order should still be on the book, but partially filled.
+    let maker_order_after_trade = order_book.get_order_by_id(1).unwrap();
+    assert_eq!(maker_order_after_trade.size(), 100);
+    assert_eq!(maker_order_after_trade.filled(), 30, "Maker order should be filled by 30");
+
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Bid), 70, "Bucket volume must be updated after partial match");
 }
 
 #[test]
