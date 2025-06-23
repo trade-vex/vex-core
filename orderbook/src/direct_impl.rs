@@ -169,6 +169,7 @@ impl OrderBookDirectImpl {
             let maker_order_size;
             let maker_order_filled;
             let maker_order_prev;
+            let maker_action;
 
             {
                 let maker_order = &self.orders[maker_key];
@@ -176,6 +177,7 @@ impl OrderBookDirectImpl {
                 maker_order_size = maker_order.size;
                 maker_order_filled = maker_order.filled;
                 maker_order_prev = maker_order.prev;
+                maker_action = maker_order.action;
             }
 
             let can_match = if is_bid_action {
@@ -193,6 +195,15 @@ impl OrderBookDirectImpl {
             if trade_size > 0 {
                 remaining_size -= trade_size;
                 filled += trade_size;
+
+            let buckets = if maker_action == OrderAction::Ask {
+                &mut self.ask_price_buckets
+            } else {
+                &mut self.bid_price_buckets
+            };
+            if let Some(bucket) = buckets.get_mut(&maker_order_price) {
+                bucket.volume -= trade_size;
+            }
 
                 let maker_order_mut = &mut self.orders[maker_key];
                 maker_order_mut.filled += trade_size;
