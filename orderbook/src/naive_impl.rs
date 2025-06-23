@@ -342,7 +342,11 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
         };
 
         let order = self.order_id_map.get_mut(&order_id).unwrap();
+        order.size -= reduce_by;
         cmd.action = action;
+        if can_remove {
+        return self.cancel_order(cmd);
+        } 
         cmd.matcher_event = Some(EventHelper::send_reduce_event(order, reduce_by, can_remove));
 
         let buckets = if action == OrderAction::Ask {
@@ -353,14 +357,8 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
 
         if let Some(bucket) = buckets.get_mut(&price) {
             bucket.reduce_size(reduce_by);
-            if can_remove {
-                bucket.remove(order_id, order_uid);
-                if bucket.get_num_orders() == 0 {
-                    buckets.remove(&price);
-                }
-                self.order_id_map.remove(&order_id);
-            } else {
-                order.size -= reduce_by;
+            if let Some(order_in_bucket) = bucket.entries.get_mut(&cmd.order_id()) {
+            order_in_bucket.size = order.size; // Sync its size with the master copy.
             }
         } else {
             return Err(OrderBookError::UnknownOrderId);
@@ -400,13 +398,23 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
             }
 
             order.price = cmd.price;
+            cmd.action = order.action;
+            cmd.uid = order.uid;
+            cmd.order_id = order.order_id;
+            cmd.size = order.size;
 
-            // Insert into new bucket
-            let new_buckets = if order.action == OrderAction::Ask { &mut self.ask_buckets } else { &mut self.bid_buckets };
-            let bucket = new_buckets.entry(order.price).or_insert_with(|| OrdersBucketNaive::new(order.price));
-            bucket.put(&order);
-            self.order_id_map.insert(order.order_id, order);
+            // Try matching after price change
+            let total_filled = self.try_match(cmd, order.filled);
+            order.filled = total_filled;        
 
+            // Insert into new bucket only if partially filled or not filled at all
+            if order.size > order.filled {
+                let new_buckets = if order.action == OrderAction::Ask { &mut self.ask_buckets } else { &mut self.bid_buckets };
+                let bucket = new_buckets.entry(order.price).or_insert_with(|| OrdersBucketNaive::new(order.price));
+                bucket.put(&order);
+                self.order_id_map.insert(order.order_id, order);
+            }
+            
             Ok(())
         } else {
             Err(OrderBookError::UnknownOrderId)
