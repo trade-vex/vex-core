@@ -1,5 +1,5 @@
 use super::enums::SymbolType;
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSerialize, to_vec};
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 
@@ -29,21 +29,13 @@ impl CoreSymbolSpecification {
     pub fn builder() -> CoreSymbolSpecificationBuilder {
         CoreSymbolSpecificationBuilder::default()
     }
+}
 
-    /// Calculate the state hash for this symbol specification
-    pub fn state_hash(&self) -> u64 {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.symbol_id.hash(&mut hasher);
-        self.symbol_type.code().hash(&mut hasher);
-        self.base_currency.hash(&mut hasher);
-        self.quote_currency.hash(&mut hasher);
-        self.base_scale_k.hash(&mut hasher);
-        self.quote_scale_k.hash(&mut hasher);
-        self.taker_fee.hash(&mut hasher);
-        self.maker_fee.hash(&mut hasher);
-        self.margin_buy.hash(&mut hasher);
-        self.margin_sell.hash(&mut hasher);
-        hasher.finish()
+/// Calculate the state hash for this symbol specification
+impl Hash for CoreSymbolSpecification {
+    fn hash<H: Hasher> (&self, state: &mut H) {
+        let encoded = to_vec(self).unwrap();
+        state.write(&encoded);
     }
 }
 
