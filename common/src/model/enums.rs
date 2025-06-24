@@ -140,4 +140,24 @@ impl PositionDirection {
             PositionDirection::Short => -1,
         }
     }
+} 
+
+
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    TryFromPrimitive,
+    Serialize,
+    Deserialize,
+    BorshSerialize,
+    BorshDeserialize,
+)]
+#[borsh(use_discriminant = true)]
+#[repr(u8)]
+pub enum BalanceAdjustmentType {
+    Adjustment = 0,
+    Suspend = 1,
 }
