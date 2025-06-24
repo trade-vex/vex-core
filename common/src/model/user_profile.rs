@@ -1,7 +1,7 @@
 use crate::model::symbol_position_record::SymbolPositionRecord;
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSerialize, to_vec};
 use hashbrown::HashMap;
-
+use std::hash::{Hash, Hasher};
 // TODO ...
 // positions: IntObjectHashMap<SymbolPositionRecord>
 // accounts: IntLongHashMap
@@ -24,6 +24,15 @@ impl UserProfile {
             positions: HashMap::new(),
             accounts: HashMap::new(),
         }
+    }
+}
+/// Implements a state hash for data integrity checks, similar to the Java version.
+/// It works by serializing the entire struct into bytes and then hashing those bytes.
+impl Hash for UserProfile {
+
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let encoded = to_vec(self).unwrap();
+        state.write(&encoded);
     }
 }
 
