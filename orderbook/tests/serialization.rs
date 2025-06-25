@@ -1,8 +1,8 @@
 //! Tests for serialization and deserialization of the order book.
+use common::model::enums::{OrderAction, OrderType};
+use common::model::symbol_specification::TestConstants;
 use orderbook::naive_impl::OrderBookNaiveImpl;
 use orderbook::{OrderBook, OrderCommand};
-use common::model::enums::{OrderAction, OrderType};
-use common::model::symbol_specification::{TestConstants};
 
 #[test]
 fn test_naive_serialization_deserialization() {
@@ -21,8 +21,20 @@ fn test_naive_serialization_deserialization() {
     let mut reader = bytes.as_slice();
     let deserialized_book = OrderBookNaiveImpl::from_bytes(&mut reader).unwrap();
 
-    assert_eq!(order_book.get_orders_num(OrderAction::Ask), deserialized_book.get_orders_num(OrderAction::Ask));
-    assert_eq!(order_book.get_orders_num(OrderAction::Bid), deserialized_book.get_orders_num(OrderAction::Bid));
-    assert_eq!(order_book.get_total_orders_volume(OrderAction::Ask), deserialized_book.get_total_orders_volume(OrderAction::Ask));
-    assert_eq!(order_book.get_total_orders_volume(OrderAction::Bid), deserialized_book.get_total_orders_volume(OrderAction::Bid));
-} 
+    assert_eq!(
+        order_book.get_orders_num(OrderAction::Ask),
+        deserialized_book.get_orders_num(OrderAction::Ask)
+    );
+    assert_eq!(
+        order_book.get_orders_num(OrderAction::Bid),
+        deserialized_book.get_orders_num(OrderAction::Bid)
+    );
+    assert_eq!(
+        order_book.get_total_orders_volume(OrderAction::Ask),
+        deserialized_book.get_total_orders_volume(OrderAction::Ask)
+    );
+    assert_eq!(
+        order_book.get_total_orders_volume(OrderAction::Bid),
+        deserialized_book.get_total_orders_volume(OrderAction::Bid)
+    );
+}
