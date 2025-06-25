@@ -74,4 +74,26 @@ impl EventHelper {
             next_event: None,
         })
     }
+
+    /// Creates an ORDER_PLACED event for when an order is successfully placed on the book.
+    /// This is used when an order (or remaining part) is added to the order book.
+    pub fn create_order_placed_event(
+        cmd: &OrderCommand,
+        placed_size: i64
+    ) -> Box<MatcherTradeEvent> {
+        Box::new(MatcherTradeEvent {
+            event_type: MatcherEventType::Reduce, // Using Reduce type for order placement
+            section: 0,
+            active_order_completed: false, // Order is placed, not completed
+            matched_order_id: cmd.order_id,
+            matched_order_uid: cmd.uid,
+            matched_order_completed: false,
+            price: cmd.price,
+            size: placed_size,
+            bidder_hold_price: cmd.reserve_bid_price,
+            taker_fee: 0, // No fees for placement
+            maker_fee: 0,
+            next_event: None,
+        })
+    }
 }
