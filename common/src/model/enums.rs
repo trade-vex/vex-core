@@ -48,10 +48,10 @@ pub enum OrderType {
     // Good till Cancel - equivalent to regular limit order
     Gtc = 0,
     // Immediate or Cancel - equivalent to strict-risk market order
-    Ioc = 1, // with price cap
+    Ioc = 1,       // with price cap
     IocBudget = 2, // with total amount cap
     // Fill or Kill - execute immediately completely or not at all
-    Fok = 3, // with price cap
+    Fok = 3,       // with price cap
     FokBudget = 4, // total amount cap
 }
 
@@ -79,22 +79,14 @@ impl SymbolType {
     pub fn code(&self) -> u8 {
         *self as u8
     }
-    
+
     pub fn of(code: u8) -> Result<Self, num_enum::TryFromPrimitiveError<Self>> {
         Self::try_from(code)
     }
 }
 
 #[derive(
-    Debug,
-    PartialEq,
-    Eq,
-    Clone,
-    Copy,
-    Serialize,
-    Deserialize,
-    BorshSerialize,
-    BorshDeserialize,
+    Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
 )]
 #[borsh(use_discriminant = true)]
 pub enum MatcherEventType {
@@ -148,4 +140,4 @@ impl PositionDirection {
             PositionDirection::Short => -1,
         }
     }
-} 
+}

@@ -31,4 +31,4 @@ impl UserProfile {
 pub enum UserStatus {
     Active,
     Suspended,
-} 
+}

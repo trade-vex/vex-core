@@ -1,8 +1,8 @@
 //! This module contains helpers for creating and managing matcher events.
+use crate::OrderCommand;
 use common::cmd::MatcherTradeEvent;
 use common::model::enums::{MatcherEventType, OrderAction};
 use common::model::order::OrderTrait;
-use crate::OrderCommand;
 use common::model::symbol_specification::CoreSymbolSpecification;
 
 pub struct EventHelper;
@@ -57,7 +57,7 @@ impl EventHelper {
     ) -> Box<MatcherTradeEvent> {
         Box::new(MatcherTradeEvent {
             event_type: MatcherEventType::Trade,
-            section: 0, // TODO
+            section: 0,                                            // TODO
             active_order_completed: active_order_cmd.size == size, // Simplified
             matched_order_id,
             matched_order_uid,
@@ -74,4 +74,4 @@ impl EventHelper {
             next_event: None,
         })
     }
-} 
+}

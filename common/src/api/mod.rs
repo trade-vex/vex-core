@@ -72,4 +72,4 @@ impl ApiCommand for ApiReduceOrder {
     fn into_order_command(self) -> OrderCommand {
         OrderCommand::reduce(self.order_id, self.uid, self.reduce_size)
     }
-} 
+}
