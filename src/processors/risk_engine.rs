@@ -56,3 +56,9 @@ impl RiskEngine {
         );
     }
 }
+
+impl Default for RiskEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
