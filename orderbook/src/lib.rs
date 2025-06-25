@@ -1,16 +1,16 @@
-use common::model::order::{OrderTrait, Order};
+use borsh::{BorshDeserialize, BorshSerialize};
 use common::model::enums::OrderAction;
 use common::model::l2_market_data::L2MarketData;
+use common::model::order::{Order, OrderTrait};
 use common::model::symbol_specification::CoreSymbolSpecification;
-use borsh::{BorshDeserialize, BorshSerialize};
 use std::fmt;
 
-pub use common::cmd::{OrderCommand, MatcherTradeEvent, OrderCommandType};
+pub use common::cmd::{MatcherTradeEvent, OrderCommand, OrderCommandType};
 pub use common::model::enums::SymbolType;
 
-pub mod naive_impl;
-pub mod events;
 pub mod direct_impl;
+pub mod events;
+pub mod naive_impl;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum OrderBookError {
@@ -48,8 +48,14 @@ pub trait OrderBook<'a> {
     fn get_total_orders_volume(&self, action: OrderAction) -> i64;
     fn get_order_by_id(&self, order_id: i64) -> Option<&dyn OrderTrait>;
     fn find_user_orders(&self, uid: i64) -> Vec<Order>;
-    fn ask_orders_stream(&'a self, sorted: bool) -> Box<dyn Iterator<Item = &'a dyn OrderTrait> + 'a>;
-    fn bid_orders_stream(&'a self, sorted: bool) -> Box<dyn Iterator<Item = &'a dyn OrderTrait> + 'a>;
+    fn ask_orders_stream(
+        &'a self,
+        sorted: bool,
+    ) -> Box<dyn Iterator<Item = &'a dyn OrderTrait> + 'a>;
+    fn bid_orders_stream(
+        &'a self,
+        sorted: bool,
+    ) -> Box<dyn Iterator<Item = &'a dyn OrderTrait> + 'a>;
     fn get_l2_market_data_snapshot(&self, size: usize) -> L2MarketData;
     fn publish_l2_market_data_snapshot(&self, data: &mut L2MarketData);
     fn fill_asks(&self, size: usize, data: &mut L2MarketData);
@@ -61,13 +67,15 @@ pub trait OrderBook<'a> {
     fn validate_internal_state(&self);
 }
 
-pub fn from_bytes<'a>(bytes: &mut &'a[u8]) -> Result<Box<dyn OrderBook<'a> + 'a>, borsh::io::Error> {
+pub fn from_bytes<'a>(
+    bytes: &mut &'a [u8],
+) -> Result<Box<dyn OrderBook<'a> + 'a>, borsh::io::Error> {
     let impl_type = OrderBookImplType::deserialize(bytes)?;
     match impl_type {
         OrderBookImplType::Naive => {
             let book = naive_impl::OrderBookNaiveImpl::from_bytes(bytes)?;
             Ok(Box::new(book))
-        },
+        }
         OrderBookImplType::Direct => {
             let book = direct_impl::OrderBookDirectImpl::from_bytes(bytes)?;
             Ok(Box::new(book))
