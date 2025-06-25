@@ -79,7 +79,7 @@ impl EventHelper {
     /// This is used when an order (or remaining part) is added to the order book.
     pub fn create_order_placed_event(
         cmd: &OrderCommand,
-        placed_size: i64
+        placed_size: i64,
     ) -> Box<MatcherTradeEvent> {
         Box::new(MatcherTradeEvent {
             event_type: MatcherEventType::Reduce, // Using Reduce type for order placement
