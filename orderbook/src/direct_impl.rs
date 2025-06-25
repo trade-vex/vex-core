@@ -277,7 +277,7 @@ impl OrderBookDirectImpl {
                     // The order we removed was the tail of the bucket. The new tail is its successor in the global list.
                     // We only care if the successor is in the same bucket.
                     if let Some(n_key) = next_key {
-                        if self.orders.get(n_key).map_or(false, |p| p.price == price) {
+                        if self.orders.get(n_key).is_some_and(|p| p.price == price) {
                             bucket.tail = next_key;
                         } else {
                             bucket.tail = None; // Successor is in another bucket, this bucket is now empty of its tail.
@@ -525,13 +525,11 @@ impl<'a> Iterator for OrderBookDirectIterator<'a> {
                 let order = &self.orders[key];
                 self.current_order_key = order.prev;
                 return Some(order as &dyn OrderTrait);
+            } else if let Some(bucket) = self.bucket_iter.next() {
+                self.current_order_key = bucket.tail;
+                continue;
             } else {
-                if let Some(bucket) = self.bucket_iter.next() {
-                    self.current_order_key = bucket.tail;
-                    continue;
-                } else {
-                    return None;
-                }
+                return None;
             }
         }
     }

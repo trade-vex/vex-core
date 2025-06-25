@@ -73,7 +73,7 @@ impl OrdersBucketNaive {
         None
     }
 
-    pub fn match_order<'a>(
+    pub fn match_order(
         &mut self,
         cmd: &OrderCommand,
         mut volume_to_collect: i64,
