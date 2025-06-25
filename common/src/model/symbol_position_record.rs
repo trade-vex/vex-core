@@ -1,5 +1,5 @@
-use borsh::{BorshDeserialize, BorshSerialize};
 use crate::model::enums::PositionDirection;
+use borsh::{BorshDeserialize, BorshSerialize};
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct SymbolPositionRecord {
@@ -12,4 +12,4 @@ pub struct SymbolPositionRecord {
     pub profit: i64,
     pub pending_sell_size: i64,
     pub pending_buy_size: i64,
-} 
+}

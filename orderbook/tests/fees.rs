@@ -1,8 +1,8 @@
 //! Tests for fee calculations.
-use orderbook::{OrderBook, OrderCommand};
-use orderbook::naive_impl::OrderBookNaiveImpl;
 use common::model::enums::{OrderAction, OrderType};
 use common::model::symbol_specification::{CoreSymbolSpecification, TestConstants};
+use orderbook::naive_impl::OrderBookNaiveImpl;
+use orderbook::{OrderBook, OrderCommand};
 
 fn get_fee_testing_spec() -> CoreSymbolSpecification {
     // Use a spec with non-zero fees for testing
@@ -15,20 +15,25 @@ fn should_calculate_fees_on_trade() {
     let mut order_book = OrderBookNaiveImpl::new(spec.clone());
 
     // Setup maker order
-    let mut maker_cmd = OrderCommand::new_order(OrderType::Gtc, 1, 100, 20000, 0, 10, OrderAction::Ask);
+    let mut maker_cmd =
+        OrderCommand::new_order(OrderType::Gtc, 1, 100, 20000, 0, 10, OrderAction::Ask);
     order_book.new_order(&mut maker_cmd).unwrap();
 
     // Execute taker order that matches the maker
-    let mut taker_cmd = OrderCommand::new_order(OrderType::Ioc, 2, 200, 20000, 0, 5, OrderAction::Bid);
+    let mut taker_cmd =
+        OrderCommand::new_order(OrderType::Ioc, 2, 200, 20000, 0, 5, OrderAction::Bid);
     order_book.new_order(&mut taker_cmd).unwrap();
 
     // Verify the trade event and fees
     assert!(taker_cmd.matcher_event.is_some());
     let event = taker_cmd.matcher_event.unwrap();
 
-    assert_eq!(event.event_type, common::model::enums::MatcherEventType::Trade);
+    assert_eq!(
+        event.event_type,
+        common::model::enums::MatcherEventType::Trade
+    );
     assert_eq!(event.size, 5);
-    
+
     // Taker fee = size * taker_fee_per_lot
     let expected_taker_fee = 5 * spec.taker_fee;
     assert_eq!(event.taker_fee, expected_taker_fee);
@@ -80,7 +85,7 @@ fn should_handle_multiple_fee_events() {
     assert_eq!(event.size, 3);
     assert_eq!(event.taker_fee, 3 * spec.taker_fee);
     assert_eq!(event.maker_fee, 3 * spec.maker_fee);
-    
+
     // Second trade
     assert!(event.next_event.is_some());
     let event2 = event.next_event.unwrap();
@@ -118,4 +123,4 @@ fn should_have_zero_fees_for_symbols_without_them() {
     let event = taker_cmd.matcher_event.unwrap();
     assert_eq!(event.taker_fee, 0);
     assert_eq!(event.maker_fee, 0);
-} 
+}

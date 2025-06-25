@@ -1,13 +1,13 @@
-use common::model::order::{OrderTrait, Order};
-use common::model::enums::{OrderAction, OrderType, MatcherEventType, SymbolType};
-use common::model::symbol_specification::CoreSymbolSpecification;
-use crate::{OrderBook, OrderBookImplType, OrderCommand, OrderBookError, MatcherTradeEvent};
 use crate::events::EventHelper;
-use tracing::warn;
+use crate::{MatcherTradeEvent, OrderBook, OrderBookError, OrderBookImplType, OrderCommand};
 use blart::TreeMap;
-use slab::Slab;
-use hashbrown::HashMap;
 use borsh::{BorshDeserialize, BorshSerialize};
+use common::model::enums::{MatcherEventType, OrderAction, OrderType, SymbolType};
+use common::model::order::{Order, OrderTrait};
+use common::model::symbol_specification::CoreSymbolSpecification;
+use hashbrown::HashMap;
+use slab::Slab;
+use tracing::warn;
 
 pub struct OrderBookDirectImpl {
     ask_price_buckets: TreeMap<i64, Bucket>,
@@ -50,14 +50,14 @@ impl OrderBookDirectImpl {
         let mut writer = Vec::new();
         self.get_implementation_type().serialize(&mut writer)?;
         self.symbol_spec.serialize(&mut writer)?;
-        
+
         let num_orders = self.orders.len() as u32;
         num_orders.serialize(&mut writer)?;
 
         for (_, order) in self.orders.iter() {
             order.serialize(&mut writer)?;
         }
-        
+
         Ok(writer)
     }
 
@@ -122,18 +122,24 @@ impl OrderBookDirectImpl {
         };
 
         while let Some(key) = next_key {
-            if size == 0 { break; }
+            if size == 0 {
+                break;
+            }
             let order = &self.orders[key];
             let available_size = order.size - order.filled;
             let trade_size = std::cmp::min(size, available_size);
-            
+
             budget += trade_size * order.price;
             size -= trade_size;
 
             next_key = order.prev;
         }
 
-        if size == 0 { budget } else { i64::MAX }
+        if size == 0 {
+            budget
+        } else {
+            i64::MAX
+        }
     }
 
     fn try_match_instantly(&mut self, cmd: &mut OrderCommand, filled: i64) -> i64 {
@@ -192,7 +198,7 @@ impl OrderBookDirectImpl {
                 maker_order_mut.filled += trade_size;
 
                 let maker_filled = maker_order_mut.filled == maker_order_mut.size;
-                
+
                 let trade_event = MatcherTradeEvent {
                     event_type: MatcherEventType::Trade,
                     section: 0, // TODO
@@ -202,7 +208,11 @@ impl OrderBookDirectImpl {
                     matched_order_completed: maker_filled,
                     price: maker_order_mut.price,
                     size: trade_size,
-                    bidder_hold_price: if cmd.action() == OrderAction::Ask { cmd.reserve_bid_price() } else { maker_order_mut.reserve_bid_price },
+                    bidder_hold_price: if cmd.action() == OrderAction::Ask {
+                        cmd.reserve_bid_price()
+                    } else {
+                        maker_order_mut.reserve_bid_price
+                    },
                     ..MatcherTradeEvent::default()
                 };
 
@@ -244,7 +254,8 @@ impl OrderBookDirectImpl {
                 if self.best_ask_order == Some(order_key) {
                     self.best_ask_order = next_key;
                 }
-            } else { // Bid
+            } else {
+                // Bid
                 if self.best_bid_order == Some(order_key) {
                     self.best_bid_order = next_key;
                 }
@@ -272,7 +283,7 @@ impl OrderBookDirectImpl {
                             bucket.tail = None; // Successor is in another bucket, this bucket is now empty of its tail.
                         }
                     } else {
-                         bucket.tail = None;
+                        bucket.tail = None;
                     }
                 }
 
@@ -285,7 +296,11 @@ impl OrderBookDirectImpl {
 
     fn insert_order(&mut self, mut order: DirectOrder) {
         let is_ask = order.action == OrderAction::Ask;
-        let buckets = if is_ask { &mut self.ask_price_buckets } else { &mut self.bid_price_buckets };
+        let buckets = if is_ask {
+            &mut self.ask_price_buckets
+        } else {
+            &mut self.bid_price_buckets
+        };
         let price = order.price;
 
         let (predecessor, successor) = if let Some(bucket) = buckets.get_mut(&price) {
@@ -296,24 +311,35 @@ impl OrderBookDirectImpl {
         } else {
             // New price level, find successor bucket.
             let successor_bucket_tail = if is_ask {
-                buckets.range((std::ops::Bound::Excluded(price), std::ops::Bound::Unbounded))
-                    .next().map(|(_, b)| b.tail.unwrap())
+                buckets
+                    .range((std::ops::Bound::Excluded(price), std::ops::Bound::Unbounded))
+                    .next()
+                    .map(|(_, b)| b.tail.unwrap())
             } else {
-                buckets.range((std::ops::Bound::Unbounded, std::ops::Bound::Excluded(price)))
-                    .next_back().map(|(_, b)| b.tail.unwrap())
+                buckets
+                    .range((std::ops::Bound::Unbounded, std::ops::Bound::Excluded(price)))
+                    .next_back()
+                    .map(|(_, b)| b.tail.unwrap())
             };
-            
+
             if let Some(succ_key) = successor_bucket_tail {
                 (self.orders[succ_key].prev, Some(succ_key))
             } else {
                 // New best price level.
-                (if is_ask { self.best_ask_order } else { self.best_bid_order }, None)
+                (
+                    if is_ask {
+                        self.best_ask_order
+                    } else {
+                        self.best_bid_order
+                    },
+                    None,
+                )
             }
         };
 
         order.prev = predecessor;
         order.next = successor;
-        
+
         let new_order_key = self.orders.insert(order);
         let new_order_id = self.orders[new_order_key].order_id;
         self.order_id_index.insert(new_order_id, new_order_key);
@@ -327,16 +353,20 @@ impl OrderBookDirectImpl {
 
         // Update best order if necessary
         if successor.is_none() {
-             if is_ask { self.best_ask_order = Some(new_order_key); } else { self.best_bid_order = Some(new_order_key); }
+            if is_ask {
+                self.best_ask_order = Some(new_order_key);
+            } else {
+                self.best_bid_order = Some(new_order_key);
+            }
         }
-        
+
         // Update or create bucket
         let bucket = buckets.entry(price).or_insert_with(|| Bucket {
             volume: 0,
             num_orders: 0,
             tail: None,
         });
-        
+
         let new_order = &self.orders[new_order_key];
         bucket.volume += new_order.size - new_order.filled;
         bucket.num_orders += 1;
@@ -345,8 +375,16 @@ impl OrderBookDirectImpl {
 
     fn validate_chain(&self, action: OrderAction, orders_in_chain: &mut hashbrown::HashSet<i64>) {
         let is_ask = action == OrderAction::Ask;
-        let buckets = if is_ask { &self.ask_price_buckets } else { &self.bid_price_buckets };
-        let mut current_order_key = if is_ask { self.best_ask_order } else { self.best_bid_order };
+        let buckets = if is_ask {
+            &self.ask_price_buckets
+        } else {
+            &self.bid_price_buckets
+        };
+        let mut current_order_key = if is_ask {
+            self.best_ask_order
+        } else {
+            self.best_bid_order
+        };
 
         let mut last_price = -1i64;
         let mut orders_in_bucket = 0;
@@ -356,12 +394,18 @@ impl OrderBookDirectImpl {
         while let Some(order_key) = current_order_key {
             let order = &self.orders[order_key];
             assert_eq!(order.action, action, "Order has wrong action");
-            assert!(orders_in_chain.insert(order.order_id), "Duplicate order in chain");
+            assert!(
+                orders_in_chain.insert(order.order_id),
+                "Duplicate order in chain"
+            );
 
             if last_price != -1 && order.price != last_price {
                 // Moved to a new price bucket
                 let bucket = buckets.get(&last_price).unwrap();
-                assert_eq!(bucket.num_orders, orders_in_bucket, "Bucket order count mismatch");
+                assert_eq!(
+                    bucket.num_orders, orders_in_bucket,
+                    "Bucket order count mismatch"
+                );
                 assert_eq!(bucket.volume, volume_in_bucket, "Bucket volume mismatch");
                 orders_in_bucket = 0;
                 volume_in_bucket = 0;
@@ -369,7 +413,7 @@ impl OrderBookDirectImpl {
 
             orders_in_bucket += 1;
             volume_in_bucket += order.size - order.filled;
-            
+
             assert_eq!(order.next, prev_order_key, "Next pointer is incorrect");
 
             last_price = order.price;
@@ -379,8 +423,14 @@ impl OrderBookDirectImpl {
 
         if last_price != -1 {
             let bucket = buckets.get(&last_price).unwrap();
-            assert_eq!(bucket.num_orders, orders_in_bucket, "Last bucket order count mismatch");
-            assert_eq!(bucket.volume, volume_in_bucket, "Last bucket volume mismatch");
+            assert_eq!(
+                bucket.num_orders, orders_in_bucket,
+                "Last bucket order count mismatch"
+            );
+            assert_eq!(
+                bucket.volume, volume_in_bucket,
+                "Last bucket volume mismatch"
+            );
         }
     }
 }
@@ -577,10 +627,10 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
         }
 
         let mut order_to_move = self.orders[*order_key].clone();
-        
-        if self.symbol_spec.symbol_type == SymbolType::CurrencyExchangePair 
-            && order_to_move.action == OrderAction::Bid 
-            && cmd.price > order_to_move.reserve_bid_price 
+
+        if self.symbol_spec.symbol_type == SymbolType::CurrencyExchangePair
+            && order_to_move.action == OrderAction::Bid
+            && cmd.price > order_to_move.reserve_bid_price
         {
             return Err(OrderBookError::MoveFailedPriceOverRiskLimit);
         }
@@ -613,7 +663,8 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
     }
 
     fn get_order_by_id(&self, order_id: i64) -> Option<&dyn OrderTrait> {
-        self.order_id_index.get(&order_id)
+        self.order_id_index
+            .get(&order_id)
             .and_then(|&key| self.orders.get(key))
             .map(|order| order as &dyn OrderTrait)
     }
@@ -627,7 +678,10 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
             .collect()
     }
 
-    fn ask_orders_stream(&'a self, sorted: bool) -> Box<dyn Iterator<Item = &'a dyn OrderTrait> + 'a> {
+    fn ask_orders_stream(
+        &'a self,
+        sorted: bool,
+    ) -> Box<dyn Iterator<Item = &'a dyn OrderTrait> + 'a> {
         let bucket_iter: Box<dyn Iterator<Item = &'a Bucket> + 'a> = if sorted {
             Box::new(self.ask_price_buckets.values())
         } else {
@@ -641,7 +695,10 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
         })
     }
 
-    fn bid_orders_stream(&'a self, sorted: bool) -> Box<dyn Iterator<Item = &'a dyn OrderTrait> + 'a> {
+    fn bid_orders_stream(
+        &'a self,
+        sorted: bool,
+    ) -> Box<dyn Iterator<Item = &'a dyn OrderTrait> + 'a> {
         let bucket_iter: Box<dyn Iterator<Item = &'a Bucket> + 'a> = if sorted {
             Box::new(self.bid_price_buckets.values().rev())
         } else {
@@ -655,7 +712,10 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
         })
     }
 
-    fn get_l2_market_data_snapshot(&self, size: usize) -> common::model::l2_market_data::L2MarketData {
+    fn get_l2_market_data_snapshot(
+        &self,
+        size: usize,
+    ) -> common::model::l2_market_data::L2MarketData {
         let asks_size = self.get_total_ask_buckets(size);
         let bids_size = self.get_total_bid_buckets(size);
         let mut data = common::model::l2_market_data::L2MarketData::with_size(asks_size, bids_size);
@@ -664,7 +724,10 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
         data
     }
 
-    fn publish_l2_market_data_snapshot(&self, data: &mut common::model::l2_market_data::L2MarketData) {
+    fn publish_l2_market_data_snapshot(
+        &self,
+        data: &mut common::model::l2_market_data::L2MarketData,
+    ) {
         self.fill_asks(data.ask_prices.capacity(), data);
         self.fill_bids(data.bid_prices.capacity(), data);
     }
@@ -713,11 +776,19 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
         let mut orders_in_chain = hashbrown::HashSet::new();
         self.validate_chain(OrderAction::Ask, &mut orders_in_chain);
         self.validate_chain(OrderAction::Bid, &mut orders_in_chain);
-        
-        assert_eq!(self.order_id_index.len(), orders_in_chain.len(), "order_id_index size does not match chain size");
+
+        assert_eq!(
+            self.order_id_index.len(),
+            orders_in_chain.len(),
+            "order_id_index size does not match chain size"
+        );
 
         for key in self.order_id_index.keys() {
-            assert!(orders_in_chain.contains(key), "orderIdIndex contains an order not in a chain: {}", key);
+            assert!(
+                orders_in_chain.contains(key),
+                "orderIdIndex contains an order not in a chain: {}",
+                key
+            );
         }
     }
-} 
+}
