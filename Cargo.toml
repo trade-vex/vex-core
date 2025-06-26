@@ -7,6 +7,7 @@ edition = "2021"
 # Workspace crates containing our data models and order book logic
 common = { path = "./common" }
 orderbook = { path = "./orderbook" }
+processors = { path = "./processors" }
 
 # High-level async runtime and message passing channels
 tokio = { version = "1", features = ["full"] }
@@ -17,12 +18,13 @@ tracing-subscriber = "0.3"
 
 # Trait for async functions in traits
 async-trait = "0.1"
+hashbrown.workspace = true
 
 [workspace]
 resolver = "2"
 members = [
     "common",
-    "orderbook",
+    "orderbook", "processors",
 ]
 
 [workspace.dependencies]
