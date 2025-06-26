@@ -12,7 +12,7 @@ use std::{
 };
 use thiserror::Error;
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq)]
 pub enum PublisherError {
     #[error("Aeron error: {0}")]
     Aeron(#[from] AeronCError),
@@ -20,22 +20,29 @@ pub enum PublisherError {
     ChannelClosed,
     #[error("Invalid input: {0}")]
     InvalidInput(#[from] std::ffi::NulError),
+    #[error("Publication not found")]
+    PublicationNotFound,
+    #[error("Empty message")]
+    EmptyMessage,
+    #[error("Publisher not running")]
+    NotRunning,
 }
 
 pub struct AeronPublisher {
     aeron: Arc<Aeron>,
     publications: HashMap<String, AeronPublication>,
     running: Arc<AtomicBool>,
-    // idle_strategy: AeronIdleStrategy,
 }
 
 impl AeronPublisher {
-    pub fn new(context_dir: &CStr) -> Result<Self, PublisherError> {
+    pub fn new(_context_dir: &CStr) -> Result<Self, PublisherError> {
         let ctx = AeronContext::new()?;
-        ctx.set_dir(context_dir)?;
-        ctx.set_driver_timeout_ms(1_000_000)?;
+        // ctx.set_dir(context_dir)?;
+        ctx.set_driver_timeout_ms(1_000)?;
 
-        let aeron = Arc::new(Aeron::new(&ctx)?);
+        let aeron = Aeron::new(&ctx)?;
+        aeron.start()?;
+        let aeron = Arc::new(aeron);
 
         Ok(Self {
             aeron,
@@ -53,8 +60,12 @@ impl AeronPublisher {
     }
 
     pub fn send(&self, msg: &[u8], channel: &str, stream_id: i32) -> Result<(), PublisherError> {
-        if !self.running.load(Ordering::Relaxed) || msg.is_empty() {
-            return Ok(());
+        if !self.running.load(Ordering::Relaxed) {
+            return Err(PublisherError::NotRunning);
+        }
+
+        if msg.is_empty() {
+            return Err(PublisherError::EmptyMessage);
         }
 
         if let Some(pub_) = self.publications.get(&Self::get_key(channel, stream_id)) {
@@ -62,6 +73,8 @@ impl AeronPublisher {
             if result < 0 {
                 return Err(AeronCError::from_code(result as i32).into());
             }
+        } else {
+            return Err(PublisherError::PublicationNotFound);
         }
 
         Ok(())
@@ -69,7 +82,7 @@ impl AeronPublisher {
 
     pub fn send_all(&self, msg: &[u8]) -> Result<(), PublisherError> {
         if msg.is_empty() {
-            return Ok(());
+            return Err(PublisherError::EmptyMessage);
         }
 
         for publication in self.publications.values() {
@@ -82,9 +95,11 @@ impl AeronPublisher {
         Ok(())
     }
 
-    pub fn stop(&mut self) {
+    pub fn stop(&mut self) -> Result<(), PublisherError> {
         self.running.store(false, Ordering::Relaxed);
+        // self.aeron.close()?;
         self.publications.clear(); // Publications are closed when dropped
+        Ok(())
     }
 
     fn get_key(channel: &str, stream_id: i32) -> String {

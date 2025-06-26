@@ -10,7 +10,7 @@
 //! 
 //! The VEX system operates as a distributed trading platform with the following key components:
 //! 
-//! ```
+//! ```ignore
 //! ┌─────────────────┐    Aeron UDP        ┌─────────────────┐
 //! │   VEX Gateway   │ ◄─────────────────► │   VEX Core      │
 //! │   (Client API)  │                     │   (Matching     │
@@ -26,8 +26,10 @@
 //! ```
 //! 
 //! #### Gateway Integration
-//! ```rust
+//! 
+//! ```ignore
 //! // Gateway receives client orders and publishes to core
+//! pub const ORDER_STREAM_ID: i32 = 1001;
 //! let mut publisher = AeronPublisher::new("/aeron/dir")?;
 //! publisher.add_publication("aeron:ipc", ORDER_STREAM_ID)?;
 //! 
@@ -36,8 +38,10 @@
 //! ```
 //! 
 //! #### Core Engine Integration
-//! ```rust
+//! ```ignore
 //! // Core subscribes to orders and publishes market data
+//! 
+//! pub const ORDER_STREAM_ID: i32 = 1001;
 //! let mut subscriber = AeronSubscriber::new("/aeron/dir", assembler)?;
 //! subscriber.add_subscription("aeron:ipc", ORDER_STREAM_ID)?;
 //! 
