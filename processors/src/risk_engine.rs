@@ -3,7 +3,7 @@ use common::cmd::OrderCommand;
 use common::model::user_profile::UserProfile;
 use hashbrown::HashMap;
 use orderbook::OrderBookError;
-
+use tracing::info;
 /// Manages all user profiles and performs risk checks as well as settlements
 /// This is the Rust equivalent of `RiskEngine.java`.
 pub struct RiskEngine {
@@ -36,7 +36,7 @@ impl RiskEngine {
         // TODOs
         // 3. Check if the user's account balance is sufficient.
         // 4. If so, debit the user's account to put funds on hold.
-        println!(
+        info!(
             "[RiskEngine] Pre-processing and approving command for user {}",
             cmd.uid
         );
@@ -50,7 +50,7 @@ impl RiskEngine {
         // 1. Look at `event.event_type`.
         // 2. If it's a TRADE, find the buyer and seller profiles and settle funds.
         // 3. If it's a REDUCE/CANCEL, find the user and release the held funds.
-        println!(
+        info!(
             "[RiskEngine] Handling settlement for event: {:?}",
             event.event_type
         );

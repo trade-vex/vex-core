@@ -4,7 +4,7 @@ use orderbook::OrderBook;
 use orderbook::OrderBookImplType;
 use orderbook::direct_impl::OrderBookDirectImpl;
 use orderbook::naive_impl::OrderBookNaiveImpl;
-
+use tracing::{info, warn};
 /// Owns all order books and routes commands to the correct one.
 /// This is the Rust equivalent of `MatchingEngineRouter.java`.
 pub struct MatchingEngineRouter {
@@ -32,7 +32,7 @@ impl MatchingEngineRouter {
     /// This is the core matching stage(Excali-6b) of the pipeline.
     pub fn route_command(&mut self, cmd: &mut OrderCommand) {
         if let Some(order_book) = self.order_books.get_mut(&cmd.symbol) {
-            println!(
+            info!(
                 "[Router] Routing command for symbol {} to its order book.",
                 cmd.symbol
             );
@@ -43,13 +43,13 @@ impl MatchingEngineRouter {
                 common::cmd::OrderCommandType::MoveOrder => order_book.move_order(cmd),
                 common::cmd::OrderCommandType::ReduceOrder => order_book.reduce_order(cmd),
             };
-            println!("[Router] Order book processed command: {:?}", cmd);
+            info!("[Router] Order book processed command: {:?}", cmd);
 
             if let Err(e) = result {
-                tracing::warn!("[Router] Order book processing failed: {:?}", e);
+                warn!("[Router] Order book processing failed: {:?}", e);
             }
         } else {
-            tracing::warn!("[Router] No order book found for symbol {}", cmd.symbol);
+            warn!("[Router] No order book found for symbol {}", cmd.symbol);
         }
     }
 }
