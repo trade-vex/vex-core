@@ -1,6 +1,6 @@
 use common::cmd::MatcherTradeEvent;
 use common::cmd::OrderCommand;
-
+use tracing::info;
 /// Responsible for writing all commands and events to a persistent log for durability.
 /// This is the Rust equivalent of `JournalingProcessor.java`.
 pub struct JournalingProcessor;
@@ -12,11 +12,11 @@ impl JournalingProcessor {
 
     // Ring buffer Disruptor to JournalingProcessor - Logger(Excali-0)
     pub fn journal_command(&self, cmd: &OrderCommand) {
-        println!("[Journal] Writing command to disk: ID {}", cmd.order_id);
+        info!("[Journal] Writing command to disk: ID {}", cmd.order_id);
     }
 
     pub fn journal_event(&self, event: &MatcherTradeEvent) {
-        println!(
+        info!(
             "[Journal] Writing event to disk: Type {:?}",
             event.event_type
         );
