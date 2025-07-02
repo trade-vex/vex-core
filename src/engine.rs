@@ -1,12 +1,12 @@
 use crate::events::EventsHandler;
-use common::{cmd::OrderCommand};
+use common::cmd::OrderCommand;
+use disruptor::BusySpin;
+use disruptor::ProcessorSettings;
 use processors::{
     journaling::JournalingProcessor, matching_engine::MatchingEngineRouter, risk_engine::RiskEngine,
 };
 use std::sync::Arc;
 use tracing::{info, warn};
-use disruptor::{BusySpin};
-use disruptor::ProcessorSettings;
 /// The central processing unit of the exchange, running a sequential pipeline.
 /// This is the equivalent of `CoreEngine.java` orchestrating the processors.
 pub struct CoreEngine {
@@ -20,7 +20,10 @@ impl CoreEngine {
         matching_engine_router: MatchingEngineRouter,
         journaling_processor: JournalingProcessor,
         events_handler: Arc<dyn EventsHandler>,
-    ) -> (Self, disruptor::SingleProducer<OrderCommand, disruptor::MultiConsumerBarrier>) {
+    ) -> (
+        Self,
+        disruptor::SingleProducer<OrderCommand, disruptor::MultiConsumerBarrier>,
+    ) {
         let factory = || OrderCommand::default();
         let buffer_size = 1024;
 
@@ -33,24 +36,29 @@ impl CoreEngine {
         let journaling_arc_stage1 = journaling_arc.clone();
 
         let producer = disruptor::build_single_producer(buffer_size, factory, BusySpin)
-
             // Stage 1: Journaling on core 1
-            .pin_at_core(1).handle_events_with(move |cmd: &OrderCommand, _, _| {
+            .pin_at_core(1)
+            .handle_events_with(move |cmd: &OrderCommand, _, _| {
                 journaling_arc_stage1.journal_command(cmd);
             })
             // Stage 2: Risk Engine on core 2
-            .pin_at_core(2).handle_events_with({
+            .pin_at_core(2)
+            .handle_events_with({
                 let risk_engine_clone = risk_engine_arc.clone();
                 move |cmd: &OrderCommand, _, _| {
                     let mut risk_engine = risk_engine_clone.lock().unwrap();
                     let mut cmd_clone = cmd.clone();
                     if let Err(e) = risk_engine.pre_process_command(&mut cmd_clone) {
-                        warn!("[Disruptor Core] Risk check failed: {:?}. Rejecting command.", e);
+                        warn!(
+                            "[Disruptor Core] Risk check failed: {:?}. Rejecting command.",
+                            e
+                        );
                     }
                 }
             })
             // Stage 3: Matching Engine + event handling on core 3
-            .pin_at_core(3).handle_events_with({
+            .pin_at_core(3)
+            .handle_events_with({
                 let matching_engine_clone = matching_engine_arc.clone();
                 let events_handler_clone = events_handler_arc.clone();
                 let journaling_clone = journaling_arc.clone();
@@ -63,7 +71,10 @@ impl CoreEngine {
 
                     let mut current_event = cmd_clone.matcher_event.take();
                     if current_event.is_none() {
-                        warn!("[Disruptor Core] No events generated for command ID: {}", cmd_clone.order_id);
+                        warn!(
+                            "[Disruptor Core] No events generated for command ID: {}",
+                            cmd_clone.order_id
+                        );
                         return;
                     }
 
@@ -83,7 +94,6 @@ impl CoreEngine {
             })
             .build();
 
-        
         let mut engine = Self {
             _producer: Some(producer),
         };
@@ -96,7 +106,7 @@ impl CoreEngine {
 
     pub async fn run(&mut self) {
         info!("\n[Sequential Core] Engine started. Waiting for commands...");
-        std::thread::park(); 
+        std::thread::park();
         info!("[Sequential Core] Engine stopped.");
     }
 }

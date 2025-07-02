@@ -1,11 +1,12 @@
 mod engine;
 mod events;
 
-use common::{cmd::OrderCommand};
+use common::cmd::OrderCommand;
 use common::model::{
     // enums::{OrderAction, OrderType},
     user_profile::{UserProfile, UserStatus},
 };
+use disruptor::Producer;
 use engine::CoreEngine;
 use events::SimpleEventsHandler;
 use orderbook::OrderBookImplType;
@@ -13,10 +14,13 @@ use processors::{
     journaling::JournalingProcessor, matching_engine::MatchingEngineRouter, risk_engine::RiskEngine,
 };
 use std::sync::Arc;
-use disruptor::Producer;
 use tracing::info;
 // Sets up the entire Exchange Core application with all processors.
-pub fn init_exchange() -> (CoreEngine, disruptor::SingleProducer<OrderCommand, disruptor::MultiConsumerBarrier>, Arc<SimpleEventsHandler>) {
+pub fn init_exchange() -> (
+    CoreEngine,
+    disruptor::SingleProducer<OrderCommand, disruptor::MultiConsumerBarrier>,
+    Arc<SimpleEventsHandler>,
+) {
     // Initialize the matching engine router with a default order book.
     let mut matching_engine_router = MatchingEngineRouter::new();
     matching_engine_router.add_symbol(0, OrderBookImplType::Naive);

@@ -50,7 +50,7 @@ impl Default for OrderCommand {
             price: 0,
             reserve_bid_price: 0,
             size: 0,
-            action: OrderAction::Ask, // Default action
+            action: OrderAction::Ask,   // Default action
             order_type: OrderType::Gtc, // Default order type
             user_cookie: 0,
             timestamp: 0,
