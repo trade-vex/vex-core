@@ -1,10 +1,9 @@
-use async_trait::async_trait;
 use common::cmd::MatcherTradeEvent;
 use std::sync::{Arc, Mutex};
-
-#[async_trait]
+use tracing::info;
+// #[async_trait]
 pub trait EventsHandler: Send + Sync {
-    async fn handle_event(&self, event: MatcherTradeEvent);
+    fn handle_event(&self, event: MatcherTradeEvent);
 }
 
 #[derive(Clone, Default)]
@@ -18,11 +17,11 @@ impl SimpleEventsHandler {
     }
 }
 
-#[async_trait]
+// #[async_trait]
 impl EventsHandler for SimpleEventsHandler {
-    async fn handle_event(&self, event: MatcherTradeEvent) {
+    fn handle_event(&self, event: MatcherTradeEvent) {
         let mut events = self.events.lock().unwrap();
-        println!(
+        info!(
             "[SimpleEventsHandler] Received final event: {:?}",
             event.event_type
         );
