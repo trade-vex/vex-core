@@ -1,98 +1,102 @@
 use crate::events::EventsHandler;
-use common::cmd::OrderCommand;
+use common::{cmd::OrderCommand};
 use processors::{
     journaling::JournalingProcessor, matching_engine::MatchingEngineRouter, risk_engine::RiskEngine,
 };
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use tracing::warn;
-
+use tracing::{info, warn};
+use disruptor::{BusySpin};
+use disruptor::ProcessorSettings;
 /// The central processing unit of the exchange, running a sequential pipeline.
 /// This is the equivalent of `CoreEngine.java` orchestrating the processors.
 pub struct CoreEngine {
-    command_rx: mpsc::Receiver<OrderCommand>,
-    risk_engine: RiskEngine,
-    matching_engine_router: MatchingEngineRouter,
-    journaling_processor: JournalingProcessor,
-    events_handler: Arc<dyn EventsHandler>,
+    // Store the producer in an Option so it can be taken out for returning
+    _producer: Option<disruptor::SingleProducer<OrderCommand, disruptor::MultiConsumerBarrier>>,
 }
 
 impl CoreEngine {
     pub fn new(
-        command_rx: mpsc::Receiver<OrderCommand>,
         risk_engine: RiskEngine,
         matching_engine_router: MatchingEngineRouter,
         journaling_processor: JournalingProcessor,
         events_handler: Arc<dyn EventsHandler>,
-    ) -> Self {
-        Self {
-            command_rx,
-            risk_engine,
-            matching_engine_router,
-            journaling_processor,
-            events_handler,
-        }
+    ) -> (Self, disruptor::SingleProducer<OrderCommand, disruptor::MultiConsumerBarrier>) {
+        let factory = || OrderCommand::default();
+        let buffer_size = 1024;
+
+        // Using Arc to share stateful processors with the main thread and the consumer threads.
+        let journaling_arc = Arc::new(journaling_processor);
+        let risk_engine_arc = Arc::new(std::sync::Mutex::new(risk_engine));
+        let matching_engine_arc = Arc::new(std::sync::Mutex::new(matching_engine_router));
+        let events_handler_arc = events_handler.clone();
+
+        let journaling_arc_stage1 = journaling_arc.clone();
+
+        let producer = disruptor::build_single_producer(buffer_size, factory, BusySpin)
+
+            // Stage 1: Journaling on core 1
+            .pin_at_core(1).handle_events_with(move |cmd: &OrderCommand, _, _| {
+                journaling_arc_stage1.journal_command(cmd);
+            })
+            // Stage 2: Risk Engine on core 2
+            .pin_at_core(2).handle_events_with({
+                let risk_engine_clone = risk_engine_arc.clone();
+                move |cmd: &OrderCommand, _, _| {
+                    let mut risk_engine = risk_engine_clone.lock().unwrap();
+                    let mut cmd_clone = cmd.clone();
+                    if let Err(e) = risk_engine.pre_process_command(&mut cmd_clone) {
+                        warn!("[Disruptor Core] Risk check failed: {:?}. Rejecting command.", e);
+                    }
+                }
+            })
+            // Stage 3: Matching Engine + event handling on core 3
+            .pin_at_core(3).handle_events_with({
+                let matching_engine_clone = matching_engine_arc.clone();
+                let events_handler_clone = events_handler_arc.clone();
+                let journaling_clone = journaling_arc.clone();
+                let risk_engine_clone = risk_engine_arc.clone();
+
+                move |cmd: &OrderCommand, _, _| {
+                    let mut matching_engine = matching_engine_clone.lock().unwrap();
+                    let mut cmd_clone = cmd.clone();
+                    matching_engine.route_command(&mut cmd_clone);
+
+                    let mut current_event = cmd_clone.matcher_event.take();
+                    if current_event.is_none() {
+                        warn!("[Disruptor Core] No events generated for command ID: {}", cmd_clone.order_id);
+                        return;
+                    }
+
+                    while let Some(event_box) = current_event {
+                        let mut event = *event_box;
+                        current_event = event.next_event.take();
+
+                        journaling_clone.journal_event(&event);
+
+                        let mut risk_engine = risk_engine_clone.lock().unwrap();
+
+                        risk_engine.handle_event(&event);
+
+                        events_handler_clone.handle_event(event.clone());
+                    }
+                }
+            })
+            .build();
+
+        
+        let mut engine = Self {
+            _producer: Some(producer),
+        };
+
+        // Take the producer out of the engine for returning
+        let producer = engine._producer.take().unwrap();
+        // (engine, producer)
+        (engine, producer)
     }
 
-    /// The main processing loop, executing each processor's logic in sequence.
     pub async fn run(&mut self) {
-        println!("\n[Sequential Core] Engine started. Waiting for commands...");
-        while let Some(mut cmd) = self.command_rx.recv().await {
-            println!(
-                "\n[Sequential Core] ------ Processing Command ID: {} symbol_id {} ------",
-                cmd.order_id, cmd.symbol
-            );
-
-            // 0: Journal the incoming command for durability. -- excali-0
-            self.journaling_processor.journal_command(&cmd);
-
-            // 1: Risk Engine validates the command(DONE) and holds funds(TODO). -- excali 5a, 5b
-            if let Err(e) = self.risk_engine.pre_process_command(&mut cmd) {
-                warn!(
-                    "[Sequential Core] Risk check failed: {:?}. Rejecting command.",
-                    e
-                );
-                continue;
-            }
-
-            // 2: Matching Engine processes the order and generates events. -- excali 6b, 7
-            self.matching_engine_router.route_command(&mut cmd);
-
-            // 3: Handle all events generated by the matching stage.
-            let mut current_event = cmd.matcher_event.take();
-            // check if fails: current_event how many events
-            if current_event.is_none() {
-                warn!(
-                    "[Sequential Core] No events generated for command ID: {}",
-                    cmd.order_id
-                );
-                continue;
-            }
-            println!(
-                "[Sequential Core] Processing events for command ID: {}",
-                cmd.order_id
-            );
-            while let Some(event_box) = current_event {
-                let mut event = *event_box;
-                current_event = event.next_event.take();
-                println!("[Sequential Core] Processing event: {:?}", event);
-
-                // 3a. Journal the resulting event. -- excali 0
-                self.journaling_processor.journal_event(&event);
-                println!("[Sequential Core] Event journaled: {:?}", event);
-
-                // 3b. Risk Engine handles financial settlement. -- excali 8a
-                self.risk_engine.handle_event(&event);
-                println!("[Sequential Core] Risk Engine processed event: {:?}", event);
-
-                // 3c. External handler sends results to clients. -- excali 8b
-                self.events_handler.handle_event(event.clone()).await;
-                println!(
-                    "[Sequential Core] Event sent to external handler: {:?}",
-                    event
-                );
-            }
-        }
-        println!("[Sequential Core] Engine stopped.");
+        info!("\n[Sequential Core] Engine started. Waiting for commands...");
+        std::thread::park(); 
+        info!("[Sequential Core] Engine stopped.");
     }
 }
