@@ -1,0 +1,17 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Workspace crates containing our data models and order book logic
+common = { path = "../common" }
+orderbook = { path = "../orderbook" }
+processors = { path = "../processors" }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+async-trait = "0.1"
+hashbrown.workspace = true
+disruptor = "3.4.0"
+
