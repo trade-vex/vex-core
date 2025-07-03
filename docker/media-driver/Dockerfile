@@ -1,93 +1,82 @@
-# ---------- Build stage ----------
+# Dockerfile for Aeron C Media Driver
 FROM ubuntu:22.04 as builder
 
+# Avoid prompts from apt
+ENV DEBIAN_FRONTEND=noninteractive
+
 # Install build dependencies
-RUN apt update && apt install -y \
-    git \
-    curl \
+RUN apt-get update && apt-get install -y \
     build-essential \
-    openjdk-17-jdk-headless \
+    curl \
     cmake \
-    wget \
+    openjdk-17-jdk-headless \
+    git \
+    libbsd-dev \
+    uuid-dev \
+    libssl-dev \
+    zlib1g-dev \
+    doxygen \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone Aeron repository and build
-RUN git clone https://github.com/real-logic/aeron.git /opt/aeron
-WORKDIR /opt/aeron
+# Set working directory
+WORKDIR /build
 
-# Build Aeron driver
+# Clone Aeron repository
+RUN git clone https://github.com/aeron-io/aeron.git
+
+# Change to aeron directory
+WORKDIR /build/aeron
+
+# Build Aeron C++ components including C Media Driver
 RUN ./cppbuild/cppbuild --no-tests
 
-# ---------- Runtime stage ----------
-FROM ubuntu:22.04
+# Create runtime image
+FROM ubuntu:22.04 as runtime
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
-    procps \
-    curl \
+    libbsd0 \
+    libuuid1 \
+    libssl3 \
+    zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /opt/aeron
+# Create aeron user and group
+RUN groupadd -r aeron && useradd -r -g aeron aeron
 
-# Copy built aeron from builder stage
-COPY --from=builder /opt/aeron /opt/aeron
+# Copy the built C Media Driver from builder stage
+COPY --from=builder /build/aeron/cppbuild/Release/binaries/aeronmd /usr/local/bin/aeronmd
+COPY --from=builder /build/aeron/cppbuild/Release/lib/ /usr/local/lib/
 
-# Create aeron directory with proper permissions
-RUN mkdir -p /tmp/aeron && chmod 755 /tmp/aeron
+# Make it executable
+RUN chmod +x /usr/local/bin/aeronmd
 
-# Set environment variables
-ENV AERON_DIR=/tmp/aeron
+# Create directory for aeron data
+RUN mkdir -p /opt && chown aeron:aeron /opt
+
+RUN ldconfig
+
+
+# Switch to aeron user
+USER aeron
+
+# Set working directory
+WORKDIR /opt
+
+# Default environment variables for Aeron C Media Driver
+ENV AERON_DIR=/opt/aeron
+ENV AERON_TERM_BUFFER_LENGTH=1048576
+ENV AERON_THREADING_MODE=DEDICATED
+ENV AERON_PRINT_CONFIGURATION=true
 ENV AERON_EVENT_LOG=all
+ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
 
-# Expose Aeron IPC directory
-VOLUME ["/tmp/aeron"]
+# Expose default ports
+EXPOSE 40123 40124
 
-# Create a proper startup script that handles directory conflicts
-RUN echo '#!/bin/bash\n\
-set -e\n\
-\n\
-# Set proper environment\n\
-export AERON_DIR=/tmp/aeron\n\
-export AERON_EVENT_LOG=all\n\
-\n\
-echo "Starting Aeron Media Driver..."\n\
-echo "AERON_DIR: $AERON_DIR"\n\
-echo "AERON_EVENT_LOG: $AERON_EVENT_LOG"\n\
-\n\
-# Clean up any existing aeron files but preserve the directory\n\
-if [ -d "/tmp/aeron" ]; then\n\
-    echo "Cleaning existing aeron files..."\n\
-    find /tmp/aeron -mindepth 1 -delete 2>/dev/null || true\n\
-else\n\
-    echo "Creating aeron directory..."\n\
-    mkdir -p /tmp/aeron\n\
-fi\n\
-\n\
-# Set proper permissions\n\
-chmod 755 /tmp/aeron\n\
-\n\
-# Start the media driver\n\
-cd /opt/aeron\n\
-exec ./cppbuild/Release/binaries/aeronmd' > /opt/aeron/start-driver.sh \
-    && chmod +x /opt/aeron/start-driver.sh
-    
-# Create health check script
-RUN echo '#!/bin/bash\n\
-# Check if media driver is running by looking for the process\n\
-if pgrep -f "aeronmd" > /dev/null; then\n\
-    echo "Media driver is running"\n\
-    exit 0\n\
-else\n\
-    echo "Media driver is not running"\n\
-    exit 1\n\
-fi' > /opt/aeron/health-check.sh \
-    && chmod +x /opt/aeron/health-check.sh
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD pgrep aeronmd || exit 1
 
-# Add health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD ["/opt/aeron/health-check.sh"]
-
-# Expose port for monitoring (optional)
-EXPOSE 8080
-
-CMD ["/opt/aeron/start-driver.sh"]
+# Start the C Media Driver
+CMD ["aeronmd"]
