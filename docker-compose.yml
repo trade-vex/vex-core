@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  # Aeron Media Driver - built from source
+  media-driver:
+    build:
+      context: ./media-driver
+      dockerfile: Dockerfile
+      cache_from:
+        - ubuntu:22.04
+    container_name: vex-media-driver
+    environment:
+      - AERON_EVENT_LOG=all
+      - AERON_DIR=/opt/aeron  # Changed from /tmp/aeron
+    volumes:
+      - aeron-ipc:/tmp/aeron
+    restart: unless-stopped
+    # Health check is now built into the Dockerfile
+
+  # Exchange Core - built from source
+  vex-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vex-core
+    depends_on:
+      media-driver:
+        condition: service_healthy
+    environment:
+      - RUST_LOG=info
+      - AERON_DIR=/tmp/aeron
+    volumes:
+      - aeron-ipc:/tmp/aeron
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "vex-core"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  aeron-ipc:
+    driver: local
