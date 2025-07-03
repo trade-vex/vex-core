@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  # Standalone Aeron Media Driver for testing
+  media-driver:
+    build:
+      context: ./media-driver
+      dockerfile: Dockerfile
+    container_name: vex-media-driver-test
+    environment:
+      - AERON_EVENT_LOG=all
+      - AERON_DIR=/tmp/aeron
+    volumes:
+      - aeron-ipc-test:/tmp/aeron
+    ports:
+      - "8080:8080"  # For monitoring
+    restart: unless-stopped
+    # Health check is built into the Dockerfile
+    
+  # Optional: Simple test service to verify media driver is accessible
+  test-client:
+    image: ubuntu:22.04
+    container_name: media-driver-test-client
+    depends_on:
+      media-driver:
+        condition: service_healthy
+    volumes:
+      - aeron-ipc-test:/tmp/aeron
+    command: >
+      bash -c "
+        apt-get update && apt-get install -y curl &&
+        echo 'Media driver is healthy and accessible!' &&
+        echo 'Aeron directory contents:' &&
+        ls -la /tmp/aeron &&
+        echo 'Sleeping for 30 seconds to keep container alive for inspection...' &&
+        sleep 30
+      "
+    restart: "no"
+
+volumes:
+  aeron-ipc-test:
+    driver: local 
