@@ -6,7 +6,7 @@
                    semanticVersion="1.0.0"
                    description="SBE schema for OrderCommand">
 
-    <!-- Define message header -->
+    <!-- Message header -->
     <types>
         <composite name="messageHeader" description="Standard SBE message header" semanticType="messageHeader">
             <type name="blockLength" primitiveType="uint16"/>
@@ -15,33 +15,54 @@
             <type name="version" primitiveType="uint16"/>
         </composite>
 
-        <!-- Define the OrderCommand composite -->
+        <!-- enums -->
+        <enum name="OrderCommandType" encodingType="uint8" description="Order command types">
+            <validValue name="PlaceOrder" value="0" description="Place a new order"/>
+            <validValue name="CancelOrder" value="1" description="Cancel an existing order"/>
+            <validValue name="MoveOrder" value="2" description="Move an existing order"/>
+            <validValue name="ReduceOrder" value="3" description="Reduce an existing order"/>
+        </enum>
+
+        <enum name="OrderAction" encodingType="uint8" description="Order action types">
+            <validValue name="Ask" value="0" description="Sell order"/>
+            <validValue name="Bid" value="1" description="Buy order"/>
+        </enum>
+
+        <enum name="OrderType" encodingType="uint8" description="Order type specifications">
+            <validValue name="Gtc" value="0" description="Good till Cancel - equivalent to regular limit order"/>
+            <validValue name="Ioc" value="1" description="Immediate or Cancel - equivalent to strict-risk market order with price cap"/>
+            <validValue name="IocBudget" value="2" description="Immediate or Cancel with total amount cap"/>
+            <validValue name="Fok" value="3" description="Fill or Kill - execute immediately completely or not at all with price cap"/>
+            <validValue name="FokBudget" value="4" description="Fill or Kill with total amount cap"/>
+        </enum>
+
+        <!-- OrderCommand -->
         <composite name="OrderCommand" description="Equivalent of Rust's OrderCommand struct">
-            <type name="command" primitiveType="uint8"/>
+            <type name="command" type="OrderCommandType"/>
             <type name="order_id" primitiveType="int64"/>
             <type name="symbol" primitiveType="int32"/>
             <type name="uid" primitiveType="int64"/>
             <type name="price" primitiveType="int64"/>
             <type name="reserve_bid_price" primitiveType="int64"/>
             <type name="size" primitiveType="int64"/>
-            <type name="action" primitiveType="uint8"/>
-            <type name="order_type" primitiveType="uint8"/>
+            <type name="action" type="OrderAction"/>
+            <type name="order_type" type="OrderType"/>
             <type name="user_cookie" primitiveType="int32"/>
             <type name="timestamp" primitiveType="int64"/>
         </composite>
     </types>
 
-    <!-- Define the message -->
+    <!-- Message -->
     <message name="OrderCommandMessage" id="1" blockLength="59" semanticType="OrderCommand">
-        <field name="command" id="1" type="uint8"/>
+        <field name="command" id="1" type="OrderCommandType"/>
         <field name="order_id" id="2" type="int64"/>
         <field name="symbol" id="3" type="int32"/>
         <field name="uid" id="4" type="int64"/>
         <field name="price" id="5" type="int64"/>
         <field name="reserve_bid_price" id="6" type="int64"/>
         <field name="size" id="7" type="int64"/>
-        <field name="action" id="8" type="uint8"/>
-        <field name="order_type" id="9" type="uint8"/>
+        <field name="action" id="8" type="OrderAction"/>
+        <field name="order_type" id="9" type="OrderType"/>
         <field name="user_cookie" id="10" type="int32"/>
         <field name="timestamp" id="11" type="int64"/>
     </message>
