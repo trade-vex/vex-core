@@ -154,6 +154,13 @@ pub struct OrderBookNaiveImpl {
 }
 
 impl OrderBookNaiveImpl {
+    fn get_buckets_mut(&mut self, action: OrderAction) -> &mut BTreeMap<i64, OrdersBucketNaive> {
+        match action {
+            OrderAction::Ask => &mut self.ask_buckets,
+            OrderAction::Bid => &mut self.bid_buckets,
+        }
+    }
+
     pub fn new(symbol_spec: CoreSymbolSpecification) -> Self {
         Self {
             ask_buckets: BTreeMap::new(),
@@ -347,7 +354,7 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
         let order_id = cmd.order_id();
         let order_uid = cmd.uid();
 
-        let (reduce_by, can_remove, price, action) = {
+        let (reduce_by, can_remove, price, action, filled) = {
             let order = self
                 .order_id_map
                 .get(&order_id)
@@ -361,31 +368,58 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
             let reduce_by = std::cmp::min(remaining_size, requested_reduce_size);
             let can_remove = reduce_by == remaining_size;
 
-            (reduce_by, can_remove, order.price, order.action)
+            (
+                reduce_by,
+                can_remove,
+                order.price,
+                order.action,
+                order.filled,
+            )
         };
 
-        let order = self.order_id_map.get_mut(&order_id).unwrap();
-        order.size -= reduce_by;
-        cmd.action = action;
-        if can_remove {
-            return self.cancel_order(cmd);
-        }
-        cmd.matcher_event = Some(EventHelper::send_reduce_event(order, reduce_by, can_remove));
+        let (new_size, matcher_evt) = {
+            let buckets = self.get_buckets_mut(action);
+            let bucket = buckets
+                .get_mut(&price)
+                .ok_or(OrderBookError::UnknownOrderId)?;
 
-        let buckets = if action == OrderAction::Ask {
-            &mut self.ask_buckets
-        } else {
-            &mut self.bid_buckets
-        };
-
-        if let Some(bucket) = buckets.get_mut(&price) {
-            bucket.reduce_size(reduce_by);
-            if let Some(order_in_bucket) = bucket.entries.get_mut(&cmd.order_id()) {
-                order_in_bucket.size = order.size; // Sync its size with the master copy.
+            // Update bucket volume and entry size
+            if can_remove {
+                // we do not remove the entry, just zero it out
+                bucket.total_volume -= reduce_by;
+            } else {
+                bucket.reduce_size(reduce_by);
             }
-        } else {
-            return Err(OrderBookError::UnknownOrderId);
+
+            let order_in_bucket = bucket
+                .entries
+                .get_mut(&order_id)
+                .ok_or(OrderBookError::UnknownOrderId)?;
+
+            let new_size = if can_remove {
+                filled
+            } else {
+                order_in_bucket.size - reduce_by
+            };
+
+            order_in_bucket.size = new_size;
+
+            // Build the matcher event now (using the &mut order_in_bucket)
+            cmd.action = action;
+
+            let evt = EventHelper::send_reduce_event(order_in_bucket, reduce_by, can_remove);
+
+            (new_size, evt)
+        };
+        {
+            let order = self
+                .order_id_map
+                .get_mut(&order_id)
+                .ok_or(OrderBookError::UnknownOrderId)?;
+            order.size = new_size;
         }
+
+        cmd.matcher_event = Some(matcher_evt);
 
         Ok(())
     }
@@ -426,9 +460,6 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
 
             order.price = cmd.price;
             cmd.action = order.action;
-            cmd.uid = order.uid;
-            cmd.order_id = order.order_id;
-            cmd.size = order.size;
 
             // Try matching after price change
             let total_filled = self.try_match(cmd, order.filled);

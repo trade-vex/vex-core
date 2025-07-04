@@ -48,7 +48,12 @@ fn test_reduce_order_to_zero_passes() {
     order_book.reduce_order(&mut reduce_cmd).unwrap();
 
     assert_eq!(order_book.get_total_orders_volume(OrderAction::Ask), 0);
-    assert!(order_book.get_order_by_id(1).is_none()); // The order should be gone
+    let order = order_book.get_order_by_id(1).unwrap();
+    assert_eq!(
+        order.size(),
+        order.filled(),
+        "Order should be fully reduced but still exist"
+    );
 }
 
 #[test]
@@ -110,5 +115,3 @@ fn test_partial_reduce_updates_all_state_consistently() {
         "Order size INSIDE the bucket must also be updated"
     );
 }
-
-// TODO: translate all other tests from OrderBookBaseTest.java
