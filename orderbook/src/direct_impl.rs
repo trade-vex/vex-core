@@ -784,8 +784,7 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
         for key in self.order_id_index.keys() {
             assert!(
                 orders_in_chain.contains(key),
-                "orderIdIndex contains an order not in a chain: {}",
-                key
+                "orderIdIndex contains an order not in a chain: {key}"
             );
         }
     }
