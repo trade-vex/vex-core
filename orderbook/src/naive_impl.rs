@@ -436,11 +436,7 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
 
             // Insert into new bucket only if partially filled or not filled at all
             if order.size > order.filled {
-                let new_buckets = if order.action == OrderAction::Ask {
-                    &mut self.ask_buckets
-                } else {
-                    &mut self.bid_buckets
-                };
+                let new_buckets = self.get_buckets_mut(order.action);
                 let bucket = new_buckets
                     .entry(order.price)
                     .or_insert_with(|| OrdersBucketNaive::new(order.price));
