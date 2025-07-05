@@ -1,9 +1,10 @@
 use crate::events::EventHelper;
 use crate::{MatcherTradeEvent, OrderBook, OrderBookError, OrderBookImplType, OrderCommand};
-use borsh::{BorshDeserialize, BorshSerialize};
-use common::model::enums::{OrderAction, OrderType};
+use common::model::enums::{OrderAction, OrderType, SymbolType};
 use common::model::order::{Order, OrderTrait};
 use common::model::symbol_specification::CoreSymbolSpecification;
+
+use borsh::{BorshDeserialize, BorshSerialize};
 use hashbrown::HashMap;
 use hashlink::LinkedHashMap;
 use std::collections::BTreeMap;
@@ -173,10 +174,10 @@ impl OrderBookNaiveImpl {
         Ok(writer)
     }
 
-    fn get_id_map_and_buckets_mut(&mut self, action: OrderAction) -> (&mut HashMap<i64, Order>, &mut BTreeMap<i64, OrdersBucketNaive>) {
+    fn get_buckets_mut(&mut self, action: OrderAction) -> &mut BTreeMap<i64, OrdersBucketNaive> {
         match action {
-            OrderAction::Ask => (&mut self.order_id_map, &mut self.ask_buckets),
-            OrderAction::Bid => (&mut self.order_id_map, &mut self.bid_buckets),
+            OrderAction::Ask => &mut self.ask_buckets,
+            OrderAction::Bid => &mut self.bid_buckets,
         }
     }
 
@@ -353,10 +354,8 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
             return Err(OrderBookError::ReduceFailedWrongSize);
         }
 
-        let (id_map, buckets) = self.get_id_map_and_buckets_mut(cmd.action);
-
-        let (order, bucket, reduce_by, remaining_size) = {
-            let order = id_map.get(&order_id).ok_or(OrderBookError::UnknownOrderId)?;
+        let (order, buckets, reduce_by, remaining_size) = {
+            let order = self.order_id_map.get(&order_id).ok_or(OrderBookError::UnknownOrderId)?.clone();
 
             if order.uid != cmd.uid {
                 return Err(OrderBookError::UnknownOrderId);
@@ -365,25 +364,27 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
             let remaining_size = order.size - order.filled;
             let reduce_by = std::cmp::min(remaining_size, requested_reduce_size);
 
-            let bucket = buckets
+            let buckets = self.get_buckets_mut(order.action);
+
+            (order.clone(),  buckets, reduce_by, remaining_size)
+        };
+
+        let bucket = buckets
                 .get_mut(&order.price).unwrap_or_else(|| {
                     panic!("Can not find bucket for order price={} for order {:?}", order.price, order);
                 });
-            (order.clone(), bucket, reduce_by, remaining_size)
-        };
 
         // Update bucket volume and entry size
         if reduce_by == remaining_size {
-            id_map.remove(&order_id);
             bucket.remove(order_id, cmd.uid);
-            
             if bucket.get_total_volume() == 0 {
                 buckets.remove(&order.price);
             }
+            self.order_id_map.remove(&order_id);
         } else {
-            let order = id_map.get_mut(&order_id).unwrap();
-            order.size -= reduce_by;
             bucket.reduce_size(reduce_by);
+            let order = self.order_id_map.get_mut(&order_id).unwrap();
+            order.size -= reduce_by;
         }
 
         cmd.matcher_event = Some(EventHelper::send_reduce_event(&order, reduce_by, false));
@@ -400,7 +401,7 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
             }
 
             if self.symbol_spec.symbol_type
-                == common::model::enums::SymbolType::CurrencyExchangePair
+                == SymbolType::CurrencyExchangePair
                 && order.action == OrderAction::Bid
                 && cmd.price > order.reserve_bid_price
             {
