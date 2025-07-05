@@ -154,13 +154,6 @@ pub struct OrderBookNaiveImpl {
 }
 
 impl OrderBookNaiveImpl {
-    fn get_buckets_mut(&mut self, action: OrderAction) -> &mut BTreeMap<i64, OrdersBucketNaive> {
-        match action {
-            OrderAction::Ask => &mut self.ask_buckets,
-            OrderAction::Bid => &mut self.bid_buckets,
-        }
-    }
-
     pub fn new(symbol_spec: CoreSymbolSpecification) -> Self {
         Self {
             ask_buckets: BTreeMap::new(),
@@ -178,6 +171,13 @@ impl OrderBookNaiveImpl {
         let mut writer = Vec::new();
         self.serialize(&mut writer)?;
         Ok(writer)
+    }
+
+    fn get_id_map_and_buckets_mut(&mut self, action: OrderAction) -> (&mut HashMap<i64, Order>, &mut BTreeMap<i64, OrdersBucketNaive>) {
+        match action {
+            OrderAction::Ask => (&mut self.order_id_map, &mut self.ask_buckets),
+            OrderAction::Bid => (&mut self.order_id_map, &mut self.bid_buckets),
+        }
     }
 
     fn new_order_place_gtc(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError> {
@@ -346,80 +346,48 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
     }
 
     fn reduce_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError> {
-        let requested_reduce_size = cmd.size();
-        if requested_reduce_size <= 0 {
+        let order_id = cmd.order_id;
+        let requested_reduce_size = cmd.size;
+        
+        if cmd.size <= 0 {
             return Err(OrderBookError::ReduceFailedWrongSize);
         }
 
-        let order_id = cmd.order_id();
-        let order_uid = cmd.uid();
+        let (id_map, buckets) = self.get_id_map_and_buckets_mut(cmd.action);
 
-        let (reduce_by, can_remove, price, action, filled) = {
-            let order = self
-                .order_id_map
-                .get(&order_id)
-                .ok_or(OrderBookError::UnknownOrderId)?;
+        let (order, bucket, reduce_by, remaining_size) = {
+            let order = id_map.get(&order_id).ok_or(OrderBookError::UnknownOrderId)?;
 
-            if order.uid != order_uid {
+            if order.uid != cmd.uid {
                 return Err(OrderBookError::UnknownOrderId);
             }
 
             let remaining_size = order.size - order.filled;
             let reduce_by = std::cmp::min(remaining_size, requested_reduce_size);
-            let can_remove = reduce_by == remaining_size;
 
-            (
-                reduce_by,
-                can_remove,
-                order.price,
-                order.action,
-                order.filled,
-            )
-        };
-
-        let (new_size, matcher_evt) = {
-            let buckets = self.get_buckets_mut(action);
             let bucket = buckets
-                .get_mut(&price)
-                .ok_or(OrderBookError::UnknownOrderId)?;
-
-            // Update bucket volume and entry size
-            if can_remove {
-                // we do not remove the entry, just zero it out
-                bucket.total_volume -= reduce_by;
-            } else {
-                bucket.reduce_size(reduce_by);
-            }
-
-            let order_in_bucket = bucket
-                .entries
-                .get_mut(&order_id)
-                .ok_or(OrderBookError::UnknownOrderId)?;
-
-            let new_size = if can_remove {
-                filled
-            } else {
-                order_in_bucket.size - reduce_by
-            };
-
-            order_in_bucket.size = new_size;
-
-            // Build the matcher event now (using the &mut order_in_bucket)
-            cmd.action = action;
-
-            let evt = EventHelper::send_reduce_event(order_in_bucket, reduce_by, can_remove);
-
-            (new_size, evt)
+                .get_mut(&order.price).unwrap_or_else(|| {
+                    panic!("Can not find bucket for order price={} for order {:?}", order.price, order);
+                });
+            (order.clone(), bucket, reduce_by, remaining_size)
         };
-        {
-            let order = self
-                .order_id_map
-                .get_mut(&order_id)
-                .ok_or(OrderBookError::UnknownOrderId)?;
-            order.size = new_size;
+
+        // Update bucket volume and entry size
+        if reduce_by == remaining_size {
+            id_map.remove(&order_id);
+            bucket.remove(order_id, cmd.uid);
+            
+            if bucket.get_total_volume() == 0 {
+                buckets.remove(&order.price);
+            }
+        } else {
+            let order = id_map.get_mut(&order_id).unwrap();
+            order.size -= reduce_by;
+            bucket.reduce_size(reduce_by);
         }
 
-        cmd.matcher_event = Some(matcher_evt);
+        cmd.matcher_event = Some(EventHelper::send_reduce_event(&order, reduce_by, false));
+        cmd.action = order.action;
 
         Ok(())
     }
