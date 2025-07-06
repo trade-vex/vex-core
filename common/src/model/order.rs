@@ -12,15 +12,7 @@ pub trait OrderTrait {
     fn reserve_bid_price(&self) -> i64;
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    BorshSerialize,
-    BorshDeserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct Order {
     pub order_id: i64,
     pub price: i64,
@@ -57,4 +49,4 @@ impl OrderTrait for Order {
     fn reserve_bid_price(&self) -> i64 {
         self.reserve_bid_price
     }
-} 
+}

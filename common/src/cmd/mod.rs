@@ -1,4 +1,4 @@
-use crate::model::enums::{OrderAction, OrderType, MatcherEventType};
+use crate::model::enums::{MatcherEventType, OrderAction, OrderType};
 use crate::model::order::OrderTrait;
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -76,7 +76,7 @@ impl OrderCommand {
             price: 0,
             reserve_bid_price: 0,
             size: 0,
-            action: OrderAction::Ask, // Will be ignored
+            action: OrderAction::Ask,   // Will be ignored
             order_type: OrderType::Gtc, // Will be ignored
             user_cookie: 0,
             timestamp: 0,
@@ -93,7 +93,7 @@ impl OrderCommand {
             price: 0,
             reserve_bid_price: 0,
             size,
-            action: OrderAction::Ask, // Will be ignored
+            action: OrderAction::Ask,   // Will be ignored
             order_type: OrderType::Gtc, // Will be ignored
             user_cookie: 0,
             timestamp: 0,
@@ -110,7 +110,7 @@ impl OrderCommand {
             price,
             reserve_bid_price: 0,
             size: 0,
-            action: OrderAction::Ask, // Will be ignored
+            action: OrderAction::Ask,   // Will be ignored
             order_type: OrderType::Gtc, // Will be ignored
             user_cookie: 0,
             timestamp: 0,
@@ -223,4 +223,3 @@ impl Default for MatcherTradeEvent {
         }
     }
 }
-

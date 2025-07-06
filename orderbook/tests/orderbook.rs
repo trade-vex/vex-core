@@ -1,4 +1,4 @@
-use common::model::enums::{OrderAction, OrderType};
+use common::model::enums::{MatcherEventType, OrderAction, OrderType};
 use common::model::symbol_specification::TestConstants;
 use orderbook::naive_impl::OrderBookNaiveImpl;
 use orderbook::{OrderBook, OrderCommand};
@@ -38,6 +38,35 @@ fn test_reduce_order() {
 }
 
 #[test]
+fn test_reduce_order_to_zero_passes() {
+    let mut order_book = create_order_book();
+    let mut cmd = OrderCommand::new_order(OrderType::Gtc, 1, 100, 50000, 0, 10, OrderAction::Ask);
+    order_book.new_order(&mut cmd).unwrap();
+
+    let mut reduce_cmd = OrderCommand::reduce(1, 100, 10); // Reduce size BY 10
+
+    order_book.reduce_order(&mut reduce_cmd).unwrap();
+
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Ask), 0);
+    let order = order_book.get_order_by_id(1);
+    assert!(
+        order.is_none(),
+        "Order should be fully reduced and not exist"
+    );
+
+    let order_event = reduce_cmd.matcher_event.unwrap();
+    assert_eq!(order_event.matched_order_id, 1);
+    assert_eq!(order_event.matched_order_uid, 100);
+    assert_eq!(order_event.price, 50000);
+    assert_eq!(order_event.size, 10);
+    assert_eq!(order_event.bidder_hold_price, 0);
+    assert_eq!(order_event.event_type, MatcherEventType::Reduce);
+    assert!(!order_event.active_order_completed);
+    assert!(!order_event.matched_order_completed);
+    assert!(order_event.next_event.is_none());
+}
+
+#[test]
 fn test_move_order() {
     let mut order_book = create_order_book();
     let mut cmd = OrderCommand::new_order(OrderType::Gtc, 1, 100, 50000, 0, 10, OrderAction::Ask);
@@ -62,4 +91,37 @@ fn test_simple_matching() {
     assert_eq!(order_book.get_order_by_id(1).unwrap().filled(), 5);
 }
 
-// TODO: translate all other tests from OrderBookBaseTest.java
+#[test]
+fn test_partial_reduce_updates_all_state_consistently() {
+    let mut order_book = create_order_book();
+    // Place a BID order of size 100.
+    let mut place_cmd =
+        OrderCommand::new_order(OrderType::Gtc, 1, 100, 50000, 0, 100, OrderAction::Bid);
+    order_book.new_order(&mut place_cmd).unwrap();
+
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Bid), 100);
+
+    // 2. Reduce the order by 40. The new size should be 60.
+    let mut reduce_cmd = OrderCommand::reduce(1, 100, 40);
+    order_book.reduce_order(&mut reduce_cmd).unwrap();
+
+    assert_eq!(
+        order_book.get_total_orders_volume(OrderAction::Bid),
+        60,
+        "Bucket total volume should be reduced"
+    );
+
+    let order_from_map = order_book.get_order_by_id(1).unwrap();
+    assert_eq!(
+        order_from_map.size(),
+        60,
+        "Order size in global map should be updated"
+    );
+
+    let order_from_stream = order_book.bid_orders_stream(true).next().unwrap();
+    assert_eq!(
+        order_from_stream.size(),
+        60,
+        "Order size INSIDE the bucket must also be updated"
+    );
+}

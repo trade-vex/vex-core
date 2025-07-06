@@ -64,4 +64,4 @@ impl L2MarketData {
     pub fn total_order_book_volume_bid(&self) -> i64 {
         self.bid_volumes.iter().sum()
     }
-} 
+}

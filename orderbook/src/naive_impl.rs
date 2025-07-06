@@ -1,13 +1,14 @@
-use common::model::order::{OrderTrait, Order};
-use common::model::enums::{OrderAction, OrderType};
-use common::model::symbol_specification::CoreSymbolSpecification;
-use crate::{OrderBook, OrderBookImplType, OrderCommand, OrderBookError, MatcherTradeEvent};
 use crate::events::EventHelper;
-use tracing::warn;
-use std::collections::BTreeMap;
-use hashbrown::HashMap;
+use crate::{MatcherTradeEvent, OrderBook, OrderBookError, OrderBookImplType, OrderCommand};
+use common::model::enums::{OrderAction, OrderType, SymbolType};
+use common::model::order::{Order, OrderTrait};
+use common::model::symbol_specification::CoreSymbolSpecification;
+
 use borsh::{BorshDeserialize, BorshSerialize};
+use hashbrown::HashMap;
 use hashlink::LinkedHashMap;
+use std::collections::BTreeMap;
+use tracing::warn;
 
 #[derive(Clone)]
 pub struct OrdersBucketNaive {
@@ -73,7 +74,7 @@ impl OrdersBucketNaive {
         None
     }
 
-    pub fn match_order<'a>(
+    pub fn match_order(
         &mut self,
         cmd: &OrderCommand,
         mut volume_to_collect: i64,
@@ -91,7 +92,8 @@ impl OrdersBucketNaive {
                 break;
             }
 
-            let trade_size = std::cmp::min(volume_to_collect, maker_order.size - maker_order.filled);
+            let trade_size =
+                std::cmp::min(volume_to_collect, maker_order.size - maker_order.filled);
             if trade_size > 0 {
                 total_matching_volume += trade_size;
                 maker_order.filled += trade_size;
@@ -123,9 +125,13 @@ impl OrdersBucketNaive {
             self.entries.remove(order_id);
         }
 
-        (total_matching_volume, events, orders_to_remove, partially_matched_orders)
+        (
+            total_matching_volume,
+            events,
+            orders_to_remove,
+            partially_matched_orders,
+        )
     }
-
 
     pub fn get_num_orders(&self) -> i32 {
         self.entries.len() as i32
@@ -168,6 +174,13 @@ impl OrderBookNaiveImpl {
         Ok(writer)
     }
 
+    fn get_buckets_mut(&mut self, action: OrderAction) -> &mut BTreeMap<i64, OrdersBucketNaive> {
+        match action {
+            OrderAction::Ask => &mut self.ask_buckets,
+            OrderAction::Bid => &mut self.bid_buckets,
+        }
+    }
+
     fn new_order_place_gtc(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError> {
         let filled = self.try_match(cmd, 0);
 
@@ -199,7 +212,9 @@ impl OrderBookNaiveImpl {
             &mut self.bid_buckets
         };
 
-        let bucket = buckets.entry(order.price).or_insert_with(|| OrdersBucketNaive::new(order.price));
+        let bucket = buckets
+            .entry(order.price)
+            .or_insert_with(|| OrdersBucketNaive::new(order.price));
         bucket.put(&order);
         self.order_id_map.insert(order.order_id, order);
 
@@ -215,17 +230,26 @@ impl OrderBookNaiveImpl {
         let price = cmd.price;
         let action = cmd.action;
 
-        let (matching_buckets, keys_to_iterate): (
-            &mut BTreeMap<i64, OrdersBucketNaive>,
-            Vec<i64>
-        ) = if action == OrderAction::Bid {
-            let keys: Vec<_> = self.ask_buckets.keys().filter(|&&p| p <= price).cloned().collect();
-            (&mut self.ask_buckets, keys)
-        } else {
-            let keys: Vec<_> = self.bid_buckets.keys().rev().filter(|&&p| p >= price).cloned().collect();
-            (&mut self.bid_buckets, keys)
-        };
-        
+        let (matching_buckets, keys_to_iterate): (&mut BTreeMap<i64, OrdersBucketNaive>, Vec<i64>) =
+            if action == OrderAction::Bid {
+                let keys: Vec<_> = self
+                    .ask_buckets
+                    .keys()
+                    .filter(|&&p| p <= price)
+                    .cloned()
+                    .collect();
+                (&mut self.ask_buckets, keys)
+            } else {
+                let keys: Vec<_> = self
+                    .bid_buckets
+                    .keys()
+                    .rev()
+                    .filter(|&&p| p >= price)
+                    .cloned()
+                    .collect();
+                (&mut self.bid_buckets, keys)
+            };
+
         let mut buckets_to_remove = Vec::new();
 
         for bucket_price in keys_to_iterate {
@@ -234,7 +258,8 @@ impl OrderBookNaiveImpl {
             }
 
             if let Some(bucket) = matching_buckets.get_mut(&bucket_price) {
-                let (matched_volume, events, removed_orders, partially_matched) = bucket.match_order(cmd, remaining_size, &self.symbol_spec);
+                let (matched_volume, events, removed_orders, partially_matched) =
+                    bucket.match_order(cmd, remaining_size, &self.symbol_spec);
 
                 if matched_volume > 0 {
                     filled += matched_volume;
@@ -310,7 +335,11 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
             }
 
             self.order_id_map.remove(&order.order_id);
-            cmd.attach_matcher_event(EventHelper::send_reduce_event(&order, order.size - order.filled, true));
+            cmd.attach_matcher_event(EventHelper::send_reduce_event(
+                &order,
+                order.size - order.filled,
+                true,
+            ));
             Ok(())
         } else {
             Err(OrderBookError::UnknownOrderId)
@@ -318,36 +347,75 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
     }
 
     fn reduce_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError> {
-        if let Some(order) = self.order_id_map.get_mut(&cmd.order_id) {
-            if order.uid != cmd.uid {
-                return Err(OrderBookError::UnknownOrderId);
-            }
-            if cmd.size <= 0 || cmd.size >= order.size {
-                return Err(OrderBookError::ReduceFailedWrongSize);
-            }
+        let order_id = cmd.order_id;
+        let requested_reduce_size = cmd.size;
 
-            let reduced_by = order.size - cmd.size;
-            order.size = cmd.size;
-
-            let buckets = if order.action == OrderAction::Ask {
-                &mut self.ask_buckets
-            } else {
-                &mut self.bid_buckets
-            };
-
-            if let Some(bucket) = buckets.get_mut(&order.price) {
-                if let Some(o) = bucket.entries.get_mut(&order.order_id) {
-                    o.size = cmd.size;
-                }
-                bucket.reduce_size(reduced_by);
-            }
-
-            cmd.attach_matcher_event(EventHelper::send_reduce_event(order, reduced_by, false));
-
-            Ok(())
-        } else {
-            Err(OrderBookError::UnknownOrderId)
+        if cmd.size <= 0 {
+            return Err(OrderBookError::ReduceFailedWrongSize);
         }
+
+        // Get order info first
+        let order = *self
+            .order_id_map
+            .get(&order_id)
+            .ok_or(OrderBookError::UnknownOrderId)?;
+
+        if order.uid != cmd.uid {
+            return Err(OrderBookError::UnknownOrderId);
+        }
+
+        let remaining_size = order.size - order.filled;
+        let reduce_by = std::cmp::min(remaining_size, requested_reduce_size);
+
+        // Update bucket volume and entry size
+        if reduce_by == remaining_size {
+            // Remove the order completely
+            {
+                let buckets = self.get_buckets_mut(order.action);
+
+                let bucket = buckets.get_mut(&order.price).unwrap_or_else(|| {
+                    panic!(
+                        "Can not find bucket for order price={} for order {:?}",
+                        order.price, order
+                    );
+                });
+
+                bucket.remove(order_id, cmd.uid);
+                if bucket.get_total_volume() == 0 {
+                    buckets.remove(&order.price);
+                }
+            }
+            self.order_id_map.remove(&order_id);
+        } else {
+            // Reduce the order size
+            {
+                let buckets = self.get_buckets_mut(order.action);
+
+                let bucket = buckets.get_mut(&order.price).unwrap_or_else(|| {
+                    panic!(
+                        "Can not find bucket for order price={} for order {:?}",
+                        order.price, order
+                    );
+                });
+
+                bucket.reduce_size(reduce_by);
+
+                // Update the order size in the bucket's entries
+                if let Some(bucket_order) = bucket.entries.get_mut(&order_id) {
+                    bucket_order.size -= reduce_by;
+                }
+            }
+
+            // Update the order size in the order_id_map
+            if let Some(order_map_entry) = self.order_id_map.get_mut(&order_id) {
+                order_map_entry.size -= reduce_by;
+            }
+        }
+
+        cmd.matcher_event = Some(EventHelper::send_reduce_event(&order, reduce_by, false));
+        cmd.action = order.action;
+
+        Ok(())
     }
 
     fn move_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError> {
@@ -356,10 +424,10 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
                 self.order_id_map.insert(order.order_id, order); // re-insert
                 return Err(OrderBookError::UnknownOrderId);
             }
-            
-            if self.symbol_spec.symbol_type == common::model::enums::SymbolType::CurrencyExchangePair 
-                && order.action == OrderAction::Bid 
-                && cmd.price > order.reserve_bid_price 
+
+            if self.symbol_spec.symbol_type == SymbolType::CurrencyExchangePair
+                && order.action == OrderAction::Bid
+                && cmd.price > order.reserve_bid_price
             {
                 // Put the order back before returning
                 self.order_id_map.insert(order.order_id, order);
@@ -367,7 +435,11 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
             }
 
             // Remove from old bucket
-            let old_buckets = if order.action == OrderAction::Ask { &mut self.ask_buckets } else { &mut self.bid_buckets };
+            let old_buckets = if order.action == OrderAction::Ask {
+                &mut self.ask_buckets
+            } else {
+                &mut self.bid_buckets
+            };
             let mut remove_bucket = false;
             if let Some(bucket) = old_buckets.get_mut(&order.price) {
                 bucket.remove(order.order_id, order.uid);
@@ -380,12 +452,21 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
             }
 
             order.price = cmd.price;
+            cmd.action = order.action;
 
-            // Insert into new bucket
-            let new_buckets = if order.action == OrderAction::Ask { &mut self.ask_buckets } else { &mut self.bid_buckets };
-            let bucket = new_buckets.entry(order.price).or_insert_with(|| OrdersBucketNaive::new(order.price));
-            bucket.put(&order);
-            self.order_id_map.insert(order.order_id, order);
+            // Try matching after price change
+            let total_filled = self.try_match(cmd, order.filled);
+            order.filled = total_filled;
+
+            // Insert into new bucket only if partially filled or not filled at all
+            if order.size > order.filled {
+                let new_buckets = self.get_buckets_mut(order.action);
+                let bucket = new_buckets
+                    .entry(order.price)
+                    .or_insert_with(|| OrdersBucketNaive::new(order.price));
+                bucket.put(&order);
+                self.order_id_map.insert(order.order_id, order);
+            }
 
             Ok(())
         } else {
@@ -398,7 +479,10 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
             &self.ask_buckets
         } else {
             &self.bid_buckets
-        }).values().map(|b| b.get_num_orders()).sum()
+        })
+        .values()
+        .map(|b| b.get_num_orders())
+        .sum()
     }
 
     fn get_total_orders_volume(&self, action: OrderAction) -> i64 {
@@ -407,21 +491,31 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
         } else {
             &self.bid_buckets
         })
-            .values()
-            .map(|b| b.get_total_volume())
-            .sum()
+        .values()
+        .map(|b| b.get_total_volume())
+        .sum()
     }
 
     fn get_order_by_id(&self, order_id: i64) -> Option<&dyn OrderTrait> {
-        self.order_id_map.get(&order_id).map(|o| o as &dyn OrderTrait)
+        self.order_id_map
+            .get(&order_id)
+            .map(|o| o as &dyn OrderTrait)
     }
 
     fn find_user_orders(&self, uid: i64) -> Vec<Order> {
-        self.order_id_map.values().filter(|o| o.uid == uid).cloned().collect()
+        self.order_id_map
+            .values()
+            .filter(|o| o.uid == uid)
+            .cloned()
+            .collect()
     }
 
-    fn ask_orders_stream(&'a self, sorted: bool) -> Box<dyn Iterator<Item=&'a dyn OrderTrait> + 'a> {
-        let iter = self.ask_buckets
+    fn ask_orders_stream(
+        &'a self,
+        sorted: bool,
+    ) -> Box<dyn Iterator<Item = &'a dyn OrderTrait> + 'a> {
+        let iter = self
+            .ask_buckets
             .values()
             .flat_map(|bucket| bucket.entries.values())
             .map(|o| o as &dyn OrderTrait);
@@ -434,8 +528,12 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
         }
     }
 
-    fn bid_orders_stream(&'a self, sorted: bool) -> Box<dyn Iterator<Item=&'a dyn OrderTrait> + 'a> {
-        let iter = self.bid_buckets
+    fn bid_orders_stream(
+        &'a self,
+        sorted: bool,
+    ) -> Box<dyn Iterator<Item = &'a dyn OrderTrait> + 'a> {
+        let iter = self
+            .bid_buckets
             .values()
             .rev() // Bids are high to low
             .flat_map(|bucket| bucket.entries.values())
@@ -449,7 +547,10 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
         }
     }
 
-    fn get_l2_market_data_snapshot(&self, size: usize) -> common::model::l2_market_data::L2MarketData {
+    fn get_l2_market_data_snapshot(
+        &self,
+        size: usize,
+    ) -> common::model::l2_market_data::L2MarketData {
         let asks_size = self.get_total_ask_buckets(size);
         let bids_size = self.get_total_bid_buckets(size);
         let mut data = common::model::l2_market_data::L2MarketData::with_size(asks_size, bids_size);
@@ -458,7 +559,10 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
         data
     }
 
-    fn publish_l2_market_data_snapshot(&self, data: &mut common::model::l2_market_data::L2MarketData) {
+    fn publish_l2_market_data_snapshot(
+        &self,
+        data: &mut common::model::l2_market_data::L2MarketData,
+    ) {
         self.fill_asks(data.ask_prices.capacity(), data);
         self.fill_bids(data.bid_prices.capacity(), data);
     }
@@ -506,4 +610,4 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
     fn validate_internal_state(&self) {
         // No-op for naive implementation
     }
-} 
+}
