@@ -355,11 +355,10 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
         }
 
         // Get order info first
-        let order = self
+        let order = *self
             .order_id_map
             .get(&order_id)
-            .ok_or(OrderBookError::UnknownOrderId)?
-            .clone();
+            .ok_or(OrderBookError::UnknownOrderId)?;
 
         if order.uid != cmd.uid {
             return Err(OrderBookError::UnknownOrderId);
