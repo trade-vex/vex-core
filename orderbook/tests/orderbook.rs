@@ -1,4 +1,4 @@
-use common::model::enums::{OrderAction, OrderType, MatcherEventType};
+use common::model::enums::{MatcherEventType, OrderAction, OrderType};
 use common::model::symbol_specification::TestConstants;
 use orderbook::naive_impl::OrderBookNaiveImpl;
 use orderbook::{OrderBook, OrderCommand};
@@ -77,17 +77,18 @@ fn test_move_order() {
     assert_eq!(order_book.get_order_by_id(1).unwrap().price(), 51000);
 }
 
-
 #[test]
 fn test_move_order_into_match_naive() {
     let mut order_book = create_order_book();
 
     // 1. Place a BID order for 10 shares at price 49900.
-    let mut bid_cmd = OrderCommand::new_order(OrderType::Gtc, 1, 200, 49900, 0, 10, OrderAction::Bid);
+    let mut bid_cmd =
+        OrderCommand::new_order(OrderType::Gtc, 1, 200, 49900, 0, 10, OrderAction::Bid);
     order_book.new_order(&mut bid_cmd).unwrap();
 
     // 2. Place an ASK order for 10 shares at price 50000.
-    let mut ask_cmd = OrderCommand::new_order(OrderType::Gtc, 2, 100, 50000, 0, 10, OrderAction::Ask);
+    let mut ask_cmd =
+        OrderCommand::new_order(OrderType::Gtc, 2, 100, 50000, 0, 10, OrderAction::Ask);
     order_book.new_order(&mut ask_cmd).unwrap();
 
     // Verify initial state.
@@ -97,7 +98,6 @@ fn test_move_order_into_match_naive() {
     // 3. Move the ASK order to a marketable price of 49800 (below the BID).
     let mut move_cmd = OrderCommand::move_order(2, 100, 49800);
     order_book.move_order(&mut move_cmd).unwrap();
-
 
     // The book should be empty because the orders matched.
     assert_eq!(order_book.get_total_orders_volume(OrderAction::Bid), 0);
