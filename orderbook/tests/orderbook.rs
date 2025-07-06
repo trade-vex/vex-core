@@ -61,8 +61,8 @@ fn test_reduce_order_to_zero_passes() {
     assert_eq!(order_event.size, 10);
     assert_eq!(order_event.bidder_hold_price, 0);
     assert_eq!(order_event.event_type, MatcherEventType::Reduce);
-    assert_eq!(order_event.active_order_completed, false);
-    assert_eq!(order_event.matched_order_completed, false);
+    assert!(!order_event.active_order_completed);
+    assert!(!order_event.matched_order_completed);
     assert!(order_event.next_event.is_none());
 }
 
