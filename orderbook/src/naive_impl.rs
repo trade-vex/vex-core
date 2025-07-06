@@ -354,37 +354,57 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
             return Err(OrderBookError::ReduceFailedWrongSize);
         }
 
-        let (order, buckets, reduce_by, remaining_size) = {
-            let order = self.order_id_map.get(&order_id).ok_or(OrderBookError::UnknownOrderId)?.clone();
+        // Get order info first
+        let order = self.order_id_map.get(&order_id).ok_or(OrderBookError::UnknownOrderId)?.clone();
 
-            if order.uid != cmd.uid {
-                return Err(OrderBookError::UnknownOrderId);
-            }
+        if order.uid != cmd.uid {
+            return Err(OrderBookError::UnknownOrderId);
+        }
 
-            let remaining_size = order.size - order.filled;
-            let reduce_by = std::cmp::min(remaining_size, requested_reduce_size);
-
-            let buckets = self.get_buckets_mut(order.action);
-
-            (order.clone(),  buckets, reduce_by, remaining_size)
-        };
-
-        let bucket = buckets
-                .get_mut(&order.price).unwrap_or_else(|| {
-                    panic!("Can not find bucket for order price={} for order {:?}", order.price, order);
-                });
+        let remaining_size = order.size - order.filled;
+        let reduce_by = std::cmp::min(remaining_size, requested_reduce_size);
 
         // Update bucket volume and entry size
         if reduce_by == remaining_size {
-            bucket.remove(order_id, cmd.uid);
-            if bucket.get_total_volume() == 0 {
-                buckets.remove(&order.price);
+            // Remove the order completely
+            {
+                let buckets = self.get_buckets_mut(order.action);
+                
+                let bucket = buckets
+                    .get_mut(&order.price)
+                    .unwrap_or_else(|| {
+                        panic!("Can not find bucket for order price={} for order {:?}", order.price, order);
+                    });
+                
+                bucket.remove(order_id, cmd.uid);
+                if bucket.get_total_volume() == 0 {
+                    buckets.remove(&order.price);
+                }
             }
             self.order_id_map.remove(&order_id);
         } else {
-            bucket.reduce_size(reduce_by);
-            let order = self.order_id_map.get_mut(&order_id).unwrap();
-            order.size -= reduce_by;
+            // Reduce the order size
+            {
+                let buckets = self.get_buckets_mut(order.action);
+                
+                let bucket = buckets
+                    .get_mut(&order.price)
+                    .unwrap_or_else(|| {
+                        panic!("Can not find bucket for order price={} for order {:?}", order.price, order);
+                    });
+                
+                bucket.reduce_size(reduce_by);
+                
+                // Update the order size in the bucket's entries
+                if let Some(bucket_order) = bucket.entries.get_mut(&order_id) {
+                    bucket_order.size -= reduce_by;
+                }
+            }
+            
+            // Update the order size in the order_id_map
+            if let Some(order_map_entry) = self.order_id_map.get_mut(&order_id) {
+                order_map_entry.size -= reduce_by;
+            }
         }
 
         cmd.matcher_event = Some(EventHelper::send_reduce_event(&order, reduce_by, false));
