@@ -349,13 +349,17 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
     fn reduce_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError> {
         let order_id = cmd.order_id;
         let requested_reduce_size = cmd.size;
-        
+
         if cmd.size <= 0 {
             return Err(OrderBookError::ReduceFailedWrongSize);
         }
 
         // Get order info first
-        let order = self.order_id_map.get(&order_id).ok_or(OrderBookError::UnknownOrderId)?.clone();
+        let order = self
+            .order_id_map
+            .get(&order_id)
+            .ok_or(OrderBookError::UnknownOrderId)?
+            .clone();
 
         if order.uid != cmd.uid {
             return Err(OrderBookError::UnknownOrderId);
@@ -369,13 +373,14 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
             // Remove the order completely
             {
                 let buckets = self.get_buckets_mut(order.action);
-                
-                let bucket = buckets
-                    .get_mut(&order.price)
-                    .unwrap_or_else(|| {
-                        panic!("Can not find bucket for order price={} for order {:?}", order.price, order);
-                    });
-                
+
+                let bucket = buckets.get_mut(&order.price).unwrap_or_else(|| {
+                    panic!(
+                        "Can not find bucket for order price={} for order {:?}",
+                        order.price, order
+                    );
+                });
+
                 bucket.remove(order_id, cmd.uid);
                 if bucket.get_total_volume() == 0 {
                     buckets.remove(&order.price);
@@ -386,21 +391,22 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
             // Reduce the order size
             {
                 let buckets = self.get_buckets_mut(order.action);
-                
-                let bucket = buckets
-                    .get_mut(&order.price)
-                    .unwrap_or_else(|| {
-                        panic!("Can not find bucket for order price={} for order {:?}", order.price, order);
-                    });
-                
+
+                let bucket = buckets.get_mut(&order.price).unwrap_or_else(|| {
+                    panic!(
+                        "Can not find bucket for order price={} for order {:?}",
+                        order.price, order
+                    );
+                });
+
                 bucket.reduce_size(reduce_by);
-                
+
                 // Update the order size in the bucket's entries
                 if let Some(bucket_order) = bucket.entries.get_mut(&order_id) {
                     bucket_order.size -= reduce_by;
                 }
             }
-            
+
             // Update the order size in the order_id_map
             if let Some(order_map_entry) = self.order_id_map.get_mut(&order_id) {
                 order_map_entry.size -= reduce_by;
@@ -420,8 +426,7 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
                 return Err(OrderBookError::UnknownOrderId);
             }
 
-            if self.symbol_spec.symbol_type
-                == SymbolType::CurrencyExchangePair
+            if self.symbol_spec.symbol_type == SymbolType::CurrencyExchangePair
                 && order.action == OrderAction::Bid
                 && cmd.price > order.reserve_bid_price
             {
