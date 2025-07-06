@@ -278,7 +278,7 @@ impl OrderBookNaiveImpl {
                     }
                 }
 
-                if bucket.get_num_orders() == 0 {
+                if bucket.get_total_volume() == 0 {
                     buckets_to_remove.push(bucket_price);
                 }
             }
@@ -419,54 +419,57 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
     }
 
     fn move_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError> {
-        if let Some(mut order) = self.order_id_map.remove(&cmd.order_id) {
+        let order = self.order_id_map.get(&cmd.order_id).cloned();
+
+        if let Some(mut order) = order {
             if order.uid != cmd.uid {
-                self.order_id_map.insert(order.order_id, order); // re-insert
                 return Err(OrderBookError::UnknownOrderId);
             }
 
+            // Reserved price risk check for exchange bids
             if self.symbol_spec.symbol_type == SymbolType::CurrencyExchangePair
                 && order.action == OrderAction::Bid
                 && cmd.price > order.reserve_bid_price
             {
-                // Put the order back before returning
-                self.order_id_map.insert(order.order_id, order);
                 return Err(OrderBookError::MoveFailedPriceOverRiskLimit);
             }
 
             // Remove from old bucket
-            let old_buckets = if order.action == OrderAction::Ask {
-                &mut self.ask_buckets
-            } else {
-                &mut self.bid_buckets
-            };
-            let mut remove_bucket = false;
+            let old_buckets = self.get_buckets_mut(order.action);
             if let Some(bucket) = old_buckets.get_mut(&order.price) {
                 bucket.remove(order.order_id, order.uid);
                 if bucket.get_num_orders() == 0 {
-                    remove_bucket = true;
+                    old_buckets.remove(&order.price);
                 }
             }
-            if remove_bucket {
-                old_buckets.remove(&order.price);
-            }
 
+            // Update order price
             order.price = cmd.price;
+
+            // Fill action field for events handling
             cmd.action = order.action;
+
+            cmd.size = order.size;
 
             // Try matching after price change
             let total_filled = self.try_match(cmd, order.filled);
             order.filled = total_filled;
 
-            // Insert into new bucket only if partially filled or not filled at all
-            if order.size > order.filled {
-                let new_buckets = self.get_buckets_mut(order.action);
-                let bucket = new_buckets
-                    .entry(order.price)
-                    .or_insert_with(|| OrdersBucketNaive::new(order.price));
-                bucket.put(&order);
-                self.order_id_map.insert(order.order_id, order);
+            // If order was fully matched, remove it from order book
+            if order.filled == order.size {
+                self.order_id_map.remove(&cmd.order_id);
+                return Ok(());
             }
+
+            // If not filled completely - put it into corresponding bucket
+            let new_buckets = self.get_buckets_mut(order.action);
+            let bucket = new_buckets
+                .entry(order.price)
+                .or_insert_with(|| OrdersBucketNaive::new(order.price));
+            bucket.put(&order);
+
+            // Update the order in the map
+            self.order_id_map.insert(order.order_id, order);
 
             Ok(())
         } else {

@@ -78,6 +78,43 @@ fn test_move_order() {
 }
 
 #[test]
+fn test_move_order_into_match_naive() {
+    let mut order_book = create_order_book();
+
+    // 1. Place a BID order for 10 shares at price 49900.
+    let mut bid_cmd =
+        OrderCommand::new_order(OrderType::Gtc, 1, 200, 49900, 0, 10, OrderAction::Bid);
+    order_book.new_order(&mut bid_cmd).unwrap();
+
+    // 2. Place an ASK order for 10 shares at price 50000.
+    let mut ask_cmd =
+        OrderCommand::new_order(OrderType::Gtc, 2, 100, 50000, 0, 10, OrderAction::Ask);
+    order_book.new_order(&mut ask_cmd).unwrap();
+
+    // Verify initial state.
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Bid), 10);
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Ask), 10);
+
+    // 3. Move the ASK order to a marketable price of 49800 (below the BID).
+    let mut move_cmd = OrderCommand::move_order(2, 100, 49800);
+    order_book.move_order(&mut move_cmd).unwrap();
+
+    // The book should be empty because the orders matched.
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Bid), 0);
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Ask), 0);
+    assert!(order_book.get_order_by_id(1).is_none());
+    assert!(order_book.get_order_by_id(2).is_none());
+
+    // Verify trade event generation.
+    let mut events = Vec::new();
+    let mut current_event = move_cmd.matcher_event;
+    while let Some(event) = current_event {
+        events.push(event.as_ref().event_type);
+        current_event = event.next_event;
+    }
+    assert!(events.contains(&MatcherEventType::Trade));
+}
+#[test]
 fn test_simple_matching() {
     let mut order_book = create_order_book();
     let mut ask_cmd =
