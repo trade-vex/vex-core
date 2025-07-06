@@ -1,4 +1,4 @@
-use common::model::enums::{OrderAction, OrderType};
+use common::model::enums::{MatcherEventType, OrderAction, OrderType};
 use common::model::symbol_specification::TestConstants;
 use orderbook::naive_impl::OrderBookNaiveImpl;
 use orderbook::{OrderBook, OrderCommand};
@@ -48,12 +48,22 @@ fn test_reduce_order_to_zero_passes() {
     order_book.reduce_order(&mut reduce_cmd).unwrap();
 
     assert_eq!(order_book.get_total_orders_volume(OrderAction::Ask), 0);
-    let order = order_book.get_order_by_id(1).unwrap();
-    assert_eq!(
-        order.size(),
-        order.filled(),
-        "Order should be fully reduced but still exist"
+    let order = order_book.get_order_by_id(1);
+    assert!(
+        order.is_none(),
+        "Order should be fully reduced and not exist"
     );
+
+    let order_event = reduce_cmd.matcher_event.unwrap();
+    assert_eq!(order_event.matched_order_id, 1);
+    assert_eq!(order_event.matched_order_uid, 100);
+    assert_eq!(order_event.price, 50000);
+    assert_eq!(order_event.size, 10);
+    assert_eq!(order_event.bidder_hold_price, 0);
+    assert_eq!(order_event.event_type, MatcherEventType::Reduce);
+    assert_eq!(order_event.active_order_completed, false);
+    assert_eq!(order_event.matched_order_completed, false);
+    assert!(order_event.next_event.is_none());
 }
 
 #[test]
