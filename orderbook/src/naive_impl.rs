@@ -420,7 +420,7 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
 
     fn move_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError> {
         let order = self.order_id_map.get(&cmd.order_id).cloned();
-        
+
         if let Some(mut order) = order {
             if order.uid != cmd.uid {
                 return Err(OrderBookError::UnknownOrderId);
@@ -445,7 +445,7 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
 
             // Update order price
             order.price = cmd.price;
-            
+
             // Fill action field for events handling
             cmd.action = order.action;
 
@@ -467,7 +467,7 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
                 .entry(order.price)
                 .or_insert_with(|| OrdersBucketNaive::new(order.price));
             bucket.put(&order);
-            
+
             // Update the order in the map
             self.order_id_map.insert(order.order_id, order);
 
@@ -614,4 +614,3 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
         // No-op for naive implementation
     }
 }
-
