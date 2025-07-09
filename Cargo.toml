@@ -16,4 +16,4 @@ members = [
 [workspace.dependencies]
 borsh = { version = "1.5.7", default-features = false, features = ["hashbrown", "derive", "de_strict_order"] }
 hashbrown = "0.15.4"
-rusteron-client = "0.1.132"
+rusteron-client = "0.1.143"
