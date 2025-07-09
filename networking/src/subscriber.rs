@@ -31,12 +31,12 @@ pub struct AeronSubscriber {
 impl AeronSubscriber {
     /// Creates a new subscriber connected to an Aeron IPC channel.
     pub fn new(
-        _context_dir: &CStr,
+        context_dir: &CStr,
         data_handler: AeronFragmentAssembler,
     ) -> Result<Self, SubscriberError> {
         let ctx = AeronContext::new()?;
         // ctx.set_on_close_client(handler)
-        // ctx.set_dir(context_dir)?;
+        ctx.set_dir(context_dir)?;
         ctx.set_driver_timeout_ms(1_000)?;  
         let aeron = Arc::new(Aeron::new(&ctx)?);
         aeron.start()?;

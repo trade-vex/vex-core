@@ -35,9 +35,9 @@ pub struct AeronPublisher {
 }
 
 impl AeronPublisher {
-    pub fn new(_context_dir: &CStr) -> Result<Self, PublisherError> {
+    pub fn new(context_dir: &CStr) -> Result<Self, PublisherError> {
         let ctx = AeronContext::new()?;
-        // ctx.set_dir(context_dir)?;
+        ctx.set_dir(context_dir)?;
         ctx.set_driver_timeout_ms(1_000)?;
 
         let aeron = Aeron::new(&ctx)?;
