@@ -2,8 +2,6 @@ use networking::client::{VexClient, ClientError};
 use networking::server::EchoServer;
 use rusteron_client::find_unused_udp_port;
 use tracing::info;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 use std::{
     net::SocketAddr,
     thread,
