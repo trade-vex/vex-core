@@ -49,10 +49,11 @@
 //! subscriber.start();
 //! ```
 //! 
+//! 
 pub mod subscriber;
 pub mod publisher;
+pub mod server_v1;
+pub mod client_v1;
 pub mod client;
-pub mod server;
-
 // Re-export main types for convenience
 pub use subscriber::{AeronSubscriber, SubscriberError};
