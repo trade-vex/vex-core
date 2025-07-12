@@ -2,8 +2,10 @@ use std::{time::{Duration, SystemTime}};
 
 use rusteron_client::{Aeron, AeronAvailableImageCallback, AeronCError, AeronImage, AeronNotificationLogger, AeronSubscription, AeronUnavailableImageCallback, Handler};
 use tracing::{info, error};
+use crate::server::handler::FragmentHandler;
+use crate::utils::{new_publication_with_mdc_and_session, new_subsciption_with_handlers_and_session};
 
-use crate::server::{handler::FragmentHandler, utils::{new_publication_with_mdc_and_session, new_subsciption_with_handlers_and_session}};
+pub const DUOLOGUE_STREAM_ID: i32 = 1002;
 
 pub struct Duologue {
     pub fragment_handler: FragmentHandler,
@@ -26,12 +28,12 @@ impl Duologue {
             .unwrap()
             .as_secs();
 
-        let publication = new_publication_with_mdc_and_session(aeron, &local, port_data, session_id, session_id)?;
+        let publication = new_publication_with_mdc_and_session(aeron, &local, port_control, DUOLOGUE_STREAM_ID, session_id)?;
 
         let on_image_available = DuologueImageAvailable { owner: owner.to_string() };
         let on_image_unavailable = DuologueImageUnavailable { owner: owner.to_string() };
 
-        let subscription = new_subsciption_with_handlers_and_session(aeron, &local, port_control, session_id, session_id, on_image_available, on_image_unavailable)?;
+        let subscription = new_subsciption_with_handlers_and_session(aeron, &local, port_data, DUOLOGUE_STREAM_ID, session_id, on_image_available, on_image_unavailable)?;
 
         let fragment_handler = FragmentHandler {
             publication

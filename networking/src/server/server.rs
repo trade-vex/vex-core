@@ -8,13 +8,13 @@ use rusteron_client::{
     Handler, AeronAvailableImageCallback, AeronUnavailableImageCallback,
 };
 use thiserror::Error;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::server::config::ServerConfig;
 use crate::server::duologue::Duologue;
-use crate::server::utils::{new_publication_with_mdc, new_subsciption_with_handlers, send_message, PortAllocator, SessionAllocator};
+use crate::utils::{new_publication_with_mdc, new_subsciption_with_handlers, send_message, PortAllocator, SessionAllocator};
 
-const ECHO_STREAM_ID: i32 = 1002;
+const ECHO_STREAM_ID: i32 = 1001;
 
 #[derive(Error, Debug)]
 pub enum EchoServerError {
@@ -65,12 +65,13 @@ impl EchoServer {
 
         let aeron = Aeron::new(&ctx)?;
         aeron.start()?;
-
+        info!("EchoServer created");
         Ok(Self { config: config.clone(), clients: Arc::new(RwLock::new(ClientState::new(Arc::new(aeron.clone()), config)?)), aeron: Arc::new(aeron) })
     }
 
     pub fn run(&self) -> Result<(), EchoServerError> {
-        let publication = new_publication_with_mdc(&self.aeron, &self.config.local_address, self.config.initial_port, ECHO_STREAM_ID)?;
+        info!("EchoServer running");
+        let publication = new_publication_with_mdc(&self.aeron, &self.config.local_address, self.config.initial_control_port, ECHO_STREAM_ID)?;
         let mc_image_available_handler = MCImageAvailableHandler{ clients: self.clients.clone() };
         let mc_image_unavailable_handler = MCImageUnavailableHandler{ clients: self.clients.clone() };
         let subscription = new_subsciption_with_handlers(&self.aeron, &self.config.local_address, self.config.initial_port, ECHO_STREAM_ID, mc_image_available_handler, mc_image_unavailable_handler)?;
@@ -79,7 +80,6 @@ impl EchoServer {
             subscription.poll(Some(&Handler::leak(&mut fragment_handler)), 10)?;
             self.clients.write().unwrap().poll()?;
         }
-        Ok(())
     }
 }
 
@@ -108,7 +108,7 @@ impl ClientState {
         })
     }
 
-    fn process_initial_message(&mut self, publication: &AeronPublication, session_name: &str, session_id: i32, message: &str) -> Result<(), EchoServerError> {
+    fn process_initial_message(&mut self, publication: &AeronPublication, session_id: i32, message: &str) -> Result<(), EchoServerError> {
         debug!("[0x{:x}] received initial message: {}", session_id, message);
 
         // accept Hello key
@@ -128,7 +128,7 @@ impl ClientState {
         // check if this ip has many connections
         let owner = self.client_session_address.get(&session_id);
         if let Some(owner) = owner {
-            if owner.len() >= self.config.max_connections_per_address.into() {
+            if self.address_counter.get(owner).unwrap_or(&0) >= &self.config.max_connections_per_address.into() {
                 send_message(publication, &mut self.buffer, "ERROR: Too many connections from this IP")?;
                 return Ok(());
             }
@@ -138,15 +138,15 @@ impl ClientState {
         // parse the key to int which will be used as one time padding key to send encrypted messages
         let key = key.parse::<i32>().map_err(|e| EchoServerError::InvalidClientMessage(format!("Invalid key: {}", e)))?;
         // Allocate a new duologue
-        let (session, ports) = self.allocate_duologue(session_name, session_id, &owner)?;
+        let (session, ports) = self.allocate_duologue(session_id, &owner)?;
         // encrypted session
         let encrypted_session = key ^ session;
-        let message = format!("{} CONNECT {} {} {}", session_name, ports[0], ports[1], encrypted_session);
+        let message = format!("{} CONNECT {} {} {}", session_id, ports[0], ports[1], encrypted_session);
         send_message(publication, &mut self.buffer, &message)?;
         Ok(())
     }
 
-    fn allocate_duologue(&mut self, session_name: &str, session_id: i32, owner: &str) -> Result<(i32, [u16; 2]), EchoServerError> {
+    fn allocate_duologue(&mut self, session_id: i32, owner: &str) -> Result<(i32, [u16; 2]), EchoServerError> {
         // increment the address counter for this session name // move to last?
         let counter = self.address_counter.entry(owner.to_string()).or_insert(0);
         *counter += 1;
@@ -160,7 +160,7 @@ impl ClientState {
         self.client_duologues.insert(session_id, duologue);
         self.client_session_address.insert(session_id, owner.to_string());
 
-        debug!("allocated duologue for session 0x{} with ports {} and {}", session_name, ports[0], ports[1]);
+        debug!("allocated duologue for session 0x{} with ports {} and {}", session, ports[0], ports[1]);
 
         Ok((session, [ports[0], ports[1]]))
     }
@@ -205,13 +205,12 @@ impl AeronFragmentHandlerCallback for &mut InitialMessageHandler {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) {
         let message = String::from_utf8_lossy(buffer);
         debug!("InitialMessageHandler: {:?}", message);
-        let session_name = header.get_values().unwrap().frame.session_id.to_string();
         let session_id = header.get_values().unwrap().frame.session_id;
         let message = String::from_utf8_lossy(buffer);
 
         let mut clients = self.clients.write().unwrap();
 
-        match clients.process_initial_message(&self.publication, &session_name, session_id, &message) {
+        match clients.process_initial_message(&self.publication, session_id, &message) {
             Ok(_) => {},
             Err(e) => {
                 error!("Error processing initial message: {}", e);

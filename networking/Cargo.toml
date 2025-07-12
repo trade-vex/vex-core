@@ -10,4 +10,4 @@ thiserror = { workspace = true }
 rand = "0.8"
 
 [dev-dependencies]
-test-log = "0.2.18"
+test-log = { version = "0.2.15", features = ["trace"] }
