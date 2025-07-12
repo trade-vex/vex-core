@@ -4,7 +4,7 @@ use rusteron_client::{Aeron, AeronPublication, AeronSubscription, AeronCError, A
 use rand::Rng;
 use tracing::info;
 
-use crate::server::server::CoreError;
+use crate::server::server::ServerError;
 
 pub fn new_publication(aeron: &Aeron, address: &str, port: u16, stream_id: i32) -> Result<AeronPublication, AeronCError> {
     let endpoint = format!("{}:{}", address, port);
@@ -96,13 +96,13 @@ impl PortAllocator {
     ///
     /// # Errors
     /// Returns `PortAllocationError` if the port range is invalid
-    pub fn new(port_base: u16, max_ports: usize) -> Result<Self, CoreError> {
+    pub fn new(port_base: u16, max_ports: usize) -> Result<Self, ServerError> {
         if port_base == 0 {
-            return Err(CoreError::PortAllocationError("Base port must be greater than 0".to_string()));
+            return Err(ServerError::PortAllocationError("Base port must be greater than 0".to_string()));
         }
 
         let port_hi = port_base.checked_add(max_ports as u16 - 1)
-            .ok_or_else(|| CoreError::PortAllocationError("Port range exceeds u16::MAX".to_string()))?;
+            .ok_or_else(|| ServerError::PortAllocationError("Port range exceeds u16::MAX".to_string()))?;
         
         let port_range = port_base..=port_hi;
         let mut ports_free: Vec<u16> = port_range.clone().collect();
@@ -155,9 +155,9 @@ impl PortAllocator {
     ///
     /// # Errors
     /// Returns `PortAllocationError` if there are fewer than `count` ports available to allocate
-    pub fn allocate(&mut self, count: usize) -> Result<Vec<u16>, CoreError> {
+    pub fn allocate(&mut self, count: usize) -> Result<Vec<u16>, ServerError> {
         if self.ports_free.len() < count {
-            return Err(CoreError::PortAllocationError(format!("Too few ports available to allocate {} ports", count)));
+            return Err(ServerError::PortAllocationError(format!("Too few ports available to allocate {} ports", count)));
         }
 
         let mut result = Vec::with_capacity(count);
@@ -199,9 +199,9 @@ impl SessionAllocator {
     ///
     /// # Errors
     /// Returns `PortAllocationError` if max < min
-    pub fn new(min: i32, max: i32) -> Result<Self, CoreError> {
+    pub fn new(min: i32, max: i32) -> Result<Self, ServerError> {
         if max < min {
-            return Err(CoreError::PortAllocationError(format!("Maximum value {} must be >= minimum value {}", max, min)));
+            return Err(ServerError::PortAllocationError(format!("Maximum value {} must be >= minimum value {}", max, min)));
         }
 
         Ok(Self {
@@ -219,9 +219,9 @@ impl SessionAllocator {
     ///
     /// # Errors
     /// Returns `PortAllocationError` if there are no non-allocated sessions left
-    pub fn allocate(&mut self) -> Result<i32, CoreError> {
+    pub fn allocate(&mut self) -> Result<i32, ServerError> {
         if self.used.len() as i32 == self.max_count {
-            return Err(CoreError::SessionAllocationError("No session IDs left to allocate".to_string()));
+            return Err(ServerError::SessionAllocationError("No session IDs left to allocate".to_string()));
         }
 
         // Try up to max_count times to find an unused session ID
@@ -233,7 +233,7 @@ impl SessionAllocator {
             }
         }
 
-        Err(CoreError::SessionAllocationError(
+        Err(ServerError::SessionAllocationError(
             format!(
                 "Unable to allocate a session ID after {} attempts ({} values in use)",
                 self.max_count,

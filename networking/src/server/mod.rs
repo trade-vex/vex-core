@@ -3,3 +3,4 @@ pub mod config;
 pub mod duologue;
 pub mod handler;
 
+pub use server::{VexCoreServer, ServerError};

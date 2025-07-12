@@ -1,7 +1,7 @@
 use networking::client::config::GatewayConfig;
 use networking::client::{VexGateway, GatewayError};
 use networking::server::config::CoreConfig;
-use networking::server::server::VexCore;
+use networking::server::server::VexCoreServer;
 use rusteron_client::find_unused_udp_port;
 use tracing::info;
 use std::{
@@ -76,7 +76,7 @@ fn test_client_server_communication() {
             core_id: "core-1".to_string(),
         };
         info!("server_config: {:?}", server_config);
-        let server = VexCore::new(server_config).unwrap();                
+        let server = VexCoreServer::new(server_config).unwrap();                
         match server.start() {
             Ok(()) => println!("Server run() completed successfully (unexpected)"),
             Err(e) => println!("Server run() error: {}", e),
