@@ -1,3 +1,3 @@
 pub mod client;
 pub mod config;
-pub use client::{VexClient, ClientError};
+pub use client::{VexGateway, GatewayError};

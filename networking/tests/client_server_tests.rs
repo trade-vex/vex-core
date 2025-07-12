@@ -1,7 +1,7 @@
-use networking::client::config::ClientConfig;
-use networking::client::{VexClient, ClientError};
-use networking::server::config::ServerConfig;
-use networking::server::EchoServer;
+use networking::client::config::GatewayConfig;
+use networking::client::{VexGateway, GatewayError};
+use networking::server::config::CoreConfig;
+use networking::server::server::VexCore;
 use rusteron_client::find_unused_udp_port;
 use tracing::info;
 use std::{
@@ -28,26 +28,29 @@ fn test_client_server_communication() {
     let (server_addr, client_addr) = create_test_addresses();
 
     // start aeron media driver in background, and create context directories for client and server in test-data directory
-    let current_dir = std::env::current_dir().unwrap();
+    let mut current_dir = std::env::current_dir().unwrap();
+    current_dir.pop();
     let context_path = current_dir.join("test-data").join("server");
     let context_s = context_path.to_str().unwrap();
     let context_path = current_dir.join("test-data").join("client");
     let context_c = context_path.to_str().unwrap();
 
-    println!("=== Testing VexClient::run() method ===");
     let context_c_clone = context_c.to_string();
-    let client_handle = thread::spawn(move || -> Result<(), ClientError> {
-        let client_config = ClientConfig {
+    let client_handle = thread::spawn(move || -> Result<(), GatewayError> {
+        let client_config = GatewayConfig {
             context_dir: context_c_clone,
             local_address: client_addr.ip().to_string(),
-            server_address: server_addr.ip().to_string(),
-            server_port: server_addr.port(),
-            server_control_port: server_addr.port() + 1,
+            core_address: server_addr.ip().to_string(),
+            core_port: server_addr.port(),
+            core_control_port: server_addr.port() + 1,
+            gateway_id: "gateway-1".to_string(),
+            max_message_size: 2048,
+            enable_heartbeat: true,
         };
-        let mut client = VexClient::new(client_config)?;
+        info!("client_config: {:?}", client_config);
+        let mut client = VexGateway::new(client_config)?;
         
-        println!("VexClient::run() is synchronous - it sends messages and polls for responses");
-        match client.run() {
+        match client.start() {
             Ok(()) => println!("Client run() completed successfully"),
             Err(e) => println!("Client run() error: {}", e),
         }
@@ -55,26 +58,26 @@ fn test_client_server_communication() {
         Ok(())
     });
     
-    println!("=== Testing EchoServer::run() method ===");
     let context_s_clone = context_s.to_string();
     let _ = thread::spawn(move || {
-        let server_config = ServerConfig {
+        let server_config = CoreConfig {
             context_dir: context_s_clone,
             local_address: server_addr.ip().to_string(),
             initial_port: server_addr.port(),
             initial_control_port: server_addr.port() + 1,
-            base_client_port: 40350,
-            max_clients: 100,
+            base_gateway_port: 40350,
+            max_gateways: 100,
             max_connections_per_address: 10,
             reserved_session_id_low: 0,
             reserved_session_id_high: 2147483647,
+            enable_authentication: true,
+            enable_heartbeat: true,
+            gateway_timeout_seconds: 30,
+            core_id: "core-1".to_string(),
         };
-        let server = EchoServer::new(server_config).unwrap();        
-        println!("EchoServer created successfully");
-        println!("Note: Both EchoServer::run() and VexClient::run() are synchronous methods");
-        println!("EchoServer::run() runs an infinite loop polling for messages");
-        
-        match server.run() {
+        info!("server_config: {:?}", server_config);
+        let server = VexCore::new(server_config).unwrap();                
+        match server.start() {
             Ok(()) => println!("Server run() completed successfully (unexpected)"),
             Err(e) => println!("Server run() error: {}", e),
         }
@@ -86,7 +89,4 @@ fn test_client_server_communication() {
         Ok(Err(e)) => panic!("Client run() test failed: {}", e),
         Err(_) => panic!("Client run() test panicked"),
     }
-    
-    println!("=== Both synchronous run() methods terminated successfully ===");
-    
 }

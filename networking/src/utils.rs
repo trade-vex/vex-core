@@ -4,7 +4,7 @@ use rusteron_client::{Aeron, AeronPublication, AeronSubscription, AeronCError, A
 use rand::Rng;
 use tracing::info;
 
-use crate::server::server::EchoServerError;
+use crate::server::server::CoreError;
 
 pub fn new_publication(aeron: &Aeron, address: &str, port: u16, stream_id: i32) -> Result<AeronPublication, AeronCError> {
     let endpoint = format!("{}:{}", address, port);
@@ -32,11 +32,11 @@ pub fn new_publication_with_session(aeron: &Aeron, address: &str, port: u16, str
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
-pub fn new_subsciption_with_mdc(aeron: &Aeron, address: &str, port: u16, stream_id: i32) -> Result<AeronSubscription, AeronCError> {
+pub fn new_subscription_with_mdc(aeron: &Aeron, address: &str, port: u16, stream_id: i32) -> Result<AeronSubscription, AeronCError> {
     let control_endpoint = format!("{}:{}", address, port);
-    info!("server: new_subsciption_with_mdc: control_endpoint: {}", control_endpoint);
+    info!("client: new_subsciption_with_mdc: control_endpoint: {}", control_endpoint);
     let uri = CString::new(format!("aeron:udp?control={}|control-mode=dynamic", control_endpoint)).unwrap();
-    info!("server: new_subsciption_with_mdc: uri: {}", uri.to_string_lossy());
+    info!("client: new_subsciption_with_mdc: uri: {}", uri.to_string_lossy());
     let available_logger = AeronAvailableImageLogger {};
     let available_handler = Handler::leak(available_logger);
     let unavailable_logger = AeronUnavailableImageLogger {};
@@ -60,7 +60,7 @@ pub fn new_subsciption_with_handlers_and_session<X: AeronAvailableImageCallback,
     aeron.add_subscription(&uri, stream_id, Some(& Handler::leak(on_image_available)), Some(& Handler::leak(on_image_unavailable)), Duration::from_secs(1))
 }
 
-pub fn new_subsciption_with_handlers<X: AeronAvailableImageCallback, Y: AeronUnavailableImageCallback>(aeron: &Aeron, address: &str, port: u16, stream_id: i32, on_image_available: X, on_image_unavailable: Y) -> Result<AeronSubscription, AeronCError> {
+pub fn new_subscription_with_handlers<X: AeronAvailableImageCallback, Y: AeronUnavailableImageCallback>(aeron: &Aeron, address: &str, port: u16, stream_id: i32, on_image_available: X, on_image_unavailable: Y) -> Result<AeronSubscription, AeronCError> {
     let endpoint = format!("{}:{}", address, port);
     let uri = CString::new(format!("aeron:udp?endpoint={}", endpoint)).unwrap();
     aeron.add_subscription(&uri, stream_id, Some(& Handler::leak(on_image_available)), Some(& Handler::leak(on_image_unavailable)), Duration::from_secs(1))
@@ -96,13 +96,13 @@ impl PortAllocator {
     ///
     /// # Errors
     /// Returns `PortAllocationError` if the port range is invalid
-    pub fn new(port_base: u16, max_ports: usize) -> Result<Self, EchoServerError> {
+    pub fn new(port_base: u16, max_ports: usize) -> Result<Self, CoreError> {
         if port_base == 0 {
-            return Err(EchoServerError::PortAllocationError("Base port must be greater than 0".to_string()));
+            return Err(CoreError::PortAllocationError("Base port must be greater than 0".to_string()));
         }
 
         let port_hi = port_base.checked_add(max_ports as u16 - 1)
-            .ok_or_else(|| EchoServerError::PortAllocationError("Port range exceeds u16::MAX".to_string()))?;
+            .ok_or_else(|| CoreError::PortAllocationError("Port range exceeds u16::MAX".to_string()))?;
         
         let port_range = port_base..=port_hi;
         let mut ports_free: Vec<u16> = port_range.clone().collect();
@@ -155,9 +155,9 @@ impl PortAllocator {
     ///
     /// # Errors
     /// Returns `PortAllocationError` if there are fewer than `count` ports available to allocate
-    pub fn allocate(&mut self, count: usize) -> Result<Vec<u16>, EchoServerError> {
+    pub fn allocate(&mut self, count: usize) -> Result<Vec<u16>, CoreError> {
         if self.ports_free.len() < count {
-            return Err(EchoServerError::PortAllocationError(format!("Too few ports available to allocate {} ports", count)));
+            return Err(CoreError::PortAllocationError(format!("Too few ports available to allocate {} ports", count)));
         }
 
         let mut result = Vec::with_capacity(count);
@@ -199,9 +199,9 @@ impl SessionAllocator {
     ///
     /// # Errors
     /// Returns `PortAllocationError` if max < min
-    pub fn new(min: i32, max: i32) -> Result<Self, EchoServerError> {
+    pub fn new(min: i32, max: i32) -> Result<Self, CoreError> {
         if max < min {
-            return Err(EchoServerError::PortAllocationError(format!("Maximum value {} must be >= minimum value {}", max, min)));
+            return Err(CoreError::PortAllocationError(format!("Maximum value {} must be >= minimum value {}", max, min)));
         }
 
         Ok(Self {
@@ -219,9 +219,9 @@ impl SessionAllocator {
     ///
     /// # Errors
     /// Returns `PortAllocationError` if there are no non-allocated sessions left
-    pub fn allocate(&mut self) -> Result<i32, EchoServerError> {
+    pub fn allocate(&mut self) -> Result<i32, CoreError> {
         if self.used.len() as i32 == self.max_count {
-            return Err(EchoServerError::SessionAllocationError("No session IDs left to allocate".to_string()));
+            return Err(CoreError::SessionAllocationError("No session IDs left to allocate".to_string()));
         }
 
         // Try up to max_count times to find an unused session ID
@@ -233,7 +233,7 @@ impl SessionAllocator {
             }
         }
 
-        Err(EchoServerError::SessionAllocationError(
+        Err(CoreError::SessionAllocationError(
             format!(
                 "Unable to allocate a session ID after {} attempts ({} values in use)",
                 self.max_count,

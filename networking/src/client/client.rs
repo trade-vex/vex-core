@@ -1,341 +1,670 @@
 use rusteron_client::{
     Aeron, AeronCError, AeronContext, AeronFragmentAssembler, AeronFragmentHandlerCallback,
-    AeronHeader, AeronPublication, AeronReservedValueSupplierLogger, Handler,
+    AeronHeader, AeronReservedValueSupplierLogger, Handler,
 };
 use rand;
 use std::ffi::CString;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, warn, instrument};
+// use serde::{Deserialize, Serialize};
 
-use crate::client::config::ClientConfig;
-use crate::utils::{new_publication, new_publication_with_session, new_subsciption_with_mdc, new_subscription_with_mdc_and_session};
+use crate::client::config::GatewayConfig;
+use crate::utils::{
+    new_publication, new_publication_with_session, 
+    new_subscription_with_mdc, new_subscription_with_mdc_and_session
+};
 
-const ALL_CLIENTS_STREAM_ID: i32 = 1001;
-const DUOLOGUE_STREAM_ID: i32 = 1002;
+// Constants for stream identification and timeouts
+const ALL_GATEWAYS_STREAM_ID: i32 = 1001;
+const GATEWAY_CORE_STREAM_ID: i32 = 1002;
+// const HEARTBEAT_STREAM_ID: i32 = 1003;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+const MESSAGE_RETRY_COUNT: usize = 5;
+const MESSAGE_RETRY_DELAY: Duration = Duration::from_millis(100);
 
-/// Represents the server's response to our initial HELLO.
-#[derive(Debug, PartialEq)]
-enum ServerResponse {
-    Connect {
-        port: u16,
-        control_port: u16,
+
+
+/// Represents the VEX Core's response to gateway handshake
+#[derive(Debug, PartialEq, Clone)]
+pub enum CoreResponse {
+    /// Core accepted the gateway connection
+    Accept {
+        dedicated_port: u16,
+        dedicated_control_port: u16,
         encrypted_session: i32,
+        gateway_id: String,
     },
-    Error(String),
+    /// Core rejected the gateway connection
+    Reject { reason: String },
+    /// Core is temporarily unavailable
+    Unavailable { retry_after_seconds: u32 },
+    /// Message should be ignored (wrong session, malformed, etc.)
     Ignore,
 }
 
-/// Parses a server response message.
-fn parse_server_response(message: &str, expected_session: i32) -> ServerResponse {
-    let clean_message = message.trim_matches('\0');
+/// Gateway connection state
+#[derive(Debug, Clone, PartialEq)]
+pub enum GatewayState {
+    Disconnected,
+    Connecting,
+    Connected,
+    Authenticated,
+    Error(String),
+}
+
+/// Statistics for monitoring gateway performance
+#[derive(Debug, Default, Clone)]
+pub struct GatewayStats {
+    pub messages_sent: u64,
+    pub messages_received: u64,
+    pub connection_attempts: u64,
+    pub last_heartbeat: Option<SystemTime>,
+    pub uptime_start: Option<SystemTime>,
+    pub errors: u64,
+}
+
+/// Parses a VEX Core response message
+fn parse_core_response(message: &str, expected_session: i32, expected_gateway_id: &str) -> CoreResponse {
+    let clean_message = message.trim_matches('\0').trim();
     let parts: Vec<&str> = clean_message.split_whitespace().collect();
-        println!("parts: {:?}", parts);
-    if parts.len() < 2 {
-        return ServerResponse::Ignore;
+    
+    debug!("Parsing core response: {:?}", parts);
+    
+    if parts.len() < 3 {
+        warn!("Malformed core response: insufficient parts");
+        return CoreResponse::Ignore;
     }
 
+    // Parse session ID
     let session_id = match parts[0].parse::<i32>() {
         Ok(id) => id,
-        Err(_) => return ServerResponse::Ignore,
+        Err(_) => {
+            warn!("Invalid session ID in core response: {}", parts[0]);
+            return CoreResponse::Ignore;
+        }
     };
 
     if session_id != expected_session {
         warn!(
-            "Ignoring message for another session. Expected: {}, Got: {}",
+            "Session ID mismatch. Expected: {}, Got: {}",
             expected_session, session_id
         );
-        return ServerResponse::Ignore;
+        return CoreResponse::Ignore;
     }
 
-    match parts[1] {
-        "CONNECT" if parts.len() == 5 => {
-            let port = parts[2].parse().ok();
-            let control_port = parts[3].parse().ok();
-            let encrypted_session = parts[4].parse().ok();
-            if let (Some(port), Some(control_port), Some(encrypted_session)) =
-                (port, control_port, encrypted_session)
-            {
-                ServerResponse::Connect {
-                    port,
-                    control_port,
-                    encrypted_session,
+    // Parse gateway ID
+    let gateway_id = parts[1];
+    if gateway_id != expected_gateway_id {
+        warn!(
+            "Gateway ID mismatch. Expected: {}, Got: {}",
+            expected_gateway_id, gateway_id
+        );
+        return CoreResponse::Ignore;
+    }
+
+    // Parse command
+    match parts[2] {
+        "ACCEPT" if parts.len() == 6 => {
+            match (parts[3].parse::<u16>(), parts[4].parse::<u16>(), parts[5].parse::<i32>()) {
+                (Ok(port), Ok(control_port), Ok(encrypted_session)) => {
+                    CoreResponse::Accept {
+                        dedicated_port: port,
+                        dedicated_control_port: control_port,
+                        encrypted_session,
+                        gateway_id: gateway_id.to_string(),
+                    }
                 }
-            } else {
-                ServerResponse::Error("Malformed CONNECT message".to_string())
+                _ => {
+                    error!("Malformed ACCEPT message: invalid parameters");
+                    CoreResponse::Ignore
+                }
             }
         }
-        "ERROR" => ServerResponse::Error(parts[2..].join(" ")),
-        _ => ServerResponse::Ignore,
+        "REJECT" if parts.len() >= 4 => {
+            let reason = parts[3..].join(" ");
+            CoreResponse::Reject { reason }
+        }
+        "UNAVAILABLE" if parts.len() == 4 => {
+            match parts[3].parse::<u32>() {
+                Ok(retry_after) => CoreResponse::Unavailable { retry_after_seconds: retry_after },
+                _ => CoreResponse::Ignore,
+            }
+        }
+        _ => {
+            warn!("Unknown or malformed core response command: {}", parts[2]);
+            CoreResponse::Ignore
+        }
     }
 }
 
-/// A shared state for the fragment handler to communicate with the main thread.
-type SharedResponse = Arc<Mutex<Option<ServerResponse>>>;
+/// Shared state for fragment handlers
+type SharedCoreResponse = Arc<Mutex<Option<CoreResponse>>>;
 
-/// Fragment handler for parsing the server's CONNECT/ERROR response.
-struct ConnectResponseHandler {
-    response: SharedResponse,
+/// Fragment handler for parsing VEX Core handshake responses
+struct HandshakeResponseHandler {
+    response: SharedCoreResponse,
     expected_session: i32,
+    expected_gateway_id: String,
 }
 
-impl AeronFragmentHandlerCallback for ConnectResponseHandler {
+impl AeronFragmentHandlerCallback for HandshakeResponseHandler {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], _header: AeronHeader) {
         let message = String::from_utf8_lossy(buffer);
-        debug!("Received initial response from server: {}", message);
-        let parsed = parse_server_response(&message, self.expected_session);
-        if parsed != ServerResponse::Ignore {
+        debug!("Received handshake response from core: {} (length: {})", message, buffer.len());
+        
+        let parsed = parse_core_response(&message, self.expected_session, &self.expected_gateway_id);
+        if parsed != CoreResponse::Ignore {
+            info!("Valid core response received: {:?}", parsed);
             *self.response.lock().unwrap() = Some(parsed);
         }
     }
 }
 
-struct EchoLoopHandler;
+/// Fragment handler for processing core messages during normal operation
+struct CoreMessageHandler {
+    gateway_id: String,
+    stats: Arc<RwLock<GatewayStats>>,
+}
 
-impl AeronFragmentHandlerCallback for EchoLoopHandler {
+impl AeronFragmentHandlerCallback for CoreMessageHandler {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], _header: AeronHeader) {
         let message = String::from_utf8_lossy(buffer);
-        info!("client: ECHO response: {}", message);
+        info!("Gateway {}: Received message from core: {}", self.gateway_id, message);
+        
+        // Update statistics
+        {
+            let mut stats = self.stats.write().unwrap();
+            stats.messages_received += 1;
+        }
+        
+        // Process different message types
+        if message.starts_with("HEARTBEAT") {
+            self.handle_heartbeat(&message);
+        } else if message.starts_with("ORDER") {
+            self.handle_order_message(&message);
+        } else if message.starts_with("MARKET_DATA") {
+            self.handle_market_data(&message);
+        } else {
+            warn!("Unknown message type received: {}", message);
+        }
     }
 }
 
+impl CoreMessageHandler {
+    fn handle_heartbeat(&self, message: &str) {
+        debug!("Gateway {}: Received heartbeat: {}", self.gateway_id, message);
+        // Update last heartbeat timestamp
+        let mut stats = self.stats.write().unwrap();
+        stats.last_heartbeat = Some(SystemTime::now());
+    }
+    
+    fn handle_order_message(&self, message: &str) {
+        info!("Gateway {}: Processing order message: {}", self.gateway_id, message);
+        // TODO: Implement order processing logic
+    }
+    
+    fn handle_market_data(&self, message: &str) {
+        debug!("Gateway {}: Processing market data: {}", self.gateway_id, message);
+        // TODO: Implement market data processing logic
+    }
+}
 
+/// Custom error types for VEX Gateway
 #[derive(Error, Debug)]
-pub enum ClientError {
+pub enum GatewayError {
     #[error("Aeron operation failed: {0}")]
     AeronError(#[from] AeronCError),
     #[error("Invalid CString: {0}")]
     NulError(#[from] std::ffi::NulError),
     #[error("Connection timed out: {0}")]
     Timeout(String),
-    #[error("Server returned an error: {0}")]
-    ServerError(String),
+    #[error("VEX Core returned an error: {0}")]
+    CoreError(String),
     #[error("Failed to send message: {0}")]
     SendError(String),
     #[error("Protocol error: {0}")]
     ProtocolError(String),
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
+    #[error("Gateway not authenticated")]
+    NotAuthenticated,
+    #[error("Invalid gateway state: expected {expected}, got {actual}")]
+    InvalidState { expected: String, actual: String },
 }
 
-/// A more robust echo client that supports NAT traversal (Take 2).
-pub struct VexClient {
+/// Enhanced VEX Gateway for connecting to VEX Core
+pub struct VexGateway {
+    /// Aeron instance for messaging
     aeron: Arc<Aeron>,
-    buffer: [u8; 2048],
-    config: ClientConfig
+    /// Gateway configuration
+    config: GatewayConfig,
+    /// Current gateway state
+    state: Arc<RwLock<GatewayState>>,
+    /// Message buffer for sending
+    buffer: Vec<u8>,
+    /// Gateway statistics
+    stats: Arc<RwLock<GatewayStats>>,
+    /// Dedicated session ID for this gateway
+    session_id: Option<i32>,
+    /// One-time encryption key for session establishment
+    encryption_key: Option<i32>,
 }
 
-impl VexClient {
-    pub fn new(
-        config: ClientConfig,
-    ) -> Result<Self, ClientError> {
+impl VexGateway {
+    /// Creates a new VEX Gateway instance
+    pub fn new(config: GatewayConfig) -> Result<Self, GatewayError> {
+        // Validate configuration
+        if config.gateway_id.is_empty() {
+            return Err(GatewayError::ConfigError("Gateway ID cannot be empty".to_string()));
+        }
+        if config.max_message_size == 0 {
+            return Err(GatewayError::ConfigError("Max message size must be greater than 0".to_string()));
+        }
+
+        // Initialize Aeron context
         let ctx = AeronContext::new()?;
         let context_dir = CString::new(config.context_dir.clone())?;
         ctx.set_dir(&context_dir)?;
         ctx.set_driver_timeout_ms(5_000)?;
-        // Reserve session IDs for duologues
 
+        // Create Aeron instance
         let aeron = Aeron::new(&ctx)?;
         aeron.start()?;
-        info!("client: VexClient started");
+        
+        info!("VEX Gateway '{}' initialized successfully", config.gateway_id);
+
+        let mut stats = GatewayStats::default();
+        stats.uptime_start = Some(SystemTime::now());
 
         Ok(Self {
             aeron: Arc::new(aeron),
             config,
-            buffer: [0u8; 2048],
+            state: Arc::new(RwLock::new(GatewayState::Disconnected)),
+            buffer: vec![0u8; 2048], // Default buffer size
+            stats: Arc::new(RwLock::new(stats)),
+            session_id: None,
+            encryption_key: None,
         })
     }
 
-    pub fn run(&mut self) -> Result<(), ClientError> {
-        // Phase 1: Connect to the "all clients" channel and get duologue details.
-        let duologue_key = rand::random::<i32>();
-        let (duologue_port, duologue_control_port, duologue_session_id) =
-            self.connect_to_all_clients_channel(duologue_key)?;
-
+    /// Starts the gateway and establishes connection to VEX Core
+    #[instrument(skip(self))]
+    pub fn start(&mut self) -> Result<(), GatewayError> {
+        info!("Starting VEX Gateway '{}'", self.config.gateway_id);
+        
+        // Update state to connecting
+        *self.state.write().unwrap() = GatewayState::Connecting;
+        
+        // Phase 1: Perform handshake with VEX Core
+        let (dedicated_port, dedicated_control_port, session_id) = self.perform_handshake()?;
+        
         info!(
-            "client: Received duologue details. Port: {}, Control Port: {}, Session ID: {}",
-            duologue_port, duologue_control_port, duologue_session_id
+            "Gateway '{}': Handshake successful. Port: {}, Control Port: {}, Session ID: {}",
+            self.config.gateway_id, dedicated_port, dedicated_control_port, session_id
         );
 
-        // Phase 2: Connect to the dedicated duologue channel and start echoing.
-        self.run_echo_loop(
-            duologue_port,
-            duologue_control_port,
-            duologue_session_id,
-        )
+        // Phase 2: Establish dedicated communication channel
+        self.establish_dedicated_channel(dedicated_port, dedicated_control_port, session_id)?;
+        
+        // Update state to authenticated
+        *self.state.write().unwrap() = GatewayState::Authenticated;
+        
+        info!("VEX Gateway '{}' successfully connected and authenticated", self.config.gateway_id);
+        Ok(())
     }
 
-    // fn setup_publication(
-    //     &self,
-    //     uri: &str,
-    //     stream_id: i32,
-    // ) -> Result<AeronPublication, ClientError> {
-    //     let uri = CString::new(uri)?;
-    //     let publication = self.aeron.add_publication(&uri, stream_id, CONNECT_TIMEOUT)?;
-
-    //     let start = Instant::now();
-    //     while !publication.is_connected() {
-    //         if start.elapsed() > CONNECT_TIMEOUT {
-    //             return Err(ClientError::Timeout(format!(
-    //                 "Connecting publication failed for uri: {}",
-    //                 uri.to_string_lossy()
-    //             )));
-    //         }
-    //         std::thread::sleep(Duration::from_millis(100));
-    //     }
-    //     Ok(publication)
-    // }
-
-    // fn setup_subscription(
-    //     &self,
-    //     uri: &str,
-    //     stream_id: i32,
-    // ) -> Result<AeronSubscription, ClientError> {
-    //     let uri = CString::new(uri)?;
-    //     let available_logger = AeronAvailableImageLogger {};
-    //     let available_handler = Handler::leak(available_logger);
-    //     let unavailable_logger = AeronUnavailableImageLogger {};
-    //     let unavailable_handler = Handler::leak(unavailable_logger);
-
-    //     let subscription = self.aeron.add_subscription(
-    //         &uri,
-    //         stream_id,
-    //         Some(&available_handler),
-    //         Some(&unavailable_handler),
-    //         CONNECT_TIMEOUT,
-    //     )?;
-    //     Ok(subscription)
-    // }
-
-
-    /// Phase 1: Connect to the server's initial channel to get a dedicated channel.
-    fn connect_to_all_clients_channel(
-        &mut self,
-        key: i32,
-    ) -> Result<(u16, u16, i32), ClientError> {
-        let publication = new_publication(&self.aeron, &self.config.server_address, self.config.server_port, ALL_CLIENTS_STREAM_ID)?;
-        let subscription = new_subsciption_with_mdc(&self.aeron, &self.config.server_address, self.config.server_control_port, ALL_CLIENTS_STREAM_ID)?;
+    /// Performs initial handshake with VEX Core
+    fn perform_handshake(&mut self) -> Result<(u16, u16, i32), GatewayError> {
+        // Create publication and subscription for handshake
+        let publication = new_publication(
+            &self.aeron,
+            &self.config.core_address,
+            self.config.core_port,
+            ALL_GATEWAYS_STREAM_ID,
+        )?;
+        
+        let subscription = new_subscription_with_mdc(
+            &self.aeron,
+            &self.config.core_address,
+            self.config.core_control_port,
+            ALL_GATEWAYS_STREAM_ID,
+        )?;
 
         // Wait for publication to be connected
-        let start = Instant::now();
-        while !publication.is_connected() {
-            if start.elapsed() > CONNECT_TIMEOUT {
-                return Err(ClientError::Timeout(
-                    "Connecting to all-clients publication".to_string(),
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
+        self.wait_for_publication_connection(&publication, "handshake")?;
 
         let session_id = publication.session_id();
+        self.session_id = Some(session_id);
+        
+        // Generate encryption key for secure session establishment
+        let encryption_key = rand::random::<i32>();
+        self.encryption_key = Some(encryption_key);
+
         info!(
-            "client: Connected to all-clients channel with session ID: {}",
-            session_id
+            "Gateway '{}': Connected to handshake channel with session ID: {}",
+            self.config.gateway_id, session_id
         );
 
-        // Send HELLO message with our one-time pad
-        let hello_msg = format!("HELLO {}", key);
-        self.send_message(&publication, &hello_msg)?;
+        // Send HELLO message with gateway identification
+        let hello_msg = format!("HELLO {} {}", self.config.gateway_id, encryption_key);
+        self.send_message_with_retries(&publication, &hello_msg)?;
 
-        // Wait for the server's CONNECT response
+        // Wait for VEX Core response
+        let response = self.wait_for_core_response(&subscription, session_id)?;
+
+        match response {
+            CoreResponse::Accept {
+                dedicated_port,
+                dedicated_control_port,
+                encrypted_session,
+                ..
+            } => {
+                // Decrypt the session ID
+                let decrypted_session = encrypted_session ^ encryption_key;
+                Ok((dedicated_port, dedicated_control_port, decrypted_session))
+            }
+            CoreResponse::Reject { reason } => {
+                Err(GatewayError::CoreError(format!("Connection rejected: {}", reason)))
+            }
+            CoreResponse::Unavailable { retry_after_seconds } => {
+                Err(GatewayError::CoreError(format!(
+                    "Core unavailable, retry after {} seconds",
+                    retry_after_seconds
+                )))
+            }
+            _ => Err(GatewayError::ProtocolError("Unexpected core response".to_string())),
+        }
+    }
+
+    /// Establishes dedicated communication channel with VEX Core
+    fn establish_dedicated_channel(
+        &mut self,
+        port: u16,
+        control_port: u16,
+        session_id: i32,
+    ) -> Result<(), GatewayError> {
+        info!(
+            "Gateway '{}': Establishing dedicated channel with session ID: {}",
+            self.config.gateway_id, session_id
+        );
+
+        // Create subscription for receiving core messages
+        let subscription = new_subscription_with_mdc_and_session(
+            &self.aeron,
+            &self.config.core_address,
+            control_port,
+            GATEWAY_CORE_STREAM_ID,
+            session_id,
+        )?;
+
+        // Create publication for sending messages to core
+        let publication = new_publication_with_session(
+            &self.aeron,
+            &self.config.core_address,
+            port,
+            GATEWAY_CORE_STREAM_ID,
+            session_id,
+        )?;
+
+        // Wait for connections
+        self.wait_for_channel_connections(&publication, &subscription)?;
+
+        info!("Gateway '{}': Successfully established dedicated channel", self.config.gateway_id);
+
+        // Start message processing loop
+        self.run_message_processing_loop(publication, subscription)
+    }
+
+    /// Waits for VEX Core response during handshake
+    fn wait_for_core_response(
+        &self,
+        subscription: &rusteron_client::AeronSubscription,
+        session_id: i32,
+    ) -> Result<CoreResponse, GatewayError> {
         let shared_response = Arc::new(Mutex::new(None));
-        let fragment_handler = ConnectResponseHandler {
+        let fragment_handler = HandshakeResponseHandler {
             response: shared_response.clone(),
             expected_session: session_id,
+            expected_gateway_id: self.config.gateway_id.clone(),
         };
+        
         let assembler = AeronFragmentAssembler::new(Some(&Handler::leak(fragment_handler)))?;
         let handler = Handler::leak(assembler);
 
         let start = Instant::now();
         while start.elapsed() < CONNECT_TIMEOUT {
             subscription.poll(Some(&handler), 10)?;
-            if shared_response.lock().unwrap().is_some() {
-                break;
+            if let Some(response) = shared_response.lock().unwrap().take() {
+                return Ok(response);
             }
             std::thread::sleep(Duration::from_millis(50));
         }
 
-        match shared_response.lock().unwrap().take() {
-            Some(ServerResponse::Connect {
-                port,
-                control_port,
-                encrypted_session,
-            }) => {
-                let decrypted_session = encrypted_session ^ key;
-                Ok((port, control_port, decrypted_session as i32))
+        Err(GatewayError::Timeout("Waiting for core handshake response".to_string()))
+    }
+
+    /// Main message processing loop
+    fn run_message_processing_loop(
+        &mut self,
+        publication: rusteron_client::AeronPublication,
+        subscription: rusteron_client::AeronSubscription,
+    ) -> Result<(), GatewayError> {
+        info!("Gateway '{}': Starting message processing loop", self.config.gateway_id);
+
+        // Set up message handler
+        let fragment_handler = CoreMessageHandler {
+            gateway_id: self.config.gateway_id.clone(),
+            stats: self.stats.clone(),
+        };
+        
+        let assembler = AeronFragmentAssembler::new(Some(&Handler::leak(fragment_handler)))?;
+        let handler = Handler::leak(assembler);
+
+        // Update state to connected
+        *self.state.write().unwrap() = GatewayState::Connected;
+
+        let mut last_heartbeat = Instant::now();
+        let mut message_counter = 0u64;
+
+        loop {
+            // Poll for incoming messages
+            subscription.poll(Some(&handler), 10)?;
+
+            // Send heartbeat if enabled
+            if self.config.enable_heartbeat && last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
+                let heartbeat_msg = format!("HEARTBEAT {}", message_counter);
+                if let Err(e) = self.send_message_with_retries(&publication, &heartbeat_msg) {
+                    error!("Failed to send heartbeat: {}", e);
+                    let mut stats = self.stats.write().unwrap();
+                    stats.errors += 1;
+                }
+                last_heartbeat = Instant::now();
             }
-            Some(ServerResponse::Error(e)) => Err(ClientError::ServerError(e)),
-            _ => Err(ClientError::Timeout(
-                "Waiting for server CONNECT response".to_string(),
-            )),
+
+            // Example: Send periodic test messages
+            if message_counter % 10 == 0 {
+                let test_msg = format!("ORDER_REQUEST {} BUY BTCUSD 1.0 50000", message_counter);
+                if let Err(e) = self.send_message_with_retries(&publication, &test_msg) {
+                    error!("Failed to send test message: {}", e);
+                    let mut stats = self.stats.write().unwrap();
+                    stats.errors += 1;
+                }
+            }
+
+            message_counter += 1;
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
 
-    /// Phase 2: Run the main echo loop on the dedicated duologue channel.
-    fn run_echo_loop(
-        &mut self,
-        port: u16,
-        control_port: u16,
-        session_id: i32,
-    ) -> Result<(), ClientError> {
-        info!("client: Running echo loop with session ID: {}", session_id);
-        let subscription = new_subscription_with_mdc_and_session(&self.aeron, &self.config.server_address, control_port, DUOLOGUE_STREAM_ID, session_id)?;
+    /// Waits for publication connection with timeout
+    fn wait_for_publication_connection(
+        &self,
+        publication: &rusteron_client::AeronPublication,
+        context: &str,
+    ) -> Result<(), GatewayError> {
+        let start = Instant::now();
+        while !publication.is_connected() {
+            if start.elapsed() > CONNECT_TIMEOUT {
+                return Err(GatewayError::Timeout(format!(
+                    "Connecting {} publication timed out",
+                    context
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Ok(())
+    }
 
-        // Publication with explicit session ID
-        let publication = new_publication_with_session(&self.aeron, &self.config.server_address, port, DUOLOGUE_STREAM_ID, session_id)?;
-        
-        // Wait for connections
+    /// Waits for both publication and subscription connections
+    fn wait_for_channel_connections(
+        &self,
+        publication: &rusteron_client::AeronPublication,
+        subscription: &rusteron_client::AeronSubscription,
+    ) -> Result<(), GatewayError> {
         let start = Instant::now();
         while !publication.is_connected() || !subscription.is_connected() {
             if start.elapsed() > CONNECT_TIMEOUT {
-                return Err(ClientError::Timeout(
-                    "Connecting to duologue channel".to_string(),
+                return Err(GatewayError::Timeout(
+                    "Connecting to dedicated channel timed out".to_string(),
                 ));
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        info!("client: Successfully connected to duologue channel.");
-
-        // Simple fragment handler for echo messages
-        let fragment_handler = EchoLoopHandler;
-        let assembler = AeronFragmentAssembler::new(Some(&Handler::leak(fragment_handler)))?;
-        let handler = Handler::leak(assembler);
-
-        let mut counter = 0u64;
-        loop {
-            let message = format!("ECHO {}", counter);
-            self.send_message(&publication, &message)?;
-            counter += 1;
-
-            subscription.poll(Some(&handler), 10)?;
-            std::thread::sleep(Duration::from_secs(1));
-        }
+        Ok(())
     }
 
-    /// Helper to send a message with retries.
-    fn send_message(
+    /// Sends a message with automatic retries
+    fn send_message_with_retries(
         &mut self,
-        publication: &AeronPublication,
+        publication: &rusteron_client::AeronPublication,
         text: &str,
-    ) -> Result<(), ClientError> {
-        debug!("Sending message: {}", text);
+    ) -> Result<(), GatewayError> {
+        debug!("Gateway '{}': Sending message: {}", self.config.gateway_id, text);
+        
         let value = text.as_bytes();
-        if value.len() > self.buffer.len() {
-            return Err(ClientError::SendError("Message too long".to_string()));
+        if value.len() > self.config.max_message_size {
+            return Err(GatewayError::SendError(format!(
+                "Message too long: {} bytes (max: {})",
+                value.len(),
+                self.config.max_message_size
+            )));
         }
+
+        // Ensure buffer is large enough
+        if self.buffer.len() < value.len() {
+            self.buffer.resize(value.len(), 0);
+        }
+        
         self.buffer[..value.len()].copy_from_slice(value);
 
-        for _ in 0..5 {
-            let result = publication
-                .offer::<AeronReservedValueSupplierLogger>(&self.buffer[..value.len()], None);
+        // Retry sending with exponential backoff
+        for attempt in 0..MESSAGE_RETRY_COUNT {
+            let result = publication.offer::<AeronReservedValueSupplierLogger>(
+                &self.buffer[..value.len()],
+                None,
+            );
+            
             if result >= 0 {
+                // Update statistics
+                let mut stats = self.stats.write().unwrap();
+                stats.messages_sent += 1;
                 return Ok(());
             }
-            std::thread::sleep(Duration::from_millis(100));
+            
+            // Wait before retrying with exponential backoff
+            let delay = MESSAGE_RETRY_DELAY * (2_u32.pow(attempt as u32));
+            std::thread::sleep(delay);
         }
 
-        Err(ClientError::SendError(
-            "Failed to send after 5 attempts".to_string(),
-        ))
+        // Update error statistics
+        let mut stats = self.stats.write().unwrap();
+        stats.errors += 1;
+        
+        Err(GatewayError::SendError(format!(
+            "Failed to send message after {} attempts",
+            MESSAGE_RETRY_COUNT
+        )))
+    }
+
+    /// Gets current gateway state
+    pub fn state(&self) -> GatewayState {
+        self.state.read().unwrap().clone()
+    }
+
+    /// Gets gateway statistics
+    pub fn stats(&self) -> GatewayStats {
+        self.stats.read().unwrap().clone()
+    }
+
+    /// Gets gateway configuration
+    pub fn config(&self) -> &GatewayConfig {
+        &self.config
+    }
+
+    /// Checks if gateway is connected and authenticated
+    pub fn is_authenticated(&self) -> bool {
+        matches!(*self.state.read().unwrap(), GatewayState::Authenticated)
+    }
+
+    /// Gracefully shuts down the gateway
+    pub async fn shutdown(&mut self) -> Result<(), GatewayError> {
+        info!("Shutting down VEX Gateway '{}'", self.config.gateway_id);
+        
+        // Update state
+        *self.state.write().unwrap() = GatewayState::Disconnected;
+        
+        // TODO: Send goodbye message to core
+        // TODO: Clean up resources
+        
+        info!("VEX Gateway '{}' shut down successfully", self.config.gateway_id);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_core_response_accept() {
+        let response = parse_core_response("12345 gateway-1 ACCEPT 40003 40004 98765", 12345, "gateway-1");
+        assert_eq!(
+            response,
+            CoreResponse::Accept {
+                dedicated_port: 40003,
+                dedicated_control_port: 40004,
+                encrypted_session: 98765,
+                gateway_id: "gateway-1".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_core_response_reject() {
+        let response = parse_core_response("12345 gateway-1 REJECT Invalid credentials", 12345, "gateway-1");
+        assert_eq!(
+            response,
+            CoreResponse::Reject {
+                reason: "Invalid credentials".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_core_response_ignore_wrong_session() {
+        let response = parse_core_response("99999 gateway-1 ACCEPT 40003 40004 98765", 12345, "gateway-1");
+        assert_eq!(response, CoreResponse::Ignore);
+    }
+
+    #[test]
+    fn test_gateway_config_default() {
+        let config = GatewayConfig::default();
+        assert_eq!(config.gateway_id, "gateway-1");
+        assert_eq!(config.core_port, 40001);
+        assert_eq!(config.max_message_size, 2048);
+        assert!(config.enable_heartbeat);
     }
 }

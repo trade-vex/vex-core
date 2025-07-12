@@ -1,16 +1,37 @@
 use std::{time::{Duration, SystemTime}};
 
-use rusteron_client::{Aeron, AeronAvailableImageCallback, AeronCError, AeronImage, AeronNotificationLogger, AeronSubscription, AeronUnavailableImageCallback, Handler};
-use tracing::{info, error};
-use crate::server::handler::FragmentHandler;
+use rusteron_client::{Aeron, AeronAvailableImageCallback, AeronCError, AeronFragmentHandlerCallback, AeronHeader, AeronImage, AeronNotificationLogger, AeronPublication, AeronReservedValueSupplierLogger, AeronSubscription, AeronUnavailableImageCallback, Handler};
+use tracing::{debug, info, error};
+// use crate::server::handler::FragmentHandler;
 use crate::utils::{new_publication_with_mdc_and_session, new_subsciption_with_handlers_and_session};
 
 pub const DUOLOGUE_STREAM_ID: i32 = 1002;
+
+pub struct FragmentHandler {
+    pub publication: AeronPublication,
+}
+
+impl AeronFragmentHandlerCallback for &FragmentHandler {
+    fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) -> () {
+        // is executor thread
+        let session_id = header.get_values().unwrap().frame.session_id;
+
+        // handle and deserialize message
+        let message = String::from_utf8(buffer.to_vec()).unwrap();
+
+        debug!("[{}] Received Message: {}", session_id, message);
+
+        // send message to client with buffer data and session_id
+        self.publication.offer::<AeronReservedValueSupplierLogger>(buffer, None);
+        // if it fails send a message "ERROR bad message" and close
+    }
+}
 
 pub struct Duologue {
     pub fragment_handler: FragmentHandler,
     pub session_id: i32,
     pub buffer: [u8; 2048],
+    pub gateway_id: String,
     // pub publication: AeronPublication,
     pub subscription: AeronSubscription,
     pub owner: String,
@@ -21,7 +42,7 @@ pub struct Duologue {
 }
 
 impl Duologue {
-    pub fn new(aeron: &Aeron,local: &str, owner: &str, port_data: u16, port_control: u16, session_id: i32) -> Result<Self, AeronCError> {
+    pub fn new(aeron: &Aeron,local: &str, gateway_id: &str, owner: &str, port_data: u16, port_control: u16, session_id: i32) -> Result<Self, AeronCError> {
         let buffer = [0; 2048];
         let expire_time = (SystemTime::now() + Duration::from_secs(10_00_000))
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -42,6 +63,7 @@ impl Duologue {
 
         Ok(Self {
             fragment_handler,
+            gateway_id: gateway_id.to_string(),
             owner: owner.to_string(),
             port_data,
             port_control,
@@ -88,7 +110,7 @@ impl AeronAvailableImageCallback for DuologueImageAvailable {
         let session_id = binding.session_id;
 
         if remote_addr != self.owner {
-            error!("Client Connecting witht the wrong address");
+            error!("Client Connecting witht the wrong address, expected: {}, got: {}", self.owner, remote_addr);
         } else {
             info!("[{}] Client Connected, address: {}", session_id, remote_addr);
         }
