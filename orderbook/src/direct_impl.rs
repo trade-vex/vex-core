@@ -169,7 +169,7 @@ impl OrderBookDirectImpl {
             let maker_order_size;
             let maker_order_filled;
             let maker_order_prev;
-            let maker_action;
+            let _maker_action;
 
             {
                 let maker_order = &self.orders[maker_key];
@@ -177,7 +177,7 @@ impl OrderBookDirectImpl {
                 maker_order_size = maker_order.size;
                 maker_order_filled = maker_order.filled;
                 maker_order_prev = maker_order.prev;
-                maker_action = maker_order.action;
+                _maker_action = maker_order.action;
             }
 
             let can_match = if is_bid_action {
