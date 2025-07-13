@@ -15,13 +15,14 @@ use crate::utils::{
     new_publication, new_publication_with_session, 
     new_subscription_with_mdc, new_subscription_with_mdc_and_session
 };
+use common::cmd::{OrderCommand, encode_order_command, decode_order_command};
 
 // Constants for stream identification and timeouts
 const ALL_GATEWAYS_STREAM_ID: i32 = 1001;
 const GATEWAY_CORE_STREAM_ID: i32 = 1002;
 // const HEARTBEAT_STREAM_ID: i32 = 1003;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+// const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const MESSAGE_RETRY_COUNT: usize = 5;
 const MESSAGE_RETRY_DELAY: Duration = Duration::from_millis(100);
 
@@ -163,16 +164,15 @@ impl AeronFragmentHandlerCallback for HandshakeResponseHandler {
     }
 }
 
-/// Fragment handler for processing core messages during normal operation
-struct CoreMessageHandler {
+/// Fragment handler for processing OrderCommand messages from core
+struct OrderCommandHandler {
     gateway_id: String,
     stats: Arc<RwLock<GatewayStats>>,
 }
 
-impl AeronFragmentHandlerCallback for CoreMessageHandler {
+impl AeronFragmentHandlerCallback for OrderCommandHandler {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], _header: AeronHeader) {
-        let message = String::from_utf8_lossy(buffer);
-        info!("Gateway {}: Received message from core: {}", self.gateway_id, message);
+        debug!("Gateway {}: Received OrderCommand from core", self.gateway_id);
         
         // Update statistics
         {
@@ -180,35 +180,19 @@ impl AeronFragmentHandlerCallback for CoreMessageHandler {
             stats.messages_received += 1;
         }
         
-        // Process different message types
-        if message.starts_with("HEARTBEAT") {
-            self.handle_heartbeat(&message);
-        } else if message.starts_with("ORDER") {
-            self.handle_order_message(&message);
-        } else if message.starts_with("MARKET_DATA") {
-            self.handle_market_data(&message);
-        } else {
-            warn!("Unknown message type received: {}", message);
+        // Deserialize OrderCommand
+        match decode_order_command(buffer) {
+            Ok(order_command) => {
+                info!("Gateway {}: Received OrderCommand: {:?}", self.gateway_id, order_command);
+                // Call the callback to handle the order command
+                // (self.callback)(order_command);
+            }
+            Err(e) => {
+                error!("Gateway {}: Failed to decode OrderCommand: {:?}", self.gateway_id, e);
+                let mut stats = self.stats.write().unwrap();
+                stats.errors += 1;
+            }
         }
-    }
-}
-
-impl CoreMessageHandler {
-    fn handle_heartbeat(&self, message: &str) {
-        debug!("Gateway {}: Received heartbeat: {}", self.gateway_id, message);
-        // Update last heartbeat timestamp
-        let mut stats = self.stats.write().unwrap();
-        stats.last_heartbeat = Some(SystemTime::now());
-    }
-    
-    fn handle_order_message(&self, message: &str) {
-        info!("Gateway {}: Processing order message: {}", self.gateway_id, message);
-        // TODO: Implement order processing logic
-    }
-    
-    fn handle_market_data(&self, message: &str) {
-        debug!("Gateway {}: Processing market data: {}", self.gateway_id, message);
-        // TODO: Implement market data processing logic
     }
 }
 
@@ -251,6 +235,10 @@ pub struct VexGateway {
     session_id: Option<i32>,
     /// One-time encryption key for session establishment
     encryption_key: Option<i32>,
+    /// Publication for sending to core (stored after handshake)
+    core_publication: Arc<RwLock<Option<rusteron_client::AeronPublication>>>,
+    /// Subscription for receiving from core (stored after handshake)
+    core_subscription: Arc<RwLock<Option<rusteron_client::AeronSubscription>>>,
 }
 
 impl VexGateway {
@@ -287,6 +275,8 @@ impl VexGateway {
             stats: Arc::new(RwLock::new(stats)),
             session_id: None,
             encryption_key: None,
+            core_publication: Arc::new(RwLock::new(None)),
+            core_subscription: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -412,10 +402,49 @@ impl VexGateway {
         // Wait for connections
         self.wait_for_channel_connections(&publication, &subscription)?;
 
+        // Store publication and subscription for later use
+        *self.core_publication.write().unwrap() = Some(publication);
+        *self.core_subscription.write().unwrap() = Some(subscription);
+
         info!("Gateway '{}': Successfully established dedicated channel", self.config.gateway_id);
 
-        // Start message processing loop
-        self.run_message_processing_loop(publication, subscription)
+        // Update state to connected
+        *self.state.write().unwrap() = GatewayState::Connected;
+
+        // Start polling for messages in a separate thread
+        self.start_message_polling()
+    }
+
+    /// Starts polling for incoming messages in a separate thread
+    fn start_message_polling(&self) -> Result<(), GatewayError> {
+        let subscription = self.core_subscription.read().unwrap().clone()
+            .ok_or_else(|| GatewayError::InvalidState {
+                expected: "Subscription available".to_string(),
+                actual: "No subscription".to_string(),
+            })?;
+
+        let fragment_handler = OrderCommandHandler {
+            gateway_id: self.config.gateway_id.clone(),
+            stats: self.stats.clone(),
+        };
+        
+        let assembler = AeronFragmentAssembler::new(Some(&Handler::leak(fragment_handler)))?;
+        let handler = Handler::leak(assembler);
+
+        // Start polling thread
+        let gateway_id = self.config.gateway_id.clone();
+        std::thread::spawn(move || {
+            info!("Gateway '{}': Started message polling thread", gateway_id);
+            loop {
+                if let Err(e) = subscription.poll(Some(&handler), 10) {
+                    error!("Gateway '{}': Error polling messages: {}", gateway_id, e);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+
+        Ok(())
     }
 
     /// Waits for VEX Core response during handshake
@@ -444,59 +473,6 @@ impl VexGateway {
         }
 
         Err(GatewayError::Timeout("Waiting for core handshake response".to_string()))
-    }
-
-    /// Main message processing loop
-    fn run_message_processing_loop(
-        &mut self,
-        publication: rusteron_client::AeronPublication,
-        subscription: rusteron_client::AeronSubscription,
-    ) -> Result<(), GatewayError> {
-        info!("Gateway '{}': Starting message processing loop", self.config.gateway_id);
-
-        // Set up message handler
-        let fragment_handler = CoreMessageHandler {
-            gateway_id: self.config.gateway_id.clone(),
-            stats: self.stats.clone(),
-        };
-        
-        let assembler = AeronFragmentAssembler::new(Some(&Handler::leak(fragment_handler)))?;
-        let handler = Handler::leak(assembler);
-
-        // Update state to connected
-        *self.state.write().unwrap() = GatewayState::Connected;
-
-        let mut last_heartbeat = Instant::now();
-        let mut message_counter = 0u64;
-
-        loop {
-            // Poll for incoming messages
-            subscription.poll(Some(&handler), 10)?;
-
-            // Send heartbeat if enabled
-            if self.config.enable_heartbeat && last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
-                let heartbeat_msg = format!("HEARTBEAT {}", message_counter);
-                if let Err(e) = self.send_message_with_retries(&publication, &heartbeat_msg) {
-                    error!("Failed to send heartbeat: {}", e);
-                    let mut stats = self.stats.write().unwrap();
-                    stats.errors += 1;
-                }
-                last_heartbeat = Instant::now();
-            }
-
-            // Example: Send periodic test messages
-            if message_counter % 10 == 0 {
-                let test_msg = format!("ORDER_REQUEST {} BUY BTCUSD 1.0 50000", message_counter);
-                if let Err(e) = self.send_message_with_retries(&publication, &test_msg) {
-                    error!("Failed to send test message: {}", e);
-                    let mut stats = self.stats.write().unwrap();
-                    stats.errors += 1;
-                }
-            }
-
-            message_counter += 1;
-            std::thread::sleep(Duration::from_millis(100));
-        }
     }
 
     /// Waits for publication connection with timeout
@@ -621,6 +597,59 @@ impl VexGateway {
         
         info!("VEX Gateway '{}' shut down successfully", self.config.gateway_id);
         Ok(())
+    }
+
+    /// Sends an OrderCommand to the core
+    pub fn send_order_command(&mut self, order_command: &OrderCommand) -> Result<(), GatewayError> {
+        // Check if we're connected
+        if !self.is_authenticated() {
+            return Err(GatewayError::NotAuthenticated);
+        }
+
+        let publication = self.core_publication.read().unwrap().clone()
+            .ok_or_else(|| GatewayError::InvalidState {
+                expected: "Publication available".to_string(),
+                actual: "No publication".to_string(),
+            })?;
+
+        // Serialize OrderCommand
+        let mut buffer = vec![0u8; self.config.max_message_size];
+        encode_order_command(order_command.clone(), &mut buffer)
+            .map_err(|e| GatewayError::ProtocolError(format!("Failed to encode OrderCommand: {:?}", e)))?;
+
+        // Send the binary message directly
+        debug!("Gateway '{}': Sending OrderCommand: {:?}", self.config.gateway_id, order_command);
+        
+        // // Calculate actual encoded size (you may need to adjust this based on your encoding)
+        // let encoded_size = std::cmp::min(buffer.len(), self.config.max_message_size);
+        
+        // Send using the buffer directly
+        for attempt in 0..MESSAGE_RETRY_COUNT {
+            let result = publication.offer::<AeronReservedValueSupplierLogger>(
+                &buffer,
+                None,
+            );
+            
+            if result >= 0 {
+                // Update statistics
+                let mut stats = self.stats.write().unwrap();
+                stats.messages_sent += 1;
+                return Ok(());
+            }
+            
+            // Wait before retrying with exponential backoff
+            let delay = MESSAGE_RETRY_DELAY * (2_u32.pow(attempt as u32));
+            std::thread::sleep(delay);
+        }
+
+        // Update error statistics
+        let mut stats = self.stats.write().unwrap();
+        stats.errors += 1;
+        
+        Err(GatewayError::SendError(format!(
+            "Failed to send OrderCommand after {} attempts",
+            MESSAGE_RETRY_COUNT
+        )))
     }
 }
 

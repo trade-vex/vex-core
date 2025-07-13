@@ -1,6 +1,13 @@
 use crate::model::enums::{MatcherEventType, OrderAction, OrderType};
 use crate::model::order::OrderTrait;
 use borsh::{BorshDeserialize, BorshSerialize};
+use sbe_order::message_header_codec::{self, MessageHeaderDecoder};
+use sbe_order::order_command_message_codec::{OrderCommandMessageDecoder, OrderCommandMessageEncoder};
+use sbe_order::{ReadBuf, SbeResult, WriteBuf};
+use sbe_order::order_command_type::OrderCommandType as SbeOrderCommandType;
+use serde::de::Error;
+use serde::de::value::Error as SerdeError;
+
 
 // TODO: translate OrderCommand
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -24,6 +31,34 @@ pub enum OrderCommandType {
     //
     //    GROUPING_CONTROL,
 }
+
+use std::convert::TryFrom;
+
+impl TryFrom<SbeOrderCommandType> for OrderCommandType {
+    type Error = SerdeError;
+
+    fn try_from(value: SbeOrderCommandType) -> Result<Self, Self::Error> {
+        match value {
+            SbeOrderCommandType::PlaceOrder => Ok(OrderCommandType::PlaceOrder),
+            SbeOrderCommandType::CancelOrder => Ok(OrderCommandType::CancelOrder),
+            SbeOrderCommandType::MoveOrder => Ok(OrderCommandType::MoveOrder),
+            SbeOrderCommandType::ReduceOrder => Ok(OrderCommandType::ReduceOrder),
+            SbeOrderCommandType::NullVal => Err(SerdeError::custom("NullVal")) // Maybe handle NullVal specially
+        }   
+    }
+}
+
+impl From<OrderCommandType> for SbeOrderCommandType {
+    fn from(value: OrderCommandType) -> Self {
+        match value {
+            OrderCommandType::PlaceOrder => SbeOrderCommandType::PlaceOrder,
+            OrderCommandType::CancelOrder => SbeOrderCommandType::CancelOrder,
+            OrderCommandType::MoveOrder => SbeOrderCommandType::MoveOrder,
+            OrderCommandType::ReduceOrder => SbeOrderCommandType::ReduceOrder,
+        }
+    }
+}
+
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct OrderCommand {
@@ -240,3 +275,43 @@ impl Default for MatcherTradeEvent {
         }
     }
 }
+
+pub fn encode_order_command(order_command: OrderCommand, buf: &mut [u8]) -> SbeResult<()> {
+    let write_buf = WriteBuf::new(buf);
+    let mut encoder = OrderCommandMessageEncoder::default();
+    encoder = encoder.wrap(write_buf, message_header_codec::ENCODED_LENGTH);
+    encoder = encoder.header(0).parent()?;
+    encoder.command(order_command.command.into());
+    encoder.order_id(order_command.order_id);
+    encoder.symbol(order_command.symbol);
+    encoder.uid(order_command.uid);
+    encoder.price(order_command.price);
+    encoder.reserve_bid_price(order_command.reserve_bid_price);
+    encoder.size(order_command.size);
+    encoder.action(order_command.action.into());
+    encoder.order_type(order_command.order_type.into());
+    encoder.user_cookie(order_command.user_cookie);
+    encoder.timestamp(order_command.timestamp);
+    Ok(())
+}
+
+pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
+    let buf = ReadBuf::new(buf);
+    let mut decoder = OrderCommandMessageDecoder::default();
+    let header = MessageHeaderDecoder::default().wrap(buf, 0);
+    decoder = decoder.header(header, 0);
+    Ok(OrderCommand {
+        command: decoder.command().try_into()?,
+        order_id: decoder.order_id(),
+        symbol: decoder.symbol(),
+        uid: decoder.uid(),
+        price: decoder.price(),
+        reserve_bid_price: decoder.reserve_bid_price(),
+        size: decoder.size(),
+        action: decoder.action().try_into()?,
+        order_type: decoder.order_type().try_into()?,
+        user_cookie: decoder.user_cookie(),
+        timestamp: decoder.timestamp(),
+        matcher_event: None,
+    })
+} 

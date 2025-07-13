@@ -1,9 +1,12 @@
+use common::cmd::{OrderCommand, OrderCommandType};
+use common::model::enums::{OrderAction, OrderType};
 use networking::client::config::GatewayConfig;
 use networking::client::{VexGateway, GatewayError};
 use networking::server::config::CoreConfig;
 use networking::server::server::VexCoreServer;
 use rusteron_client::find_unused_udp_port;
 use tracing::info;
+use std::time::Duration;
 use std::{
     net::SocketAddr,
     thread,
@@ -44,7 +47,7 @@ fn test_client_server_communication() {
             core_port: server_addr.port(),
             core_control_port: server_addr.port() + 1,
             gateway_id: "gateway-1".to_string(),
-            max_message_size: 2048,
+            max_message_size: 67,
             enable_heartbeat: true,
         };
         info!("client_config: {:?}", client_config);
@@ -54,7 +57,26 @@ fn test_client_server_communication() {
             Ok(()) => println!("Client run() completed successfully"),
             Err(e) => println!("Client run() error: {}", e),
         }
-        
+
+        let mut order_command = OrderCommand {
+            command: OrderCommandType::PlaceOrder,
+            uid: 1,
+            reserve_bid_price: 150,
+            size: 100,
+            order_type: OrderType::Gtc,
+            user_cookie: 1,
+            timestamp: 1,
+            matcher_event: None,
+            action: OrderAction::Ask,
+            order_id: 1,
+            symbol: 3124,
+            price: 150,
+        };
+        for i in 0..10 {
+            order_command.order_id = i;
+            client.send_order_command(&order_command)?;
+            std::thread::sleep(Duration::from_millis(10));
+        }
         Ok(())
     });
     

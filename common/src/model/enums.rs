@@ -1,6 +1,10 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use num_enum::TryFromPrimitive;
 use serde::{Deserialize, Serialize};
+use sbe_order::order_action::OrderAction as SbeOrderAction;
+use sbe_order::order_type::OrderType as SbeOrderType;
+use serde::de::Error;
+use serde::de::value::Error as SerdeError;
 
 #[derive(
     Debug,
@@ -30,6 +34,26 @@ impl OrderAction {
     }
 }
 
+impl From<OrderAction> for SbeOrderAction {
+    fn from(value: OrderAction) -> Self {
+        match value {
+            OrderAction::Ask => SbeOrderAction::Ask,
+            OrderAction::Bid => SbeOrderAction::Bid,
+        }
+    }
+}
+
+impl TryFrom<SbeOrderAction> for OrderAction {
+    type Error = SerdeError;
+    fn try_from(value: SbeOrderAction) -> Result<Self, Self::Error> {
+        match value {
+            SbeOrderAction::Ask => Ok(OrderAction::Ask),
+            SbeOrderAction::Bid => Ok(OrderAction::Bid),
+            SbeOrderAction::NullVal => Err(SerdeError::custom("NullVal")),
+        }
+    }
+}
+
 #[derive(
     Debug,
     PartialEq,
@@ -53,6 +77,32 @@ pub enum OrderType {
     // Fill or Kill - execute immediately completely or not at all
     Fok = 3,       // with price cap
     FokBudget = 4, // total amount cap
+}
+
+impl From<OrderType> for SbeOrderType {
+    fn from(value: OrderType) -> Self {
+        match value {
+            OrderType::Gtc => SbeOrderType::Gtc,
+            OrderType::Ioc => SbeOrderType::Ioc,
+            OrderType::IocBudget => SbeOrderType::IocBudget,
+            OrderType::Fok => SbeOrderType::Fok,
+            OrderType::FokBudget => SbeOrderType::FokBudget,
+        }
+    }
+}
+
+impl TryFrom<SbeOrderType> for OrderType {
+    type Error = SerdeError;
+    fn try_from(value: SbeOrderType) -> Result<Self, Self::Error> {
+        match value {
+            SbeOrderType::Gtc => Ok(OrderType::Gtc),
+            SbeOrderType::Ioc => Ok(OrderType::Ioc),
+            SbeOrderType::IocBudget => Ok(OrderType::IocBudget),
+            SbeOrderType::Fok => Ok(OrderType::Fok),
+            SbeOrderType::FokBudget => Ok(OrderType::FokBudget),
+            SbeOrderType::NullVal => Err(SerdeError::custom("NullVal")),
+        }
+    }
 }
 
 #[derive(
