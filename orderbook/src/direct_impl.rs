@@ -196,19 +196,22 @@ impl OrderBookDirectImpl {
                 remaining_size -= trade_size;
                 filled += trade_size;
 
-                let buckets = if maker_action == OrderAction::Ask {
-                    &mut self.ask_price_buckets
-                } else {
-                    &mut self.bid_price_buckets
-                };
-                if let Some(bucket) = buckets.get_mut(&maker_order_price) {
-                    bucket.volume -= trade_size;
-                }
-
                 let maker_order_mut = &mut self.orders[maker_key];
                 maker_order_mut.filled += trade_size;
 
                 let maker_filled = maker_order_mut.filled == maker_order_mut.size;
+
+                if !maker_filled {
+                    // Only subtract from volume if not going to remove order
+                    let buckets = if cmd.action() == OrderAction::Ask {
+                        &mut self.bid_price_buckets
+                    } else {
+                        &mut self.ask_price_buckets
+                    };
+                    if let Some(bucket) = buckets.get_mut(&maker_order_mut.price) {
+                        bucket.volume -= trade_size;
+                    }
+                }
 
                 let trade_event = MatcherTradeEvent {
                     event_type: MatcherEventType::Trade,
@@ -231,15 +234,6 @@ impl OrderBookDirectImpl {
 
                 if maker_filled {
                     self.remove_order(maker_key);
-                } else {
-                    let buckets = if maker_action == OrderAction::Ask {
-                        &mut self.ask_price_buckets
-                    } else {
-                        &mut self.bid_price_buckets
-                    };
-                    if let Some(bucket) = buckets.get_mut(&maker_order_price) {
-                        bucket.volume -= trade_size;
-                    }
                 }
             }
 
