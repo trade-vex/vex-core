@@ -3,6 +3,7 @@ use rusteron_client::{
     AeronHeader, AeronReservedValueSupplierLogger, Handler,
 };
 use rand;
+use rusteron_media_driver::AeronIdleStrategy;
 use std::ffi::CString;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
@@ -172,7 +173,7 @@ struct OrderCommandHandler {
 
 impl AeronFragmentHandlerCallback for OrderCommandHandler {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], _header: AeronHeader) {
-        debug!("Gateway {}: Received OrderCommand from core", self.gateway_id);
+        // debug!("Gateway {}: Received OrderCommand from core", self.gateway_id);
         
         // Update statistics
         {
@@ -440,7 +441,7 @@ impl VexGateway {
                     error!("Gateway '{}': Error polling messages: {}", gateway_id, e);
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(10));
+                AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
             }
         });
 
@@ -469,7 +470,7 @@ impl VexGateway {
             if let Some(response) = shared_response.lock().unwrap().take() {
                 return Ok(response);
             }
-            std::thread::sleep(Duration::from_millis(50));
+            AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
         }
 
         Err(GatewayError::Timeout("Waiting for core handshake response".to_string()))

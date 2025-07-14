@@ -1064,6 +1064,7 @@ dependencies = [
  "common",
  "rand",
  "rusteron-client",
+ "rusteron-media-driver",
  "test-log",
  "thiserror 2.0.12",
  "tracing",
@@ -1550,6 +1551,27 @@ dependencies = [
  "quote",
  "regex",
  "syn",
+]
+
+[[package]]
+name = "rusteron-media-driver"
+version = "0.1.143"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "856f30c0d1b3efee7b5b76898357f5e8553cb467dc459a1bcf579cb21272d952"
+dependencies = [
+ "bindgen",
+ "cmake",
+ "ctrlc",
+ "dunce",
+ "flate2",
+ "log",
+ "pkg-config",
+ "proc-macro2",
+ "regex",
+ "reqwest",
+ "rusteron-code-gen",
+ "tar",
+ "walkdir",
 ]
 
 [[package]]

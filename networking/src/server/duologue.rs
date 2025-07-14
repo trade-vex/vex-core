@@ -17,7 +17,7 @@ impl AeronFragmentHandlerCallback for &FragmentHandler {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) -> () {
         // is executor thread
         let session_id = header.get_values().unwrap().frame.session_id;
-        debug!("[{}] Gateway '{}': Received OrderCommand", session_id, self.gateway_id);
+        // debug!("[{}] Gateway '{}': Received OrderCommand", session_id, self.gateway_id);
 
         // Deserialize OrderCommand
         match decode_order_command(buffer) {
@@ -69,7 +69,7 @@ fn process_order_command(mut order_command: OrderCommand) -> OrderCommand {
     // TODO: Implement actual order processing logic here
     // For now, just add a timestamp and return the command
     
-    info!("Processing OrderCommand: {:?}", order_command);
+    // info!("Processing OrderCommand: {:?}", order_command);
     
     // Example processing:
     // - Validate the order

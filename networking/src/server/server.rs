@@ -7,6 +7,7 @@ use rusteron_client::{
     AeronHeader, AeronImage, AeronPublication, AeronSubscription,
     Handler, AeronAvailableImageCallback, AeronUnavailableImageCallback,
 };
+use rusteron_media_driver::AeronIdleStrategy;
 use thiserror::Error;
 use tracing::{debug, error, info, warn, instrument};
 
@@ -96,6 +97,8 @@ pub struct VexCoreServer {
     stats: Arc<RwLock<CoreStats>>,
     /// Last cleanup timestamp
     last_cleanup: Arc<RwLock<Instant>>,
+    // /// Idle strategy
+    // idle_strategy: AeronIdleStrategy,
 }
 
 impl VexCoreServer {
@@ -133,6 +136,7 @@ impl VexCoreServer {
             config,
             stats: Arc::new(RwLock::new(stats)),
             last_cleanup: Arc::new(RwLock::new(Instant::now())),
+            // idle_strategy: idle_strategy,
         })
     }
 
@@ -187,9 +191,8 @@ impl VexCoreServer {
             // Perform periodic cleanup
             self.periodic_cleanup()?;
             
-            // Brief pause to prevent busy waiting
-            std::thread::sleep(Duration::from_millis(10));
-        }
+            AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
+            }
     }
 
     /// Performs periodic cleanup of expired gateways and statistics
