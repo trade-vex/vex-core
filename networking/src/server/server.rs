@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::{collections::HashMap, sync::RwLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::SystemTime;
 
 use rusteron_client::{
     Aeron, AeronCError, AeronContext, AeronFragmentHandlerCallback,
@@ -18,17 +18,8 @@ use crate::utils::{
     PortAllocator, SessionAllocator
 };
 
-// Stream IDs for different communication channels
+/// Stream IDs for different communication channels
 const ALL_GATEWAYS_STREAM_ID: i32 = 1001;
-// const GATEWAY_CORE_STREAM_ID: i32 = 1002;
-// const HEARTBEAT_STREAM_ID: i32 = 1003;
-
-// Timeouts and intervals
-// const GATEWAY_TIMEOUT: Duration = Duration::from_secs(30);
-// const HEARTBEAT_CHECK_INTERVAL: Duration = Duration::from_secs(10);
-const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
-
-
 
 /// Represents a gateway's handshake request
 #[derive(Debug, Clone)]
@@ -38,18 +29,6 @@ pub struct GatewayHandshakeRequest {
     pub encryption_key: i32,
     pub source_address: String,
     pub timestamp: SystemTime,
-}
-
-/// Core server state and statistics
-#[derive(Debug, Default, Clone)]
-pub struct CoreStats {
-    pub connected_gateways: u32,
-    pub total_messages_received: u64,
-    pub total_messages_sent: u64,
-    pub handshakes_successful: u64,
-    pub handshakes_rejected: u64,
-    pub uptime_start: Option<SystemTime>,
-    pub last_cleanup: Option<SystemTime>,
 }
 
 /// Custom error types for VEX Core
@@ -93,12 +72,6 @@ pub struct VexCoreServer {
     config: CoreConfig,
     /// Gateway state management
     gateways: Arc<RwLock<GatewayManager>>,
-    /// Core statistics
-    stats: Arc<RwLock<CoreStats>>,
-    /// Last cleanup timestamp
-    last_cleanup: Arc<RwLock<Instant>>,
-    // /// Idle strategy
-    // idle_strategy: AeronIdleStrategy,
 }
 
 impl VexCoreServer {
@@ -125,18 +98,12 @@ impl VexCoreServer {
         
         info!("VEX Core '{}' initialized successfully", config.core_id);
 
-        let mut stats = CoreStats::default();
-        stats.uptime_start = Some(SystemTime::now());
-
         let aeron = Arc::new(aeron);
 
         Ok(Self {
             aeron: Arc::clone(&aeron),
             gateways: Arc::new(RwLock::new(GatewayManager::new(config.clone(), aeron)?)),
             config,
-            stats: Arc::new(RwLock::new(stats)),
-            last_cleanup: Arc::new(RwLock::new(Instant::now())),
-            // idle_strategy: idle_strategy,
         })
     }
 
@@ -174,7 +141,6 @@ impl VexCoreServer {
         // Create handshake message handler
         let mut handshake_handler = HandshakeMessageHandler::new(
             self.gateways.clone(),
-            self.stats.clone(),
             publication,
         );
 
@@ -188,42 +154,9 @@ impl VexCoreServer {
             // Poll all active gateway sessions
             self.gateways.write().unwrap().poll()?;
             
-            // Perform periodic cleanup
-            self.periodic_cleanup()?;
-            
+            // Idle strategy
             AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
             }
-    }
-
-    /// Performs periodic cleanup of expired gateways and statistics
-    fn periodic_cleanup(&self) -> Result<(), ServerError> {
-        let now = Instant::now();
-        let mut last_cleanup = self.last_cleanup.write().unwrap();
-        
-        if now.duration_since(*last_cleanup) >= CLEANUP_INTERVAL {
-            info!("Performing periodic cleanup");
-            
-            // Clean up expired gateways
-            let cleanup_count = self.gateways.write().unwrap().cleanup_expired_gateways()?;
-            if cleanup_count > 0 {
-                info!("Cleaned up {} expired gateways", cleanup_count);
-            }
-            
-            // Update statistics
-            {
-                let mut stats = self.stats.write().unwrap();
-                stats.last_cleanup = Some(SystemTime::now());
-            }
-            
-            *last_cleanup = now;
-        }
-        
-        Ok(())
-    }
-
-    /// Gets core statistics
-    pub fn stats(&self) -> CoreStats {
-        self.stats.read().unwrap().clone()
     }
 
     /// Gets core configuration
@@ -503,22 +436,6 @@ impl GatewayManager {
         Ok(())
     }
 
-    /// Cleans up expired gateways
-    fn cleanup_expired_gateways(&mut self) -> Result<usize, ServerError> {
-        let expired_sessions: Vec<i32> = self.gateway_sessions
-            .iter()
-            .filter(|(_, session)| session.is_expired())
-            .map(|(session_id, _)| *session_id)
-            .collect();
-
-        let count = expired_sessions.len();
-        for session_id in expired_sessions {
-            self.remove_gateway_session(session_id)?;
-        }
-
-        Ok(count)
-    }
-
     /// Shuts down all gateways
     fn shutdown_all_gateways(&mut self) -> Result<(), ServerError> {
         let session_ids: Vec<i32> = self.gateway_sessions.keys().cloned().collect();
@@ -535,19 +452,16 @@ impl GatewayManager {
 /// Handler for processing initial handshake messages from gateways
 struct HandshakeMessageHandler {
     gateways: Arc<RwLock<GatewayManager>>,
-    stats: Arc<RwLock<CoreStats>>,
     publication: AeronPublication,
 }
 
 impl HandshakeMessageHandler {
     fn new(
         gateways: Arc<RwLock<GatewayManager>>,
-        stats: Arc<RwLock<CoreStats>>,
         publication: AeronPublication,
     ) -> Self {
         Self {
             gateways,
-            stats,
             publication,
         }
     }
@@ -560,24 +474,14 @@ impl AeronFragmentHandlerCallback for &mut HandshakeMessageHandler {
         
         debug!("Received handshake message from session 0x{:x}: {}", session_id, message);
 
-        // Update statistics
-        {
-            let mut stats = self.stats.write().unwrap();
-            stats.total_messages_received += 1;
-        }
-
         // Process the handshake message
         let mut gateways = self.gateways.write().unwrap();
         match gateways.process_handshake_message(&self.publication, session_id, &message) {
             Ok(_) => {
-                let mut stats = self.stats.write().unwrap();
-                stats.handshakes_successful += 1;
-                stats.total_messages_sent += 1;
+                info!("Handshake message processed successfully");
             }
             Err(e) => {
                 error!("Error processing handshake message: {}", e);
-                let mut stats = self.stats.write().unwrap();
-                stats.handshakes_rejected += 1;
             }
         }
     }
