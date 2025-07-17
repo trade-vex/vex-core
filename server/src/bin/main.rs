@@ -6,7 +6,7 @@ use common::model::{
     // enums::{OrderAction, OrderType},
     user_profile::{UserProfile, UserStatus},
 };
-use disruptor::Producer;
+use disruptor::{MultiConsumerBarrier, MultiProducer, Producer};
 use orderbook::OrderBookImplType;
 use processors::{
     journaling::JournalingProcessor, matching_engine::MatchingEngineRouter, risk_engine::RiskEngine,
@@ -16,7 +16,7 @@ use tracing::info;
 // Sets up the entire Exchange Core application with all processors.
 pub fn init_exchange() -> (
     CoreEngine,
-    disruptor::SingleProducer<OrderCommand, disruptor::MultiConsumerBarrier>,
+    MultiProducer<OrderCommand, MultiConsumerBarrier>,
     Arc<SimpleEventsHandler>,
 ) {
     // Initialize the matching engine router with a default order book.

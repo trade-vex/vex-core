@@ -1,7 +1,6 @@
 use crate::events::EventsHandler;
 use common::cmd::OrderCommand;
-use disruptor::BusySpin;
-use disruptor::ProcessorSettings;
+use disruptor::{build_multi_producer, BusySpin, MultiConsumerBarrier, MultiProducer, ProcessorSettings};
 use processors::{
     journaling::JournalingProcessor, matching_engine::MatchingEngineRouter, risk_engine::RiskEngine,
 };
@@ -11,7 +10,7 @@ use tracing::{info, warn};
 /// This is the equivalent of `CoreEngine.java` orchestrating the processors.
 pub struct CoreEngine {
     // Store the producer in an Option so it can be taken out for returning
-    _producer: Option<disruptor::SingleProducer<OrderCommand, disruptor::MultiConsumerBarrier>>,
+    _producer: Option<MultiProducer<OrderCommand, MultiConsumerBarrier>>,
 }
 
 impl CoreEngine {
@@ -22,7 +21,7 @@ impl CoreEngine {
         events_handler: Arc<dyn EventsHandler>,
     ) -> (
         Self,
-        disruptor::SingleProducer<OrderCommand, disruptor::MultiConsumerBarrier>,
+        MultiProducer<OrderCommand, MultiConsumerBarrier>,
     ) {
         let factory = || OrderCommand::default();
         let buffer_size = 1024;
@@ -35,7 +34,7 @@ impl CoreEngine {
 
         let journaling_arc_stage1 = journaling_arc.clone();
 
-        let producer = disruptor::build_single_producer(buffer_size, factory, BusySpin)
+        let producer = build_multi_producer(buffer_size, factory, BusySpin)
             // Stage 1: Journaling on core 1
             .pin_at_core(1)
             .handle_events_with(move |cmd: &OrderCommand, _, _| {
