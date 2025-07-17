@@ -12,6 +12,8 @@ services:
     shm_size: "512m"            # 🆕 Set shm-size like docker run
     ipc: "shareable"            # 🆕 Enable shared IPC namespace
     restart: unless-stopped
+    volumes:
+      - /dev/shm:/opt
 
   # SBE Code Generator - generates Rust code from ordercmd.xml
   sbe-generator:
@@ -33,6 +35,8 @@ services:
     depends_on:
       media-driver:
         condition: service_healthy
+      sbe-generator:
+        condition: service_completed_successfully
     environment:
       - RUST_LOG=info
       - AERON_DIR=/tmp/aeron

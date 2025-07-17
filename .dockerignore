@@ -1,4 +1,5 @@
 target/
+!target/generated/
 Cargo.lock
 .git/
 .cargo/

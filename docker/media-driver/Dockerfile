@@ -41,27 +41,12 @@ RUN apt-get update && apt-get install -y \
     zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
-# Create aeron user and group
-RUN groupadd -r aeron && useradd -r -g aeron aeron
-
 # Copy the built C Media Driver from builder stage
 COPY --from=builder /build/aeron/cppbuild/Release/binaries/aeronmd /usr/local/bin/aeronmd
 COPY --from=builder /build/aeron/cppbuild/Release/lib/ /usr/local/lib/
 
 # Make it executable
 RUN chmod +x /usr/local/bin/aeronmd
-
-# Create directory for aeron data
-RUN mkdir -p /opt && chown aeron:aeron /opt
-
-RUN ldconfig
-
-
-# Switch to aeron user
-USER aeron
-
-# Set working directory
-WORKDIR /opt
 
 # Default environment variables for Aeron C Media Driver
 ENV AERON_DIR=/opt/aeron
