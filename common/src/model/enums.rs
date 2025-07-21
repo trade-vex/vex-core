@@ -156,6 +156,7 @@ pub enum MatcherEventType {
     // Custom binary data attached
     BinaryEvent,
     Cancel,
+    OrderPlaced, // New event type for order placement
 }
 
 #[derive(

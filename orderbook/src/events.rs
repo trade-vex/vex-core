@@ -90,7 +90,7 @@ impl EventHelper {
         placed_size: i64,
     ) -> Box<MatcherTradeEvent> {
         Box::new(MatcherTradeEvent {
-            event_type: MatcherEventType::Reduce, // Using Reduce type for order placement
+            event_type: MatcherEventType::OrderPlaced, // Using OrderPlaced type for order placement
             symbol: cmd.symbol,
             active_order_uid: cmd.uid,
             taker_action: cmd.action,
