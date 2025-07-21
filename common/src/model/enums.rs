@@ -107,31 +107,34 @@ impl TryFrom<SbeOrderType> for OrderType {
 
 #[derive(
     Debug,
-    PartialEq,
-    Eq,
     Clone,
     Copy,
-    TryFromPrimitive,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
     Serialize,
     Deserialize,
     BorshSerialize,
     BorshDeserialize,
 )]
 #[borsh(use_discriminant = true)]
-#[repr(u8)]
 pub enum SymbolType {
-    CurrencyExchangePair = 0,
-    FuturesContract = 1,
+    FuturesContract = 0,
+    CurrencyExchangePair = 1,
     Option = 2,
+}
+
+impl Default for SymbolType {
+    fn default() -> Self {
+        SymbolType::CurrencyExchangePair
+    }
 }
 
 impl SymbolType {
     pub fn code(&self) -> u8 {
         *self as u8
-    }
-
-    pub fn of(code: u8) -> Result<Self, num_enum::TryFromPrimitiveError<Self>> {
-        Self::try_from(code)
     }
 }
 
