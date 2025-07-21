@@ -4,10 +4,11 @@ use server::events::SimpleEventsHandler;
 
 use common::cmd::OrderCommand;
 use common::model::{
+    symbol_specification::CoreSymbolSpecification,
     // enums::{OrderAction, OrderType},
     user_profile::{UserProfile, UserStatus},
 };
-use disruptor::{MultiConsumerBarrier, MultiProducer, Producer};
+use disruptor::Producer;
 use orderbook::OrderBookImplType;
 use processors::{
     journaling::JournalingProcessor, matching_engine::MatchingEngineRouter, risk_engine::RiskEngine,
@@ -17,18 +18,26 @@ use tracing::info;
 // Sets up the entire Exchange Core application with all processors.
 pub fn init_exchange() -> (
     CoreEngine,
-    MultiProducer<OrderCommand, MultiConsumerBarrier>,
+    disruptor::SingleProducer<OrderCommand, disruptor::MultiConsumerBarrier>,
     Arc<SimpleEventsHandler>,
 ) {
     // Initialize the matching engine router with a default order book.
     let mut matching_engine_router = MatchingEngineRouter::new();
     matching_engine_router.add_symbol(0, OrderBookImplType::Naive);
 
+    // Create a symbol specification for the risk engine.
+    let mut symbol_specs = HashMap::new();
+    symbol_specs.insert(0, CoreSymbolSpecification::default());
+
     // Create a risk engine with a user profile(say 100 here)
-    let mut risk_engine = RiskEngine::new(HashMap::new());
+    let mut risk_engine = RiskEngine::new(symbol_specs);
+    let mut user_profile = UserProfile::new(100, UserStatus::Active);
+    // Deposit funds for the user to be able to place an ASK order
+    // The default symbol spec has base currency 0, so we deposit into that account.
+    user_profile.accounts.insert(0, 1_000_000); 
     risk_engine
         .user_profiles
-        .insert(100, UserProfile::new(100, UserStatus::Active));
+        .insert(100, user_profile);
 
     // Initialize the journaling processor to log commands and events.
     let journaling_processor = JournalingProcessor::new();
@@ -96,7 +105,7 @@ async fn main() {
     );
     assert!(!event.matched_order_completed);
     assert_eq!(event.matched_order_id, 1);
-    assert_eq!(event.matched_order_uid, 100);
+    assert_eq!(event.maker_uid, 100);
     assert_eq!(event.price, 9629);
     assert_eq!(event.size, 10);
     info!(
