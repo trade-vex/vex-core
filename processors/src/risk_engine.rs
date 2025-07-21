@@ -7,6 +7,7 @@ use tracing::{info, warn};
 use common::model::enums::OrderAction;
 use common::model::symbol_specification::CoreSymbolSpecification;
 use common::model::enums::MatcherEventType;
+use common::cmd::OrderCommandType;
 /// Manages all user profiles and performs risk checks as well as settlements
 /// This is the Rust equivalent of `RiskEngine.java`.
 pub struct RiskEngine {
@@ -44,36 +45,43 @@ impl RiskEngine {
             "[RiskEngine] Validating arguments for order {}",
             cmd.order_id
         );
-        if cmd.size <= 0 || cmd.price <= 0 {
-            return Err(OrderBookError::InvalidArguments);
-        }
-
-        info!(
-            "[RiskEngine] Looking up symbol spec for symbol {}",
-            cmd.symbol
-        );
-        let spec = self
-            .symbol_specs
-            .get(&cmd.symbol)
-            .ok_or(OrderBookError::UnsupportedCommand)?;
-
-        info!(
-            "[RiskEngine] Found symbol spec: {:?} for symbol {}",
-            spec, cmd.symbol
-        );
-        let required_funds = if cmd.action == OrderAction::Bid {
-            cmd.price * cmd.size
-        } else {
-            cmd.size
-        };
-
-        if !user_profile.hold_funds(spec, required_funds, cmd.action) {
-            warn!(
-                "[RiskEngine] Insufficient funds for user {} to place order {}",
-                cmd.uid, cmd.order_id
+        if matches!(cmd.command, OrderCommandType::PlaceOrder | OrderCommandType::ReduceOrder) {
+            if cmd.size <= 0 || cmd.price <= 0 {
+                return Err(OrderBookError::InvalidArguments);
+            }
+            info!(
+                "[RiskEngine] Looking up symbol spec for symbol {}",
+                cmd.symbol
             );
-            return Err(OrderBookError::InsufficientFunds);
+            let spec = self
+                .symbol_specs
+                .get(&cmd.symbol)
+                .ok_or(OrderBookError::UnsupportedCommand)?;
+
+            info!(
+                "[RiskEngine] Found symbol spec: {:?} for symbol {}",
+                spec, cmd.symbol
+            );
+            let required_funds = if cmd.action == OrderAction::Bid {
+                cmd.price * cmd.size
+            } else {
+                cmd.size
+            };
+
+            if !user_profile.hold_funds(spec, required_funds, cmd.action) {
+                warn!(
+                    "[RiskEngine] Insufficient funds for user {} to place order {}",
+                    cmd.uid, cmd.order_id
+                );
+                return Err(OrderBookError::InsufficientFunds);
+            }
+        } else if matches!(cmd.command, OrderCommandType::MoveOrder) {
+            if cmd.price <= 0 {
+                return Err(OrderBookError::InvalidArguments);
+            }
+            // Do NOT call hold_funds for MoveOrder!
         }
+
         info!(
             "[RiskEngine] Pre-processing and approving command for user {}",
             cmd.uid
@@ -129,6 +137,9 @@ impl RiskEngine {
                         event.taker_action,
                     );
                 }
+            }
+            MatcherEventType::OrderPlaced => {
+                // Do nothing
             }
             _ => {
                 // Other event types like Reject or BinaryEvent might not have financial impact

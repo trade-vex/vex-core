@@ -11,6 +11,7 @@ use tracing::{info, warn};
 pub struct CoreEngine {
     // Store the producer in an Option so it can be taken out for returning
     _producer: Option<MultiProducer<OrderCommand, MultiConsumerBarrier>>,
+    risk_engine: Arc<std::sync::Mutex<RiskEngine>>, // <-- Add this line
 }
 
 impl CoreEngine {
@@ -26,7 +27,6 @@ impl CoreEngine {
         let factory = || OrderCommand::default();
         let buffer_size = 1024;
 
-        // Using Arc to share stateful processors with the main thread and the consumer threads.
         let journaling_arc = Arc::new(journaling_processor);
         let risk_engine_arc = Arc::new(std::sync::Mutex::new(risk_engine));
         let matching_engine_arc = Arc::new(std::sync::Mutex::new(matching_engine_router));
@@ -95,11 +95,10 @@ impl CoreEngine {
 
         let mut engine = Self {
             _producer: Some(producer),
+            risk_engine: risk_engine_arc.clone(), // <-- Store the Arc here
         };
 
-        // Take the producer out of the engine for returning
         let producer = engine._producer.take().unwrap();
-        // (engine, producer)
         (engine, producer)
     }
 
@@ -107,5 +106,11 @@ impl CoreEngine {
         info!("\n[Sequential Core] Engine started. Waiting for commands...");
         std::thread::park();
         info!("[Sequential Core] Engine stopped.");
+    }
+
+    pub fn get_user_balance(&self, uid: u64, currency: i32) -> Option<i64> {
+        let risk_engine = self.risk_engine.lock().unwrap();
+        risk_engine.user_profiles.get(&(uid as i64))
+            .and_then(|profile| profile.accounts.get(&currency).copied())
     }
 }
