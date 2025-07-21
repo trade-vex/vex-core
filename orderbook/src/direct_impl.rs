@@ -204,7 +204,7 @@ impl OrderBookDirectImpl {
                     section: 0, // TODO
                     active_order_completed: remaining_size == 0,
                     matched_order_id: maker_order_mut.order_id,
-                    matched_order_uid: maker_order_mut.uid,
+                    maker_uid: maker_order_mut.uid,
                     matched_order_completed: maker_filled,
                     price: maker_order_mut.price,
                     size: trade_size,
@@ -563,7 +563,7 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
 
         let remaining_size = order_to_cancel.size() - order_to_cancel.filled();
         cmd.matcher_event = Some(EventHelper::send_reduce_event(
-            &order_to_cancel,
+            &cmd,
             remaining_size,
             true,
         ));
@@ -606,7 +606,7 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
         }
 
         cmd.matcher_event = Some(EventHelper::send_reduce_event(
-            order_to_reduce,
+            cmd,
             reduced_size,
             false,
         ));
