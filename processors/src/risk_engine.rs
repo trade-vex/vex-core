@@ -6,6 +6,7 @@ use orderbook::OrderBookError;
 use tracing::{info, warn};
 use common::model::enums::OrderAction;
 use common::model::symbol_specification::CoreSymbolSpecification;
+use common::model::enums::MatcherEventType;
 /// Manages all user profiles and performs risk checks as well as settlements
 /// This is the Rust equivalent of `RiskEngine.java`.
 pub struct RiskEngine {
@@ -24,25 +25,42 @@ impl RiskEngine {
     /// Pre-processes a command to validate it(DONE) and hold funds(TODOs).
     /// This is the first stage(excali-5a, excali-5b) of processing for any command that can affect a user.
     pub fn pre_process_command(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError> {
+        info!("[RiskEngine] Pre-processing command: {:?}", cmd);
         let user_profile = self
             .user_profiles
             .get_mut(&cmd.uid)
             .ok_or(OrderBookError::UnsupportedCommand)?;
 
         // check 1:Check `user_profile.user_status`.
+        info!(
+            "[RiskEngine] Checking user status for user {}: {:?}",
+            cmd.uid, user_profile.user_status
+        );
         if user_profile.user_status != common::model::user_profile::UserStatus::Active {
             return Err(OrderBookError::UnsupportedCommand);
         }
         // check 2: Validate the command arguments.
+        info!(
+            "[RiskEngine] Validating arguments for order {}",
+            cmd.order_id
+        );
         if cmd.size <= 0 || cmd.price <= 0 {
             return Err(OrderBookError::InvalidArguments);
         }
 
+        info!(
+            "[RiskEngine] Looking up symbol spec for symbol {}",
+            cmd.symbol
+        );
         let spec = self
             .symbol_specs
             .get(&cmd.symbol)
             .ok_or(OrderBookError::UnsupportedCommand)?;
 
+        info!(
+            "[RiskEngine] Found symbol spec: {:?} for symbol {}",
+            spec, cmd.symbol
+        );
         let required_funds = if cmd.action == OrderAction::Bid {
             cmd.price * cmd.size
         } else {
@@ -66,7 +84,6 @@ impl RiskEngine {
     /// Handles events coming from the matching engine to settle funds.
     /// This is a final stage(excali-8a) in the pipeline for events that have financial impact.
     pub fn handle_event(&mut self, event: &MatcherTradeEvent) {
-        // TODOs
         // 1. Look at `event.event_type`.
         // 2. If it's a TRADE, find the buyer and seller profiles and settle funds.
         // 3. If it's a REDUCE/CANCEL, find the user and release the held funds.
@@ -74,6 +91,49 @@ impl RiskEngine {
             "[RiskEngine] Handling settlement for event: {:?}",
             event.event_type
         );
+
+        match event.event_type {
+            MatcherEventType::Trade => {
+                // Find maker and taker profiles
+                if let Some(maker_profile) = self.user_profiles.get_mut(&event.maker_uid) {
+                    maker_profile.settle_trade(
+                        event.symbol,
+                        event.price,
+                        event.size,
+                        if event.taker_action == OrderAction::Ask {
+                            OrderAction::Bid
+                        } else {
+                            OrderAction::Ask
+                        },
+                    );
+                }
+                if let Some(taker_profile) = self.user_profiles.get_mut(&event.active_order_uid) {
+                    taker_profile.settle_trade(
+                        event.symbol,
+                        event.price,
+                        event.size,
+                        event.taker_action,
+                    );
+                }
+            }
+            MatcherEventType::Reduce | MatcherEventType::Cancel => {
+                if let Some(user_profile) = self.user_profiles.get_mut(&event.active_order_uid) {
+                    let released_amount = if event.taker_action == OrderAction::Bid {
+                        event.price * event.size
+                    } else {
+                        event.size
+                    };
+                    user_profile.release_funds(
+                        event.symbol,
+                        released_amount,
+                        event.taker_action,
+                    );
+                }
+            }
+            _ => {
+                // Other event types like Reject or BinaryEvent might not have financial impact
+            }
+        }
         
     }
 }
