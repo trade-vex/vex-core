@@ -20,6 +20,7 @@ pub enum OrderBookError {
     MoveFailedPriceOverRiskLimit,
     ReduceFailedWrongSize,
     InvalidArguments,
+    InsufficientFunds,
 }
 
 impl fmt::Display for OrderBookError {
@@ -33,6 +34,7 @@ impl fmt::Display for OrderBookError {
             }
             OrderBookError::ReduceFailedWrongSize => write!(f, "Reduce failed: invalid size"),
             OrderBookError::InvalidArguments => write!(f, "Invalid arguments"),
+            OrderBookError::InsufficientFunds => write!(f, "Insufficient funds"),
         }
     }
 }

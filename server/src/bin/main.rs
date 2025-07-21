@@ -1,3 +1,4 @@
+use hashbrown::HashMap;
 use server::engine::CoreEngine;
 use server::events::SimpleEventsHandler;
 
@@ -24,7 +25,7 @@ pub fn init_exchange() -> (
     matching_engine_router.add_symbol(0, OrderBookImplType::Naive);
 
     // Create a risk engine with a user profile(say 100 here)
-    let mut risk_engine = RiskEngine::new();
+    let mut risk_engine = RiskEngine::new(HashMap::new());
     risk_engine
         .user_profiles
         .insert(100, UserProfile::new(100, UserStatus::Active));
