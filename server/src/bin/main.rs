@@ -18,7 +18,7 @@ use tracing::info;
 // Sets up the entire Exchange Core application with all processors.
 pub fn init_exchange() -> (
     CoreEngine,
-    disruptor::SingleProducer<OrderCommand, disruptor::MultiConsumerBarrier>,
+    disruptor::MultiProducer<OrderCommand, disruptor::MultiConsumerBarrier>,
     Arc<SimpleEventsHandler>,
 ) {
     // Initialize the matching engine router with a default order book.
