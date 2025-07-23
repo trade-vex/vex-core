@@ -1,4 +1,4 @@
-use std::{ffi::CString, time::Duration, collections::HashSet};
+use std::{collections::HashSet, ffi::{CStr, CString}, time::Duration};
 use rand::seq::SliceRandom;
 use rusteron_client::{Aeron, AeronPublication, AeronSubscription, AeronCError, AeronAvailableImageLogger, AeronUnavailableImageLogger, Handler, AeronAvailableImageCallback, AeronUnavailableImageCallback, AeronReservedValueSupplierLogger};
 use rand::Rng;
@@ -6,36 +6,54 @@ use tracing::info;
 
 use crate::server::server::ServerError;
 
-pub fn new_publication(aeron: &Aeron, address: &str, port: u16, stream_id: i32) -> Result<AeronPublication, AeronCError> {
+#[inline]
+pub fn create_udp_endpoint_uri(address: &str, port: u16) -> CString {
     let endpoint = format!("{}:{}", address, port);
-    let uri = CString::new(format!("aeron:udp?endpoint={}", endpoint)).unwrap();
+    CString::new(format!("aeron:udp?endpoint={}", endpoint)).unwrap()
+}
+
+#[inline]
+pub fn create_mdc_control_uri(address: &str, port: u16) -> CString {
+    let control_endpoint = format!("{}:{}", address, port);
+    CString::new(format!("aeron:udp?control={}|control-mode=dynamic", control_endpoint)).unwrap()
+}
+
+#[inline]
+pub fn create_udp_endpoint_with_session_uri(address: &str, port: u16, session_id: i32) -> CString {
+    let endpoint = format!("{}:{}", address, port);
+    CString::new(format!("aeron:udp?endpoint={}|session-id={}", endpoint, session_id)).unwrap()
+}
+
+#[inline]
+pub fn create_mdc_control_with_session_uri(address: &str, port: u16, session_id: i32) -> CString {
+    let control_endpoint = format!("{}:{}", address, port);
+    CString::new(format!("aeron:udp?control={}|control-mode=dynamic|session-id={}", control_endpoint, session_id)).unwrap()
+}
+
+pub fn new_publication(aeron: &Aeron, address: &str, port: u16, stream_id: i32) -> Result<AeronPublication, AeronCError> {
+    let uri = create_udp_endpoint_uri(address, port);
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
 pub fn new_publication_with_mdc_and_session(aeron: &Aeron, address: &str, port: u16, stream_id: i32, session_id: i32) -> Result<AeronPublication, AeronCError> {
-    let control_endpoint = format!("{}:{}", address, port);
-    let uri = CString::new(format!("aeron:udp?control={}|control-mode=dynamic|session-id={}",control_endpoint, session_id)).unwrap();
+    let uri = create_mdc_control_with_session_uri(address, port, session_id);
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
 pub fn new_publication_with_mdc(aeron: &Aeron, address: &str, port: u16, stream_id: i32) -> Result<AeronPublication, AeronCError> {
     info!("server: new_publication_with_mdc: address: {}, port: {}, stream_id: {}", address, port, stream_id);
-    let control_endpoint = format!("{}:{}", address, port);
-    let uri = CString::new(format!("aeron:udp?control={}|control-mode=dynamic", control_endpoint)).unwrap();
+    let uri = create_mdc_control_uri(address, port);
     info!("server: new_publication_with_mdc: uri: {}", uri.to_string_lossy());
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
 pub fn new_publication_with_session(aeron: &Aeron, address: &str, port: u16, stream_id: i32, session_id: i32) -> Result<AeronPublication, AeronCError> {
-    let endpoint = format!("{}:{}", address, port);
-    let uri = CString::new(format!("aeron:udp?endpoint={}|session-id={}", endpoint, session_id)).unwrap();
+    let uri = create_udp_endpoint_with_session_uri(address, port, session_id);
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
 pub fn new_subscription_with_mdc(aeron: &Aeron, address: &str, port: u16, stream_id: i32) -> Result<AeronSubscription, AeronCError> {
-    let control_endpoint = format!("{}:{}", address, port);
-    info!("client: new_subsciption_with_mdc: control_endpoint: {}", control_endpoint);
-    let uri = CString::new(format!("aeron:udp?control={}|control-mode=dynamic", control_endpoint)).unwrap();
+    let uri = create_mdc_control_uri(address, port);
     info!("client: new_subsciption_with_mdc: uri: {}", uri.to_string_lossy());
     let available_logger = AeronAvailableImageLogger {};
     let available_handler = Handler::leak(available_logger);
@@ -45,8 +63,7 @@ pub fn new_subscription_with_mdc(aeron: &Aeron, address: &str, port: u16, stream
 }
 
 pub fn new_subscription_with_mdc_and_session(aeron: &Aeron, address: &str, port: u16, stream_id: i32, session_id: i32) -> Result<AeronSubscription, AeronCError> {
-    let control_endpoint = format!("{}:{}", address, port);
-    let uri = CString::new(format!("aeron:udp?control={}|control-mode=dynamic|session-id={}", control_endpoint, session_id)).unwrap();
+    let uri = create_mdc_control_with_session_uri(address, port, session_id);
     let available_logger = AeronAvailableImageLogger {};
     let available_handler = Handler::leak(available_logger);
     let unavailable_logger = AeronUnavailableImageLogger {};
@@ -55,17 +72,22 @@ pub fn new_subscription_with_mdc_and_session(aeron: &Aeron, address: &str, port:
 }
 
 pub fn new_subsciption_with_handlers_and_session<X: AeronAvailableImageCallback, Y: AeronUnavailableImageCallback>(aeron: &Aeron, address: &str, port: u16, stream_id: i32, session_id: i32, on_image_available: X, on_image_unavailable: Y) -> Result<AeronSubscription, AeronCError> {
-    let endpoint = format!("{}:{}", address, port);
-    let uri = CString::new(format!("aeron:udp?endpoint={}|session-id={}", endpoint, session_id)).unwrap();
+    let uri = create_udp_endpoint_with_session_uri(address, port, session_id);
     aeron.add_subscription(&uri, stream_id, Some(& Handler::leak(on_image_available)), Some(& Handler::leak(on_image_unavailable)), Duration::from_secs(1))
 }
 
 pub fn new_subscription_with_handlers<X: AeronAvailableImageCallback, Y: AeronUnavailableImageCallback>(aeron: &Aeron, address: &str, port: u16, stream_id: i32, on_image_available: X, on_image_unavailable: Y) -> Result<AeronSubscription, AeronCError> {
-    let endpoint = format!("{}:{}", address, port);
-    let uri = CString::new(format!("aeron:udp?endpoint={}", endpoint)).unwrap();
+    let uri = create_udp_endpoint_uri(address, port);
     aeron.add_subscription(&uri, stream_id, Some(& Handler::leak(on_image_available)), Some(& Handler::leak(on_image_unavailable)), Duration::from_secs(1))
 }
 
+pub fn new_publication_with_channel(aeron: &Aeron, channel: &CStr, stream_id: i32) -> Result<AeronPublication, AeronCError> {
+    aeron.add_publication(channel, stream_id, Duration::from_secs(1))
+}
+
+pub fn new_subscription_with_channel<X: AeronAvailableImageCallback, Y: AeronUnavailableImageCallback>(aeron: &Aeron, channel: &CStr, stream_id: i32, on_image_available: X, on_image_unavailable: Y) -> Result<AeronSubscription, AeronCError> {
+    aeron.add_subscription(channel, stream_id, Some(& Handler::leak(on_image_available)), Some(& Handler::leak(on_image_unavailable)), Duration::from_secs(1))
+}
 pub fn send_message(publication: &AeronPublication, buffer: &mut [u8], message: &str) -> Result<(), AeronCError> {
     let message_bytes = message.as_bytes();
     buffer[0..message_bytes.len()].copy_from_slice(message_bytes);
@@ -77,7 +99,7 @@ pub fn send_message(publication: &AeronPublication, buffer: &mut [u8], message: 
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PortAllocator {
     port_range: std::ops::RangeInclusive<u16>,
     ports_used: HashSet<u16>,
@@ -179,10 +201,9 @@ impl PortAllocator {
 /// This implementation uses storage proportional to the number of currently-allocated
 /// values. Allocation time is bounded by `max - min`, will be `O(1)` with no allocated
 /// values, and will increase to `O(n)` as the number of allocated values approaches `max - min`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SessionAllocator {
     used: HashSet<i32>,
-    random: rand::rngs::ThreadRng,
     min: i32,
     max_count: i32,
 }
@@ -206,7 +227,6 @@ impl SessionAllocator {
 
         Ok(Self {
             used: HashSet::new(),
-            random: rand::thread_rng(),
             min,
             max_count: std::cmp::max(max - min, 1),
         })
@@ -225,8 +245,9 @@ impl SessionAllocator {
         }
 
         // Try up to max_count times to find an unused session ID
+        let mut rng = rand::thread_rng();
         for _ in 0..self.max_count {
-            let session = self.random.gen_range(self.min..self.min + self.max_count);
+            let session = rng.gen_range(self.min..self.min + self.max_count);
             if !self.used.contains(&session) {
                 self.used.insert(session);
                 return Ok(session);

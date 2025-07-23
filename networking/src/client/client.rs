@@ -461,9 +461,8 @@ impl VexGateway {
             expected_gateway_id: self.config.gateway_id.clone(),
         };
         
-        let assembler = AeronFragmentAssembler::new(Some(&Handler::leak(fragment_handler)))?;
-        let handler = Handler::leak(assembler);
-
+        // let assembler = AeronFragmentAssembler::new(Some(&Handler::leak(fragment_handler)))?;
+        let handler = Handler::leak(fragment_handler);
         let start = Instant::now();
         while start.elapsed() < CONNECT_TIMEOUT {
             subscription.poll(Some(&handler), 10)?;

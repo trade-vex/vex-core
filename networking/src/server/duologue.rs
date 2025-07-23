@@ -1,13 +1,12 @@
 use std::{time::{Duration, SystemTime}};
 
-use rusteron_client::{Aeron, AeronAvailableImageCallback, AeronCError, AeronFragmentHandlerCallback, AeronHeader, AeronImage, AeronNotificationLogger, AeronPublication, AeronReservedValueSupplierLogger, AeronSubscription, AeronUnavailableImageCallback, Handler};
+use rusteron_client::{AeronAvailableImageCallback, AeronCError, AeronFragmentHandlerCallback, AeronHeader, AeronImage, AeronNotificationLogger, AeronPublication, AeronReservedValueSupplierLogger, AeronSubscription, AeronUnavailableImageCallback, Handler};
 use tracing::{debug, info, error};
-// use crate::server::handler::FragmentHandler;
-use crate::utils::{new_publication_with_mdc_and_session, new_subsciption_with_handlers_and_session};
 use common::cmd::{OrderCommand, encode_order_command, decode_order_command};
 
 pub const DUOLOGUE_STREAM_ID: i32 = 1002;
 
+#[derive(Clone)]
 pub struct FragmentHandler {
     pub publication: AeronPublication,
     pub gateway_id: String,
@@ -87,6 +86,7 @@ fn process_order_command(mut order_command: OrderCommand) -> OrderCommand {
     order_command
 }
 
+#[derive(Clone)]
 pub struct Duologue {
     pub fragment_handler: FragmentHandler,
     pub session_id: i32,
@@ -102,19 +102,12 @@ pub struct Duologue {
 }
 
 impl Duologue {
-    pub fn new(aeron: &Aeron,local: &str, gateway_id: &str, owner: &str, port_data: u16, port_control: u16, session_id: i32) -> Result<Self, AeronCError> {
+    pub fn new(gateway_id: &str, owner: &str, port_data: u16, port_control: u16, session_id: i32, publication: AeronPublication, subscription: AeronSubscription) -> Result<Self, AeronCError> {
         let buffer = [0; 2048];
         let expire_time = (SystemTime::now() + Duration::from_secs(10_00_000))
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-
-        let publication = new_publication_with_mdc_and_session(aeron, &local, port_control, DUOLOGUE_STREAM_ID, session_id)?;
-
-        let on_image_available = DuologueImageAvailable { owner: owner.to_string() };
-        let on_image_unavailable = DuologueImageUnavailable { owner: owner.to_string() };
-
-        let subscription = new_subsciption_with_handlers_and_session(aeron, &local, port_data, DUOLOGUE_STREAM_ID, session_id, on_image_available, on_image_unavailable)?;
 
         let fragment_handler = FragmentHandler {
             publication,

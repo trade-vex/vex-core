@@ -3,19 +3,23 @@ use std::{collections::HashMap, sync::RwLock};
 use std::time::SystemTime;
 
 use rusteron_client::{
-    Aeron, AeronCError, AeronContext, AeronFragmentHandlerCallback,
+    AeronCError, AeronFragmentHandlerCallback,
     AeronHeader, AeronImage, AeronPublication, AeronSubscription,
     Handler, AeronAvailableImageCallback, AeronUnavailableImageCallback,
 };
 use rusteron_media_driver::AeronIdleStrategy;
 use thiserror::Error;
-use tracing::{debug, error, info, warn, instrument};
+use tokio::sync::oneshot;
+use tokio::task::{spawn};
+use tokio::sync::mpsc::error::SendError;
+use tokio::sync::mpsc::{self, Receiver, Sender};
+use tracing::{debug, error, info, instrument};
 
-use crate::server::config::CoreConfig;
-use crate::server::duologue::Duologue;
+use crate::server::aeron::AeronActor;
+use crate::server::{aeron::AeronCommand, config::CoreConfig};
+use crate::server::duologue::{Duologue, DUOLOGUE_STREAM_ID, DuologueImageAvailable, DuologueImageUnavailable};
 use crate::utils::{
-    new_publication_with_mdc, new_subscription_with_handlers, send_message, 
-    PortAllocator, SessionAllocator
+    create_mdc_control_uri, create_mdc_control_with_session_uri, create_udp_endpoint_uri, create_udp_endpoint_with_session_uri, send_message, PortAllocator, SessionAllocator
 };
 
 /// Stream IDs for different communication channels
@@ -62,16 +66,21 @@ pub enum ServerError {
     GatewayNotFoundError(String),
     #[error("Configuration error: {0}")]
     ConfigurationError(String),
+    #[error("Error sending GatewayManagerCommand Tokio Error: {0}")]
+    SendCommandError(#[from] SendError<GatewayManagerCommand>),
+    #[error("Error sending AeronCommand Tokio Error: {0}")]
+    SendAeronCommandError(#[from] SendError<AeronCommand>),
+    #[error("Error receiving AeronCommand Tokio Error: {0}")]
+    ReceiveAeronCommandError(#[from] oneshot::error::RecvError),
 }
+
 
 /// Enhanced VEX Core server for handling gateway connections
 pub struct VexCoreServer {
-    /// Aeron instance for messaging
-    aeron: Arc<Aeron>,
     /// Core configuration
     config: CoreConfig,
     /// Gateway state management
-    gateways: Arc<RwLock<GatewayManager>>,
+    gateways: GatewayManager,
 }
 
 impl VexCoreServer {
@@ -84,79 +93,81 @@ impl VexCoreServer {
         if config.core_id.is_empty() {
             return Err(ServerError::ConfigurationError("Core ID cannot be empty".to_string()));
         }
-
-        // Initialize Aeron context
-        let ctx = AeronContext::new()?;
-        let context_dir = std::ffi::CString::new(config.context_dir.clone())?;
-        info!("VEX Core '{}' context_dir: {:?}", config.core_id, context_dir);
-        ctx.set_dir(&context_dir)?;
-        ctx.set_driver_timeout_ms(5_000)?;
-
-        // Create Aeron instance
-        let aeron = Aeron::new(&ctx)?;
-        aeron.start()?;
-        
-        info!("VEX Core '{}' initialized successfully", config.core_id);
-
-        let aeron = Arc::new(aeron);
-
+        info!("VEX Core '{}' initialized", config.core_id);
         Ok(Self {
-            aeron: Arc::clone(&aeron),
-            gateways: Arc::new(RwLock::new(GatewayManager::new(config.clone(), aeron)?)),
+            gateways: GatewayManager::new(config.clone())?,
             config,
         })
     }
 
     /// Starts the VEX Core server
     #[instrument(skip(self))]
-    pub fn start(&self) -> Result<(), ServerError> {
+    pub async fn start(&self) -> Result<(), ServerError> {
         info!("Starting VEX Core '{}'", self.config.core_id);
-        
-        // Create publication for sending responses to gateways
-        let publication = new_publication_with_mdc(
-            &self.aeron,
-            &self.config.local_address,
-            self.config.initial_control_port,
-            ALL_GATEWAYS_STREAM_ID,
-        )?;
 
-        // Create image handlers for gateway connection management
-        let image_available_handler = GatewayImageAvailableHandler {
-            gateways: self.gateways.clone(),
-        };
-        let image_unavailable_handler = GatewayImageUnavailableHandler {
-            gateways: self.gateways.clone(),
-        };
+        // let aeron_actor = AeronActor::new(self.config.clone())?;
+        let (aeron_tx, aeron_rx) = mpsc::channel(50);
+        let config = self.config.clone();
 
-        // Create subscription for receiving gateway handshakes
-        let subscription = new_subscription_with_handlers(
-            &self.aeron,
-            &self.config.local_address,
-            self.config.initial_port,
-            ALL_GATEWAYS_STREAM_ID,
-            image_available_handler,
-            image_unavailable_handler,
-        )?;
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async move {
+                let aeron_actor = AeronActor::new(config).unwrap();
+                if let Err(e) = aeron_actor.run(aeron_rx).await {
+                    error!("AeronActor failed: {}", e);
+                }
+            });
+        });
+        let (gateway_manager_tx, gateway_manager_rx) = mpsc::channel(100);
+        // Spawn the GatewayManager Actor in a dedicated thread
+        let gateways = self.gateways.clone();
 
         // Create handshake message handler
         let mut handshake_handler = HandshakeMessageHandler::new(
-            self.gateways.clone(),
-            publication,
+            gateway_manager_tx.clone(),
         );
+        let aeron_tx_s = aeron_tx.clone();
+        let _gateway_handle = spawn(async move {
+            info!("GatewayManager: Task starting");
+            match gateways.run(gateway_manager_rx, gateway_manager_tx, aeron_tx_s).await {
+                Ok(_) => info!("GatewayManager: Task completed successfully"),
+                Err(e) => error!("GatewayManager: Task failed with error: {}", e),
+            }
+        });
+        // Create image handlers for gateway connection management
+        let image_available_handler = GatewayImageAvailableHandler {
+            gateway_session_addresses: Arc::clone(&self.gateways.gateway_session_addresses),
+        };
+        let image_unavailable_handler = GatewayImageUnavailableHandler {
+            gateway_session_addresses: Arc::clone(&self.gateways.gateway_session_addresses),
+        };
 
+        // Create subscription for receiving gateway 
+        let (sub_tx, sub_rx) = oneshot::channel();
+        let channel = create_udp_endpoint_uri(
+            &self.config.local_address,
+            self.config.initial_port,
+        );
+        aeron_tx.send(AeronCommand::CreateAllGatewaySubscription {channel, stream_id: ALL_GATEWAYS_STREAM_ID, reply: sub_tx, image_available_handler, image_unavailable_handler }).await?;
+        let subscription = sub_rx.await??;
         info!("VEX Core '{}' started successfully", self.config.core_id);
 
         // Main event loop
-        loop {
-            // Process incoming handshake messages
-            subscription.poll(Some(&Handler::leak(&mut handshake_handler)), 10)?;
-            
-            // Poll all active gateway sessions
-            self.gateways.write().unwrap().poll()?;
-            
-            // Idle strategy
-            AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
-            }
+        tokio::task::spawn_blocking(move || {
+            loop {
+                // Process incoming handshake messages
+                subscription.poll(Some(&Handler::leak(&mut handshake_handler)), 10).unwrap();
+                // Idle strategy
+                AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
+                }
+            });
+        info!("VEX Core '{}' started successfully. Polling loop is running.", self.config.core_id);
+
+        // The `start` function can now complete, or you can await other futures,
+        // like a shutdown signal. For instance, to keep the server alive:
+        tokio::signal::ctrl_c().await.expect("failed to listen for ctrl-c");
+        info!("Shutdown signal received.");
+        Ok(())
     }
 
     /// Gets core configuration
@@ -166,34 +177,49 @@ impl VexCoreServer {
 
     /// Gets the number of connected gateways
     pub fn connected_gateway_count(&self) -> usize {
-        self.gateways.read().unwrap().gateway_sessions.len()
+        self.gateways.gateway_sessions.len()
     }
 
     /// Checks if a gateway is connected
     pub fn is_gateway_connected(&self, gateway_id: &str) -> bool {
-        self.gateways.read().unwrap().is_gateway_connected(gateway_id)
+        self.gateways.is_gateway_connected(gateway_id)
     }
 
     /// Gracefully shuts down the core
-    pub fn shutdown(&self) -> Result<(), ServerError> {
+    pub fn shutdown(&mut self) -> Result<(), ServerError> {
         info!("Shutting down VEX Core '{}'", self.config.core_id);
         
         // Close all gateway sessions
-        self.gateways.write().unwrap().shutdown_all_gateways()?;
+        self.gateways.shutdown_all_gateways()?;
         
         info!("VEX Core '{}' shut down successfully", self.config.core_id);
         Ok(())
     }
 }
 
+/// Commands that are sent to the GatewayManager Actor
+#[derive(Debug, Clone)]
+pub enum GatewayManagerCommand {
+    ProcessHandshake {
+        /// Session ID of the All Gateways Channel
+        session_id: i32,
+        /// Message from the gateway
+        message: String,
+    },
+    DisconnectGateway {
+        /// Dedicated session ID
+        session_id: i32
+    },
+    ShutdownAllGateways,
+}
+
 /// Manages all gateway connections and sessions
+#[derive(Clone)]
 struct GatewayManager {
     /// Map of session ID to gateway address
-    gateway_session_addresses: HashMap<i32, String>,
-    /// Map of session ID to gateway sessions
+    gateway_session_addresses: Arc<RwLock<HashMap<i32, String>>>,
+    /// Gateway sessions to Gateway IDs
     gateway_sessions: HashMap<i32, Duologue>,
-    /// Aeron instance reference
-    aeron: Arc<Aeron>,
     /// Core configuration
     config: CoreConfig,
     /// Message buffer for sending responses
@@ -207,11 +233,10 @@ struct GatewayManager {
 }
 
 impl GatewayManager {
-    fn new(config: CoreConfig, aeron: Arc<Aeron>) -> Result<Self, ServerError> {
+    fn new(config: CoreConfig) -> Result<Self, ServerError> {
         Ok(Self {
-            gateway_session_addresses: HashMap::new(),
+            gateway_session_addresses: Arc::new(RwLock::new(HashMap::new())),
             gateway_sessions: HashMap::new(),
-            aeron,
             port_allocator: PortAllocator::new(
                 config.base_gateway_port,
                 config.max_gateways.into(),
@@ -226,12 +251,60 @@ impl GatewayManager {
         })
     }
 
+    /// GatewayManager Actor
+    async fn run(mut self, mut gateway_manager_rx: Receiver<GatewayManagerCommand>, gateway_manager_tx: Sender<GatewayManagerCommand>, aeron_tx: Sender<AeronCommand>) -> Result<(), ServerError> {
+        info!("GatewayManager Actor started");
+        let (pub_tx, pub_rx) = oneshot::channel();
+        let _ = aeron_tx.send(AeronCommand::CreatePublication { channel: create_mdc_control_uri(&self.config.local_address, self.config.initial_control_port), stream_id: ALL_GATEWAYS_STREAM_ID, reply: pub_tx }).await?;
+        info!("GatewayManager: Waiting for CreatePublication reply...");
+        // Add detailed error handling here
+        match pub_rx.await {
+            Ok(Ok(publication)) => {
+                info!("GatewayManager created all gateways publication successfully");
+                while let Some(command) = gateway_manager_rx.recv().await {
+                    match command {
+                        GatewayManagerCommand::ProcessHandshake { session_id, message } => {
+                            info!("Processing handshake from session 0x{:x}: {}", session_id, message);
+                            self.process_handshake_message(
+                                session_id,
+                                &message,
+                                gateway_manager_tx.clone(),
+                                &publication,
+                                aeron_tx.clone(),
+                            ).await?;
+                        }
+                        GatewayManagerCommand::DisconnectGateway { session_id } => {
+                            info!("Disconnecting gateway session 0x{:x}", session_id);
+                            self.remove_gateway_session(session_id)?;
+                        }
+                        GatewayManagerCommand::ShutdownAllGateways => {
+                            info!("Shutting down all gateway sessions");
+                            self.shutdown_all_gateways()?;
+                        } 
+                    }
+                }
+                info!("GatewayManager: Message loop ended - no more commands");
+                Ok(())
+            }
+            Ok(Err(aeron_error)) => {
+                error!("GatewayManager failed to create publication: AeronCError: {}", aeron_error);
+                return Err(ServerError::AeronConnectionError(aeron_error));
+            }
+            Err(recv_error) => {
+                error!("GatewayManager failed to receive publication reply: {}", recv_error);
+                return Err(ServerError::ReceiveAeronCommandError(recv_error));
+            }
+        }
+    }
+
     /// Processes initial handshake message from a gateway
-    fn process_handshake_message(
+    async fn process_handshake_message(
         &mut self,
-        publication: &AeronPublication,
         session_id: i32,
         message: &str,
+        tx: Sender<GatewayManagerCommand>,
+        publication: &AeronPublication,
+        aeron_tx: Sender<AeronCommand>,
     ) -> Result<(), ServerError> {
         debug!("Processing handshake from session 0x{:x}: {}", session_id, message);
 
@@ -239,7 +312,7 @@ impl GatewayManager {
         let parts: Vec<&str> = message.split_whitespace().collect();
         if parts.len() != 3 || parts[0] != "HELLO" {
             let error_msg = format!("{} {} REJECT Malformed HELLO message", session_id, "unknown");
-            send_message(publication, &mut self.buffer, &error_msg)?;
+            send_message(&publication, &mut self.buffer, &error_msg)?;
             return Err(ServerError::InvalidGatewayMessage("Malformed HELLO message".to_string()));
         }
 
@@ -250,23 +323,23 @@ impl GatewayManager {
         // Validate gateway ID
         if gateway_id.is_empty() {
             let error_msg = format!("{} {} REJECT Empty gateway ID", session_id, gateway_id);
-            send_message(publication, &mut self.buffer, &error_msg)?;
+            send_message(&publication, &mut self.buffer, &error_msg)?;
             return Err(ServerError::InvalidGatewayMessage("Empty gateway ID".to_string()));
         }
 
         // Check if too many gateways are connected
         if self.gateway_sessions.len() >= self.config.max_gateways as usize {
             let error_msg = format!("{} {} REJECT Core capacity exceeded", session_id, gateway_id);
-            send_message(publication, &mut self.buffer, &error_msg)?;
+            send_message(&publication, &mut self.buffer, &error_msg)?;
             return Err(ServerError::CapacityExceededError("Too many gateways connected".to_string()));
         }
 
         // Check connection limits per address
-        if let Some(gateway_address) = self.gateway_session_addresses.get(&session_id) {
+        if let Some(gateway_address) = self.gateway_session_addresses.read().unwrap().get(&session_id) {
             let connection_count = self.address_connection_count.get(gateway_address).unwrap_or(&0);
             if *connection_count >= self.config.max_connections_per_address {
                 let error_msg = format!("{} {} REJECT Too many connections from address", session_id, gateway_id);
-                send_message(publication, &mut self.buffer, &error_msg)?;
+                send_message(&publication, &mut self.buffer, &error_msg)?;
                 return Err(ServerError::CapacityExceededError("Too many connections from this address".to_string()));
             }
         }
@@ -274,7 +347,7 @@ impl GatewayManager {
         // Check if gateway is already connected
         if self.is_gateway_connected(gateway_id) {
             let error_msg = format!("{} {} REJECT Gateway already connected", session_id, gateway_id);
-            send_message(publication, &mut self.buffer, &error_msg)?;
+            send_message(&publication, &mut self.buffer, &error_msg)?;
             return Err(ServerError::InvalidGatewayMessage("Gateway already connected".to_string()));
         }
 
@@ -282,17 +355,17 @@ impl GatewayManager {
         if self.config.enable_authentication {
             if let Err(e) = self.authenticate_gateway(gateway_id, &encryption_key.to_string()) {
                 let error_msg = format!("{} {} REJECT Authentication failed", session_id, gateway_id);
-                send_message(publication, &mut self.buffer, &error_msg)?;
+                send_message(&publication, &mut self.buffer, &error_msg)?;
                 return Err(e);
             }
         }
 
         // Allocate dedicated session for this gateway
-        let gateway_address = self.gateway_session_addresses.get(&session_id)
+        let gateway_address = self.gateway_session_addresses.read().unwrap().get(&session_id)
             .ok_or_else(|| ServerError::InvalidGatewayMessage("Gateway address not found".to_string()))?
             .clone();
 
-        let (dedicated_session, ports) = self.allocate_gateway_session(session_id, gateway_id, &gateway_address)?;
+        let (dedicated_session, ports) = self.allocate_gateway_session(session_id, gateway_id, &gateway_address, tx, aeron_tx).await?;
 
         // Encrypt the dedicated session ID
         let encrypted_session = encryption_key ^ dedicated_session;
@@ -302,7 +375,8 @@ impl GatewayManager {
             "{} {} ACCEPT {} {} {}",
             session_id, gateway_id, ports[0], ports[1], encrypted_session
         );
-        send_message(publication, &mut self.buffer, &accept_msg)?;
+        info!("Sending ACCEPT response to gateway: {}", accept_msg);
+        send_message(&publication, &mut self.buffer, &accept_msg)?;
 
         info!(
             "Gateway '{}' handshake successful. Dedicated session: 0x{:x}, ports: {} and {}",
@@ -313,11 +387,13 @@ impl GatewayManager {
     }
 
     /// Allocates a dedicated session for a gateway
-    fn allocate_gateway_session(
+    async fn allocate_gateway_session(
         &mut self,
         initial_session_id: i32,
         gateway_id: &str,
         gateway_address: &str,
+        tx: Sender<GatewayManagerCommand>,
+        aeron_tx: Sender<AeronCommand>,
     ) -> Result<(i32, [u16; 2]), ServerError> {
         // Increment connection count for this address
         let counter = self.address_connection_count.entry(gateway_address.to_string()).or_insert(0);
@@ -331,20 +407,34 @@ impl GatewayManager {
         let dedicated_session = self.session_allocator.allocate()
             .map_err(|e| ServerError::SessionAllocationError(e.to_string()))?;
 
+        let (pub_tx, pub_rx) = oneshot::channel();
+        aeron_tx.send(AeronCommand::CreatePublication { channel: create_mdc_control_with_session_uri(&self.config.local_address, ports[1], dedicated_session), stream_id: DUOLOGUE_STREAM_ID, reply: pub_tx }).await?;
+        let publication = pub_rx.await??;
+
+        let (sub_tx, sub_rx) = oneshot::channel();
+        let image_available_handler = DuologueImageAvailable { owner: gateway_address.to_string() };
+        let image_unavailable_handler = DuologueImageUnavailable { owner: gateway_address.to_string() };
+        aeron_tx.send(AeronCommand::CreateGatewaySubscription { channel: create_udp_endpoint_with_session_uri(&self.config.local_address, ports[0], dedicated_session), stream_id: DUOLOGUE_STREAM_ID, reply: sub_tx, image_available_handler, image_unavailable_handler }).await?;
+        let subscription = sub_rx.await??;
+
         // Create gateway session
-        let gateway_session = Duologue::new(
-            &self.aeron,
-            &self.config.local_address,
+        let duologue = Duologue::new(
             gateway_id,
             gateway_address,
             ports[0],
             ports[1],
             dedicated_session,
+            publication,
+            subscription,
         )?;
 
+        // Spawn a task to handle the gateway session
+        info!("{}: Gateway task started for session 0x{:x} from {}", duologue.gateway_id, dedicated_session, gateway_address);
+        spawn(gateway_task(duologue, tx.clone()));
+
         // Store the gateway session
-        self.gateway_sessions.insert(initial_session_id, gateway_session);
-        self.gateway_session_addresses.insert(initial_session_id, gateway_address.to_string());
+        // self.gateway_sessions.insert(initial_session_id, gateway_session);
+        self.gateway_session_addresses.write().unwrap().insert(initial_session_id, gateway_address.to_string());
 
         debug!(
             "Allocated dedicated session 0x{:x} for gateway '{}' with ports {} and {}",
@@ -371,45 +461,6 @@ impl GatewayManager {
         self.gateway_sessions.values().any(|session| session.gateway_id == gateway_id)
     }
 
-    /// Polls all active gateway sessions
-    fn poll(&mut self) -> Result<(), ServerError> {
-        let mut sessions_to_remove = Vec::new();
-
-        for (initial_session_id, gateway_session) in self.gateway_sessions.iter_mut() {
-            let mut should_remove = false;
-
-            // Check if session is expired
-            if gateway_session.is_expired() {
-                warn!("Gateway session 0x{:x} expired", initial_session_id);
-                should_remove = true;
-            }
-
-            // Check if session is closed
-            if gateway_session.is_closed() {
-                info!("Gateway session 0x{:x} closed", initial_session_id);
-                should_remove = true;
-            }
-
-            if should_remove {
-                sessions_to_remove.push(*initial_session_id);
-                continue;
-            }
-
-            // Poll the session for messages
-            if let Err(e) = gateway_session.poll() {
-                error!("Error polling gateway session 0x{:x}: {}", initial_session_id, e);
-                sessions_to_remove.push(*initial_session_id);
-            }
-        }
-
-        // Remove expired/closed sessions
-        for session_id in sessions_to_remove {
-            self.remove_gateway_session(session_id)?;
-        }
-
-        Ok(())
-    }
-
     /// Removes a gateway session and cleans up resources
     fn remove_gateway_session(&mut self, session_id: i32) -> Result<(), ServerError> {
         if let Some(mut gateway_session) = self.gateway_sessions.remove(&session_id) {
@@ -423,7 +474,7 @@ impl GatewayManager {
             self.port_allocator.free(gateway_session.port_control);
 
             // Decrement connection count for the address
-            if let Some(address) = self.gateway_session_addresses.remove(&session_id) {
+            if let Some(address) = self.gateway_session_addresses.write().unwrap().remove(&session_id) {
                 if let Some(count) = self.address_connection_count.get_mut(&address) {
                     *count = count.saturating_sub(1);
                     if *count == 0 {
@@ -449,20 +500,41 @@ impl GatewayManager {
     }
 }
 
+async fn gateway_task(mut duologue: Duologue, manager: Sender<GatewayManagerCommand>) -> Result<(), ServerError> {
+    let id = &duologue.gateway_id;
+    let dedicated_session_id = duologue.session_id;
+    loop {
+
+        if duologue.is_closed() {
+            info!("{}: Session 0x{:x} closed", id, dedicated_session_id);
+            break;
+        }
+
+        if duologue.is_expired() {
+            info!("{}: Session 0x{:x} expired", id, dedicated_session_id);
+            break;
+        }
+
+        duologue.poll()?;
+
+        AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
+    }
+    info!("{}: Gateway task stopped for session 0x{:x}", id, dedicated_session_id);
+    duologue.close()?;
+    manager.send(GatewayManagerCommand::DisconnectGateway { session_id: dedicated_session_id }).await?;
+    Ok(())
+}
 /// Handler for processing initial handshake messages from gateways
 struct HandshakeMessageHandler {
-    gateways: Arc<RwLock<GatewayManager>>,
-    publication: AeronPublication,
+    gateway_manager_tx: Sender<GatewayManagerCommand>,
 }
 
 impl HandshakeMessageHandler {
     fn new(
-        gateways: Arc<RwLock<GatewayManager>>,
-        publication: AeronPublication,
+        gateway_manager_tx: Sender<GatewayManagerCommand>,
     ) -> Self {
         Self {
-            gateways,
-            publication,
+            gateway_manager_tx,
         }
     }
 }
@@ -474,22 +546,28 @@ impl AeronFragmentHandlerCallback for &mut HandshakeMessageHandler {
         
         debug!("Received handshake message from session 0x{:x}: {}", session_id, message);
 
-        // Process the handshake message
-        let mut gateways = self.gateways.write().unwrap();
-        match gateways.process_handshake_message(&self.publication, session_id, &message) {
+        // Use blocking_send instead of try_send
+        let tx = self.gateway_manager_tx.clone();
+        let command = GatewayManagerCommand::ProcessHandshake { 
+            session_id, 
+            message: message.to_string() 
+        };
+        
+        // Spawn a task to send the command asynchronously
+        match tx.try_send(command) {
             Ok(_) => {
-                info!("Handshake message processed successfully");
+                info!("Handshake message sent to GatewayManager Actor");
             }
             Err(e) => {
-                error!("Error processing handshake message: {}", e);
+                error!("Error sending handshake message to GatewayManager Actor: {}", e);
             }
         }
     }
 }
 
 /// Handler for gateway image availability events
-struct GatewayImageAvailableHandler {
-    gateways: Arc<RwLock<GatewayManager>>,
+pub struct GatewayImageAvailableHandler {
+    gateway_session_addresses: Arc<RwLock<HashMap<i32, String>>>,
 }
 
 impl AeronAvailableImageCallback for GatewayImageAvailableHandler {
@@ -504,14 +582,14 @@ impl AeronAvailableImageCallback for GatewayImageAvailableHandler {
         
         debug!("Gateway image available for session 0x{:x} from {}", session_id, address);
         
-        let mut gateways = self.gateways.write().unwrap();
-        gateways.gateway_session_addresses.insert(session_id, address.to_string());
+        let mut gateway_session_addresses = self.gateway_session_addresses.write().unwrap();
+        gateway_session_addresses.insert(session_id, address.to_string());
     }
 }
 
 /// Handler for gateway image unavailability events
-struct GatewayImageUnavailableHandler {
-    gateways: Arc<RwLock<GatewayManager>>,
+pub struct GatewayImageUnavailableHandler {
+    gateway_session_addresses: Arc<RwLock<HashMap<i32, String>>>,
 }
 
 impl AeronUnavailableImageCallback for GatewayImageUnavailableHandler {
@@ -526,8 +604,8 @@ impl AeronUnavailableImageCallback for GatewayImageUnavailableHandler {
         
         debug!("Gateway image unavailable for session 0x{:x} from {}", session_id, address);
         
-        let mut gateways = self.gateways.write().unwrap();
-        gateways.gateway_session_addresses.remove(&session_id);
+        let mut gateway_session_addresses = self.gateway_session_addresses.write().unwrap();
+        gateway_session_addresses.remove(&session_id);
     }
 }
 
