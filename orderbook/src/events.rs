@@ -2,7 +2,6 @@
 use crate::OrderCommand;
 use common::cmd::MatcherTradeEvent;
 use common::model::enums::{MatcherEventType, OrderAction};
-use common::model::order::OrderTrait;
 use common::model::symbol_specification::CoreSymbolSpecification;
 
 pub struct EventHelper;
@@ -13,9 +12,12 @@ impl EventHelper {
     pub fn attach_reject_event(cmd: &mut OrderCommand, rejected_size: i64) {
         let reject_event = MatcherTradeEvent {
             event_type: MatcherEventType::Reject,
+            symbol: cmd.symbol,
+            active_order_uid: cmd.uid,
+            taker_action: cmd.action,
             active_order_completed: true, // A reject always finalizes the active order
             matched_order_id: 0,          // No matched order for a reject
-            matched_order_uid: 0,
+            maker_uid: 0,
             matched_order_completed: false,
             price: cmd.price,
             size: rejected_size,
@@ -27,7 +29,7 @@ impl EventHelper {
     /// Creates and attaches a REDUCE event to the command.
     /// This is used when an order is cancelled or reduced in size.
     pub fn send_reduce_event(
-        order: &dyn OrderTrait,
+        cmd: &OrderCommand,
         reduced_size: i64,
         is_cancel: bool,
     ) -> Box<MatcherTradeEvent> {
@@ -37,10 +39,13 @@ impl EventHelper {
             } else {
                 MatcherEventType::Reduce
             },
+            symbol: cmd.symbol,
+            active_order_uid: cmd.uid,
+            taker_action: cmd.action,
             active_order_completed: is_cancel,
-            matched_order_id: order.order_id(),
-            matched_order_uid: order.uid(),
-            price: order.price(),
+            matched_order_id: cmd.order_id,
+            maker_uid: cmd.uid,
+            price: cmd.price,
             size: reduced_size,
             ..MatcherTradeEvent::default()
         })
@@ -49,7 +54,7 @@ impl EventHelper {
     pub fn create_trade_event(
         active_order_cmd: &OrderCommand,
         matched_order_id: i64,
-        matched_order_uid: i64,
+        maker_uid: i64,
         maker_filled: bool,
         price: i64,
         size: i64,
@@ -57,10 +62,13 @@ impl EventHelper {
     ) -> Box<MatcherTradeEvent> {
         Box::new(MatcherTradeEvent {
             event_type: MatcherEventType::Trade,
+            symbol: active_order_cmd.symbol,
+            active_order_uid: active_order_cmd.uid,
+            taker_action: active_order_cmd.action,
             section: 0,                                            // TODO
             active_order_completed: active_order_cmd.size == size, // Simplified
             matched_order_id,
-            matched_order_uid,
+            maker_uid,
             matched_order_completed: maker_filled,
             price,
             size,
@@ -82,11 +90,14 @@ impl EventHelper {
         placed_size: i64,
     ) -> Box<MatcherTradeEvent> {
         Box::new(MatcherTradeEvent {
-            event_type: MatcherEventType::Reduce, // Using Reduce type for order placement
+            event_type: MatcherEventType::OrderPlaced, // Using OrderPlaced type for order placement
+            symbol: cmd.symbol,
+            active_order_uid: cmd.uid,
+            taker_action: cmd.action,
             section: 0,
             active_order_completed: false, // Order is placed, not completed
             matched_order_id: cmd.order_id,
-            matched_order_uid: cmd.uid,
+            maker_uid: cmd.uid,
             matched_order_completed: false,
             price: cmd.price,
             size: placed_size,
