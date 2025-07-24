@@ -75,29 +75,38 @@ impl UserProfile {
     /// Settles a trade, adjusting balances and positions.
     pub fn settle_trade(
         &mut self,
-        symbol: i32,
-        trade_price: i64,
-        trade_size: i64,
-        taker_action: OrderAction,
+        spec: &CoreSymbolSpecification,
+        price: i64,
+        size: i64,
+        action: OrderAction,
     ) {
-        if let Some(position) = self.positions.get_mut(&symbol) {
-            let (amount, currency) = if taker_action == OrderAction::Bid {
-                // Taker is buying, so this user is selling (Ask)
-                // Release held base currency, receive quote currency
-                position.release(trade_size, OrderAction::Ask);
-                (trade_price * trade_size, position.quote_currency)
-            } else {
-                // Taker is selling, so this user is buying (Bid)
-                // Release held quote currency, receive base currency
-                position.release(trade_price * trade_size, OrderAction::Bid);
-                (trade_size, position.base_currency)
-            };
+        let base_currency = spec.base_currency;
+        let quote_currency = spec.quote_currency;
+        let trade_amount = price * size;
 
-            if let Some(balance) = self.accounts.get_mut(&currency) {
-                *balance += amount;
+        match action {
+            OrderAction::Bid => { // User is a BUYER
+                // The quote currency was already debited by `hold_funds`.
+                // We only need to credit the base currency they received.
+                *self.accounts.entry(base_currency).or_insert(0) += size;
             }
+            OrderAction::Ask => { // User is a SELLER
+                // Credit the quote currency account for the sale.
+                *self.accounts.entry(quote_currency).or_insert(0) += trade_amount;
+                // The base currency was already debited by `hold_funds`.
+            }
+        }
 
-            position.add_trade(trade_price, trade_size, taker_action);
+        // Finally, update the position to clear the held funds for this trade.
+        if let Some(position) = self.positions.get_mut(&spec.symbol_id) {
+            // Pass the correct amount to settle based on the action.
+            // For a BID, the held amount was the trade value (quote currency).
+            // For an ASK, the held amount was the trade size (base currency).
+            let amount_to_settle = match action {
+                OrderAction::Bid => trade_amount,
+                OrderAction::Ask => size,
+            };
+            position.settle(amount_to_settle, action);
         }
     }
 }

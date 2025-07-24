@@ -41,10 +41,17 @@ impl SymbolPositionRecord {
     }
 
     pub fn release(&mut self, amount: i64, action: OrderAction) {
-        if action == OrderAction::Bid {
-            self.pending_buy_size -= amount;
-        } else {
-            self.pending_sell_size -= amount;
+        match action {
+            OrderAction::Bid => self.pending_buy_size -= amount,
+            OrderAction::Ask => self.pending_sell_size -= amount,
+        }
+    }
+
+    /// Settles a trade by reducing the held amount.
+    pub fn settle(&mut self, amount: i64, action: OrderAction) {
+        match action {
+            OrderAction::Bid => self.pending_buy_size -= amount,
+            OrderAction::Ask => self.pending_sell_size -= amount,
         }
     }
 

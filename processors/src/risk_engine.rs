@@ -92,20 +92,13 @@ impl RiskEngine {
     /// Handles events coming from the matching engine to settle funds.
     /// This is a final stage(excali-8a) in the pipeline for events that have financial impact.
     pub fn handle_event(&mut self, event: &MatcherTradeEvent) {
-        // 1. Look at `event.event_type`.
-        // 2. If it's a TRADE, find the buyer and seller profiles and settle funds.
-        // 3. If it's a REDUCE/CANCEL, find the user and release the held funds.
-        info!(
-            "[RiskEngine] Handling settlement for event: {:?}",
-            event.event_type
-        );
-
         match event.event_type {
             MatcherEventType::Trade => {
-                // Find maker and taker profiles
+                let spec = self.symbol_specs.get(&event.symbol).unwrap();
+
                 if let Some(maker_profile) = self.user_profiles.get_mut(&event.maker_uid) {
                     maker_profile.settle_trade(
-                        event.symbol,
+                        spec,
                         event.price,
                         event.size,
                         if event.taker_action == OrderAction::Ask {
@@ -117,7 +110,7 @@ impl RiskEngine {
                 }
                 if let Some(taker_profile) = self.user_profiles.get_mut(&event.active_order_uid) {
                     taker_profile.settle_trade(
-                        event.symbol,
+                        spec,
                         event.price,
                         event.size,
                         event.taker_action,
