@@ -27,17 +27,24 @@ pub fn init_exchange() -> (
 
     // Create a symbol specification for the risk engine.
     let mut symbol_specs = HashMap::new();
-    symbol_specs.insert(0, CoreSymbolSpecification::default());
+    // : Use distinct base and quote currencies for a realistic test
+    let mut spec = CoreSymbolSpecification::default();
+    spec.base_currency = 1;  // e.g., BTC
+    spec.quote_currency = 2; // e.g., USD
+    symbol_specs.insert(0, spec);
 
     // Create a risk engine with a user profile(say 100 here)
     let mut risk_engine = RiskEngine::new(symbol_specs);
-    let mut user_profile = UserProfile::new(100, UserStatus::Active);
-    // Deposit funds for the user to be able to place an ASK order
-    // The default symbol spec has base currency 0, so we deposit into that account.
-    user_profile.accounts.insert(0, 1_000_000); 
-    risk_engine
-        .user_profiles
-        .insert(100, user_profile);
+
+    // : Fund the seller (user 100) with base currency (1)
+    let mut user_profile_100 = UserProfile::new(100, UserStatus::Active);
+    user_profile_100.accounts.insert(1, 1_000_000); 
+    risk_engine.user_profiles.insert(100, user_profile_100);
+
+    // : Fund the buyer (user 101) with quote currency (2)
+    let mut user_profile_101 = UserProfile::new(101, UserStatus::Active);
+    user_profile_101.accounts.insert(2, 1_000_000);
+    risk_engine.user_profiles.insert(101, user_profile_101);
 
     // Initialize the journaling processor to log commands and events.
     let journaling_processor = JournalingProcessor::new();
@@ -115,30 +122,81 @@ async fn main() {
 
     // Check events
     info!("\n--- Asserting events received by handler ---");
-    let received_events = handler.events.lock().unwrap();
-    assert!(
-        received_events.len() >= 4,
-        "Should have received at least four events"
-    );
+    { // : Add an inner scope to release the lock
+        let received_events = handler.events.lock().unwrap();
+        assert!(
+            received_events.len() >= 4,
+            "Should have received at least four events"
+        );
 
-    // Detailed assertions for event types
-    let mut has_reduce = false;
-    let mut has_cancel = false;
-    let mut _has_move = false;
-    for event in received_events.iter() {
-        match format!("{:?}", event) {
-            s if s.contains("Reduce") => has_reduce = true,
-            s if s.contains("Cancel") => has_cancel = true,
-            s if s.contains("Move") => _has_move = true,
-            _ => {}
+        // Detailed assertions for event types
+        let mut has_reduce = false;
+        let mut has_cancel = false;
+        let mut _has_move = false;
+        for event in received_events.iter() {
+            match format!("{:?}", event) {
+                s if s.contains("Reduce") => has_reduce = true,
+                s if s.contains("Cancel") => has_cancel = true,
+                s if s.contains("Move") => _has_move = true,
+                _ => {}
+            }
         }
-    }
-    assert!(has_reduce, "Should have at least one Reduce event");
-    assert!(has_cancel, "Should have at least one Cancel event");
+        assert!(has_reduce, "Should have at least one Reduce event");
+        assert!(has_cancel, "Should have at least one Cancel event");
+    } // : The lock on handler.events is released here as `received_events` goes out of scope.
 
     // --- User balance assertion ---
-    let balance = core.get_user_balance(100, 0).unwrap();
-    println!("User 100 balance in currency 0: {}", balance);
+    // : Check for the correct currency (1 for the seller)
+    let balance = core.get_user_balance(100, 1).unwrap();
+    println!("User 100 balance in currency 1: {}", balance);
+
+    // --- Matching test: Place matching ASK and BID orders ---
+    // Use a price that is guaranteed to be the best available to ensure the correct orders match.
+    let mut ask_cmd = OrderCommand::new_order(
+        common::model::enums::OrderType::Gtc,
+        10, // order_id
+        100, // uid
+        9620, // price (better than the existing order at 9629)
+        0, // reserve_bid_price
+        5, // size
+        common::model::enums::OrderAction::Ask,
+    );
+    ask_cmd.symbol = 0;
+    producer.publish(|e| *e = ask_cmd.clone());
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let mut bid_cmd = OrderCommand::new_order(
+        common::model::enums::OrderType::Gtc,
+        11, // order_id
+        101, // uid (different user)
+        9620, // price (matches the new ASK)
+        0,
+        5,
+        common::model::enums::OrderAction::Bid,
+    );
+    bid_cmd.symbol = 0;
+    producer.publish(|e| *e = bid_cmd.clone());
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // --- Assert trade event and filled quantities ---
+    let received_events = handler.events.lock().unwrap();
+    let mut has_trade = false;
+    for event in received_events.iter() {
+        if format!("{:?}", event).contains("Trade") {
+            has_trade = true;
+            println!("Trade event: {:?}", event);
+        }
+    }
+    assert!(has_trade, "Should have at least one Trade event");
+
+    // --- Assert user balances updated ---
+    // Check for the correct currencies (1 and 2) after the trade
+    let ask_user_base_balance = core.get_user_balance(100, 1).unwrap();
+    let ask_user_quote_balance = core.get_user_balance(100, 2).unwrap();
+    let bid_user_base_balance = core.get_user_balance(101, 1).unwrap();
+    let bid_user_quote_balance = core.get_user_balance(101, 2).unwrap();
+    println!("User 100 (ASK) balances: base={}, quote={}", ask_user_base_balance, ask_user_quote_balance);
+    println!("User 101 (BID) balances: base={}, quote={}", bid_user_base_balance, bid_user_quote_balance);
 
     core.run().await;
 }
