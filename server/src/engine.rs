@@ -12,6 +12,7 @@ pub struct CoreEngine {
     // Store the producer in an Option so it can be taken out for returning
     _producer: Option<MultiProducer<OrderCommand, MultiConsumerBarrier>>,
     risk_engine: Arc<std::sync::Mutex<RiskEngine>>, // <-- Add this line
+    matching_engine_router: Arc<std::sync::Mutex<MatchingEngineRouter>>, // <-- Add this line
 }
 
 impl CoreEngine {
@@ -96,6 +97,7 @@ impl CoreEngine {
         let mut engine = Self {
             _producer: Some(producer),
             risk_engine: risk_engine_arc.clone(), // <-- Store the Arc here
+            matching_engine_router: matching_engine_arc.clone(), // <-- Add this line
         };
 
         let producer = engine._producer.take().unwrap();
@@ -112,5 +114,18 @@ impl CoreEngine {
         let risk_engine = self.risk_engine.lock().unwrap();
         risk_engine.user_profiles.get(&(uid as i64))
             .and_then(|profile| profile.accounts.get(&currency).copied())
+    }
+
+    /// Returns the filled quantity for the given order_id, searching all order books.
+    pub fn get_order_filled(&self, order_id: i64) -> Option<i64> {
+        // Assuming you have access to the matching_engine_router
+        // and it is wrapped in Arc<Mutex<...>>
+        let matching_engine = self.matching_engine_router.lock().unwrap();
+        for order_book in matching_engine.order_books.values() {
+            if let Some(order) = order_book.get_order_by_id(order_id) {
+                return Some(order.filled());
+            }
+        }
+        None
     }
 }

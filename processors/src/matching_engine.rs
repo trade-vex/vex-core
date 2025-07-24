@@ -8,7 +8,7 @@ use tracing::{info, warn};
 /// Owns all order books and routes commands to the correct one.
 /// This is the Rust equivalent of `MatchingEngineRouter.java`.
 pub struct MatchingEngineRouter {
-    order_books: HashMap<i32, Box<dyn OrderBook<'static> + Send>>,
+    pub order_books: HashMap<i32, Box<dyn OrderBook<'static> + Send>>,
 }
 
 impl MatchingEngineRouter {
