@@ -1,16 +1,43 @@
-use common::cmd::{OrderCommand, OrderCommandType};
+use common::cmd::{decode_order_command, OrderCommand, OrderCommandType};
 use common::model::enums::{OrderAction, OrderType};
 use networking::client::config::GatewayConfig;
 use networking::client::{VexGateway, GatewayError};
 use networking::server::config::CoreConfig;
 use networking::server::server::VexCoreServer;
-use rusteron_client::find_unused_udp_port;
-use tracing::info;
+use rusteron_client::{find_unused_udp_port, AeronFragmentHandlerCallback, AeronHeader};
+use tracing::{info, error};
 use std::time::Duration;
 use std::{
     net::SocketAddr,
     thread,
 };
+
+/// Fragment handler for processing OrderCommand messages from core
+struct OrderCommandHandler {
+    gateway_id: String,
+}
+
+impl AeronFragmentHandlerCallback for OrderCommandHandler {
+    fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], _header: AeronHeader) {
+        // Deserialize OrderCommand
+        match decode_order_command(buffer) {
+            Ok(order_command) => {
+                info!(
+                    "Gateway {}: Received OrderCommand: {:?}",
+                    self.gateway_id, order_command
+                );
+                // Call the callback to handle the order command
+                // (self.callback)(order_command);
+            }
+            Err(e) => {
+                error!(
+                    "Gateway {}: Failed to decode OrderCommand: {:?}",
+                    self.gateway_id, e
+                );
+            }
+        }
+    }
+}
 
 /// Helper to create test addresses
 fn create_test_addresses() -> (SocketAddr, SocketAddr) {
@@ -52,8 +79,12 @@ fn test_client_server_communication() {
         };
         info!("client_config: {:?}", client_config);
         let mut client = VexGateway::new(client_config)?;
+
+        let handler = OrderCommandHandler {
+            gateway_id: client.gateway_id().to_string(),
+        };
         
-        match client.start() {
+        match client.start(handler) {
             Ok(()) => println!("Client run() completed successfully"),
             Err(e) => println!("Client run() error: {e}"),
         }

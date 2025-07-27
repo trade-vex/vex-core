@@ -1,14 +1,14 @@
 use rand;
 use rusteron_client::{
     Aeron, AeronCError, AeronContext, AeronFragmentAssembler, AeronFragmentHandlerCallback,
-    AeronHeader, AeronReservedValueSupplierLogger, Handler,
+    AeronHeader, AeronPublication, AeronReservedValueSupplierLogger, AeronSubscription, Handler,
 };
 use rusteron_media_driver::AeronIdleStrategy;
 use std::ffi::CString;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use thiserror::Error;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, warn};
 // use serde::{Deserialize, Serialize};
 
 use crate::client::config::GatewayConfig;
@@ -16,7 +16,7 @@ use crate::utils::{
     new_publication, new_publication_with_session, new_subscription_with_mdc,
     new_subscription_with_mdc_and_session,
 };
-use common::cmd::{OrderCommand, decode_order_command, encode_order_command};
+use common::cmd::{OrderCommand, encode_order_command};
 
 // Constants for stream identification and timeouts
 const ALL_GATEWAYS_STREAM_ID: i32 = 1001;
@@ -53,17 +53,6 @@ pub enum GatewayState {
     Connected,
     Authenticated,
     Error(String),
-}
-
-/// Statistics for monitoring gateway performance
-#[derive(Debug, Default, Clone)]
-pub struct GatewayStats {
-    pub messages_sent: u64,
-    pub messages_received: u64,
-    pub connection_attempts: u64,
-    pub last_heartbeat: Option<SystemTime>,
-    pub uptime_start: Option<SystemTime>,
-    pub errors: u64,
 }
 
 /// Parses a VEX Core response message
@@ -174,44 +163,6 @@ impl AeronFragmentHandlerCallback for HandshakeResponseHandler {
     }
 }
 
-/// Fragment handler for processing OrderCommand messages from core
-struct OrderCommandHandler {
-    gateway_id: String,
-    stats: Arc<RwLock<GatewayStats>>,
-}
-
-impl AeronFragmentHandlerCallback for OrderCommandHandler {
-    fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], _header: AeronHeader) {
-        // debug!("Gateway {}: Received OrderCommand from core", self.gateway_id);
-
-        // Update statistics
-        {
-            let mut stats = self.stats.write().unwrap();
-            stats.messages_received += 1;
-        }
-
-        // Deserialize OrderCommand
-        match decode_order_command(buffer) {
-            Ok(order_command) => {
-                info!(
-                    "Gateway {}: Received OrderCommand: {:?}",
-                    self.gateway_id, order_command
-                );
-                // Call the callback to handle the order command
-                // (self.callback)(order_command);
-            }
-            Err(e) => {
-                error!(
-                    "Gateway {}: Failed to decode OrderCommand: {:?}",
-                    self.gateway_id, e
-                );
-                let mut stats = self.stats.write().unwrap();
-                stats.errors += 1;
-            }
-        }
-    }
-}
-
 /// Custom error types for VEX Gateway
 #[derive(Error, Debug)]
 pub enum GatewayError {
@@ -233,28 +184,26 @@ pub enum GatewayError {
     NotAuthenticated,
     #[error("Invalid gateway state: expected {expected}, got {actual}")]
     InvalidState { expected: String, actual: String },
+    #[error("Vex Core Not Started")]
+    VexCoreNotStarted,
 }
 
 /// Enhanced VEX Gateway for connecting to VEX Core
 pub struct VexGateway {
     /// Aeron instance for messaging
-    aeron: Arc<Aeron>,
+    aeron: Aeron,
     /// Gateway configuration
     config: GatewayConfig,
     /// Current gateway state
     state: Arc<RwLock<GatewayState>>,
     /// Message buffer for sending
     buffer: Vec<u8>,
-    /// Gateway statistics
-    stats: Arc<RwLock<GatewayStats>>,
     /// Dedicated session ID for this gateway
     session_id: Option<i32>,
     /// One-time encryption key for session establishment
     encryption_key: Option<i32>,
     /// Publication for sending to core (stored after handshake)
-    core_publication: Arc<RwLock<Option<rusteron_client::AeronPublication>>>,
-    /// Subscription for receiving from core (stored after handshake)
-    core_subscription: Arc<RwLock<Option<rusteron_client::AeronSubscription>>>,
+    core_publication: Option<AeronPublication>,
 }
 
 impl VexGateway {
@@ -287,27 +236,22 @@ impl VexGateway {
             config.gateway_id
         );
 
-        let stats = GatewayStats {
-            uptime_start: Some(SystemTime::now()),
-            ..Default::default()
-        };
-
         Ok(Self {
-            aeron: Arc::new(aeron),
+            aeron,
             config,
             state: Arc::new(RwLock::new(GatewayState::Disconnected)),
             buffer: vec![0u8; 2048], // Default buffer size
-            stats: Arc::new(RwLock::new(stats)),
             session_id: None,
             encryption_key: None,
-            core_publication: Arc::new(RwLock::new(None)),
-            core_subscription: Arc::new(RwLock::new(None)),
+            core_publication: None,
         })
     }
 
     /// Starts the gateway and establishes connection to VEX Core
-    #[instrument(skip(self))]
-    pub fn start(&mut self) -> Result<(), GatewayError> {
+    pub fn start<AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback>(
+        &mut self,
+        handler: AeronFragmentHandlerHandlerImpl,
+    ) -> Result<(), GatewayError> {
         info!("Starting VEX Gateway '{}'", self.config.gateway_id);
 
         // Update state to connecting
@@ -322,7 +266,12 @@ impl VexGateway {
         );
 
         // Phase 2: Establish dedicated communication channel
-        self.establish_dedicated_channel(dedicated_port, dedicated_control_port, session_id)?;
+        self.establish_dedicated_channel(
+            dedicated_port,
+            dedicated_control_port,
+            session_id,
+            handler,
+        )?;
 
         // Update state to authenticated
         *self.state.write().unwrap() = GatewayState::Authenticated;
@@ -399,11 +348,14 @@ impl VexGateway {
     }
 
     /// Establishes dedicated communication channel with VEX Core
-    fn establish_dedicated_channel(
+    fn establish_dedicated_channel<
+        AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback,
+    >(
         &mut self,
         port: u16,
         control_port: u16,
         session_id: i32,
+        handler: AeronFragmentHandlerHandlerImpl,
     ) -> Result<(), GatewayError> {
         info!(
             "Gateway '{}': Establishing dedicated channel with session ID: {}",
@@ -428,12 +380,11 @@ impl VexGateway {
             session_id,
         )?;
 
+        // Store publication for further sending Order Command
+        self.core_publication = Some(publication.clone());
+
         // Wait for connections
         self.wait_for_channel_connections(&publication, &subscription)?;
-
-        // Store publication and subscription for later use
-        *self.core_publication.write().unwrap() = Some(publication);
-        *self.core_subscription.write().unwrap() = Some(subscription);
 
         info!(
             "Gateway '{}': Successfully established dedicated channel",
@@ -444,31 +395,19 @@ impl VexGateway {
         *self.state.write().unwrap() = GatewayState::Connected;
 
         // Start polling for messages in a separate thread
-        self.start_message_polling()
+        self.start_message_polling(subscription, handler)
     }
 
     /// Starts polling for incoming messages in a separate thread
-    fn start_message_polling(&self) -> Result<(), GatewayError> {
-        let subscription = self
-            .core_subscription
-            .read()
-            .unwrap()
-            .clone()
-            .ok_or_else(|| GatewayError::InvalidState {
-                expected: "Subscription available".to_string(),
-                actual: "No subscription".to_string(),
-            })?;
-
-        let fragment_handler = OrderCommandHandler {
-            gateway_id: self.config.gateway_id.clone(),
-            stats: self.stats.clone(),
-        };
-
-        let assembler = AeronFragmentAssembler::new(Some(&Handler::leak(fragment_handler)))?;
-        let handler = Handler::leak(assembler);
-
+    fn start_message_polling<AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback>(
+        &self,
+        subscription: AeronSubscription,
+        handler: AeronFragmentHandlerHandlerImpl,
+    ) -> Result<(), GatewayError> {
         // Start polling thread
         let gateway_id = self.config.gateway_id.clone();
+        let fragment_assembler = AeronFragmentAssembler::new(Some(&Handler::leak(handler)))?;
+        let handler = Handler::leak(fragment_assembler);
         std::thread::spawn(move || {
             info!("Gateway '{}': Started message polling thread", gateway_id);
             loop {
@@ -582,9 +521,6 @@ impl VexGateway {
                 .offer::<AeronReservedValueSupplierLogger>(&self.buffer[..value.len()], None);
 
             if result >= 0 {
-                // Update statistics
-                let mut stats = self.stats.write().unwrap();
-                stats.messages_sent += 1;
                 return Ok(());
             }
 
@@ -592,10 +528,6 @@ impl VexGateway {
             let delay = MESSAGE_RETRY_DELAY * (2_u32.pow(attempt as u32));
             std::thread::sleep(delay);
         }
-
-        // Update error statistics
-        let mut stats = self.stats.write().unwrap();
-        stats.errors += 1;
 
         Err(GatewayError::SendError(format!(
             "Failed to send message after {MESSAGE_RETRY_COUNT} attempts",
@@ -605,11 +537,6 @@ impl VexGateway {
     /// Gets current gateway state
     pub fn state(&self) -> GatewayState {
         self.state.read().unwrap().clone()
-    }
-
-    /// Gets gateway statistics
-    pub fn stats(&self) -> GatewayStats {
-        self.stats.read().unwrap().clone()
     }
 
     /// Gets gateway configuration
@@ -648,13 +575,8 @@ impl VexGateway {
 
         let publication = self
             .core_publication
-            .read()
-            .unwrap()
-            .clone()
-            .ok_or_else(|| GatewayError::InvalidState {
-                expected: "Publication available".to_string(),
-                actual: "No publication".to_string(),
-            })?;
+            .as_ref()
+            .ok_or_else(|| GatewayError::VexCoreNotStarted)?;
 
         // Serialize OrderCommand
         let mut buffer = vec![0u8; self.config.max_message_size];
@@ -676,9 +598,6 @@ impl VexGateway {
             let result = publication.offer::<AeronReservedValueSupplierLogger>(&buffer, None);
 
             if result >= 0 {
-                // Update statistics
-                let mut stats = self.stats.write().unwrap();
-                stats.messages_sent += 1;
                 return Ok(());
             }
 
@@ -687,13 +606,14 @@ impl VexGateway {
             std::thread::sleep(delay);
         }
 
-        // Update error statistics
-        let mut stats = self.stats.write().unwrap();
-        stats.errors += 1;
-
         Err(GatewayError::SendError(format!(
             "Failed to send OrderCommand after {MESSAGE_RETRY_COUNT} attempts",
         )))
+    }
+
+    /// get gateway ID
+    pub fn gateway_id(&self) -> &str {
+        &self.config.gateway_id
     }
 }
 
