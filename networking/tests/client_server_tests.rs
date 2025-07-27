@@ -6,6 +6,7 @@ use networking::server::config::CoreConfig;
 use networking::server::server::VexCoreServer;
 use rusteron_client::find_unused_udp_port;
 use tracing::info;
+use std::time::Duration;
 use std::{
     net::SocketAddr,
     thread,
@@ -74,7 +75,7 @@ fn test_client_server_communication() {
         for i in 0..10 {
             order_command.order_id = i;
             client.send_order_command(&order_command)?;
-            // std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(10));
         }
         Ok(())
     });
