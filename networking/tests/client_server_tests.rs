@@ -6,7 +6,6 @@ use networking::server::config::CoreConfig;
 use networking::server::server::VexCoreServer;
 use rusteron_client::find_unused_udp_port;
 use tracing::info;
-use std::time::Duration;
 use std::{
     net::SocketAddr,
     thread,
@@ -17,8 +16,8 @@ fn create_test_addresses() -> (SocketAddr, SocketAddr) {
     let server_port = find_unused_udp_port(40300).unwrap();
     let client_port = find_unused_udp_port(40350).unwrap();
     
-    let server_addr = format!("127.0.0.1:{}", server_port).parse().unwrap();
-    let client_addr = format!("127.0.0.1:{}", client_port).parse().unwrap();
+    let server_addr = format!("127.0.0.1:{server_port}").parse().unwrap();
+    let client_addr = format!("127.0.0.1:{client_port}").parse().unwrap();
     info!("server_addr: {}", server_addr);
     info!("client_addr: {}", client_addr);
     
@@ -55,7 +54,7 @@ fn test_client_server_communication() {
         
         match client.start() {
             Ok(()) => println!("Client run() completed successfully"),
-            Err(e) => println!("Client run() error: {}", e),
+            Err(e) => println!("Client run() error: {e}"),
         }
 
         let mut order_command = OrderCommand {
@@ -75,7 +74,7 @@ fn test_client_server_communication() {
         for i in 0..10 {
             order_command.order_id = i;
             client.send_order_command(&order_command)?;
-            std::thread::sleep(Duration::from_millis(10));
+            // std::thread::sleep(Duration::from_millis(10));
         }
         Ok(())
     });
@@ -98,17 +97,17 @@ fn test_client_server_communication() {
             core_id: "core-1".to_string(),
         };
         info!("server_config: {:?}", server_config);
-        let server = VexCoreServer::new(server_config).unwrap();                
+        let mut server = VexCoreServer::new(server_config).unwrap();                
         match server.start() {
             Ok(()) => println!("Server run() completed successfully (unexpected)"),
-            Err(e) => println!("Server run() error: {}", e),
+            Err(e) => println!("Server run() error: {e}"),
         }
     });
     let client_result = client_handle.join();
     
     match client_result {
         Ok(Ok(())) => println!("✓ Client run() test passed"),
-        Ok(Err(e)) => panic!("Client run() test failed: {}", e),
+        Ok(Err(e)) => panic!("Client run() test failed: {e}"),
         Err(_) => panic!("Client run() test panicked"),
     }
 }
