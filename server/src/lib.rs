@@ -7,7 +7,6 @@ use common::{
     cmd::OrderCommand,
     model::{
         symbol_specification::CoreSymbolSpecification,
-        user_profile::{UserProfile, UserStatus},
     },
 };
 use disruptor::{MultiConsumerBarrier, MultiProducer};
@@ -19,7 +18,7 @@ use crate::{engine::CoreEngine, events::SimpleEventsHandler};
 
 /// Sets up the entire Exchange Core application with all processors.
 ///
-/// This creates the core engine and adds symbols dynamically, like real exchanges.
+/// This creates the core engine and adds symbols dynamically
 pub fn init_exchange() -> (
     CoreEngine,
     MultiProducer<OrderCommand, MultiConsumerBarrier>,
@@ -33,17 +32,7 @@ pub fn init_exchange() -> (
     symbol_specs.insert(0, spec);
 
     // Create risk engine with funded user profiles
-    let mut risk_engine = RiskEngine::new(symbol_specs);
-
-    // Fund seller (user 100) with base currency (BTC)
-    let mut seller_profile = UserProfile::new(100, UserStatus::Active);
-    seller_profile.accounts.insert(1, 1_000_000); // 1M BTC
-    risk_engine.user_profiles.insert(100, seller_profile);
-
-    // Fund buyer (user 101) with quote currency (USD)
-    let mut buyer_profile = UserProfile::new(101, UserStatus::Active);
-    buyer_profile.accounts.insert(2, 1_000_000); // 1M USD
-    risk_engine.user_profiles.insert(101, buyer_profile);
+    let risk_engine = RiskEngine::new(symbol_specs);
 
     // Initialize journaling processor for audit trail
     let journaling_processor = JournalingProcessor::new();

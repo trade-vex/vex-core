@@ -33,7 +33,7 @@ impl CoreEngine {
         let events_handler_arc = events_handler.clone();
 
         // Create multiple empty matching engine routers
-        let num_matching_engines = 4; // Power of 2 for efficient sharding
+        let num_matching_engines = 4; 
         let mut matching_engine_routers = Vec::new();
 
         for shard_id in 0..num_matching_engines {
