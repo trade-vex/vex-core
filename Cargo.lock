@@ -1281,6 +1281,7 @@ dependencies = [
  "common",
  "crossbeam",
  "dashmap",
+ "disruptor",
  "rand",
  "rusteron-client",
  "rusteron-media-driver",
