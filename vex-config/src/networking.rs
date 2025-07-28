@@ -2,7 +2,6 @@
 
 use crate::{ConfigError, Environment, Result};
 use serde::{Deserialize, Serialize};
-use std::net::{IpAddr, Ipv4Addr};
 
 /// Core networking configuration for VEX Core server
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -10,7 +9,7 @@ pub struct CoreNetworkingConfig {
     /// The directory used for the underlying Aeron media driver
     pub context_dir: String,
     /// The local address to bind to
-    pub local_address: IpAddr,
+    pub local_address: String,
     /// The initial port to use for gateway introduction
     pub initial_port: u16,
     /// The initial control port to use for gateway introduction
@@ -54,8 +53,8 @@ impl CoreNetworkingConfig {
     /// Development environment defaults - relaxed settings for local development
     pub fn development_defaults() -> Self {
         Self {
-            context_dir: "/tmp/aeron-core-dev".to_string(),
-            local_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            context_dir: "/dev/shm/aeron-dev".to_string(),
+            local_address: "127.0.0.1".to_string(),
             initial_port: 40001,
             initial_control_port: 40002,
             base_gateway_port: 50000,
@@ -75,23 +74,16 @@ impl CoreNetworkingConfig {
 
     /// Test environment defaults - moderate settings for automated testing
     pub fn test_defaults() -> Self {
-        let current_dir = std::env::current_dir().unwrap();
-        let context_dir = current_dir
-            .join("test-data")
-            .join("server")
-            .to_str()
-            .unwrap()
-            .to_string();
         Self {
-            context_dir,
-            local_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            context_dir: "/dev/shm/aeron-test-server".to_string(),
+            local_address: "127.0.0.1".to_string(),
             initial_port: 41001,
             initial_control_port: 41002,
-            base_gateway_port: 51000,
+            base_gateway_port: 40350,
             max_gateways: 5,
-            max_connections_per_address: 3,
-            reserved_session_id_low: 2000,
-            reserved_session_id_high: 8999,
+            max_connections_per_address: 2,
+            reserved_session_id_low: 0,
+            reserved_session_id_high: 2147483647,
             enable_authentication: true,
             enable_heartbeat: true,
             gateway_timeout_seconds: 30,
@@ -106,7 +98,7 @@ impl CoreNetworkingConfig {
     pub fn production_defaults() -> Self {
         Self {
             context_dir: "/var/lib/vex/aeron-core".to_string(),
-            local_address: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), // Bind to all interfaces
+            local_address: "127.0.0.1".to_string(), // Bind to all interfaces
             initial_port: 40001,
             initial_control_port: 40002,
             base_gateway_port: 50000,
@@ -192,16 +184,16 @@ pub struct GatewayNetworkingConfig {
     /// The directory used for the underlying Aeron media driver
     pub context_dir: String,
     /// The local IP address for this gateway
-    pub local_address: IpAddr,
+    pub local_address: String,
     /// VEX Core address to connect to
-    pub core_address: IpAddr,
+    pub core_address: String,
     /// VEX Core port for initial handshake
     pub core_port: u16,
     /// VEX Core control port for receiving messages
     pub core_control_port: u16,
     /// Gateway identifier for this instance
     pub gateway_id: String,
-    /// Maximum message size in bytes
+    /// Maximum message size in bytes, 67 for OrderCommand
     pub max_message_size: usize,
     /// Enable heartbeat mechanism
     pub enable_heartbeat: bool,
@@ -231,12 +223,12 @@ impl GatewayNetworkingConfig {
     pub fn development_defaults() -> Self {
         Self {
             context_dir: "/tmp/aeron-gateway-dev".to_string(),
-            local_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-            core_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            local_address: "127.0.0.1".to_string(),
+            core_address: "127.0.0.1".to_string(),
             core_port: 40001,
             core_control_port: 40002,
             gateway_id: "gateway-dev-1".to_string(),
-            max_message_size: 4096,
+            max_message_size: 67,
             enable_heartbeat: true,
             heartbeat_interval_seconds: 10,
             connection_timeout_seconds: 60,
@@ -249,13 +241,13 @@ impl GatewayNetworkingConfig {
     /// Test environment defaults
     pub fn test_defaults() -> Self {
         Self {
-            context_dir: "/tmp/aeron-gateway-test".to_string(),
-            local_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-            core_address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            context_dir: "/dev/shm/aeron-test-client".to_string(),
+            local_address: "127.0.0.1".to_string(),
+            core_address: "127.0.0.1".to_string(),
             core_port: 41001,
             core_control_port: 41002,
             gateway_id: "gateway-test-1".to_string(),
-            max_message_size: 2048,
+            max_message_size: 67,
             enable_heartbeat: true,
             heartbeat_interval_seconds: 5,
             connection_timeout_seconds: 30,
@@ -269,12 +261,12 @@ impl GatewayNetworkingConfig {
     pub fn production_defaults() -> Self {
         Self {
             context_dir: "/var/lib/vex/aeron-gateway".to_string(),
-            local_address: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-            core_address: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), // Example production IP
+            local_address: "127.0.0.1".to_string(),
+            core_address: "127.0.0.1".to_string(), // Example production IP
             core_port: 40001,
             core_control_port: 40002,
             gateway_id: "gateway-prod".to_string(),
-            max_message_size: 8192,
+            max_message_size: 67,
             enable_heartbeat: true,
             heartbeat_interval_seconds: 5,
             connection_timeout_seconds: 15,

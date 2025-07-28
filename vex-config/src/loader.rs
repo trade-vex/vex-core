@@ -113,7 +113,7 @@ impl ConfigLoader {
         // Check if we found any files
         if !files_found && !self.allow_missing {
             return Err(ConfigError::not_found(format!(
-                "No configuration files found in search paths: {:?}", search_paths
+                "No configuration files found in search paths: {search_paths:?}"
             )));
         }
 
@@ -126,7 +126,7 @@ impl ConfigLoader {
                 // Apply environment variables to the default config
                 // This is a simplified approach - in a real implementation,
                 // you might want to use a more sophisticated merging strategy
-                default_config = self.apply_env_vars_to_config(default_config, &prefix, &env)?;
+                default_config = self.apply_env_vars_to_config(default_config, prefix, &env)?;
             }
             
             default_config.validate()?;
@@ -174,7 +174,7 @@ impl ConfigLoader {
             Some("yaml") | Some("yml") => Ok(FileFormat::Yaml),
             Some("json") => Ok(FileFormat::Json),
             Some("ini") => Ok(FileFormat::Ini),
-            Some(ext) => Err(ConfigError::parse(format!("Unsupported file format: {}", ext))),
+            Some(ext) => Err(ConfigError::parse(format!("Unsupported file format: {ext}"))),
             None => Err(ConfigError::parse("No file extension found")),
         }
     }

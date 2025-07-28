@@ -5,10 +5,11 @@ use std::fmt;
 use std::str::FromStr;
 
 /// Represents the deployment environment for VEX Core
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Environment {
     /// Development environment - relaxed security, verbose logging, local defaults
+    #[default]
     Development,
     /// Test environment - moderate security, structured logging, test-friendly defaults
     Test,
@@ -106,14 +107,8 @@ impl FromStr for Environment {
             "development" | "dev" | "develop" => Ok(Environment::Development),
             "test" | "testing" => Ok(Environment::Test),
             "production" | "prod" => Ok(Environment::Production),
-            _ => Err(format!("Invalid environment: '{}'. Valid options: development, test, production", s)),
+            _ => Err(format!("Invalid environment: '{s}'. Valid options: development, test, production")),
         }
-    }
-}
-
-impl Default for Environment {
-    fn default() -> Self {
-        Environment::Development
     }
 }
 
