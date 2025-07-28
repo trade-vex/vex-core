@@ -10,7 +10,8 @@ members = [
     "networking",
     "orderbook", 
     "processors", 
-    "server",
+    "server", 
+    "utils",
 ]
 
 [workspace.dependencies]

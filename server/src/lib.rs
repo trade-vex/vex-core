@@ -3,27 +3,20 @@ pub mod events;
 
 use std::sync::Arc;
 
-use common::{
-    cmd::OrderCommand,
-    model::{
-        symbol_specification::CoreSymbolSpecification,
-    },
-};
+use common::{cmd::OrderCommand, model::symbol_specification::CoreSymbolSpecification};
 use disruptor::{MultiConsumerBarrier, MultiProducer};
 use hashbrown::HashMap;
 use orderbook::OrderBookImplType;
-use processors::{journaling::JournalingProcessor};
+use processors::journaling::JournalingProcessor;
 
 use crate::{engine::CoreEngine, events::SimpleEventsHandler};
+
+type ProducerType = MultiProducer<OrderCommand, MultiConsumerBarrier>;
 
 /// Sets up the entire Exchange Core application with all processors.
 ///
 /// This creates the core engine and adds symbols dynamically
-pub fn init_exchange() -> (
-    CoreEngine,
-    MultiProducer<OrderCommand, MultiConsumerBarrier>,
-    Arc<SimpleEventsHandler>,
-) {
+pub fn init_exchange() -> (CoreEngine, ProducerType, Arc<SimpleEventsHandler>) {
     // Create symbol specifications for the risk engine
     let mut symbol_specs = HashMap::new();
     let mut spec = CoreSymbolSpecification::default();
