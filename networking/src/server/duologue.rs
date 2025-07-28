@@ -4,6 +4,8 @@ use crate::server::cmd_handler::FragmentHandler;
 use crate::utils::{
     new_publication_with_mdc_and_session, new_subsciption_with_handlers_and_session,
 };
+use common::cmd::OrderCommand;
+use disruptor::{MultiProducer, MultiConsumerBarrier};
 use rusteron_client::{
     Aeron, AeronAvailableImageCallback, AeronCError, AeronImage, AeronNotificationLogger,
     AeronSubscription, AeronUnavailableImageCallback, Handler,
@@ -32,6 +34,7 @@ impl Duologue {
         port_data: u16,
         port_control: u16,
         session_id: i32,
+        producer: MultiProducer<OrderCommand, MultiConsumerBarrier>,
     ) -> Result<Self, AeronCError> {
         let expire_time = (SystemTime::now() + Duration::from_secs(1_000_000))
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -66,6 +69,7 @@ impl Duologue {
         let fragment_handler = FragmentHandler {
             publication,
             gateway_id: gateway_id.to_string(),
+            producer,
         };
 
         Ok(Self {
@@ -80,9 +84,9 @@ impl Duologue {
         })
     }
 
-    pub fn poll(&self) -> Result<i32, AeronCError> {
+    pub fn poll(&mut self) -> Result<i32, AeronCError> {
         self.subscription
-            .poll(Some(&Handler::leak(&self.fragment_handler)), 2048)
+            .poll(Some(&Handler::leak(&mut self.fragment_handler)), 2048)
     }
 
     pub fn is_expired(&self) -> bool {

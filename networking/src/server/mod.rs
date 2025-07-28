@@ -31,6 +31,8 @@ mod gateway_handler;
 mod gateway_manager;
 mod cmd_handler;
 
+use common::cmd::OrderCommand;
+use disruptor::{MultiProducer, MultiConsumerBarrier};
 use vex_config::CoreNetworkingConfig;
 use crate::server::gateway_handler::{
     GatewayImageAvailableHandler, GatewayImageUnavailableHandler, HandshakeMessageHandler,
@@ -87,7 +89,7 @@ pub struct VexCoreServer {
 
 impl VexCoreServer {
     /// Creates a new VEX Core instance
-    pub fn new(config: CoreNetworkingConfig) -> Result<Self, ServerError> {
+    pub fn new(config: CoreNetworkingConfig, producer: MultiProducer<OrderCommand, MultiConsumerBarrier>) -> Result<Self, ServerError> {
         // Validate configuration
         Self::validate_config(&config)?;
 
@@ -102,7 +104,7 @@ impl VexCoreServer {
 
         Ok(Self {
             aeron: Rc::clone(&aeron),
-            gateways: Rc::new(GatewayManager::new(config.clone(), aeron)?),
+            gateways: Rc::new(GatewayManager::new(config.clone(), aeron, producer)?),
             config,
             last_cleanup_nanos: CachePadded::new(AtomicU64::new(now_nanos)),
         })

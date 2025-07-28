@@ -1,15 +1,13 @@
-use common::cmd::{decode_order_command, OrderCommand, OrderCommandType};
+use common::cmd::{OrderCommand, OrderCommandType, decode_order_command};
 use common::model::enums::{OrderAction, OrderType};
-use networking::client::{VexGateway, GatewayError};
+use disruptor::{BusySpin, ProcessorSettings, build_multi_producer};
+use networking::client::{GatewayError, VexGateway};
 use networking::server::VexCoreServer;
-use vex_config::{CoreNetworkingConfig, GatewayNetworkingConfig};
-use rusteron_client::{find_unused_udp_port, AeronFragmentHandlerCallback, AeronHeader};
-use tracing::{info, error};
+use rusteron_client::{AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port};
 use std::time::Duration;
-use std::{
-    net::SocketAddr,
-    thread,
-};
+use std::{net::SocketAddr, thread};
+use tracing::{error, info};
+use vex_config::{CoreNetworkingConfig, GatewayNetworkingConfig};
 
 /// Fragment handler for processing OrderCommand messages from core
 struct OrderCommandHandler {
@@ -42,12 +40,12 @@ impl AeronFragmentHandlerCallback for OrderCommandHandler {
 fn create_test_addresses() -> (SocketAddr, SocketAddr) {
     let server_port = find_unused_udp_port(40300).unwrap();
     let client_port = find_unused_udp_port(40350).unwrap();
-    
+
     let server_addr = format!("127.0.0.1:{server_port}").parse().unwrap();
     let client_addr = format!("127.0.0.1:{client_port}").parse().unwrap();
     info!("server_addr: {}", server_addr);
     info!("client_addr: {}", client_addr);
-    
+
     (server_addr, client_addr)
 }
 
@@ -67,7 +65,7 @@ fn test_client_server_communication() {
         let handler = OrderCommandHandler {
             gateway_id: client.gateway_id().to_string(),
         };
-        
+
         match client.start(handler) {
             Ok(()) => println!("Client run() completed successfully"),
             Err(e) => println!("Client run() error: {e}"),
@@ -94,20 +92,34 @@ fn test_client_server_communication() {
         }
         Ok(())
     });
-    
+
     let _ = thread::spawn(move || {
         let mut server_config = CoreNetworkingConfig::test_defaults();
         server_config.initial_port = server_addr.port();
         server_config.initial_control_port = server_addr.port() + 1;
         info!("server_config: {:?}", server_config);
-        let mut server = VexCoreServer::new(server_config).unwrap();                
+        let producer = build_multi_producer(1024, || OrderCommand::default(), BusySpin)
+            .pin_at_core(1)
+            .handle_events_with({
+                move |cmd: &OrderCommand, _, _| {
+                    info!("Server received OrderCommand Core 1: {:?}", cmd);
+                }
+            })
+            .pin_at_core(2)
+            .handle_events_with({
+                move |cmd: &OrderCommand, _, _| {
+                    info!("Server processing OrderCommand Core 2: {:?}", cmd);
+                }
+            })
+            .build();
+        let mut server = VexCoreServer::new(server_config, producer).unwrap();
         match server.start() {
             Ok(()) => println!("Server run() completed successfully (unexpected)"),
             Err(e) => println!("Server run() error: {e}"),
         }
     });
     let client_result = client_handle.join();
-    
+
     match client_result {
         Ok(Ok(())) => println!("✓ Client run() test passed"),
         Ok(Err(e)) => panic!("Client run() test failed: {e}"),

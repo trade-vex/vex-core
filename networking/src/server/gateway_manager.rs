@@ -1,6 +1,8 @@
 use crate::server::duologue::Duologue;
 use crate::utils::{PortAllocator, SessionAllocator, send_message};
+use common::cmd::OrderCommand;
 use dashmap::DashMap;
+use disruptor::{MultiProducer, MultiConsumerBarrier};
 use rusteron_client::{Aeron, AeronPublication};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,11 +33,13 @@ pub struct GatewayManager {
     session_allocator: SessionAllocator,
     /// Reusable message buffers
     buffer_pool: SegQueue<Vec<u8>>,
+    /// Producer that sends commands to the disruptor ring
+    producer: MultiProducer<OrderCommand, MultiConsumerBarrier>,
 }
 
 impl GatewayManager {
     /// Creates a new gateway manager
-    pub fn new(config: CoreNetworkingConfig, aeron: Rc<Aeron>) -> Result<Self, ServerError> {
+    pub fn new(config: CoreNetworkingConfig, aeron: Rc<Aeron>, producer: MultiProducer<OrderCommand, MultiConsumerBarrier>) -> Result<Self, ServerError> {
         let buffer_pool = SegQueue::new();
 
         // Pre-populate buffer pool
@@ -60,6 +64,7 @@ impl GatewayManager {
             .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?,
             config,
             buffer_pool,
+            producer,
         })
     }
 
@@ -172,8 +177,8 @@ impl GatewayManager {
     pub fn poll(&self) -> Result<(), ServerError> {
         let mut sessions_to_remove = Vec::new();
 
-        for x in self.gateway_sessions.iter_mut() {
-            let (initial_session_id, gateway_session) = x.pair();
+        for mut x in self.gateway_sessions.iter_mut() {
+            let (initial_session_id, gateway_session) = x.pair_mut();
 
             if gateway_session.is_expired() || gateway_session.is_closed() {
                 sessions_to_remove.push(*initial_session_id);
@@ -341,6 +346,7 @@ impl GatewayManager {
             ports[0],
             ports[1],
             dedicated_session,
+            self.producer.clone(),
         )?;
 
         // Store session
