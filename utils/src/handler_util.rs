@@ -4,20 +4,20 @@
 /// This eliminates code duplication while maintaining separate handlers for each shard
 #[macro_export]
 macro_rules! create_risk_handler {
-    ($shard_id:expr, $risk_engines:expr) => {{
-        let risk_engines_clone = $risk_engines.clone();
-        move |cmd: &OrderCommand, _sequence: i64, _end_of_batch: bool| {
-            // Lock the specific risk engine shard
-            let mut engine = risk_engines_clone[$shard_id].lock().unwrap();
-            let mut cmd_clone = cmd.clone();
-
-            // Each risk engine filters internally using uid_for_this_handler()
-            // This ensures only the correct shard processes each user's commands
-            if let Err(e) = engine.pre_process_command(&mut cmd_clone) {
-                warn!("[RiskEngine_{}] Risk check failed: {:?}", $shard_id, e);
+    ($shard_id:expr, $risk_engines:expr) => {
+        {
+            let risk_engines_clone = $risk_engines.clone();
+            move |cmd: &OrderCommand, _sequence: i64, _end_of_batch: bool| {
+                let mut engine = risk_engines_clone[$shard_id].lock().unwrap();
+                let mut cmd_clone = cmd.clone();
+                
+                if let Err(e) = engine.pre_process_command(&mut cmd_clone) {
+                    warn!("[RiskEngine_{}] Risk check failed: {:?}", $shard_id, e);
+                    return; 
+                }
             }
         }
-    }};
+    };
 }
 
 /// Macro to generate matching engine handlers
