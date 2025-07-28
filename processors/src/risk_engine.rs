@@ -1,13 +1,13 @@
 use common::cmd::MatcherTradeEvent;
 use common::cmd::OrderCommand;
+use common::cmd::OrderCommandType;
+use common::model::enums::MatcherEventType;
+use common::model::enums::OrderAction;
+use common::model::symbol_specification::CoreSymbolSpecification;
 use common::model::user_profile::UserProfile;
 use hashbrown::HashMap;
 use orderbook::OrderBookError;
 use tracing::{info, warn};
-use common::model::enums::OrderAction;
-use common::model::symbol_specification::CoreSymbolSpecification;
-use common::model::enums::MatcherEventType;
-use common::cmd::OrderCommandType;
 /// Manages all user profiles and performs risk checks as well as settlements
 /// This is the Rust equivalent of `RiskEngine.java`.
 pub struct RiskEngine {
@@ -45,7 +45,10 @@ impl RiskEngine {
             "[RiskEngine] Validating arguments for order {}",
             cmd.order_id
         );
-        if matches!(cmd.command, OrderCommandType::PlaceOrder | OrderCommandType::ReduceOrder) {
+        if matches!(
+            cmd.command,
+            OrderCommandType::PlaceOrder | OrderCommandType::ReduceOrder
+        ) {
             if cmd.size <= 0 || cmd.price <= 0 {
                 return Err(OrderBookError::InvalidArguments);
             }
@@ -109,12 +112,7 @@ impl RiskEngine {
                     );
                 }
                 if let Some(taker_profile) = self.user_profiles.get_mut(&event.active_order_uid) {
-                    taker_profile.settle_trade(
-                        spec,
-                        event.price,
-                        event.size,
-                        event.taker_action,
-                    );
+                    taker_profile.settle_trade(spec, event.price, event.size, event.taker_action);
                 }
             }
             MatcherEventType::Reduce | MatcherEventType::Cancel => {
@@ -124,11 +122,7 @@ impl RiskEngine {
                     } else {
                         event.size
                     };
-                    user_profile.release_funds(
-                        event.symbol,
-                        released_amount,
-                        event.taker_action,
-                    );
+                    user_profile.release_funds(event.symbol, released_amount, event.taker_action);
                 }
             }
             MatcherEventType::OrderPlaced => {
@@ -138,7 +132,6 @@ impl RiskEngine {
                 // Other event types like Reject or BinaryEvent might not have financial impact
             }
         }
-        
     }
 }
 

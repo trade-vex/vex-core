@@ -1,5 +1,5 @@
-use server::init_exchange;
 use common::cmd::OrderCommand;
+use server::init_exchange;
 
 use disruptor::Producer;
 
@@ -61,7 +61,8 @@ async fn test_full_exchange_flow() {
 
     // Check events
     info!("\n Asserting events received by handler ");
-    { // : Add an inner scope to release the lock
+    {
+        // : Add an inner scope to release the lock
         let received_events = handler.events.lock().unwrap();
         assert!(
             received_events.len() >= 4,
@@ -84,20 +85,20 @@ async fn test_full_exchange_flow() {
         assert!(has_cancel, "Should have at least one Cancel event");
     } // : The lock on handler.events is released here as `received_events` goes out of scope.
 
-    //  User balance assertion 
+    //  User balance assertion
     // : Check for the correct currency (1 for the seller)
     let balance = core.get_user_balance(100, 1).unwrap();
     println!("User 100 balance in currency 1: {}", balance);
 
-    //  Matching test: Place matching ASK and BID orders 
+    //  Matching test: Place matching ASK and BID orders
     // Use a price that is guaranteed to be the best available to ensure the correct orders match.
     let mut ask_cmd = OrderCommand::new_order(
         common::model::enums::OrderType::Gtc,
-        10, // order_id
-        100, // uid
+        10,   // order_id
+        100,  // uid
         9620, // price (better than the existing order at 9629)
-        0, // reserve_bid_price
-        5, // size
+        0,    // reserve_bid_price
+        5,    // size
         common::model::enums::OrderAction::Ask,
     );
     ask_cmd.symbol = 0;
@@ -106,8 +107,8 @@ async fn test_full_exchange_flow() {
 
     let mut bid_cmd = OrderCommand::new_order(
         common::model::enums::OrderType::Gtc,
-        11, // order_id
-        101, // uid (different user)
+        11,   // order_id
+        101,  // uid (different user)
         9620, // price (matches the new ASK)
         0,
         5,
@@ -117,7 +118,7 @@ async fn test_full_exchange_flow() {
     producer.publish(|e| *e = bid_cmd.clone());
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    //  Assert trade event and filled quantities 
+    //  Assert trade event and filled quantities
     let received_events = handler.events.lock().unwrap();
     let mut has_trade = false;
     for event in received_events.iter() {
@@ -128,12 +129,18 @@ async fn test_full_exchange_flow() {
     }
     assert!(has_trade, "Should have at least one Trade event");
 
-    //  Assert user balances updated 
+    //  Assert user balances updated
     // Check for the correct currencies (1 and 2) after the trade
     let ask_user_base_balance = core.get_user_balance(100, 1).unwrap();
     let ask_user_quote_balance = core.get_user_balance(100, 2).unwrap();
     let bid_user_base_balance = core.get_user_balance(101, 1).unwrap();
     let bid_user_quote_balance = core.get_user_balance(101, 2).unwrap();
-    println!("User 100 (ASK) balances: base={}, quote={}", ask_user_base_balance, ask_user_quote_balance);
-    println!("User 101 (BID) balances: base={}, quote={}", bid_user_base_balance, bid_user_quote_balance);
+    println!(
+        "User 100 (ASK) balances: base={}, quote={}",
+        ask_user_base_balance, ask_user_quote_balance
+    );
+    println!(
+        "User 101 (BID) balances: base={}, quote={}",
+        bid_user_base_balance, bid_user_quote_balance
+    );
 }

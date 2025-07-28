@@ -5,16 +5,38 @@ use orderbook::OrderBookImplType;
 use orderbook::direct_impl::OrderBookDirectImpl;
 use orderbook::naive_impl::OrderBookNaiveImpl;
 use tracing::{info, warn};
+
 /// Owns all order books and routes commands to the correct one.
 /// This is the Rust equivalent of `MatchingEngineRouter.java`.
 pub struct MatchingEngineRouter {
     pub order_books: HashMap<i32, Box<dyn OrderBook<'static> + Send>>,
+    pub shard_id: i32,
+    pub shard_mask: i64,
 }
 
 impl MatchingEngineRouter {
-    pub fn new() -> Self {
+    /// Creates a new router with sharding support
+    ///
+    /// # Arguments
+    /// * `shard_id` - The ID of this shard (0, 1, 2, 3, etc.)
+    /// * `num_shards` - Total number of shards (must be power of 2)
+    ///
+    /// # Reasoning
+    /// This matches the exchangeCore constructor: `MatchingEngineRouter(shardId, matchingEnginesNum, ...)`
+    /// The power-of-2 validation ensures efficient bitwise operations for symbol distribution.
+    pub fn new(shard_id: i32, num_shards: i64) -> Self {
+        // Validate num_shards is power of 2
+        if num_shards.count_ones() != 1 {
+            panic!(
+                "Invalid number of shards {} - must be power of 2",
+                num_shards
+            );
+        }
+
         Self {
             order_books: HashMap::new(),
+            shard_id,
+            shard_mask: num_shards - 1, // Creates mask : shardMask = numShards - 1
         }
     }
 
@@ -28,34 +50,89 @@ impl MatchingEngineRouter {
         self.order_books.insert(symbol_id, book);
     }
 
-    /// Routes a command to the appropriate order book for processing.
-    /// This is the core matching stage(Excali-6b) of the pipeline.
-    pub fn route_command(&mut self, cmd: &mut OrderCommand) {
+    /// Check if this router handles the given symbol
+    ///
+    /// # Reasoning
+    /// This implements the exact same logic as exchangeCore:
+    /// ```java
+    /// private boolean symbolForThisHandler(final long symbol) {
+    ///     return (shardMask == 0) || ((symbol & shardMask) == shardId);
+    /// }
+    /// ```
+    ///
+    /// The bitwise AND operation efficiently distributes symbols across shards:
+    /// - With 4 shards (shard_mask = 3 = 0b11), symbols are distributed as:
+    ///   - Symbol 0, 4, 8, 12... → Shard 0 (0 & 3 = 0)
+    ///   - Symbol 1, 5, 9, 13... → Shard 1 (1 & 3 = 1)
+    ///   - Symbol 2, 6, 10, 14... → Shard 2 (2 & 3 = 2)
+    ///   - Symbol 3, 7, 11, 15... → Shard 3 (3 & 3 = 3)
+    pub fn symbol_for_this_handler(&self, symbol: i64) -> bool {
+        (self.shard_mask == 0) || ((symbol & self.shard_mask) == self.shard_id as i64)
+    }
+
+    /// Main entry point for processing orders
+    ///
+    /// # Reasoning
+    /// This method mirrors the exchangeCore `processOrder(long seq, OrderCommand cmd)` method.
+    /// It implements the same command routing logic where each router only processes
+    /// commands for symbols it owns
+    pub fn process_order(&mut self, cmd: &mut OrderCommand) {
+        let command = cmd.command;
+
+        match command {
+            common::cmd::OrderCommandType::PlaceOrder
+            | common::cmd::OrderCommandType::CancelOrder
+            | common::cmd::OrderCommandType::MoveOrder
+            | common::cmd::OrderCommandType::ReduceOrder => {
+                // Process specific symbol group
+                if self.symbol_for_this_handler(cmd.symbol as i64) {
+                    self.process_matching_command(cmd);
+                }
+            }
+        }
+    }
+
+    /// Process matching command
+    ///
+    /// # Reasoning
+    /// This method implements the core matching logic, similar to exchangeCore's `processMatchingCommand`.
+    /// It routes commands to the appropriate orderbook.
+    fn process_matching_command(&mut self, cmd: &mut OrderCommand) {
         if let Some(order_book) = self.order_books.get_mut(&cmd.symbol) {
             info!(
-                "[Router] Routing command for symbol {} to its order book.",
-                cmd.symbol
+                "[Router {}] Processing command for symbol {}",
+                self.shard_id, cmd.symbol
             );
-            // Events are created inside these methods(excali-7)
+
             let result = match cmd.command {
                 common::cmd::OrderCommandType::PlaceOrder => order_book.new_order(cmd),
                 common::cmd::OrderCommandType::CancelOrder => order_book.cancel_order(cmd),
                 common::cmd::OrderCommandType::MoveOrder => order_book.move_order(cmd),
                 common::cmd::OrderCommandType::ReduceOrder => order_book.reduce_order(cmd),
             };
-            info!("[Router] Order book processed command: {:?}", cmd);
 
             if let Err(e) = result {
-                warn!("[Router] Order book processing failed: {:?}", e);
+                warn!(
+                    "[Router {}] Order book processing failed: {:?}",
+                    self.shard_id, e
+                );
             }
         } else {
-            warn!("[Router] No order book found for symbol {}", cmd.symbol);
+            warn!(
+                "[Router {}] No order book found for symbol {}",
+                self.shard_id, cmd.symbol
+            );
         }
+    }
+
+    /// Get order books for external access
+    pub fn get_order_books(&self) -> &HashMap<i32, Box<dyn OrderBook<'static> + Send>> {
+        &self.order_books
     }
 }
 
 impl Default for MatchingEngineRouter {
     fn default() -> Self {
-        Self::new()
+        Self::new(0, 1)
     }
 }

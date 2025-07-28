@@ -1,10 +1,10 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use num_enum::TryFromPrimitive;
-use serde::{Deserialize, Serialize};
 use sbe_order::order_action::OrderAction as SbeOrderAction;
 use sbe_order::order_type::OrderType as SbeOrderType;
 use serde::de::Error;
 use serde::de::value::Error as SerdeError;
+use serde::{Deserialize, Serialize};
 
 #[derive(
     Debug,

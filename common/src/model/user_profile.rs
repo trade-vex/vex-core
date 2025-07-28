@@ -37,7 +37,12 @@ impl UserProfile {
         action: OrderAction,
     ) -> bool {
         let position = self.positions.entry(spec.symbol_id).or_insert_with(|| {
-            SymbolPositionRecord::new(self.uid, spec.symbol_id, spec.base_currency, spec.quote_currency)
+            SymbolPositionRecord::new(
+                self.uid,
+                spec.symbol_id,
+                spec.base_currency,
+                spec.quote_currency,
+            )
         });
 
         let currency = if action == OrderAction::Bid {
@@ -85,12 +90,14 @@ impl UserProfile {
         let trade_amount = price * size;
 
         match action {
-            OrderAction::Bid => { // User is a BUYER
+            OrderAction::Bid => {
+                // User is a BUYER
                 // The quote currency was already debited by `hold_funds`.
                 // We only need to credit the base currency they received.
                 *self.accounts.entry(base_currency).or_insert(0) += size;
             }
-            OrderAction::Ask => { // User is a SELLER
+            OrderAction::Ask => {
+                // User is a SELLER
                 // Credit the quote currency account for the sale.
                 *self.accounts.entry(quote_currency).or_insert(0) += trade_amount;
                 // The base currency was already debited by `hold_funds`.

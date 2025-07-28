@@ -1,6 +1,6 @@
+use crate::model::enums::OrderAction;
 use crate::model::enums::PositionDirection;
 use borsh::{BorshDeserialize, BorshSerialize};
-use crate::model::enums::OrderAction;
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct SymbolPositionRecord {
@@ -81,7 +81,8 @@ impl SymbolPositionRecord {
                 self.open_price_sum -= trade_size * avg_price;
             } else {
                 self.direction = trade_direction;
-                self.profit += (trade_price - self.open_price_sum / self.open_volume) * self.open_volume;
+                self.profit +=
+                    (trade_price - self.open_price_sum / self.open_volume) * self.open_volume;
                 self.open_volume = trade_size - self.open_volume;
                 self.open_price_sum = self.open_volume * trade_price;
             }

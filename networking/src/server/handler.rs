@@ -1,4 +1,6 @@
-use rusteron_client::{AeronFragmentHandlerCallback, AeronHeader, AeronPublication, AeronReservedValueSupplierLogger};
+use rusteron_client::{
+    AeronFragmentHandlerCallback, AeronHeader, AeronPublication, AeronReservedValueSupplierLogger,
+};
 use tracing::debug;
 
 pub struct FragmentHandler {
@@ -16,7 +18,8 @@ impl AeronFragmentHandlerCallback for &FragmentHandler {
         debug!("[{}] Received Message: {}", session_id, message);
 
         // send message to client with buffer data and session_id
-        self.publication.offer::<AeronReservedValueSupplierLogger>(buffer, None);
+        self.publication
+            .offer::<AeronReservedValueSupplierLogger>(buffer, None);
         // if it fails send a message "ERROR bad message" and close
     }
 }

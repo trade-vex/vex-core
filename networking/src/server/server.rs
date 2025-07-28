@@ -1,21 +1,21 @@
 use std::sync::Arc;
-use std::{collections::HashMap, sync::RwLock};
 use std::time::{Duration, Instant, SystemTime};
+use std::{collections::HashMap, sync::RwLock};
 
 use rusteron_client::{
-    Aeron, AeronCError, AeronContext, AeronFragmentHandlerCallback,
-    AeronHeader, AeronImage, AeronPublication, AeronSubscription,
-    Handler, AeronAvailableImageCallback, AeronUnavailableImageCallback,
+    Aeron, AeronAvailableImageCallback, AeronCError, AeronContext, AeronFragmentHandlerCallback,
+    AeronHeader, AeronImage, AeronPublication, AeronSubscription, AeronUnavailableImageCallback,
+    Handler,
 };
 use rusteron_media_driver::AeronIdleStrategy;
 use thiserror::Error;
-use tracing::{debug, error, info, warn, instrument};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::server::config::CoreConfig;
 use crate::server::duologue::Duologue;
 use crate::utils::{
-    new_publication_with_mdc, new_subscription_with_handlers, send_message, 
-    PortAllocator, SessionAllocator
+    PortAllocator, SessionAllocator, new_publication_with_mdc, new_subscription_with_handlers,
+    send_message,
 };
 
 // Stream IDs for different communication channels
@@ -27,8 +27,6 @@ const ALL_GATEWAYS_STREAM_ID: i32 = 1001;
 // const GATEWAY_TIMEOUT: Duration = Duration::from_secs(30);
 // const HEARTBEAT_CHECK_INTERVAL: Duration = Duration::from_secs(10);
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
-
-
 
 /// Represents a gateway's handshake request
 #[derive(Debug, Clone)]
@@ -106,23 +104,30 @@ impl VexCoreServer {
     pub fn new(config: CoreConfig) -> Result<Self, ServerError> {
         // Validate configuration
         if config.max_gateways == 0 {
-            return Err(ServerError::ConfigurationError("Max gateways must be greater than 0".to_string()));
+            return Err(ServerError::ConfigurationError(
+                "Max gateways must be greater than 0".to_string(),
+            ));
         }
         if config.core_id.is_empty() {
-            return Err(ServerError::ConfigurationError("Core ID cannot be empty".to_string()));
+            return Err(ServerError::ConfigurationError(
+                "Core ID cannot be empty".to_string(),
+            ));
         }
 
         // Initialize Aeron context
         let ctx = AeronContext::new()?;
         let context_dir = std::ffi::CString::new(config.context_dir.clone())?;
-        info!("VEX Core '{}' context_dir: {:?}", config.core_id, context_dir);
+        info!(
+            "VEX Core '{}' context_dir: {:?}",
+            config.core_id, context_dir
+        );
         ctx.set_dir(&context_dir)?;
         ctx.set_driver_timeout_ms(5_000)?;
 
         // Create Aeron instance
         let aeron = Aeron::new(&ctx)?;
         aeron.start()?;
-        
+
         info!("VEX Core '{}' initialized successfully", config.core_id);
 
         let mut stats = CoreStats::default();
@@ -144,7 +149,7 @@ impl VexCoreServer {
     #[instrument(skip(self))]
     pub fn start(&self) -> Result<(), ServerError> {
         info!("Starting VEX Core '{}'", self.config.core_id);
-        
+
         // Create publication for sending responses to gateways
         let publication = new_publication_with_mdc(
             &self.aeron,
@@ -172,11 +177,8 @@ impl VexCoreServer {
         )?;
 
         // Create handshake message handler
-        let mut handshake_handler = HandshakeMessageHandler::new(
-            self.gateways.clone(),
-            self.stats.clone(),
-            publication,
-        );
+        let mut handshake_handler =
+            HandshakeMessageHandler::new(self.gateways.clone(), self.stats.clone(), publication);
 
         info!("VEX Core '{}' started successfully", self.config.core_id);
 
@@ -184,40 +186,40 @@ impl VexCoreServer {
         loop {
             // Process incoming handshake messages
             subscription.poll(Some(&Handler::leak(&mut handshake_handler)), 10)?;
-            
+
             // Poll all active gateway sessions
             self.gateways.write().unwrap().poll()?;
-            
+
             // Perform periodic cleanup
             self.periodic_cleanup()?;
-            
+
             AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
-            }
+        }
     }
 
     /// Performs periodic cleanup of expired gateways and statistics
     fn periodic_cleanup(&self) -> Result<(), ServerError> {
         let now = Instant::now();
         let mut last_cleanup = self.last_cleanup.write().unwrap();
-        
+
         if now.duration_since(*last_cleanup) >= CLEANUP_INTERVAL {
             info!("Performing periodic cleanup");
-            
+
             // Clean up expired gateways
             let cleanup_count = self.gateways.write().unwrap().cleanup_expired_gateways()?;
             if cleanup_count > 0 {
                 info!("Cleaned up {} expired gateways", cleanup_count);
             }
-            
+
             // Update statistics
             {
                 let mut stats = self.stats.write().unwrap();
                 stats.last_cleanup = Some(SystemTime::now());
             }
-            
+
             *last_cleanup = now;
         }
-        
+
         Ok(())
     }
 
@@ -238,16 +240,19 @@ impl VexCoreServer {
 
     /// Checks if a gateway is connected
     pub fn is_gateway_connected(&self, gateway_id: &str) -> bool {
-        self.gateways.read().unwrap().is_gateway_connected(gateway_id)
+        self.gateways
+            .read()
+            .unwrap()
+            .is_gateway_connected(gateway_id)
     }
 
     /// Gracefully shuts down the core
     pub fn shutdown(&self) -> Result<(), ServerError> {
         info!("Shutting down VEX Core '{}'", self.config.core_id);
-        
+
         // Close all gateway sessions
         self.gateways.write().unwrap().shutdown_all_gateways()?;
-        
+
         info!("VEX Core '{}' shut down successfully", self.config.core_id);
         Ok(())
     }
@@ -282,11 +287,13 @@ impl GatewayManager {
             port_allocator: PortAllocator::new(
                 config.base_gateway_port,
                 config.max_gateways.into(),
-            ).map_err(|e| ServerError::PortAllocationError(e.to_string()))?,
+            )
+            .map_err(|e| ServerError::PortAllocationError(e.to_string()))?,
             session_allocator: SessionAllocator::new(
                 config.reserved_session_id_low,
                 config.reserved_session_id_high,
-            ).map_err(|e| ServerError::SessionAllocationError(e.to_string()))?,
+            )
+            .map_err(|e| ServerError::SessionAllocationError(e.to_string()))?,
             config,
             buffer: [0u8; 2048],
             address_connection_count: HashMap::new(),
@@ -300,66 +307,101 @@ impl GatewayManager {
         session_id: i32,
         message: &str,
     ) -> Result<(), ServerError> {
-        debug!("Processing handshake from session 0x{:x}: {}", session_id, message);
+        debug!(
+            "Processing handshake from session 0x{:x}: {}",
+            session_id, message
+        );
 
         // Parse handshake message: "HELLO gateway_id encryption_key"
         let parts: Vec<&str> = message.split_whitespace().collect();
         if parts.len() != 3 || parts[0] != "HELLO" {
-            let error_msg = format!("{} {} REJECT Malformed HELLO message", session_id, "unknown");
+            let error_msg = format!(
+                "{} {} REJECT Malformed HELLO message",
+                session_id, "unknown"
+            );
             send_message(publication, &mut self.buffer, &error_msg)?;
-            return Err(ServerError::InvalidGatewayMessage("Malformed HELLO message".to_string()));
+            return Err(ServerError::InvalidGatewayMessage(
+                "Malformed HELLO message".to_string(),
+            ));
         }
 
         let gateway_id = parts[1];
-        let encryption_key = parts[2].parse::<i32>()
-            .map_err(|e| ServerError::InvalidGatewayMessage(format!("Invalid encryption key: {}", e)))?;
+        let encryption_key = parts[2].parse::<i32>().map_err(|e| {
+            ServerError::InvalidGatewayMessage(format!("Invalid encryption key: {}", e))
+        })?;
 
         // Validate gateway ID
         if gateway_id.is_empty() {
             let error_msg = format!("{} {} REJECT Empty gateway ID", session_id, gateway_id);
             send_message(publication, &mut self.buffer, &error_msg)?;
-            return Err(ServerError::InvalidGatewayMessage("Empty gateway ID".to_string()));
+            return Err(ServerError::InvalidGatewayMessage(
+                "Empty gateway ID".to_string(),
+            ));
         }
 
         // Check if too many gateways are connected
         if self.gateway_sessions.len() >= self.config.max_gateways as usize {
-            let error_msg = format!("{} {} REJECT Core capacity exceeded", session_id, gateway_id);
+            let error_msg = format!(
+                "{} {} REJECT Core capacity exceeded",
+                session_id, gateway_id
+            );
             send_message(publication, &mut self.buffer, &error_msg)?;
-            return Err(ServerError::CapacityExceededError("Too many gateways connected".to_string()));
+            return Err(ServerError::CapacityExceededError(
+                "Too many gateways connected".to_string(),
+            ));
         }
 
         // Check connection limits per address
         if let Some(gateway_address) = self.gateway_session_addresses.get(&session_id) {
-            let connection_count = self.address_connection_count.get(gateway_address).unwrap_or(&0);
+            let connection_count = self
+                .address_connection_count
+                .get(gateway_address)
+                .unwrap_or(&0);
             if *connection_count >= self.config.max_connections_per_address {
-                let error_msg = format!("{} {} REJECT Too many connections from address", session_id, gateway_id);
+                let error_msg = format!(
+                    "{} {} REJECT Too many connections from address",
+                    session_id, gateway_id
+                );
                 send_message(publication, &mut self.buffer, &error_msg)?;
-                return Err(ServerError::CapacityExceededError("Too many connections from this address".to_string()));
+                return Err(ServerError::CapacityExceededError(
+                    "Too many connections from this address".to_string(),
+                ));
             }
         }
 
         // Check if gateway is already connected
         if self.is_gateway_connected(gateway_id) {
-            let error_msg = format!("{} {} REJECT Gateway already connected", session_id, gateway_id);
+            let error_msg = format!(
+                "{} {} REJECT Gateway already connected",
+                session_id, gateway_id
+            );
             send_message(publication, &mut self.buffer, &error_msg)?;
-            return Err(ServerError::InvalidGatewayMessage("Gateway already connected".to_string()));
+            return Err(ServerError::InvalidGatewayMessage(
+                "Gateway already connected".to_string(),
+            ));
         }
 
         // Authenticate gateway if required
         if self.config.enable_authentication {
             if let Err(e) = self.authenticate_gateway(gateway_id, &encryption_key.to_string()) {
-                let error_msg = format!("{} {} REJECT Authentication failed", session_id, gateway_id);
+                let error_msg =
+                    format!("{} {} REJECT Authentication failed", session_id, gateway_id);
                 send_message(publication, &mut self.buffer, &error_msg)?;
                 return Err(e);
             }
         }
 
         // Allocate dedicated session for this gateway
-        let gateway_address = self.gateway_session_addresses.get(&session_id)
-            .ok_or_else(|| ServerError::InvalidGatewayMessage("Gateway address not found".to_string()))?
+        let gateway_address = self
+            .gateway_session_addresses
+            .get(&session_id)
+            .ok_or_else(|| {
+                ServerError::InvalidGatewayMessage("Gateway address not found".to_string())
+            })?
             .clone();
 
-        let (dedicated_session, ports) = self.allocate_gateway_session(session_id, gateway_id, &gateway_address)?;
+        let (dedicated_session, ports) =
+            self.allocate_gateway_session(session_id, gateway_id, &gateway_address)?;
 
         // Encrypt the dedicated session ID
         let encrypted_session = encryption_key ^ dedicated_session;
@@ -387,15 +429,22 @@ impl GatewayManager {
         gateway_address: &str,
     ) -> Result<(i32, [u16; 2]), ServerError> {
         // Increment connection count for this address
-        let counter = self.address_connection_count.entry(gateway_address.to_string()).or_insert(0);
+        let counter = self
+            .address_connection_count
+            .entry(gateway_address.to_string())
+            .or_insert(0);
         *counter += 1;
 
         // Allocate two ports for the gateway session
-        let ports = self.port_allocator.allocate(2)
+        let ports = self
+            .port_allocator
+            .allocate(2)
             .map_err(|e| ServerError::PortAllocationError(e.to_string()))?;
 
         // Allocate a dedicated session ID
-        let dedicated_session = self.session_allocator.allocate()
+        let dedicated_session = self
+            .session_allocator
+            .allocate()
             .map_err(|e| ServerError::SessionAllocationError(e.to_string()))?;
 
         // Create gateway session
@@ -410,8 +459,10 @@ impl GatewayManager {
         )?;
 
         // Store the gateway session
-        self.gateway_sessions.insert(initial_session_id, gateway_session);
-        self.gateway_session_addresses.insert(initial_session_id, gateway_address.to_string());
+        self.gateway_sessions
+            .insert(initial_session_id, gateway_session);
+        self.gateway_session_addresses
+            .insert(initial_session_id, gateway_address.to_string());
 
         debug!(
             "Allocated dedicated session 0x{:x} for gateway '{}' with ports {} and {}",
@@ -422,20 +473,28 @@ impl GatewayManager {
     }
 
     /// Authenticates a gateway (placeholder implementation)
-    fn authenticate_gateway(&self, gateway_id: &str, _credentials: &str) -> Result<(), ServerError> {
+    fn authenticate_gateway(
+        &self,
+        gateway_id: &str,
+        _credentials: &str,
+    ) -> Result<(), ServerError> {
         // TODO: Implement actual authentication logic
         // For now, just validate the gateway ID format
         if gateway_id.len() < 3 || !gateway_id.starts_with("gateway-") {
-            return Err(ServerError::AuthenticationError("Invalid gateway ID format".to_string()));
+            return Err(ServerError::AuthenticationError(
+                "Invalid gateway ID format".to_string(),
+            ));
         }
-        
+
         info!("Gateway '{}' authenticated successfully", gateway_id);
         Ok(())
     }
 
     /// Checks if a gateway is already connected
     fn is_gateway_connected(&self, gateway_id: &str) -> bool {
-        self.gateway_sessions.values().any(|session| session.gateway_id == gateway_id)
+        self.gateway_sessions
+            .values()
+            .any(|session| session.gateway_id == gateway_id)
     }
 
     /// Polls all active gateway sessions
@@ -464,7 +523,10 @@ impl GatewayManager {
 
             // Poll the session for messages
             if let Err(e) = gateway_session.poll() {
-                error!("Error polling gateway session 0x{:x}: {}", initial_session_id, e);
+                error!(
+                    "Error polling gateway session 0x{:x}: {}",
+                    initial_session_id, e
+                );
                 sessions_to_remove.push(*initial_session_id);
             }
         }
@@ -480,7 +542,10 @@ impl GatewayManager {
     /// Removes a gateway session and cleans up resources
     fn remove_gateway_session(&mut self, session_id: i32) -> Result<(), ServerError> {
         if let Some(mut gateway_session) = self.gateway_sessions.remove(&session_id) {
-            info!("Removing gateway session 0x{:x} for gateway '{}'", session_id, gateway_session.gateway_id);
+            info!(
+                "Removing gateway session 0x{:x} for gateway '{}'",
+                session_id, gateway_session.gateway_id
+            );
 
             // Close the session
             gateway_session.close()?;
@@ -505,7 +570,8 @@ impl GatewayManager {
 
     /// Cleans up expired gateways
     fn cleanup_expired_gateways(&mut self) -> Result<usize, ServerError> {
-        let expired_sessions: Vec<i32> = self.gateway_sessions
+        let expired_sessions: Vec<i32> = self
+            .gateway_sessions
             .iter()
             .filter(|(_, session)| session.is_expired())
             .map(|(session_id, _)| *session_id)
@@ -522,7 +588,7 @@ impl GatewayManager {
     /// Shuts down all gateways
     fn shutdown_all_gateways(&mut self) -> Result<(), ServerError> {
         let session_ids: Vec<i32> = self.gateway_sessions.keys().cloned().collect();
-        
+
         for session_id in session_ids {
             self.remove_gateway_session(session_id)?;
         }
@@ -557,8 +623,11 @@ impl AeronFragmentHandlerCallback for &mut HandshakeMessageHandler {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) {
         let message = String::from_utf8_lossy(buffer);
         let session_id = header.get_values().unwrap().frame.session_id;
-        
-        debug!("Received handshake message from session 0x{:x}: {}", session_id, message);
+
+        debug!(
+            "Received handshake message from session 0x{:x}: {}",
+            session_id, message
+        );
 
         // Update statistics
         {
@@ -597,11 +666,16 @@ impl AeronAvailableImageCallback for GatewayImageAvailableHandler {
         let session_id = image.get_constants().unwrap().session_id;
         let binding = image.get_constants().unwrap();
         let address = binding.source_identity();
-        
-        debug!("Gateway image available for session 0x{:x} from {}", session_id, address);
-        
+
+        debug!(
+            "Gateway image available for session 0x{:x} from {}",
+            session_id, address
+        );
+
         let mut gateways = self.gateways.write().unwrap();
-        gateways.gateway_session_addresses.insert(session_id, address.to_string());
+        gateways
+            .gateway_session_addresses
+            .insert(session_id, address.to_string());
     }
 }
 
@@ -619,9 +693,12 @@ impl AeronUnavailableImageCallback for GatewayImageUnavailableHandler {
         let session_id = image.get_constants().unwrap().session_id;
         let binding = image.get_constants().unwrap();
         let address = binding.source_identity();
-        
-        debug!("Gateway image unavailable for session 0x{:x} from {}", session_id, address);
-        
+
+        debug!(
+            "Gateway image unavailable for session 0x{:x} from {}",
+            session_id, address
+        );
+
         let mut gateways = self.gateways.write().unwrap();
         gateways.gateway_session_addresses.remove(&session_id);
     }

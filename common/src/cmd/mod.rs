@@ -2,12 +2,13 @@ use crate::model::enums::{MatcherEventType, OrderAction, OrderType};
 use crate::model::order::OrderTrait;
 use borsh::{BorshDeserialize, BorshSerialize};
 use sbe_order::message_header_codec::{self, MessageHeaderDecoder};
-use sbe_order::order_command_message_codec::{OrderCommandMessageDecoder, OrderCommandMessageEncoder};
-use sbe_order::{ReadBuf, SbeResult, WriteBuf};
+use sbe_order::order_command_message_codec::{
+    OrderCommandMessageDecoder, OrderCommandMessageEncoder,
+};
 use sbe_order::order_command_type::OrderCommandType as SbeOrderCommandType;
+use sbe_order::{ReadBuf, SbeResult, WriteBuf};
 use serde::de::Error;
 use serde::de::value::Error as SerdeError;
-
 
 // TODO: translate OrderCommand
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -43,8 +44,8 @@ impl TryFrom<SbeOrderCommandType> for OrderCommandType {
             SbeOrderCommandType::CancelOrder => Ok(OrderCommandType::CancelOrder),
             SbeOrderCommandType::MoveOrder => Ok(OrderCommandType::MoveOrder),
             SbeOrderCommandType::ReduceOrder => Ok(OrderCommandType::ReduceOrder),
-            SbeOrderCommandType::NullVal => Err(SerdeError::custom("NullVal")) // Maybe handle NullVal specially
-        }   
+            SbeOrderCommandType::NullVal => Err(SerdeError::custom("NullVal")), // Maybe handle NullVal specially
+        }
     }
 }
 
@@ -58,7 +59,6 @@ impl From<OrderCommandType> for SbeOrderCommandType {
         }
     }
 }
-
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct OrderCommand {
