@@ -17,7 +17,6 @@ pub struct Duologue {
     pub session_id: i32,
     pub gateway_id: String,
     pub subscription: AeronSubscription,
-    pub owner: String,
     pub port_data: u16,
     pub port_control: u16,
     pub expire_time: u64,
@@ -72,7 +71,6 @@ impl Duologue {
         Ok(Self {
             fragment_handler,
             gateway_id: gateway_id.to_string(),
-            owner: owner.to_string(),
             port_data,
             port_control,
             is_closed: false,
@@ -152,8 +150,8 @@ impl AeronUnavailableImageCallback for DuologueImageUnavailable {
         let session_id = binding.session_id;
         // check image_count and close?
         info!(
-            "[{}] Client Disconnected, address: {}",
-            session_id, remote_addr
+            "[{}] Client Disconnected, address: {}, gateway: {}",
+            session_id, remote_addr, self.owner
         );
     }
 }

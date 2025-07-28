@@ -1,25 +1,14 @@
-use crate::server::config::CoreConfig;
 use crate::server::duologue::Duologue;
 use crate::utils::{PortAllocator, SessionAllocator, send_message};
 use dashmap::DashMap;
 use rusteron_client::{Aeron, AeronPublication};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::SystemTime;
 use crossbeam::queue::SegQueue;
 use tracing::{debug, error, info};
+use vex_config::CoreNetworkingConfig;
 
 use super::ServerError;
-
-/// Represents a gateway's handshake request
-#[derive(Debug, Clone)]
-pub struct GatewayHandshakeRequest {
-    pub gateway_id: String,
-    pub session_id: i32,
-    pub encryption_key: i32,
-    pub source_address: String,
-    pub timestamp: SystemTime,
-}
 
 /// Manages gateway connections and session lifecycle
 ///
@@ -35,7 +24,7 @@ pub struct GatewayManager {
     /// Aeron messaging instance
     aeron: Rc<Aeron>,
     /// Core configuration
-    config: CoreConfig,
+    config: CoreNetworkingConfig,
     /// Port allocator for gateway sessions
     port_allocator: PortAllocator,
     /// Session ID allocator
@@ -46,7 +35,7 @@ pub struct GatewayManager {
 
 impl GatewayManager {
     /// Creates a new gateway manager
-    pub fn new(config: CoreConfig, aeron: Rc<Aeron>) -> Result<Self, ServerError> {
+    pub fn new(config: CoreNetworkingConfig, aeron: Rc<Aeron>) -> Result<Self, ServerError> {
         let buffer_pool = SegQueue::new();
 
         // Pre-populate buffer pool

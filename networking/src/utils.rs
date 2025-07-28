@@ -5,7 +5,7 @@ use rusteron_client::{Aeron, AeronPublication, AeronSubscription, AeronCError, A
 use rand::Rng;
 use tracing::info;
 
-use crate::server::server::ServerError;
+use crate::server::ServerError;
 
 pub fn new_publication(aeron: &Aeron, address: &str, port: u16, stream_id: i32) -> Result<AeronPublication, AeronCError> {
     let endpoint = format!("{address}:{port}");
