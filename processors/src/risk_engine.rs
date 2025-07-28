@@ -1,32 +1,56 @@
 use common::cmd::MatcherTradeEvent;
 use common::cmd::OrderCommand;
-use common::cmd::OrderCommandType;
-use common::model::enums::MatcherEventType;
-use common::model::enums::OrderAction;
-use common::model::symbol_specification::CoreSymbolSpecification;
 use common::model::user_profile::UserProfile;
 use hashbrown::HashMap;
 use orderbook::OrderBookError;
 use tracing::{info, warn};
+use common::cmd::OrderCommandType;
+use common::model::enums::MatcherEventType;
+use common::model::enums::OrderAction;
+use common::model::symbol_specification::CoreSymbolSpecification;
+
+
 /// Manages all user profiles and performs risk checks as well as settlements
 /// This is the Rust equivalent of `RiskEngine.java`.
 pub struct RiskEngine {
     pub user_profiles: HashMap<i64, UserProfile>,
     pub symbol_specs: HashMap<i32, CoreSymbolSpecification>,
+    // Sharding configuration
+    shard_id: i32,
+    shard_mask: i64,
 }
 
 impl RiskEngine {
-    pub fn new(symbol_specs: HashMap<i32, CoreSymbolSpecification>) -> Self {
+    pub fn new(
+        symbol_specs: HashMap<i32, CoreSymbolSpecification>,
+        shard_id: i32,
+        num_shards: i32,
+    ) -> Self {
+        if num_shards.count_ones() != 1 {
+            panic!("Number of shards must be a power of 2");
+        }
         Self {
             user_profiles: HashMap::new(),
             symbol_specs,
+            shard_id,
+            shard_mask: (num_shards - 1) as i64,
         }
+    }
+
+    /// Checks if a user ID is handled by this risk engine instance.
+    fn uid_for_this_handler(&self, uid: i64) -> bool {
+        (uid & self.shard_mask) == self.shard_id as i64
     }
 
     /// Pre-processes a command to validate it(DONE) and hold funds(TODOs).
     /// This is the first stage(excali-5a, excali-5b) of processing for any command that can affect a user.
     pub fn pre_process_command(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError> {
-        info!("[RiskEngine] Pre-processing command: {:?}", cmd);
+        // Process only if the command is for a user managed by this shard
+        if !self.uid_for_this_handler(cmd.uid) {
+            return Ok(()); // Not for this shard, skip
+        }
+
+        info!("[RiskEngine_{}] Pre-processing command: {:?}", self.shard_id, cmd);
         let user_profile = self
             .user_profiles
             .get_mut(&cmd.uid)
@@ -45,10 +69,7 @@ impl RiskEngine {
             "[RiskEngine] Validating arguments for order {}",
             cmd.order_id
         );
-        if matches!(
-            cmd.command,
-            OrderCommandType::PlaceOrder | OrderCommandType::ReduceOrder
-        ) {
+        if matches!(cmd.command, OrderCommandType::PlaceOrder | OrderCommandType::ReduceOrder) {
             if cmd.size <= 0 || cmd.price <= 0 {
                 return Err(OrderBookError::InvalidArguments);
             }
@@ -95,6 +116,13 @@ impl RiskEngine {
     /// Handles events coming from the matching engine to settle funds.
     /// This is a final stage(excali-8a) in the pipeline for events that have financial impact.
     pub fn handle_event(&mut self, event: &MatcherTradeEvent) {
+        // Process only if the event is for a user managed by this shard
+        if !self.uid_for_this_handler(event.active_order_uid) && !self.uid_for_this_handler(event.maker_uid) {
+            return; // Not for this shard, skip
+        }
+
+        info!("[RiskEngine_{}] Handling event: {:?}", self.shard_id, event);
+
         match event.event_type {
             MatcherEventType::Trade => {
                 let spec = self.symbol_specs.get(&event.symbol).unwrap();
@@ -112,7 +140,12 @@ impl RiskEngine {
                     );
                 }
                 if let Some(taker_profile) = self.user_profiles.get_mut(&event.active_order_uid) {
-                    taker_profile.settle_trade(spec, event.price, event.size, event.taker_action);
+                    taker_profile.settle_trade(
+                        spec,
+                        event.price,
+                        event.size,
+                        event.taker_action,
+                    );
                 }
             }
             MatcherEventType::Reduce | MatcherEventType::Cancel => {
@@ -122,7 +155,11 @@ impl RiskEngine {
                     } else {
                         event.size
                     };
-                    user_profile.release_funds(event.symbol, released_amount, event.taker_action);
+                    user_profile.release_funds(
+                        event.symbol,
+                        released_amount,
+                        event.taker_action,
+                    );
                 }
             }
             MatcherEventType::OrderPlaced => {
@@ -137,6 +174,6 @@ impl RiskEngine {
 
 impl Default for RiskEngine {
     fn default() -> Self {
-        Self::new(HashMap::new())
+        Self::new(HashMap::new(),0,1)
     }
 }

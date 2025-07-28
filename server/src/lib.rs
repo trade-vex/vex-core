@@ -12,7 +12,7 @@ use common::{
 use disruptor::{MultiConsumerBarrier, MultiProducer};
 use hashbrown::HashMap;
 use orderbook::OrderBookImplType;
-use processors::{journaling::JournalingProcessor, risk_engine::RiskEngine};
+use processors::{journaling::JournalingProcessor};
 
 use crate::{engine::CoreEngine, events::SimpleEventsHandler};
 
@@ -31,18 +31,15 @@ pub fn init_exchange() -> (
     spec.quote_currency = 2; // USD
     symbol_specs.insert(0, spec);
 
-    // Create risk engine with funded user profiles
-    let risk_engine = RiskEngine::new(symbol_specs);
-
     // Initialize journaling processor for audit trail
     let journaling_processor = JournalingProcessor::new();
 
     // Create events handler for trade events
     let events_handler = Arc::new(SimpleEventsHandler::new());
 
-    // Create the Exchange Core with empty routers
+    // Create the Exchange Core with sharded risk engines and matching engines
     let (core_engine, producer) =
-        CoreEngine::new(risk_engine, journaling_processor, events_handler.clone());
+        CoreEngine::new(symbol_specs, journaling_processor, events_handler.clone());
 
     core_engine.add_symbol(0, OrderBookImplType::Naive);
 
