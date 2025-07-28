@@ -46,6 +46,7 @@ fn create_test_addresses() -> (SocketAddr, SocketAddr) {
     info!("server_addr: {}", server_addr);
     info!("client_addr: {}", client_addr);
 
+
     (server_addr, client_addr)
 }
 
@@ -119,6 +120,7 @@ fn test_client_server_communication() {
         }
     });
     let client_result = client_handle.join();
+
 
     match client_result {
         Ok(Ok(())) => println!("✓ Client run() test passed"),

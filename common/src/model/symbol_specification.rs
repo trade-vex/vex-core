@@ -25,6 +25,23 @@ pub struct CoreSymbolSpecification {
     pub margin_sell: i64, // sell margin (quote currency)
 }
 
+impl Default for CoreSymbolSpecification {
+    fn default() -> Self {
+        Self {
+            symbol_id: 0,
+            symbol_type: SymbolType::default(),
+            base_currency: 0,
+            quote_currency: 0,
+            base_scale_k: 1,
+            quote_scale_k: 1,
+            taker_fee: 0,
+            maker_fee: 0,
+            margin_buy: 0,
+            margin_sell: 0,
+        }
+    }
+}
+
 impl CoreSymbolSpecification {
     pub fn builder() -> CoreSymbolSpecificationBuilder {
         CoreSymbolSpecificationBuilder::default()

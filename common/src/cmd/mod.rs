@@ -2,12 +2,13 @@ use crate::model::enums::{MatcherEventType, OrderAction, OrderType};
 use crate::model::order::OrderTrait;
 use borsh::{BorshDeserialize, BorshSerialize};
 use sbe_order::message_header_codec::{self, MessageHeaderDecoder};
-use sbe_order::order_command_message_codec::{OrderCommandMessageDecoder, OrderCommandMessageEncoder};
-use sbe_order::{ReadBuf, SbeResult, WriteBuf};
+use sbe_order::order_command_message_codec::{
+    OrderCommandMessageDecoder, OrderCommandMessageEncoder,
+};
 use sbe_order::order_command_type::OrderCommandType as SbeOrderCommandType;
+use sbe_order::{ReadBuf, SbeResult, WriteBuf};
 use serde::de::Error;
 use serde::de::value::Error as SerdeError;
-
 
 // TODO: translate OrderCommand
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -43,8 +44,8 @@ impl TryFrom<SbeOrderCommandType> for OrderCommandType {
             SbeOrderCommandType::CancelOrder => Ok(OrderCommandType::CancelOrder),
             SbeOrderCommandType::MoveOrder => Ok(OrderCommandType::MoveOrder),
             SbeOrderCommandType::ReduceOrder => Ok(OrderCommandType::ReduceOrder),
-            SbeOrderCommandType::NullVal => Err(SerdeError::custom("NullVal")) // Maybe handle NullVal specially
-        }   
+            SbeOrderCommandType::NullVal => Err(SerdeError::custom("NullVal")), // Maybe handle NullVal specially
+        }
     }
 }
 
@@ -58,7 +59,6 @@ impl From<OrderCommandType> for SbeOrderCommandType {
         }
     }
 }
-
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct OrderCommand {
@@ -228,9 +228,12 @@ impl OrderTrait for OrderCommand {
 pub struct MatcherTradeEvent {
     pub event_type: MatcherEventType,
     pub section: i32,
+    pub symbol: i32,
+    pub active_order_uid: i64,
+    pub taker_action: OrderAction,
     pub active_order_completed: bool,
     pub matched_order_id: i64,
-    pub matched_order_uid: i64,
+    pub maker_uid: i64,
     pub matched_order_completed: bool,
     pub price: i64,
     pub size: i64,
@@ -262,9 +265,12 @@ impl Default for MatcherTradeEvent {
         Self {
             event_type: MatcherEventType::Trade,
             section: 0, // TODO: What is section?
+            symbol: 0,
+            active_order_uid: 0,
+            taker_action: OrderAction::Ask,
             active_order_completed: false,
             matched_order_id: 0,
-            matched_order_uid: 0,
+            maker_uid: 0,
             matched_order_completed: false,
             price: 0,
             size: 0,
@@ -314,4 +320,4 @@ pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
         timestamp: decoder.timestamp(),
         matcher_event: None,
     })
-} 
+}

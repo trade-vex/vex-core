@@ -67,7 +67,11 @@ pub fn new_subscription_with_handlers<X: AeronAvailableImageCallback, Y: AeronUn
     aeron.add_subscription(&uri, stream_id, Some(& Handler::leak(on_image_available)), Some(& Handler::leak(on_image_unavailable)), Duration::from_secs(1))
 }
 
-pub fn send_message(publication: &AeronPublication, buffer: &mut [u8], message: &str) -> Result<(), AeronCError> {
+pub fn send_message(
+    publication: &AeronPublication,
+    buffer: &mut [u8],
+    message: &str,
+) -> Result<(), AeronCError> {
     let message_bytes = message.as_bytes();
     buffer[0..message_bytes.len()].copy_from_slice(message_bytes);
     let result = publication.offer::<AeronReservedValueSupplierLogger>(buffer, None);
@@ -108,7 +112,7 @@ impl PortAllocator {
         
         let port_range = port_base..=port_hi;
         let mut ports_free: Vec<u16> = port_range.clone().collect();
-        
+
         // Shuffle the ports for random allocation
         let mut rng = rand::thread_rng();
         ports_free.shuffle(&mut rng);

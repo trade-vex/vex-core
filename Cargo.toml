@@ -10,8 +10,9 @@ members = [
     "networking",
     "orderbook", 
     "processors", 
-    "server",
+    "server", 
     "vex-config",
+    "utils",
 ]
 
 [workspace.dependencies]
@@ -19,6 +20,7 @@ common = { path = "./common" }
 vex-config = { path = "./vex-config" }
 processors = { path = "./processors" }
 orderbook = { path = "./orderbook" }
+utils = { path = "./utils" }
 borsh = { version = "1.5.7", default-features = false, features = ["hashbrown", "derive", "de_strict_order"] }
 hashbrown = "0.15.4"
 thiserror = "2.0.12"

@@ -332,7 +332,7 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
 
             self.order_id_map.remove(&order.order_id);
             cmd.attach_matcher_event(EventHelper::send_reduce_event(
-                &order,
+                &cmd,
                 order.size - order.filled,
                 true,
             ));
@@ -367,7 +367,7 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
                 bucket.reduce_size(reduced_by);
             }
 
-            cmd.attach_matcher_event(EventHelper::send_reduce_event(order, reduced_by, false));
+            cmd.attach_matcher_event(EventHelper::send_reduce_event(cmd, reduced_by, false));
 
             Ok(())
         } else {

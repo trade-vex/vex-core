@@ -135,11 +135,7 @@ impl OrderBookDirectImpl {
             next_key = order.prev;
         }
 
-        if size == 0 {
-            budget
-        } else {
-            i64::MAX
-        }
+        if size == 0 { budget } else { i64::MAX }
     }
 
     fn try_match_instantly(&mut self, cmd: &mut OrderCommand, filled: i64) -> i64 {
@@ -204,7 +200,7 @@ impl OrderBookDirectImpl {
                     section: 0, // TODO
                     active_order_completed: remaining_size == 0,
                     matched_order_id: maker_order_mut.order_id,
-                    matched_order_uid: maker_order_mut.uid,
+                    maker_uid: maker_order_mut.uid,
                     matched_order_completed: maker_filled,
                     price: maker_order_mut.price,
                     size: trade_size,
@@ -562,11 +558,7 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
         }
 
         let remaining_size = order_to_cancel.size() - order_to_cancel.filled();
-        cmd.matcher_event = Some(EventHelper::send_reduce_event(
-            &order_to_cancel,
-            remaining_size,
-            true,
-        ));
+        cmd.matcher_event = Some(EventHelper::send_reduce_event(&cmd, remaining_size, true));
 
         self.remove_order(*order_key);
 
@@ -605,11 +597,7 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
             bucket.volume -= reduced_size;
         }
 
-        cmd.matcher_event = Some(EventHelper::send_reduce_event(
-            order_to_reduce,
-            reduced_size,
-            false,
-        ));
+        cmd.matcher_event = Some(EventHelper::send_reduce_event(cmd, reduced_size, false));
 
         Ok(())
     }
