@@ -2,7 +2,7 @@ use crate::events::EventHelper;
 use crate::{MatcherTradeEvent, OrderBook, OrderBookError, OrderBookImplType, OrderCommand};
 use blart::TreeMap;
 use borsh::{BorshDeserialize, BorshSerialize};
-use common::model::enums::{MatcherEventType, OrderAction, OrderType, SymbolType};
+use common::model::enums::{MatcherEventType, OrderType, Side, SymbolType};
 use common::model::order::{Order, OrderTrait};
 use common::model::symbol_specification::CoreSymbolSpecification;
 use hashbrown::HashMap;
@@ -80,7 +80,7 @@ impl OrderBookDirectImpl {
             filled: filled_size,
             reserve_bid_price: cmd.reserve_bid_price(),
             action: cmd.action(),
-            uid: cmd.uid(),
+            user_id: cmd.user_id(),
             timestamp: cmd.timestamp(),
             next: None,
             prev: None,
@@ -104,7 +104,7 @@ impl OrderBookDirectImpl {
     fn new_order_match_fok_budget(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError> {
         let budget = self.check_budget_to_fill(cmd.action(), cmd.size());
 
-        if budget != i64::MAX && (cmd.action() == OrderAction::Ask || budget <= cmd.price()) {
+        if budget != i64::MAX && (cmd.action() == Side::Ask || budget <= cmd.price()) {
             self.try_match_instantly(cmd, 0);
         } else {
             EventHelper::attach_reject_event(cmd, cmd.size());
@@ -112,10 +112,10 @@ impl OrderBookDirectImpl {
         Ok(())
     }
 
-    fn check_budget_to_fill(&self, action: OrderAction, mut size: i64) -> i64 {
+    fn check_budget_to_fill(&self, action: Side, mut size: i64) -> i64 {
         let mut budget = 0i64;
 
-        let mut next_key = if action == OrderAction::Bid {
+        let mut next_key = if action == Side::Bid {
             self.best_ask_order
         } else {
             self.best_bid_order
@@ -145,7 +145,7 @@ impl OrderBookDirectImpl {
             return filled;
         }
 
-        let is_bid_action = cmd.action() == OrderAction::Bid;
+        let is_bid_action = cmd.action() == Side::Bid;
         let limit_price = cmd.price();
 
         let best_maker_key = if is_bid_action {
@@ -200,11 +200,11 @@ impl OrderBookDirectImpl {
                     section: 0, // TODO
                     active_order_completed: remaining_size == 0,
                     matched_order_id: maker_order_mut.order_id,
-                    maker_uid: maker_order_mut.uid,
+                    maker_user_id: maker_order_mut.user_id,
                     matched_order_completed: maker_filled,
                     price: maker_order_mut.price,
                     size: trade_size,
-                    bidder_hold_price: if cmd.action() == OrderAction::Ask {
+                    bidder_hold_price: if cmd.action() == Side::Ask {
                         cmd.reserve_bid_price()
                     } else {
                         maker_order_mut.reserve_bid_price
@@ -246,7 +246,7 @@ impl OrderBookDirectImpl {
 
             // 2. Update best order pointers if needed
             let action = order_to_remove.action;
-            if action == OrderAction::Ask {
+            if action == Side::Ask {
                 if self.best_ask_order == Some(order_key) {
                     self.best_ask_order = next_key;
                 }
@@ -258,7 +258,7 @@ impl OrderBookDirectImpl {
             }
 
             // 3. Update bucket
-            let buckets = if action == OrderAction::Ask {
+            let buckets = if action == Side::Ask {
                 &mut self.ask_price_buckets
             } else {
                 &mut self.bid_price_buckets
@@ -291,7 +291,7 @@ impl OrderBookDirectImpl {
     }
 
     fn insert_order(&mut self, mut order: DirectOrder) {
-        let is_ask = order.action == OrderAction::Ask;
+        let is_ask = order.action == Side::Ask;
         let buckets = if is_ask {
             &mut self.ask_price_buckets
         } else {
@@ -369,8 +369,8 @@ impl OrderBookDirectImpl {
         bucket.tail = Some(new_order_key);
     }
 
-    fn validate_chain(&self, action: OrderAction, orders_in_chain: &mut hashbrown::HashSet<i64>) {
-        let is_ask = action == OrderAction::Ask;
+    fn validate_chain(&self, action: Side, orders_in_chain: &mut hashbrown::HashSet<i64>) {
+        let is_ask = action == Side::Ask;
         let buckets = if is_ask {
             &self.ask_price_buckets
         } else {
@@ -438,8 +438,8 @@ pub struct DirectOrder {
     pub size: i64,
     pub filled: i64,
     pub reserve_bid_price: i64,
-    pub action: OrderAction,
-    pub uid: i64,
+    pub action: Side,
+    pub user_id: i64,
     pub timestamp: i64,
 
     // Doubly-linked list pointers
@@ -459,10 +459,10 @@ impl OrderTrait for DirectOrder {
     fn filled(&self) -> i64 {
         self.filled
     }
-    fn uid(&self) -> i64 {
-        self.uid
+    fn user_id(&self) -> i64 {
+        self.user_id
     }
-    fn action(&self) -> OrderAction {
+    fn action(&self) -> Side {
         self.action
     }
     fn order_id(&self) -> i64 {
@@ -493,7 +493,7 @@ impl DirectOrder {
             filled: self.filled,
             reserve_bid_price: self.reserve_bid_price,
             action: self.action,
-            uid: self.uid,
+            user_id: self.user_id,
             timestamp: self.timestamp,
         }
     }
@@ -553,7 +553,7 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
 
         let order_to_cancel = self.orders[*order_key].clone();
 
-        if order_to_cancel.uid() != cmd.uid() {
+        if order_to_cancel.user_id() != cmd.user_id() {
             return Err(OrderBookError::UnknownOrderId);
         }
 
@@ -573,7 +573,7 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
 
         let order_to_reduce = self.orders.get_mut(*order_key).unwrap();
 
-        if order_to_reduce.uid() != cmd.uid() {
+        if order_to_reduce.user_id() != cmd.user_id() {
             return Err(OrderBookError::UnknownOrderId);
         }
 
@@ -587,7 +587,7 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
         let price = order_to_reduce.price();
         let action = order_to_reduce.action();
 
-        let buckets = if action == OrderAction::Ask {
+        let buckets = if action == Side::Ask {
             &mut self.ask_price_buckets
         } else {
             &mut self.bid_price_buckets
@@ -608,14 +608,14 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
             .get(&cmd.order_id())
             .ok_or(OrderBookError::UnknownOrderId)?;
 
-        if self.orders[*order_key].uid() != cmd.uid() {
+        if self.orders[*order_key].user_id() != cmd.user_id() {
             return Err(OrderBookError::UnknownOrderId);
         }
 
         let mut order_to_move = self.orders[*order_key].clone();
 
         if self.symbol_spec.symbol_type == SymbolType::CurrencyExchangePair
-            && order_to_move.action == OrderAction::Bid
+            && order_to_move.action == Side::Bid
             && cmd.price > order_to_move.reserve_bid_price
         {
             return Err(OrderBookError::MoveFailedPriceOverRiskLimit);
@@ -630,8 +630,8 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
         Ok(())
     }
 
-    fn get_orders_num(&self, action: OrderAction) -> i32 {
-        let buckets = if action == OrderAction::Ask {
+    fn get_orders_num(&self, action: Side) -> i32 {
+        let buckets = if action == Side::Ask {
             &self.ask_price_buckets
         } else {
             &self.bid_price_buckets
@@ -639,8 +639,8 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
         buckets.values().map(|b| b.num_orders).sum()
     }
 
-    fn get_total_orders_volume(&self, action: OrderAction) -> i64 {
-        let buckets = if action == OrderAction::Ask {
+    fn get_total_orders_volume(&self, action: Side) -> i64 {
+        let buckets = if action == Side::Ask {
             &self.ask_price_buckets
         } else {
             &self.bid_price_buckets
@@ -655,11 +655,11 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
             .map(|order| order as &dyn OrderTrait)
     }
 
-    fn find_user_orders(&self, uid: i64) -> Vec<Order> {
+    fn find_user_orders(&self, user_id: i64) -> Vec<Order> {
         self.orders
             .iter()
             .map(|(_, order)| order)
-            .filter(|order| order.uid == uid)
+            .filter(|order| order.user_id == user_id)
             .map(|direct_order| direct_order.to_order())
             .collect()
     }
@@ -760,8 +760,8 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
 
     fn validate_internal_state(&self) {
         let mut orders_in_chain = hashbrown::HashSet::new();
-        self.validate_chain(OrderAction::Ask, &mut orders_in_chain);
-        self.validate_chain(OrderAction::Bid, &mut orders_in_chain);
+        self.validate_chain(Side::Ask, &mut orders_in_chain);
+        self.validate_chain(Side::Bid, &mut orders_in_chain);
 
         assert_eq!(
             self.order_id_index.len(),

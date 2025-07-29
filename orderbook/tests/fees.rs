@@ -1,5 +1,5 @@
 //! Tests for fee calculations.
-use common::model::enums::{OrderAction, OrderType};
+use common::model::enums::{OrderType, Side};
 use common::model::symbol_specification::{CoreSymbolSpecification, TestConstants};
 use orderbook::naive_impl::OrderBookNaiveImpl;
 use orderbook::{OrderBook, OrderCommand};
@@ -15,13 +15,11 @@ fn should_calculate_fees_on_trade() {
     let mut order_book = OrderBookNaiveImpl::new(spec.clone());
 
     // Setup maker order
-    let mut maker_cmd =
-        OrderCommand::new_order(OrderType::Gtc, 1, 100, 20000, 0, 10, OrderAction::Ask);
+    let mut maker_cmd = OrderCommand::new_order(OrderType::Gtc, 1, 100, 20000, 0, 10, Side::Ask);
     order_book.new_order(&mut maker_cmd).unwrap();
 
     // Execute taker order that matches the maker
-    let mut taker_cmd =
-        OrderCommand::new_order(OrderType::Ioc, 2, 200, 20000, 0, 5, OrderAction::Bid);
+    let mut taker_cmd = OrderCommand::new_order(OrderType::Ioc, 2, 200, 20000, 0, 5, Side::Bid);
     order_book.new_order(&mut taker_cmd).unwrap();
 
     // Verify the trade event and fees
@@ -57,7 +55,7 @@ fn should_handle_multiple_fee_events() {
             20000,
             0,
             3,
-            OrderAction::Ask,
+            Side::Ask,
         ))
         .unwrap();
     order_book
@@ -68,13 +66,12 @@ fn should_handle_multiple_fee_events() {
             20000,
             0,
             8,
-            OrderAction::Ask,
+            Side::Ask,
         ))
         .unwrap();
 
     // Execute taker order that matches both makers
-    let mut taker_cmd =
-        OrderCommand::new_order(OrderType::Ioc, 3, 200, 20000, 0, 10, OrderAction::Bid);
+    let mut taker_cmd = OrderCommand::new_order(OrderType::Ioc, 3, 200, 20000, 0, 10, Side::Bid);
     order_book.new_order(&mut taker_cmd).unwrap();
 
     // Verify the trade events and fees
@@ -109,13 +106,12 @@ fn should_have_zero_fees_for_symbols_without_them() {
             50000,
             0,
             10,
-            OrderAction::Ask,
+            Side::Ask,
         ))
         .unwrap();
 
     // Execute taker order
-    let mut taker_cmd =
-        OrderCommand::new_order(OrderType::Ioc, 2, 200, 50000, 0, 5, OrderAction::Bid);
+    let mut taker_cmd = OrderCommand::new_order(OrderType::Ioc, 2, 200, 50000, 0, 5, Side::Bid);
     order_book.new_order(&mut taker_cmd).unwrap();
 
     // Verify fees are zero
