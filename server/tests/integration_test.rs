@@ -1,6 +1,6 @@
-// use common::cmd::{OrderCommand, OrderCommandType, decode_order_command};
-// use common::model::enums::{OrderType, Side};
-// use server::init_exchange;
+use common::cmd::{OrderCommand, OrderCommandType, decode_order_command};
+use common::model::enums::{Side, OrderType};
+use server::init_exchange;
 
 // use rusteron_client::{AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port};
 // use std::time::Duration;
@@ -40,30 +40,51 @@
 //     let server_port = find_unused_udp_port(40300).unwrap();
 //     let client_port = find_unused_udp_port(40350).unwrap();
 
-//     let server_addr = format!("127.0.0.1:{server_port}").parse().unwrap();
-//     let client_addr = format!("127.0.0.1:{client_port}").parse().unwrap();
-//     info!("server_addr: {}", server_addr);
-//     info!("client_addr: {}", client_addr);
+    // Place order
+    let mut cmd = OrderCommand::default();
+    cmd.order_id = 1;
+    cmd.user_id = 100;
+    cmd.symbol_id = 0;
+    cmd.size = 10;
+    cmd.price = 9629;
+    producer.publish(|e| *e = cmd.clone());
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-//     (server_addr, client_addr)
-// }
+    // Cancel order
+    let mut cancel_cmd = OrderCommand::cancel(1, 100);
+    cancel_cmd.symbol_id = 0;
+    producer.publish(|e| *e = cancel_cmd.clone());
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-// #[tokio::test]
-// async fn test_end_to_end_exchange_flow() {
-//     tracing_subscriber::fmt::init();
-//     info!("Starting end-to-end exchange flow test");
+    // Reduce order
+    let mut cmd2 = OrderCommand::default();
+    cmd2.order_id = 2;
+    cmd2.user_id = 100;
+    cmd2.symbol_id = 0;
+    cmd2.size = 10;
+    cmd2.price = 9629;
+    producer.publish(|e| *e = cmd2.clone());
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-//     let (server_addr, _client_addr) = create_test_addresses();
-//     let received_commands = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-//     let received_commands_clone = received_commands.clone();
+    let mut reduce_cmd = OrderCommand::reduce(2, 100, 5);
+    reduce_cmd.symbol_id = 0;
+    producer.publish(|e| *e = reduce_cmd.clone());
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-//     let client_handle = thread::spawn(move || -> Result<(), GatewayError> {
-//         let mut client_config = GatewayNetworkingConfig::test_defaults();
-//         client_config.core_port = server_addr.port();
-//         client_config.core_control_port = server_addr.port() + 1;
-//         info!("client_config: {:?}", client_config);
+    // Move order
+    let mut cmd3 = OrderCommand::default();
+    cmd3.order_id = 3;
+    cmd3.user_id = 100;
+    cmd3.symbol_id = 0;
+    cmd3.size = 10;
+    cmd3.price = 9629;
+    producer.publish(|e| *e = cmd3.clone());
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-//         let mut client = VexGateway::new(client_config)?;
+    let mut move_cmd = OrderCommand::move_order(3, 100, 9700);
+    move_cmd.symbol_id = 0;
+    producer.publish(|e| *e = move_cmd.clone());
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
 //         let handler = TestOrderCommandHandler {
 //             gateway_id: client.gateway_id().to_string(),
@@ -115,11 +136,33 @@
 //             thread::sleep(Duration::from_millis(100));
 //         }
 
-//         // Wait for processing
-//         thread::sleep(Duration::from_millis(1000));
+    //  Matching test: Place matching ASK and BID orders
+    // Use a price that is guaranteed to be the best available to ensure the correct orders match.
+    let mut ask_cmd = OrderCommand::new_order(
+        common::model::enums::OrderType::Gtc,
+        10,   // order_id
+        100,  // user_id
+        9620, // price (better than the existing order at 9629)
+        0,    // reserve_bid_price
+        5,    // size
+        common::model::enums::Side::Ask,
+    );
+    ask_cmd.symbol_id = 0;
+    producer.publish(|e| *e = ask_cmd.clone());
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-//         Ok(())
-//     });
+    let mut bid_cmd = OrderCommand::new_order(
+        common::model::enums::OrderType::Gtc,
+        11,   // order_id
+        101,  // user_id (different user)
+        9620, // price (matches the new ASK)
+        0,
+        5,
+        common::model::enums::Side::Bid,
+    );
+    bid_cmd.symbol_id = 0;
+    producer.publish(|e| *e = bid_cmd.clone());
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
 //     // Start the core engine server
 //     let server_handle = thread::spawn(move || {
@@ -174,12 +217,52 @@
 //     tracing_subscriber::fmt::init();
 //     info!("Starting end-to-end test without Aeron networking");
 
-//     // Create symbol specifications
-//     let mut symbol_specs = HashMap::new();
-//     symbol_specs.insert(0, TestConstants::symbol_spec_eth_xbt());
+        // Start client in background thread
+        match client.start(handler) {
+            Ok(()) => info!("Client started successfully"),
+            Err(e) => error!("Client start error: {e}"),
+        }
+        // Send test orders through the gateway
+        let test_orders = vec![
+            OrderCommand {
+                command: OrderCommandType::PlaceOrder,
+                user_id: 100,
+                reserve_bid_price: 0,
+                size: 10,
+                order_type: OrderType::Gtc,
+                user_cookie: 1,
+                timestamp: 1,
+                matcher_event: None,
+                action: Side::Ask,
+                order_id: 1,
+                symbol_id: 0,
+                price: 9630,
+            },
+            OrderCommand {
+                command: OrderCommandType::PlaceOrder,
+                user_id: 101,
+                reserve_bid_price: 0,
+                size: 10,
+                order_type: OrderType::Gtc,
+                user_cookie: 2,
+                timestamp: 2,
+                matcher_event: None,
+                action: Side::Bid,
+                order_id: 2,
+                symbol_id: 0,
+                price: 9630,
+            },
+            OrderCommand::cancel(1, 100),
+        ];
 
-//     // Initialize the exchange core using init_exchange
-//     let (_core_engine, mut producer, events_handler) = init_exchange(symbol_specs);
+        for mut order in test_orders {
+            if order.command == OrderCommandType::CancelOrder {
+                order.symbol_id = 0;
+            }
+            info!("Sending order: {:?}", order);
+            client.send_order_command(&order)?;
+            thread::sleep(Duration::from_millis(100));
+        }
 
 //     // Create test orders
 //     let test_orders = vec![
