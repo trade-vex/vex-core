@@ -28,7 +28,7 @@ pub type Producer = MultiProducer<OrderCommand, MultiConsumerBarrier>;
 /// Each processor runs on its own dedicated thread/core.
 pub struct CoreEngine {
     /// Sharded risk engines for parallel risk processing
-    /// Each shard handles users based on uid % num_shards
+    /// Each shard handles users based on user_id % num_shards
     risk_engines: Arc<Vec<Mutex<RiskEngine>>>,
 
     /// Sharded matching engine routers for parallel order processing
@@ -67,7 +67,7 @@ impl CoreEngine {
         let events_handler_arc = events_handler.clone();
 
         // Create 4 sharded risk engines for parallel risk processing
-        // Power of 2 sharding enables efficient bitwise operations: uid & shard_mask
+        // Power of 2 sharding enables efficient bitwise operations: user_id & shard_mask
         let num_risk_engines = 4;
         let mut risk_engines = Vec::new();
 
@@ -76,13 +76,13 @@ impl CoreEngine {
             
             // Add initial user profiles to this shard with funded accounts
             for user_id in [100, 101] {
-                let uid = user_id as i64;
+                let user_id = user_id as i64;
                 let shard_mask = (num_risk_engines - 1) as i64;
                 
                 // Only add users that belong to this shard
-                if (uid & shard_mask) == shard_id as i64 {
+                if (user_id & shard_mask) == shard_id as i64 {
                     let mut user_profile = common::model::user_profile::UserProfile::new(
-                        uid, 
+                        user_id, 
                         common::model::user_profile::UserStatus::Active
                     );
                     
@@ -90,9 +90,9 @@ impl CoreEngine {
                     user_profile.accounts.insert(1, 1000000); // 1M base currency
                     user_profile.accounts.insert(2, 1000000); // 1M quote currency
                     
-                    risk_engine.user_profiles.insert(uid, user_profile);
+                    risk_engine.user_profiles.insert(user_id, user_profile);
                     
-                    info!("Added user {} to RiskEngine shard {} with initial balances", uid, shard_id);
+                    info!("Added user {} to RiskEngine shard {} with initial balances", user_id, shard_id);
                 }
             }
             
@@ -176,7 +176,7 @@ impl CoreEngine {
             .handle_events_with(risk_r1_handler_3)
             .and_then() // Creates dependency: matching engines wait for risk engines
             // Stage 3: Matching Engine - 4 parallel handlers (equivalent to Java's disruptor.after(procR1))
-            // Each handler processes ALL events but filters internally based on symbol ID
+            // Each handler processes ALL events but filters internally based on symbol_id ID
             .pin_at_core(6)
             .handle_events_with(matching_handler_0)
             .pin_at_core(7)
@@ -219,30 +219,30 @@ impl CoreEngine {
     
     }
 
-    /// Adds a symbol to the appropriate matching engine shard
+    /// Adds a symbol_id to the appropriate matching engine shard
     ///
     /// Uses the same sharding logic as runtime processing: symbol_id & shard_mask
     /// This ensures symbols are distributed evenly across matching engine shards
     /// for optimal load balancing and memory usage.
     pub fn add_symbol(&self, symbol_id: i32, book_type: orderbook::OrderBookImplType) {
-        // Calculate which matching engine shard owns this symbol
+        // Calculate which matching engine shard owns this symbol_id
         let num_shards = self.matching_engine_routers.len() as i64;
         let shard_mask = num_shards - 1; // Power of 2 mask for efficient bitwise operations
         let owner_shard_id = (symbol_id as i64) & shard_mask;
         let router_index = owner_shard_id as usize;
 
-        // Add symbol only to the owning shard for memory efficiency
+        // Add symbol_id only to the owning shard for memory efficiency
         if let Some(router) = self.matching_engine_routers.get(router_index) {
             let mut matching_engine = router.lock().unwrap();
             matching_engine.add_symbol(symbol_id, book_type);
 
             info!(
-                "Added symbol {} to MatchingEngine shard {} (owner_shard_id={})",
+                "Added symbol_id {} to MatchingEngine shard {} (owner_shard_id={})",
                 symbol_id, router_index, owner_shard_id
             );
         } else {
             warn!(
-                "Failed to add symbol {}: router index {} out of bounds",
+                "Failed to add symbol_id {}: router index {} out of bounds",
                 symbol_id, router_index
             );
         }
@@ -255,18 +255,18 @@ impl CoreEngine {
     /// Routes the query to the correct risk engine shard based on user ID.
     /// This ensures consistent access to user data regardless of which
     /// risk engine shard is currently holding the user's state.
-    pub fn get_user_balance(&self, uid: u64, currency: i32) -> Option<i64> {
+    pub fn get_user_balance(&self, user_id: u64, currency: i32) -> Option<i64> {
         // Route to the correct risk engine shard using the same logic as processing
-        let uid_i64 = uid as i64;
+        let user_id_i64 = user_id as i64;
         let num_shards = self.risk_engines.len() as i64;
         let shard_mask = num_shards - 1; // Power of 2 mask
-        let risk_engine_index = (uid_i64 & shard_mask) as usize;
+        let risk_engine_index = (user_id_i64 & shard_mask) as usize;
 
         if let Some(risk_engine_mutex) = self.risk_engines.get(risk_engine_index) {
             let risk_engine = risk_engine_mutex.lock().unwrap();
             if let Some(balance) = risk_engine
                 .user_profiles
-                .get(&uid_i64)
+                .get(&user_id_i64)
                 .and_then(|profile| profile.accounts.get(&currency).copied())
             {
                 return Some(balance);

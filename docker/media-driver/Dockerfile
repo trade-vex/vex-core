@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     openjdk-17-jdk-headless \
     git \
     libbsd-dev \
-    uuid-dev \
+    uuser_id-dev \
     libssl-dev \
     zlib1g-dev \
     doxygen \
@@ -36,7 +36,7 @@ FROM ubuntu:22.04 as runtime
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     libbsd0 \
-    libuuid1 \
+    libuuser_id1 \
     libssl3 \
     zlib1g \
     && rm -rf /var/lib/apt/lists/*

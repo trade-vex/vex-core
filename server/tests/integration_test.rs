@@ -1,5 +1,5 @@
 use common::cmd::{OrderCommand, OrderCommandType, decode_order_command};
-use common::model::enums::{OrderAction, OrderType};
+use common::model::enums::{Side, OrderType};
 use server::init_exchange;
 
 use disruptor::Producer;
@@ -21,8 +21,8 @@ async fn test_full_exchange_flow() {
     // Place order
     let mut cmd = OrderCommand::default();
     cmd.order_id = 1;
-    cmd.uid = 100;
-    cmd.symbol = 0;
+    cmd.user_id = 100;
+    cmd.symbol_id = 0;
     cmd.size = 10;
     cmd.price = 9629;
     producer.publish(|e| *e = cmd.clone());
@@ -30,37 +30,37 @@ async fn test_full_exchange_flow() {
 
     // Cancel order
     let mut cancel_cmd = OrderCommand::cancel(1, 100);
-    cancel_cmd.symbol = 0;
+    cancel_cmd.symbol_id = 0;
     producer.publish(|e| *e = cancel_cmd.clone());
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // Reduce order
     let mut cmd2 = OrderCommand::default();
     cmd2.order_id = 2;
-    cmd2.uid = 100;
-    cmd2.symbol = 0;
+    cmd2.user_id = 100;
+    cmd2.symbol_id = 0;
     cmd2.size = 10;
     cmd2.price = 9629;
     producer.publish(|e| *e = cmd2.clone());
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let mut reduce_cmd = OrderCommand::reduce(2, 100, 5);
-    reduce_cmd.symbol = 0;
+    reduce_cmd.symbol_id = 0;
     producer.publish(|e| *e = reduce_cmd.clone());
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // Move order
     let mut cmd3 = OrderCommand::default();
     cmd3.order_id = 3;
-    cmd3.uid = 100;
-    cmd3.symbol = 0;
+    cmd3.user_id = 100;
+    cmd3.symbol_id = 0;
     cmd3.size = 10;
     cmd3.price = 9629;
     producer.publish(|e| *e = cmd3.clone());
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let mut move_cmd = OrderCommand::move_order(3, 100, 9700);
-    move_cmd.symbol = 0;
+    move_cmd.symbol_id = 0;
     producer.publish(|e| *e = move_cmd.clone());
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -100,26 +100,26 @@ async fn test_full_exchange_flow() {
     let mut ask_cmd = OrderCommand::new_order(
         common::model::enums::OrderType::Gtc,
         10,   // order_id
-        100,  // uid
+        100,  // user_id
         9620, // price (better than the existing order at 9629)
         0,    // reserve_bid_price
         5,    // size
-        common::model::enums::OrderAction::Ask,
+        common::model::enums::Side::Ask,
     );
-    ask_cmd.symbol = 0;
+    ask_cmd.symbol_id = 0;
     producer.publish(|e| *e = ask_cmd.clone());
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let mut bid_cmd = OrderCommand::new_order(
         common::model::enums::OrderType::Gtc,
         11,   // order_id
-        101,  // uid (different user)
+        101,  // user_id (different user)
         9620, // price (matches the new ASK)
         0,
         5,
-        common::model::enums::OrderAction::Bid,
+        common::model::enums::Side::Bid,
     );
-    bid_cmd.symbol = 0;
+    bid_cmd.symbol_id = 0;
     producer.publish(|e| *e = bid_cmd.clone());
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -220,30 +220,30 @@ async fn test_end_to_end_exchange_flow() {
         let test_orders = vec![
             OrderCommand {
                 command: OrderCommandType::PlaceOrder,
-                uid: 100,
+                user_id: 100,
                 reserve_bid_price: 0,
                 size: 10,
                 order_type: OrderType::Gtc,
                 user_cookie: 1,
                 timestamp: 1,
                 matcher_event: None,
-                action: OrderAction::Ask,
+                action: Side::Ask,
                 order_id: 1,
-                symbol: 0,
+                symbol_id: 0,
                 price: 9630,
             },
             OrderCommand {
                 command: OrderCommandType::PlaceOrder,
-                uid: 101,
+                user_id: 101,
                 reserve_bid_price: 0,
                 size: 10,
                 order_type: OrderType::Gtc,
                 user_cookie: 2,
                 timestamp: 2,
                 matcher_event: None,
-                action: OrderAction::Bid,
+                action: Side::Bid,
                 order_id: 2,
-                symbol: 0,
+                symbol_id: 0,
                 price: 9630,
             },
             OrderCommand::cancel(1, 100),
@@ -251,7 +251,7 @@ async fn test_end_to_end_exchange_flow() {
 
         for mut order in test_orders {
             if order.command == OrderCommandType::CancelOrder {
-                order.symbol = 0;
+                order.symbol_id = 0;
             }
             info!("Sending order: {:?}", order);
             client.send_order_command(&order)?;

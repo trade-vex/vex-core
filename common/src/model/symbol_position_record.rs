@@ -1,11 +1,11 @@
-use crate::model::enums::Side;
 use crate::model::enums::PositionDirection;
+use crate::model::enums::Side;
 use borsh::{BorshDeserialize, BorshSerialize};
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct SymbolPositionRecord {
-    pub uid: i64,
-    pub symbol: i32,
+    pub user_id: i64,
+    pub symbol_id: i32,
     pub base_currency: i32,
     pub quote_currency: i32,
     pub direction: PositionDirection,
@@ -17,10 +17,10 @@ pub struct SymbolPositionRecord {
 }
 
 impl SymbolPositionRecord {
-    pub fn new(uid: i64, symbol: i32, base_currency: i32, quote_currency: i32) -> Self {
+    pub fn new(user_id: i64, symbol_id: i32, base_currency: i32, quote_currency: i32) -> Self {
         Self {
-            uid,
-            symbol,
+            user_id,
+            symbol_id,
             base_currency,
             quote_currency,
             direction: PositionDirection::Empty,

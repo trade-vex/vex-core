@@ -5,12 +5,12 @@ use crate::model::symbol_specification::CoreSymbolSpecification;
 pub struct CoreArithmetic;
 
 impl CoreArithmetic {
-    /// Calculate the required amount for an ASK order based on its size and the symbol spec.
+    /// Calculate the required amount for an ASK order based on its size and the symbol_id spec.
     pub fn calculate_amount_ask(size: i64, spec: &CoreSymbolSpecification) -> i64 {
         size * spec.base_scale_k
     }
 
-    /// Calculate the required amount for a BID order based on its size, price, and the symbol spec.
+    /// Calculate the required amount for a BID order based on its size, price, and the symbol_id spec.
     pub fn calculate_amount_bid(size: i64, price: i64, spec: &CoreSymbolSpecification) -> i64 {
         size * (price * spec.quote_scale_k)
     }

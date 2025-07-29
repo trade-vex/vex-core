@@ -3,7 +3,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 
-/// Core symbol specification that defines trading parameters for a symbol.
+/// Core symbol_id specification that defines trading parameters for a symbol_id.
 /// This mirrors the Java CoreSymbolSpecification class exactly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct CoreSymbolSpecification {
@@ -47,7 +47,7 @@ impl CoreSymbolSpecification {
         CoreSymbolSpecificationBuilder::default()
     }
 
-    /// Calculate the state hash for this symbol specification
+    /// Calculate the state hash for this symbol_id specification
     pub fn state_hash(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.symbol_id.hash(&mut hasher);

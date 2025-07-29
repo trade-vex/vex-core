@@ -1,7 +1,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use num_enum::TryFromPrimitive;
-use sbe_order::side::Side as SbeSide;
 use sbe_order::order_type::OrderType as SbeOrderType;
+use sbe_order::side::Side as SbeSide;
 use serde::de::Error;
 use serde::de::value::Error as SerdeError;
 use serde::{Deserialize, Serialize};
@@ -147,7 +147,7 @@ pub enum MatcherEventType {
     // Can be triggered by place ORDER or for MOVE order command.
     Trade,
     // Reject event
-    // Can happen only when MARKET order has to be rejected by Matcher Engine due lack of liquidity
+    // Can happen only when MARKET order has to be rejected by Matcher Engine due lack of liquser_idity
     // That basically means no ASK (or BID) orders left in the order book for any price.
     // Before being rejected active order can be partially filled.
     Reject,

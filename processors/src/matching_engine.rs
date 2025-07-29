@@ -23,7 +23,7 @@ impl MatchingEngineRouter {
     ///
     /// # Reasoning
     /// This matches the exchangeCore constructor: `MatchingEngineRouter(shardId, matchingEnginesNum, ...)`
-    /// The power-of-2 validation ensures efficient bitwise operations for symbol distribution.
+    /// The power-of-2 validation ensures efficient bitwise operations for symbol_id distribution.
     pub fn new(shard_id: i32, num_shards: i64) -> Self {
         // Validate num_shards is power of 2
         if num_shards.count_ones() != 1 {
@@ -40,7 +40,7 @@ impl MatchingEngineRouter {
         }
     }
 
-    /// Adds a new symbol to the matching engine, creating a new order book for it.
+    /// Adds a new symbol_id to the matching engine, creating a new order book for it.
     pub fn add_symbol(&mut self, symbol_id: i32, book_type: OrderBookImplType) {
         let spec = common::model::symbol_specification::TestConstants::symbol_spec_eth_xbt();
         let book: Box<dyn OrderBook + Send> = match book_type {
@@ -50,13 +50,13 @@ impl MatchingEngineRouter {
         self.order_books.insert(symbol_id, book);
     }
 
-    /// Check if this router handles the given symbol
+    /// Check if this router handles the given symbol_id
     ///
     /// # Reasoning
     /// This implements the exact same logic as exchangeCore:
     /// ```java
-    /// private boolean symbolForThisHandler(final long symbol) {
-    ///     return (shardMask == 0) || ((symbol & shardMask) == shardId);
+    /// private boolean symbolForThisHandler(final long symbol_id) {
+    ///     return (shardMask == 0) || ((symbol_id & shardMask) == shardId);
     /// }
     /// ```
     ///
@@ -66,8 +66,8 @@ impl MatchingEngineRouter {
     ///   - Symbol 1, 5, 9, 13... → Shard 1 (1 & 3 = 1)
     ///   - Symbol 2, 6, 10, 14... → Shard 2 (2 & 3 = 2)
     ///   - Symbol 3, 7, 11, 15... → Shard 3 (3 & 3 = 3)
-    pub fn symbol_for_this_handler(&self, symbol: i64) -> bool {
-        (self.shard_mask == 0) || ((symbol & self.shard_mask) == self.shard_id as i64)
+    pub fn symbol_for_this_handler(&self, symbol_id: i64) -> bool {
+        (self.shard_mask == 0) || ((symbol_id & self.shard_mask) == self.shard_id as i64)
     }
 
     /// Main entry point for processing orders
@@ -84,8 +84,8 @@ impl MatchingEngineRouter {
             | common::cmd::OrderCommandType::CancelOrder
             | common::cmd::OrderCommandType::MoveOrder
             | common::cmd::OrderCommandType::ReduceOrder => {
-                // Process specific symbol group
-                if self.symbol_for_this_handler(cmd.symbol as i64) {
+                // Process specific symbol_id group
+                if self.symbol_for_this_handler(cmd.symbol_id as i64) {
                     self.process_matching_command(cmd);
                 }
             }
@@ -98,10 +98,10 @@ impl MatchingEngineRouter {
     /// This method implements the core matching logic, similar to exchangeCore's `processMatchingCommand`.
     /// It routes commands to the appropriate orderbook.
     fn process_matching_command(&mut self, cmd: &mut OrderCommand) {
-        if let Some(order_book) = self.order_books.get_mut(&cmd.symbol) {
+        if let Some(order_book) = self.order_books.get_mut(&cmd.symbol_id) {
             info!(
-                "[Router {}] Processing command for symbol {}",
-                self.shard_id, cmd.symbol
+                "[Router {}] Processing command for symbol_id {}",
+                self.shard_id, cmd.symbol_id
             );
 
             let result = match cmd.command {
@@ -119,8 +119,8 @@ impl MatchingEngineRouter {
             }
         } else {
             warn!(
-                "[Router {}] No order book found for symbol {}",
-                self.shard_id, cmd.symbol
+                "[Router {}] No order book found for symbol_id {}",
+                self.shard_id, cmd.symbol_id
             );
         }
     }

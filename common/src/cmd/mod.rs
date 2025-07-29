@@ -1,4 +1,4 @@
-use crate::model::enums::{MatcherEventType, Side, OrderType};
+use crate::model::enums::{MatcherEventType, OrderType, Side};
 use crate::model::order::OrderTrait;
 use borsh::{BorshDeserialize, BorshSerialize};
 use sbe_order::message_header_codec::{self, MessageHeaderDecoder};
@@ -47,14 +47,13 @@ impl From<OrderCommandType> for SbeOrderCommandType {
 pub struct OrderCommand {
     pub command: OrderCommandType,
     pub order_id: i64,
-    pub symbol: i32,
-    pub uid: i64,
+    pub symbol_id: i32,
+    pub user_id: i64,
     pub price: i64,
     pub reserve_bid_price: i64,
     pub size: i64,
     pub action: Side,
     pub order_type: OrderType,
-    pub user_cookie: i32,
     pub timestamp: i64,
     pub matcher_event: Option<Box<MatcherTradeEvent>>,
 }
@@ -63,14 +62,13 @@ impl Default for OrderCommand {
         Self {
             command: OrderCommandType::PlaceLimitOrder,
             order_id: 0,
-            symbol: 0,
-            uid: 0,
+            symbol_id: 0,
+            user_id: 0,
             price: 0,
             reserve_bid_price: 0,
             size: 0,
-            action: Side::Ask,   // Default action
+            action: Side::Ask,          // Default action
             order_type: OrderType::Gtc, // Default order type
-            user_cookie: 0,
             timestamp: 0,
             matcher_event: None,
         }
@@ -80,7 +78,7 @@ impl OrderCommand {
     pub fn new_order(
         order_type: OrderType,
         order_id: i64,
-        uid: i64,
+        user_id: i64,
         price: i64,
         reserve_bid_price: i64,
         size: i64,
@@ -89,31 +87,29 @@ impl OrderCommand {
         Self {
             command: OrderCommandType::PlaceLimitOrder,
             order_id,
-            symbol: 0,
-            uid,
+            symbol_id: 0,
+            user_id,
             price,
             reserve_bid_price,
             size,
             action,
             order_type,
-            user_cookie: 0,
             timestamp: 0,
             matcher_event: None,
         }
     }
 
-    pub fn cancel(order_id: i64, uid: i64) -> Self {
+    pub fn cancel(order_id: i64, user_id: i64) -> Self {
         Self {
             command: OrderCommandType::CancelOrder,
             order_id,
-            symbol: 0,
-            uid,
+            symbol_id: 0,
+            user_id,
             price: 0,
             reserve_bid_price: 0,
             size: 0,
-            action: Side::Ask,   // Will be ignored
+            action: Side::Ask,          // Will be ignored
             order_type: OrderType::Gtc, // Will be ignored
-            user_cookie: 0,
             timestamp: 0,
             matcher_event: None,
         }
@@ -155,9 +151,11 @@ impl OrderTrait for OrderCommand {
             .map(|e| e.calc_filled_size())
             .unwrap_or(0)
     }
-    fn uid(&self) -> i64 {
-        self.uid
+
+    fn user_id(&self) -> i64 {
+        self.user_id
     }
+
     fn action(&self) -> Side {
         self.action
     }
@@ -176,12 +174,12 @@ impl OrderTrait for OrderCommand {
 pub struct MatcherTradeEvent {
     pub event_type: MatcherEventType,
     pub section: i32,
-    pub symbol: i32,
-    pub active_order_uid: i64,
+    pub symbol_id: i32,
+    pub active_order_user_id: i64,
     pub taker_action: Side,
     pub active_order_completed: bool,
     pub matched_order_id: i64,
-    pub maker_uid: i64,
+    pub maker_user_id: i64,
     pub matched_order_completed: bool,
     pub price: i64,
     pub size: i64,
@@ -213,12 +211,12 @@ impl Default for MatcherTradeEvent {
         Self {
             event_type: MatcherEventType::Trade,
             section: 0, // TODO: What is section?
-            symbol: 0,
-            active_order_uid: 0,
+            symbol_id: 0,
+            active_order_user_id: 0,
             taker_action: Side::Ask,
             active_order_completed: false,
             matched_order_id: 0,
-            maker_uid: 0,
+            maker_user_id: 0,
             matched_order_completed: false,
             price: 0,
             size: 0,
@@ -237,14 +235,13 @@ pub fn encode_order_command(order_command: OrderCommand, buf: &mut [u8]) -> SbeR
     encoder = encoder.header(0).parent()?;
     encoder.command(order_command.command.into());
     encoder.order_id(order_command.order_id);
-    encoder.symbol(order_command.symbol);
-    encoder.uid(order_command.uid);
+    encoder.symbol_id(order_command.symbol_id);
+    encoder.user_id(order_command.user_id);
     encoder.price(order_command.price);
     encoder.reserve_bid_price(order_command.reserve_bid_price);
     encoder.size(order_command.size);
     encoder.action(order_command.action.into());
     encoder.order_type(order_command.order_type.into());
-    encoder.user_cookie(order_command.user_cookie);
     encoder.timestamp(order_command.timestamp);
     Ok(())
 }
@@ -257,14 +254,13 @@ pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
     Ok(OrderCommand {
         command: decoder.command().try_into()?,
         order_id: decoder.order_id(),
-        symbol: decoder.symbol(),
-        uid: decoder.uid(),
+        symbol_id: decoder.symbol_id(),
+        user_id: decoder.user_id(),
         price: decoder.price(),
         reserve_bid_price: decoder.reserve_bid_price(),
         size: decoder.size(),
         action: decoder.action().try_into()?,
         order_type: decoder.order_type().try_into()?,
-        user_cookie: decoder.user_cookie(),
         timestamp: decoder.timestamp(),
         matcher_event: None,
     })
