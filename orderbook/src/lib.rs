@@ -1,46 +1,9 @@
-//! # Vex Order Book Implementation
-//!
-//! This module provides a fast and efficient implementation of a limit order book (LOB).
-//! It is designed for low-latency, considering existing Architecure of VEX-CORE.
-//!
-//! ## Core Design Principles
-//!
-//! 1.  **Data Structure Choice:**
-//!     -   **Price Levels (`BookSide`):** BookSide is a trait that defines the interface for accessing
-//!         price levels. This provides sorted iteration, which is essential for matching orders.
-//!         -   **Asks:** BookSide implementations for asks should provide access to price levels
-//!             sorted ascendingly (lowest price first).
-//!         -   **Bids:** BookSide implementations for bids should provide access to price levels
-//!             sorted descendingly (highest price first).
-//!     -   **Order Queue (`VecDeque`):** Within each `PriceLevel`, a `VecDeque` stores the orders.
-//!         This acts as a FIFO (First-In, First-Out) queue, ensuring time priority for orders
-//!         at the same price.
-//!     -   **Direct Order Access (`HashMap`):** A `HashMap<u64, u64>` provides O(1) average-case
-//!         lookup time for order-price pairs by their ID. This is crucial for fast cancellation.
-//!
-//! 2.  **Performance Characteristics:** [Depends on BookSide Implementation]
-//!     [For BTreeMap-based BookSide]
-//!     -   **Placing an order:**
-//!         -   Matching: O(M * N), where M is the number of price levels crossed and N is the average
-//!             number of orders at each level. In practice, this is very fast.
-//!         -   Resting a new limit order: O(log P), where P is the number of price levels on that side of the book.
-//!     -   **Canceling an order:** O(log P + Q), where P is the number of price levels and Q is the
-//!         number of orders at the specific price level of the canceled order. The `+ Q` is due
-//!         to the linear scan required to find the order in the `VecDeque`. For extreme performance,
-//!         this `VecDeque` could be replaced with an intrusive doubly-linked list (see suggestions below).
-//!
-//! 3.  **State Management:**
-//!     -   The order book is self-contained and mutates its state through the `place_order` and
-//!         `cancel_order` methods.
-//!     -   It generates `MatcherTradeEvent`s and attaches them to the `ProcessedOrderCommand` for downstream
-//!         processors (risk engines and event handlers) to consume.
-use crate::tree::BookSide;
-use common::{
-    Side, TimeInForce,
-    cmd::{MatcherTradeEvent, OrderCommand, ProcessedOrderCommand, Status},
-    model::order::Order,
-};
-use std::collections::{HashMap, VecDeque};
+use borsh::{BorshDeserialize, BorshSerialize};
+use common::model::enums::Side;
+use common::model::l2_market_data::L2MarketData;
+use common::model::order::{Order, OrderTrait};
+use common::model::symbol_specification::CoreSymbolSpecification;
+use std::fmt;
 
 pub mod tree;
 mod unit_tests;
@@ -365,15 +328,34 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     }
 }
 
-/// The concrete implementation of the `OrderBook`.
-/// It is generic over the L2 market data depth.
-pub struct OrderBook<Ask: BookSide, Bid: BookSide> {
-    /// Bids are stored in a BTreeMap with a `Reverse` key to sort from high to low price.
-    bids: Bid,
-    /// Asks are stored in a BTreeMap sorted from low to high price.
-    asks: Ask,
-    /// Orders for fast lookups in case of cancellations
-    orders: HashMap<u64, u64>,
+impl std::error::Error for OrderBookError {}
+
+pub trait OrderBook<'a> {
+    fn new_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError>;
+    fn cancel_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError>;
+    fn reduce_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError>;
+    fn move_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError>;
+    fn get_orders_num(&self, action: Side) -> i32;
+    fn get_total_orders_volume(&self, action: Side) -> i64;
+    fn get_order_by_id(&self, order_id: i64) -> Option<&dyn OrderTrait>;
+    fn find_user_orders(&self, user_id: i64) -> Vec<Order>;
+    fn ask_orders_stream(
+        &'a self,
+        sorted: bool,
+    ) -> Box<dyn Iterator<Item = &'a dyn OrderTrait> + 'a>;
+    fn bid_orders_stream(
+        &'a self,
+        sorted: bool,
+    ) -> Box<dyn Iterator<Item = &'a dyn OrderTrait> + 'a>;
+    fn get_l2_market_data_snapshot(&self, size: usize) -> L2MarketData;
+    fn publish_l2_market_data_snapshot(&self, data: &mut L2MarketData);
+    fn fill_asks(&self, size: usize, data: &mut L2MarketData);
+    fn fill_bids(&self, size: usize, data: &mut L2MarketData);
+    fn get_total_ask_buckets(&self, limit: usize) -> usize;
+    fn get_total_bid_buckets(&self, limit: usize) -> usize;
+    fn get_implementation_type(&self) -> OrderBookImplType;
+    fn get_symbol_spec(&self) -> &CoreSymbolSpecification;
+    fn validate_internal_state(&self);
 }
 
 impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
