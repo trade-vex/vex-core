@@ -8,14 +8,17 @@ use hashbrown::HashMap;
 use processors::{
     journaling::JournalingProcessor, matching_engine::MatchingEngineRouter, risk_engine::RiskEngine,
 };
+use vex_config::CoreNetworkingConfig;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::thread;
 use tracing::{info, warn};
+use vex_networking::server::VexCoreServer;
 
 // Import macros from utils crate
 use utils::{create_matching_handler, create_risk_handler};
 
-type ProducerType = MultiProducer<OrderCommand, MultiConsumerBarrier>;
+pub type Producer = MultiProducer<OrderCommand, MultiConsumerBarrier>;
 
 /// This follows the exact same architecture as the  ExchangeCore:
 /// 1. Multiple parallel Risk Engines (R1) for risk hold/pre-processing
@@ -56,7 +59,7 @@ impl CoreEngine {
         symbol_specs: HashMap<i32, CoreSymbolSpecification>,
         journaling_processor: JournalingProcessor,
         events_handler: Arc<dyn EventsHandler>,
-    ) -> (Self, ProducerType) {
+    ) -> (Self, Producer) {
         let factory = || OrderCommand::default();
         let buffer_size = 1024; // Power of 2 for disruptor efficiency
 
@@ -196,6 +199,24 @@ impl CoreEngine {
         info!("  - Risk Engine R2 embedded in matching engine event processing");
 
         (engine, producer)
+    }
+
+    /// Run Starts the Networking. 2 Processes Starts
+    /// 1. Listens for New Gateway Clients  
+    /// 2. Listens for OrderCommands from Gateways
+    pub fn run(&mut self, produder: Producer, networking_config: CoreNetworkingConfig) {
+        // Start the disruptor ring buffer processing
+        // This will block and process events in parallel across all handlers
+        let _ = thread::spawn(move || {
+            let mut core_server =
+            VexCoreServer::new(networking_config, produder)
+                .expect("Failed to create VexCoreServer");
+            match core_server.start() {
+                Ok(()) => println!("Server run() completed successfully (unexpected)"),
+                Err(e) => println!("Server run() error: {e}"),
+            }
+        });
+    
     }
 
     /// Adds a symbol to the appropriate matching engine shard

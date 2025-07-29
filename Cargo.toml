@@ -18,6 +18,7 @@ members = [
 [workspace.dependencies]
 common = { path = "./common" }
 vex-config = { path = "./vex-config" }
+vex-networking = { path = "./networking" }
 processors = { path = "./processors" }
 orderbook = { path = "./orderbook" }
 utils = { path = "./utils" }

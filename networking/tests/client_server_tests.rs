@@ -1,8 +1,8 @@
 use common::cmd::{OrderCommand, OrderCommandType, decode_order_command};
 use common::model::enums::{OrderAction, OrderType};
 use disruptor::{BusySpin, ProcessorSettings, build_multi_producer};
-use networking::client::{GatewayError, VexGateway};
-use networking::server::VexCoreServer;
+use vex_networking::client::{GatewayError, VexGateway};
+use vex_networking::server::VexCoreServer;
 use rusteron_client::{AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port};
 use std::time::Duration;
 use std::{net::SocketAddr, thread};

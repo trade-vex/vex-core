@@ -8,6 +8,8 @@ edition = "2024"
 common = { workspace = true }
 orderbook = { workspace = true }
 processors = { workspace = true }
+vex-config = { workspace = true }
+vex-networking = { workspace = true }
 utils = { workspace = true }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
@@ -15,4 +17,7 @@ tracing-subscriber = "0.3"
 async-trait = "0.1"
 hashbrown.workspace = true
 disruptor = "3.4.0"
+
+[dev-dependencies]
+rusteron-client = { workspace = true }
 

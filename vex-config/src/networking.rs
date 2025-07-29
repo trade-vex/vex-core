@@ -53,7 +53,7 @@ impl CoreNetworkingConfig {
     /// Development environment defaults - relaxed settings for local development
     pub fn development_defaults() -> Self {
         Self {
-            context_dir: "/dev/shm/aeron-dev".to_string(),
+            context_dir: "/dev/shm/aeron-test-server".to_string(),
             local_address: "127.0.0.1".to_string(),
             initial_port: 40001,
             initial_control_port: 40002,
@@ -222,7 +222,7 @@ impl GatewayNetworkingConfig {
     /// Development environment defaults
     pub fn development_defaults() -> Self {
         Self {
-            context_dir: "/tmp/aeron-gateway-dev".to_string(),
+            context_dir: "/tmp/aeron-test-client".to_string(),
             local_address: "127.0.0.1".to_string(),
             core_address: "127.0.0.1".to_string(),
             core_port: 40001,

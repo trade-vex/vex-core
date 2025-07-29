@@ -1275,23 +1275,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "networking"
-version = "0.1.0"
-dependencies = [
- "common",
- "crossbeam",
- "dashmap",
- "disruptor",
- "rand",
- "rusteron-client",
- "rusteron-media-driver",
- "test-log",
- "thiserror 2.0.12",
- "tracing",
- "vex-config",
-]
-
-[[package]]
 name = "nix"
 version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2062,10 +2045,13 @@ dependencies = [
  "hashbrown 0.15.4",
  "orderbook",
  "processors",
+ "rusteron-client",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "utils",
+ "vex-config",
+ "vex-networking",
 ]
 
 [[package]]
@@ -2628,6 +2614,23 @@ dependencies = [
 [[package]]
 name = "vex-core"
 version = "0.1.0"
+
+[[package]]
+name = "vex-networking"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "crossbeam",
+ "dashmap",
+ "disruptor",
+ "rand",
+ "rusteron-client",
+ "rusteron-media-driver",
+ "test-log",
+ "thiserror 2.0.12",
+ "tracing",
+ "vex-config",
+]
 
 [[package]]
 name = "walkdir"
