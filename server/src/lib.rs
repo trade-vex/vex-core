@@ -8,14 +8,22 @@ use hashbrown::HashMap;
 use processors::journaling::JournalingProcessor;
 use processors::events::SimpleEventsHandler;
 
-use crate::engine::{CoreEngine, OrderProducer};
+use crate::{
+    engine::{CoreEngine, Producer},
+    events::SimpleEventsHandler,
+};
 
 /// Sets up the entire Exchange Core application with all processors.
 ///
-/// This creates the core engine and adds symbols from the provided configuration
-pub fn init_exchange(
-    symbol_specs: HashMap<u32, CoreMarketSpecification>,
-) -> (CoreEngine, OrderProducer, Arc<SimpleEventsHandler>) {
+/// This creates the core engine and adds symbols dynamically
+pub fn init_exchange() -> (CoreEngine, Producer, Arc<SimpleEventsHandler>) {
+    // Create symbol_id specifications for the risk engine
+    let mut symbol_specs = HashMap::new();
+    let mut spec = CoreSymbolSpecification::default();
+    spec.base_currency = 1; // BTC
+    spec.quote_currency = 2; // USD
+    symbol_specs.insert(0, spec);
+
     // Initialize journaling processor for audit trail
     let journaling_processor = JournalingProcessor::new();
 

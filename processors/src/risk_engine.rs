@@ -1,9 +1,10 @@
 use common::cmd::MatcherTradeEvent;
 use common::cmd::OrderCommand;
-use common::OrderCommandType;
-use common::Side;
-use common::model::market_specification::CoreMarketSpecification;
-use common::model::user_profile::BalanceStore;
+use common::cmd::OrderCommandType;
+use common::model::enums::MatcherEventType;
+use common::model::enums::Side;
+use common::model::symbol_specification::CoreSymbolSpecification;
+use common::model::user_profile::UserProfile;
 use hashbrown::HashMap;
 use tracing::{info, warn};
 use crate::error::{Result, RiskEngineError};
@@ -34,8 +35,8 @@ impl RiskEngine {
     }
 
     /// Checks if a user ID is handled by this risk engine instance.
-    fn user_id_for_this_handler(&self, user_id: u64) -> bool {
-        (user_id & self.shard_mask) == self.shard_id as u64
+    fn user_id_for_this_handler(&self, user_id: i64) -> bool {
+        (user_id & self.shard_mask) == self.shard_id as i64
     }
 
     /// Pre-processes a command to validate it(DONE) and hold funds(TODOs)
@@ -50,10 +51,18 @@ impl RiskEngine {
             self.shard_id, cmd
         );
         let user_profile = self
-            .user_balances
+            .user_profiles
             .get_mut(&cmd.user_id)
-            .ok_or(RiskEngineError::UserNotFound { user_id: cmd.user_id })?;
+            .ok_or(OrderBookError::UnsupportedCommand)?;
 
+        // check 1:Check `user_profile.user_status`.
+        info!(
+            "[RiskEngine] Checking user status for user {}: {:?}",
+            cmd.user_id, user_profile.user_status
+        );
+        if user_profile.user_status != common::model::user_profile::UserStatus::Active {
+            return Err(OrderBookError::UnsupportedCommand);
+        }
         // check 2: Validate the command arguments.
         info!(
             "[RiskEngine] Validating arguments for order {}",
@@ -70,24 +79,20 @@ impl RiskEngine {
                 });
             }
             info!(
-                "[RiskEngine] Looking up market_id spec for market_id {}",
-                cmd.market_id
+                "[RiskEngine] Looking up symbol_id spec for symbol_id {}",
+                cmd.symbol_id
             );
             let spec = self
                 .symbol_specs
-                .get(&cmd.market_id)
-                .ok_or(RiskEngineError::MarketSpecNotFound { market_id: cmd.market_id })?;
+                .get(&cmd.symbol_id)
+                .ok_or(OrderBookError::UnsupportedCommand)?;
 
             info!(
-                "[RiskEngine] Found market_id spec: {:?} for market_id {}",
-                spec, cmd.market_id
+                "[RiskEngine] Found symbol_id spec: {:?} for symbol_id {}",
+                spec, cmd.symbol_id
             );
-            // Calculate required funds based on order side and market specification
-            let required_funds = if cmd.side == Side::Bid {
-                // For BID orders: need to lock the total cost (price * size) plus taker fee
-                let base_amount = cmd.price * cmd.size;
-                let taker_fee = spec.taker_fee * cmd.size;
-                base_amount + taker_fee
+            let required_funds = if cmd.action == Side::Bid {
+                cmd.price * cmd.size
             } else {
                 // For ASK orders: need to lock the size (quantity being sold)
                 cmd.size
@@ -97,8 +102,8 @@ impl RiskEngine {
 
             if let Err(balance_error) = user_profile.lock_funds(cmd.user_id, cmd.market_id, amount) {
                 warn!(
-                    "[RiskEngine] Insufficient funds for user {} to place order {}: {:?}",
-                    cmd.user_id, cmd.order_id, balance_error
+                    "[RiskEngine] Insufficient funds for user {} to place order {}",
+                    cmd.user_id, cmd.order_id
                 );
                 
                 // Get actual available balance for error reporting
@@ -122,77 +127,46 @@ impl RiskEngine {
         Ok(())
     }
 
-    /// Handles events coming from the matching engine to settle funds
-    pub fn handle_event(&mut self, event: &MatcherTradeEvent, market_id: u32, taker_side: Side, taker_id: u64) {
-        info!("[RiskEngine_{}] Processing trade event: price={}, size={}, maker={}, taker={}", 
-              self.shard_id, event.price, event.size, event.maker_user_id, taker_id);
-
-        // Get market specification for fee calculations
-        let spec = match self.symbol_specs.get(&market_id) {
-            Some(spec) => spec,
-            None => {
-                warn!("[RiskEngine_{}] Market spec not found for market_id {}", self.shard_id, market_id);
-                return;
-            }
-        };
-
-        // Process maker settlement (consume locked funds)
-        if self.user_id_for_this_handler(event.maker_user_id) {
-            if let Some(maker_profile) = self.user_balances.get_mut(&event.maker_user_id) {
-                let trade_amount = event.price * event.size;
-                
-                match maker_profile.consume_locked(event.maker_user_id, market_id, trade_amount) {
-                    Ok(()) => {
-                        info!("[RiskEngine_{}] Successfully consumed locked funds for maker {}: amount={}", 
-                              self.shard_id, event.maker_user_id, trade_amount);
-                    }
-                    Err(e) => {
-                        warn!("[RiskEngine_{}] Failed to consume locked funds for maker {}: {:?}", 
-                              self.shard_id, event.maker_user_id, e);
-                    }
-                }
-            }
+    /// Handles events coming from the matching engine to settle funds.
+    /// This is a final stage(excali-8a) in the pipeline for events that have financial impact.
+    pub fn handle_event(&mut self, event: &MatcherTradeEvent) {
+        // Process only if the event is for a user managed by this shard
+        if !self.user_id_for_this_handler(event.active_order_user_id)
+            && !self.user_id_for_this_handler(event.maker_user_id)
+        {
+            return; // Not for this shard, skip
         }
 
-        // Process taker settlement (unlock remaining funds and apply fees)
-        if self.user_id_for_this_handler(taker_id) {
-            if let Some(taker_profile) = self.user_balances.get_mut(&taker_id) {
-                let total_trade_amount = event.price * event.size;
-                let taker_fee = spec.taker_fee * event.size;
-                let total_required = total_trade_amount + taker_fee;
-                
-                // Unlock the excess funds that were locked but not used
-                if let Err(e) = taker_profile.unlock_funds(taker_id, market_id, total_required) {
-                    warn!("[RiskEngine_{}] Failed to unlock excess funds for taker {}: {:?}", 
-                          self.shard_id, taker_id, e);
-                } else {
-                    info!("[RiskEngine_{}] Successfully unlocked excess funds for taker {}: amount={}", 
-                          self.shard_id, taker_id, total_required);
+        info!("[RiskEngine_{}] Handling event: {:?}", self.shard_id, event);
+
+        match event.event_type {
+            MatcherEventType::Trade => {
+                let spec = self.symbol_specs.get(&event.symbol_id).unwrap();
+
+                if let Some(maker_profile) = self.user_profiles.get_mut(&event.maker_user_id) {
+                    maker_profile.settle_trade(
+                        spec,
+                        event.price,
+                        event.size,
+                        if event.taker_action == Side::Ask {
+                            Side::Bid
+                        } else {
+                            Side::Ask
+                        },
+                    );
+                }
+                if let Some(taker_profile) = self.user_profiles.get_mut(&event.active_order_user_id) {
+                    taker_profile.settle_trade(spec, event.price, event.size, event.taker_action);
                 }
             }
-        }
-        
-        // Process chained events if they exist
-        let mut current_event = event.next_event.as_ref();
-        while let Some(next_event) = current_event {
-            info!("[RiskEngine_{}] Processing chained event: price={}, size={}, maker={}", 
-                  self.shard_id, next_event.price, next_event.size, next_event.maker_user_id);
-            
-            // Process maker settlement for chained event
-            if self.user_id_for_this_handler(next_event.maker_user_id) {
-                if let Some(maker_profile) = self.user_balances.get_mut(&next_event.maker_user_id) {
-                    let trade_amount = next_event.price * next_event.size;
-                    
-                    match maker_profile.consume_locked(next_event.maker_user_id, market_id, trade_amount) {
-                        Ok(()) => {
-                            info!("[RiskEngine_{}] Successfully consumed locked funds for chained maker {}: amount={}", 
-                                  self.shard_id, next_event.maker_user_id, trade_amount);
-                        }
-                        Err(e) => {
-                            warn!("[RiskEngine_{}] Failed to consume locked funds for chained maker {}: {:?}", 
-                                  self.shard_id, next_event.maker_user_id, e);
-                        }
-                    }
+            MatcherEventType::Reduce | MatcherEventType::Cancel => {
+                if let Some(user_profile) = self.user_profiles.get_mut(&event.active_order_user_id) {
+                    let released_amount = if event.taker_action == Side::Bid {
+                        event.price * event.size
+                    } else {
+                        event.size
+                    };
+                    user_profile.release_funds(event.symbol_id, released_amount, event.taker_action);
                 }
             }
             
