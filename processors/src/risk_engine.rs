@@ -35,9 +35,8 @@ impl RiskEngine {
     }
 
     /// Checks if a user ID is handled by this risk engine instance.
-    #[inline]
-    fn user_id_for_this_handler(&self, user_id: u64) -> bool {
-        (user_id & self.shard_mask) == self.shard_id as u64
+    fn user_id_for_this_handler(&self, user_id: i64) -> bool {
+        (user_id & self.shard_mask) == self.shard_id as i64
     }
 
     /// Pre-processes a command to validate it(DONE) and hold funds(TODOs)
@@ -89,7 +88,7 @@ impl RiskEngine {
                 "[RiskEngine] Found symbol_id spec: {:?} for symbol_id {}",
                 spec, cmd.symbol_id
             );
-            let required_funds = if cmd.side == Side::Bid {
+            let required_funds = if cmd.action == Side::Bid {
                 cmd.price * cmd.size
             } else {
                 cmd.size
@@ -138,24 +137,18 @@ impl RiskEngine {
                         },
                     );
                 }
-                if let Some(taker_profile) = self.user_profiles.get_mut(&event.active_order_user_id)
-                {
+                if let Some(taker_profile) = self.user_profiles.get_mut(&event.active_order_user_id) {
                     taker_profile.settle_trade(spec, event.price, event.size, event.taker_action);
                 }
             }
             MatcherEventType::Reduce | MatcherEventType::Cancel => {
-                if let Some(user_profile) = self.user_profiles.get_mut(&event.active_order_user_id)
-                {
+                if let Some(user_profile) = self.user_profiles.get_mut(&event.active_order_user_id) {
                     let released_amount = if event.taker_action == Side::Bid {
                         event.price * event.size
                     } else {
                         event.size
                     };
-                    user_profile.release_funds(
-                        event.symbol_id,
-                        released_amount,
-                        event.taker_action,
-                    );
+                    user_profile.release_funds(event.symbol_id, released_amount, event.taker_action);
                 }
             }
             MatcherEventType::OrderPlaced => {
