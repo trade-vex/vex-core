@@ -1,6 +1,6 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use num_enum::TryFromPrimitive;
-use sbe_order::order_action::OrderAction as SbeOrderAction;
+use sbe_order::side::Side as SbeSide;
 use sbe_order::order_type::OrderType as SbeOrderType;
 use serde::de::Error;
 use serde::de::value::Error as SerdeError;
@@ -20,36 +20,36 @@ use serde::{Deserialize, Serialize};
 )]
 #[borsh(use_discriminant = true)]
 #[repr(u8)]
-pub enum OrderAction {
+pub enum Side {
     Ask = 0,
     Bid = 1,
 }
 
-impl OrderAction {
-    pub fn opposite(&self) -> OrderAction {
+impl Side {
+    pub fn opposite(&self) -> Side {
         match self {
-            OrderAction::Ask => OrderAction::Bid,
-            OrderAction::Bid => OrderAction::Ask,
+            Side::Ask => Side::Bid,
+            Side::Bid => Side::Ask,
         }
     }
 }
 
-impl From<OrderAction> for SbeOrderAction {
-    fn from(value: OrderAction) -> Self {
+impl From<Side> for SbeSide {
+    fn from(value: Side) -> Self {
         match value {
-            OrderAction::Ask => SbeOrderAction::Ask,
-            OrderAction::Bid => SbeOrderAction::Bid,
+            Side::Ask => SbeSide::Ask,
+            Side::Bid => SbeSide::Bid,
         }
     }
 }
 
-impl TryFrom<SbeOrderAction> for OrderAction {
+impl TryFrom<SbeSide> for Side {
     type Error = SerdeError;
-    fn try_from(value: SbeOrderAction) -> Result<Self, Self::Error> {
+    fn try_from(value: SbeSide) -> Result<Self, Self::Error> {
         match value {
-            SbeOrderAction::Ask => Ok(OrderAction::Ask),
-            SbeOrderAction::Bid => Ok(OrderAction::Bid),
-            SbeOrderAction::NullVal => Err(SerdeError::custom("NullVal")),
+            SbeSide::Ask => Ok(Side::Ask),
+            SbeSide::Bid => Ok(Side::Bid),
+            SbeSide::NullVal => Err(SerdeError::custom("NullVal")),
         }
     }
 }
@@ -180,10 +180,10 @@ pub enum PositionDirection {
 }
 
 impl PositionDirection {
-    pub fn of(action: OrderAction) -> Self {
+    pub fn of(action: Side) -> Self {
         match action {
-            OrderAction::Bid => Self::Long,
-            OrderAction::Ask => Self::Short,
+            Side::Bid => Self::Long,
+            Side::Ask => Self::Short,
         }
     }
 

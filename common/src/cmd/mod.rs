@@ -1,4 +1,4 @@
-use crate::model::enums::{MatcherEventType, OrderAction, OrderType};
+use crate::model::enums::{MatcherEventType, Side, OrderType};
 use crate::model::order::OrderTrait;
 use borsh::{BorshDeserialize, BorshSerialize};
 use sbe_order::message_header_codec::{self, MessageHeaderDecoder};
@@ -10,27 +10,12 @@ use sbe_order::{ReadBuf, SbeResult, WriteBuf};
 use serde::de::Error;
 use serde::de::value::Error as SerdeError;
 
-// TODO: translate OrderCommand
+/// Order Command Type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub enum OrderCommandType {
-    PlaceOrder,
+    PlaceLimitOrder,
+    PlaceMarketOrder,
     CancelOrder,
-    MoveOrder,
-    ReduceOrder,
-    // TODO
-    //    ORDER_BOOK_REQUEST,
-    //    ADD_USER,
-    //    BALANCE_ADJUSTMENT,
-    //    SUSPEND_USER,
-    //    RESUME_USER,
-    //
-    //    BINARY_DATA_QUERY,
-    //    BINARY_DATA_COMMAND,
-    //
-    //    PERSIST_STATE_MATCHING,
-    //    PERSIST_STATE_RISK,
-    //
-    //    GROUPING_CONTROL,
 }
 
 use std::convert::TryFrom;
@@ -40,10 +25,9 @@ impl TryFrom<SbeOrderCommandType> for OrderCommandType {
 
     fn try_from(value: SbeOrderCommandType) -> Result<Self, Self::Error> {
         match value {
-            SbeOrderCommandType::PlaceOrder => Ok(OrderCommandType::PlaceOrder),
+            SbeOrderCommandType::PlaceLimitOrder => Ok(OrderCommandType::PlaceLimitOrder),
+            SbeOrderCommandType::PlaceMarketOrder => Ok(OrderCommandType::PlaceMarketOrder),
             SbeOrderCommandType::CancelOrder => Ok(OrderCommandType::CancelOrder),
-            SbeOrderCommandType::MoveOrder => Ok(OrderCommandType::MoveOrder),
-            SbeOrderCommandType::ReduceOrder => Ok(OrderCommandType::ReduceOrder),
             SbeOrderCommandType::NullVal => Err(SerdeError::custom("NullVal")), // Maybe handle NullVal specially
         }
     }
@@ -52,10 +36,9 @@ impl TryFrom<SbeOrderCommandType> for OrderCommandType {
 impl From<OrderCommandType> for SbeOrderCommandType {
     fn from(value: OrderCommandType) -> Self {
         match value {
-            OrderCommandType::PlaceOrder => SbeOrderCommandType::PlaceOrder,
+            OrderCommandType::PlaceLimitOrder => SbeOrderCommandType::PlaceLimitOrder,
+            OrderCommandType::PlaceMarketOrder => SbeOrderCommandType::PlaceMarketOrder,
             OrderCommandType::CancelOrder => SbeOrderCommandType::CancelOrder,
-            OrderCommandType::MoveOrder => SbeOrderCommandType::MoveOrder,
-            OrderCommandType::ReduceOrder => SbeOrderCommandType::ReduceOrder,
         }
     }
 }
@@ -69,7 +52,7 @@ pub struct OrderCommand {
     pub price: i64,
     pub reserve_bid_price: i64,
     pub size: i64,
-    pub action: OrderAction,
+    pub action: Side,
     pub order_type: OrderType,
     pub user_cookie: i32,
     pub timestamp: i64,
@@ -78,14 +61,14 @@ pub struct OrderCommand {
 impl Default for OrderCommand {
     fn default() -> Self {
         Self {
-            command: OrderCommandType::PlaceOrder,
+            command: OrderCommandType::PlaceLimitOrder,
             order_id: 0,
             symbol: 0,
             uid: 0,
             price: 0,
             reserve_bid_price: 0,
             size: 0,
-            action: OrderAction::Ask,   // Default action
+            action: Side::Ask,   // Default action
             order_type: OrderType::Gtc, // Default order type
             user_cookie: 0,
             timestamp: 0,
@@ -101,10 +84,10 @@ impl OrderCommand {
         price: i64,
         reserve_bid_price: i64,
         size: i64,
-        action: OrderAction,
+        action: Side,
     ) -> Self {
         Self {
-            command: OrderCommandType::PlaceOrder,
+            command: OrderCommandType::PlaceLimitOrder,
             order_id,
             symbol: 0,
             uid,
@@ -128,41 +111,7 @@ impl OrderCommand {
             price: 0,
             reserve_bid_price: 0,
             size: 0,
-            action: OrderAction::Ask,   // Will be ignored
-            order_type: OrderType::Gtc, // Will be ignored
-            user_cookie: 0,
-            timestamp: 0,
-            matcher_event: None,
-        }
-    }
-
-    pub fn reduce(order_id: i64, uid: i64, size: i64) -> Self {
-        Self {
-            command: OrderCommandType::ReduceOrder,
-            order_id,
-            symbol: 0,
-            uid,
-            price: 0,
-            reserve_bid_price: 0,
-            size,
-            action: OrderAction::Ask,   // Will be ignored
-            order_type: OrderType::Gtc, // Will be ignored
-            user_cookie: 0,
-            timestamp: 0,
-            matcher_event: None,
-        }
-    }
-
-    pub fn move_order(order_id: i64, uid: i64, price: i64) -> Self {
-        Self {
-            command: OrderCommandType::MoveOrder,
-            order_id,
-            symbol: 0,
-            uid,
-            price,
-            reserve_bid_price: 0,
-            size: 0,
-            action: OrderAction::Ask,   // Will be ignored
+            action: Side::Ask,   // Will be ignored
             order_type: OrderType::Gtc, // Will be ignored
             user_cookie: 0,
             timestamp: 0,
@@ -173,10 +122,9 @@ impl OrderCommand {
     pub fn is_mutating(&self) -> bool {
         matches!(
             self.command,
-            OrderCommandType::PlaceOrder
+            OrderCommandType::PlaceLimitOrder
+                | OrderCommandType::PlaceMarketOrder
                 | OrderCommandType::CancelOrder
-                | OrderCommandType::MoveOrder
-                | OrderCommandType::ReduceOrder
         )
     }
 
@@ -210,7 +158,7 @@ impl OrderTrait for OrderCommand {
     fn uid(&self) -> i64 {
         self.uid
     }
-    fn action(&self) -> OrderAction {
+    fn action(&self) -> Side {
         self.action
     }
     fn order_id(&self) -> i64 {
@@ -230,7 +178,7 @@ pub struct MatcherTradeEvent {
     pub section: i32,
     pub symbol: i32,
     pub active_order_uid: i64,
-    pub taker_action: OrderAction,
+    pub taker_action: Side,
     pub active_order_completed: bool,
     pub matched_order_id: i64,
     pub maker_uid: i64,
@@ -267,7 +215,7 @@ impl Default for MatcherTradeEvent {
             section: 0, // TODO: What is section?
             symbol: 0,
             active_order_uid: 0,
-            taker_action: OrderAction::Ask,
+            taker_action: Side::Ask,
             active_order_completed: false,
             matched_order_id: 0,
             maker_uid: 0,

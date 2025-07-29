@@ -1,4 +1,4 @@
-use crate::model::enums::OrderAction;
+use crate::model::enums::Side;
 use crate::model::enums::PositionDirection;
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -32,31 +32,31 @@ impl SymbolPositionRecord {
         }
     }
 
-    pub fn hold(&mut self, amount: i64, action: OrderAction) {
-        if action == OrderAction::Bid {
+    pub fn hold(&mut self, amount: i64, action: Side) {
+        if action == Side::Bid {
             self.pending_buy_size += amount;
         } else {
             self.pending_sell_size += amount;
         }
     }
 
-    pub fn release(&mut self, amount: i64, action: OrderAction) {
+    pub fn release(&mut self, amount: i64, action: Side) {
         match action {
-            OrderAction::Bid => self.pending_buy_size -= amount,
-            OrderAction::Ask => self.pending_sell_size -= amount,
+            Side::Bid => self.pending_buy_size -= amount,
+            Side::Ask => self.pending_sell_size -= amount,
         }
     }
 
     /// Settles a trade by reducing the held amount.
-    pub fn settle(&mut self, amount: i64, action: OrderAction) {
+    pub fn settle(&mut self, amount: i64, action: Side) {
         match action {
-            OrderAction::Bid => self.pending_buy_size -= amount,
-            OrderAction::Ask => self.pending_sell_size -= amount,
+            Side::Bid => self.pending_buy_size -= amount,
+            Side::Ask => self.pending_sell_size -= amount,
         }
     }
 
-    pub fn add_trade(&mut self, trade_price: i64, trade_size: i64, taker_action: OrderAction) {
-        let trade_direction = if taker_action == OrderAction::Bid {
+    pub fn add_trade(&mut self, trade_price: i64, trade_size: i64, taker_action: Side) {
+        let trade_direction = if taker_action == Side::Bid {
             PositionDirection::Short
         } else {
             PositionDirection::Long

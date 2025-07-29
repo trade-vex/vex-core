@@ -1,5 +1,5 @@
 use common::cmd::{OrderCommand, OrderCommandType, decode_order_command};
-use common::model::enums::{OrderAction, OrderType};
+use common::model::enums::{Side, OrderType};
 use disruptor::{BusySpin, ProcessorSettings, build_multi_producer};
 use vex_networking::client::{GatewayError, VexGateway};
 use vex_networking::server::VexCoreServer;
@@ -73,7 +73,7 @@ fn test_client_server_communication() {
         }
 
         let mut order_command = OrderCommand {
-            command: OrderCommandType::PlaceOrder,
+            command: OrderCommandType::PlaceLimitOrder,
             uid: 1,
             reserve_bid_price: 150,
             size: 100,
@@ -81,7 +81,7 @@ fn test_client_server_communication() {
             user_cookie: 1,
             timestamp: 1,
             matcher_event: None,
-            action: OrderAction::Ask,
+            action: Side::Ask,
             order_id: 1,
             symbol: 3124,
             price: 150,
