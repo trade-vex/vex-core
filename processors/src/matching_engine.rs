@@ -1,5 +1,4 @@
-use common::OrderCommandType;
-use common::cmd::{OrderCommand, ProcessedOrderCommand, Status};
+use common::cmd::{OrderCommand, OrderCommandType};
 use hashbrown::HashMap;
 use tracing::{info, warn};
 use vex_orderbook::OrderBook;
@@ -75,26 +74,14 @@ impl MatchingEngineRouter {
     }
 
     /// Main entry point for processing orders
-    pub fn process_order(&mut self, cmd: &mut OrderCommand) -> ProcessedOrderCommand {
-        let res =
-            ProcessedOrderCommand::new(Status::Rejected, cmd.order_id, cmd.market_id, cmd.side);
-        if self.market_for_this_handler(cmd.market_id as u64) {
-            if let Some(order_book) = self.order_books.get_mut(&cmd.market_id) {
-                info!(
-                    "[Router {}] Processing command for market_id {}",
-                    self.shard_id, cmd.market_id
-                );
-
-        match command {
-            common::cmd::OrderCommandType::PlaceOrder
-            | common::cmd::OrderCommandType::CancelOrder
-            | common::cmd::OrderCommandType::MoveOrder
-            | common::cmd::OrderCommandType::ReduceOrder => {
-                // Process specific symbol_id group
-                if self.symbol_for_this_handler(cmd.symbol_id as i64) {
-                    self.process_matching_command(cmd);
-                }
-            }
+    ///
+    /// # Reasoning
+    /// This method mirrors the exchangeCore `processOrder(long seq, OrderCommand cmd)` method.
+    /// It implements the same command routing logic where each router only processes
+    /// commands for symbols it owns
+    pub fn process_order(&mut self, cmd: &mut OrderCommand) {
+        if self.symbol_for_this_handler(cmd.symbol_id as i64) {
+            self.process_matching_command(cmd);
         }
     }
 
@@ -111,10 +98,9 @@ impl MatchingEngineRouter {
             );
 
             let result = match cmd.command {
-                common::cmd::OrderCommandType::PlaceOrder => order_book.new_order(cmd),
-                common::cmd::OrderCommandType::CancelOrder => order_book.cancel_order(cmd),
-                common::cmd::OrderCommandType::MoveOrder => order_book.move_order(cmd),
-                common::cmd::OrderCommandType::ReduceOrder => order_book.reduce_order(cmd),
+                OrderCommandType::PlaceLimitOrder => order_book.new_order(cmd),
+                OrderCommandType::PlaceMarketOrder => order_book.new_order(cmd),
+                OrderCommandType::CancelOrder => order_book.cancel_order(cmd),
             };
 
             if let Err(e) = result {

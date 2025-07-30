@@ -70,7 +70,7 @@ impl RiskEngine {
         );
         if matches!(
             cmd.command,
-            OrderCommandType::PlaceOrder 
+            OrderCommandType::PlaceLimitOrder | OrderCommandType::PlaceMarketOrder
         ) {
             if cmd.size <= 0 || cmd.price <= 0 {
                 return Err(RiskEngineError::InvalidArguments { 
