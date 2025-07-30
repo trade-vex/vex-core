@@ -13,6 +13,7 @@ use tracing::{info, warn};
 pub struct RiskEngine {
     pub user_profiles: HashMap<u64, UserProfile>,
     pub symbol_specs: HashMap<u32, CoreSymbolSpecification>,
+    // Sharding configuration
     shard_id: u32,
     shard_mask: u64,
 }
@@ -35,8 +36,8 @@ impl RiskEngine {
     }
 
     /// Checks if a user ID is handled by this risk engine instance.
-    fn user_id_for_this_handler(&self, user_id: i64) -> bool {
-        (user_id & self.shard_mask) == self.shard_id as i64
+    fn user_id_for_this_handler(&self, user_id: u64) -> bool {
+        (user_id & self.shard_mask) == self.shard_id as u64
     }
 
     /// Pre-processes a command to validate it(DONE) and hold funds(TODOs)
