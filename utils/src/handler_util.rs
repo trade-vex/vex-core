@@ -4,20 +4,18 @@
 /// This eliminates code duplication while maintaining separate handlers for each shard
 #[macro_export]
 macro_rules! create_risk_handler {
-    ($shard_id:expr, $risk_engines:expr) => {
-        {
-            let risk_engines_clone = $risk_engines.clone();
-            move |cmd: &OrderCommand, _sequence: i64, _end_of_batch: bool| {
-                let mut engine = risk_engines_clone[$shard_id].lock().unwrap();
-                let mut cmd_clone = cmd.clone();
-                
-                if let Err(e) = engine.pre_process_command(&mut cmd_clone) {
-                    warn!("[RiskEngine_{}] Risk check failed: {:?}", $shard_id, e);
-                    return; 
-                }
+    ($shard_id:expr, $risk_engines:expr) => {{
+        let risk_engines_clone = $risk_engines.clone();
+        move |cmd: &OrderCommand, _sequence: u64, _end_of_batch: bool| {
+            let mut engine = risk_engines_clone[$shard_id].lock().unwrap();
+            let mut cmd_clone = cmd.clone();
+
+            if let Err(e) = engine.pre_process_command(&mut cmd_clone) {
+                warn!("[RiskEngine_{}] Risk check failed: {:?}", $shard_id, e);
+                return;
             }
         }
-    };
+    }};
 }
 
 /// Macro to generate matching engine handlers
@@ -30,7 +28,7 @@ macro_rules! create_matching_handler {
         let journaling = $journaling.clone();
         let risk_engines = $risk_engines.clone();
 
-        move |cmd: &OrderCommand, _sequence: i64, _end_of_batch: bool| {
+        move |cmd: &OrderCommand, _sequence: u64, _end_of_batch: bool| {
             // Lock the specific matching engine router shard
             let mut router_guard = router.lock().unwrap();
             let mut cmd_clone = cmd.clone();
@@ -51,7 +49,7 @@ macro_rules! create_matching_handler {
 
                 // Route events to correct risk engine shards for settlement (R2)
                 // Events can affect multiple users (maker and taker), so route to both
-                let num_shards = risk_engines.len() as i64;
+                let num_shards = risk_engines.len() as u64;
                 let shard_mask = num_shards - 1; // Power of 2 for efficient bitwise ops
 
                 // Route to risk engine shard for active order user

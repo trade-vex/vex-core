@@ -9,7 +9,7 @@ pub struct EventHelper;
 impl EventHelper {
     /// Creates and attaches a REJECT event to the command.
     /// This is used when an order (or part of it) cannot be filled.
-    pub fn attach_reject_event(cmd: &mut OrderCommand, rejected_size: i64) {
+    pub fn attach_reject_event(cmd: &mut OrderCommand, rejected_size: u64) {
         let reject_event = MatcherTradeEvent {
             event_type: MatcherEventType::Reject,
             symbol_id: cmd.symbol_id,
@@ -30,7 +30,7 @@ impl EventHelper {
     /// This is used when an order is cancelled or reduced in size.
     pub fn send_reduce_event(
         cmd: &OrderCommand,
-        reduced_size: i64,
+        reduced_size: u64,
         is_cancel: bool,
     ) -> Box<MatcherTradeEvent> {
         Box::new(MatcherTradeEvent {
@@ -53,11 +53,11 @@ impl EventHelper {
 
     pub fn create_trade_event(
         active_order_cmd: &OrderCommand,
-        matched_order_id: i64,
-        maker_user_id: i64,
+        matched_order_id: u64,
+        maker_user_id: u64,
         maker_filled: bool,
-        price: i64,
-        size: i64,
+        price: u64,
+        size: u64,
         spec: &CoreSymbolSpecification,
     ) -> Box<MatcherTradeEvent> {
         Box::new(MatcherTradeEvent {
@@ -87,7 +87,7 @@ impl EventHelper {
     /// This is used when an order (or remaining part) is added to the order book.
     pub fn create_order_placed_event(
         cmd: &OrderCommand,
-        placed_size: i64,
+        placed_size: u64,
     ) -> Box<MatcherTradeEvent> {
         Box::new(MatcherTradeEvent {
             event_type: MatcherEventType::OrderPlaced, // Using OrderPlaced type for order placement

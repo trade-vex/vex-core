@@ -316,10 +316,10 @@ pub trait OrderBook<'a> {
     fn cancel_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError>;
     fn reduce_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError>;
     fn move_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError>;
-    fn get_orders_num(&self, side: Side) -> i32;
-    fn get_total_orders_volume(&self, side: Side) -> i64;
-    fn get_order_by_id(&self, order_id: i64) -> Option<&dyn OrderTrait>;
-    fn find_user_orders(&self, user_id: i64) -> Vec<Order>;
+    fn get_orders_num(&self, side: Side) -> u32;
+    fn get_total_orders_volume(&self, side: Side) -> u64;
+    fn get_order_by_id(&self, order_id: u64) -> Option<&dyn OrderTrait>;
+    fn find_user_orders(&self, user_id: u64) -> Vec<Order>;
     fn ask_orders_stream(
         &'a self,
         sorted: bool,
@@ -363,6 +363,6 @@ pub enum OrderBookImplType {
 
 #[derive(BorshSerialize, BorshDeserialize)]
 pub struct MatcherResult {
-    pub volume: i64,
-    pub orders_to_remove: Vec<i64>,
+    pub volume: u64,
+    pub orders_to_remove: Vec<u64>,
 }

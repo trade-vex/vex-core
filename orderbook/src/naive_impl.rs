@@ -11,9 +11,9 @@ use tracing::warn;
 
 #[derive(Clone)]
 pub struct OrdersBucketNaive {
-    price: i64,
-    entries: LinkedHashMap<i64, Order>,
-    total_volume: i64,
+    price: u64,
+    entries: LinkedHashMap<u64, Order>,
+    total_volume: u64,
 }
 
 impl BorshSerialize for OrdersBucketNaive {
@@ -31,12 +31,12 @@ impl BorshSerialize for OrdersBucketNaive {
 
 impl BorshDeserialize for OrdersBucketNaive {
     fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> Result<Self, borsh::io::Error> {
-        let price = i64::deserialize_reader(reader)?;
-        let total_volume = i64::deserialize_reader(reader)?;
+        let price = u64::deserialize_reader(reader)?;
+        let total_volume = u64::deserialize_reader(reader)?;
         let len = u32::deserialize_reader(reader)?;
         let mut entries = LinkedHashMap::with_capacity(len as usize);
         for _ in 0..len {
-            let k = i64::deserialize_reader(reader)?;
+            let k = u64::deserialize_reader(reader)?;
             let v = Order::deserialize_reader(reader)?;
             entries.insert(k, v);
         }
@@ -49,7 +49,7 @@ impl BorshDeserialize for OrdersBucketNaive {
 }
 
 impl OrdersBucketNaive {
-    pub fn new(price: i64) -> Self {
+    pub fn new(price: u64) -> Self {
         Self {
             price,
             entries: LinkedHashMap::new(),
@@ -62,7 +62,7 @@ impl OrdersBucketNaive {
         self.total_volume += order.size - order.filled;
     }
 
-    pub fn remove(&mut self, order_id: i64, user_id: i64) -> Option<Order> {
+    pub fn remove(&mut self, order_id: u64, user_id: u64) -> Option<Order> {
         if let Some(order) = self.entries.get(&order_id) {
             if order.user_id == user_id {
                 let removed_order = self.entries.remove(&order_id).unwrap();
@@ -76,9 +76,9 @@ impl OrdersBucketNaive {
     pub fn match_order(
         &mut self,
         cmd: &OrderCommand,
-        mut volume_to_collect: i64,
+        mut volume_to_collect: u64,
         symbol_spec: &CoreSymbolSpecification,
-    ) -> (i64, Vec<Box<MatcherTradeEvent>>, Vec<i64>, Vec<Order>) {
+    ) -> (u64, Vec<Box<MatcherTradeEvent>>, Vec<u64>, Vec<Order>) {
         let mut total_matching_volume = 0;
         let mut orders_to_remove = Vec::new();
         let mut partially_matched_orders = Vec::new();
@@ -132,24 +132,24 @@ impl OrdersBucketNaive {
         )
     }
 
-    pub fn get_num_orders(&self) -> i32 {
-        self.entries.len() as i32
+    pub fn get_num_orders(&self) -> u32 {
+        self.entries.len() as u32
     }
 
-    pub fn get_total_volume(&self) -> i64 {
+    pub fn get_total_volume(&self) -> u64 {
         self.total_volume
     }
 
-    pub fn reduce_size(&mut self, reduce_by: i64) {
+    pub fn reduce_size(&mut self, reduce_by: u64) {
         self.total_volume -= reduce_by;
     }
 }
 
 #[derive(Clone, BorshDeserialize, BorshSerialize)]
 pub struct OrderBookNaiveImpl {
-    ask_buckets: BTreeMap<i64, OrdersBucketNaive>,
-    bid_buckets: BTreeMap<i64, OrdersBucketNaive>,
-    order_id_map: HashMap<i64, Order>,
+    ask_buckets: BTreeMap<u64, OrdersBucketNaive>,
+    bid_buckets: BTreeMap<u64, OrdersBucketNaive>,
+    order_id_map: HashMap<u64, Order>,
     symbol_spec: CoreSymbolSpecification,
 }
 
@@ -217,7 +217,7 @@ impl OrderBookNaiveImpl {
         Ok(())
     }
 
-    fn try_match(&mut self, cmd: &mut OrderCommand, mut filled: i64) -> i64 {
+    fn try_match(&mut self, cmd: &mut OrderCommand, mut filled: u64) -> u64 {
         let mut remaining_size = cmd.size - filled;
         if remaining_size <= 0 {
             return filled;
@@ -226,7 +226,7 @@ impl OrderBookNaiveImpl {
         let price = cmd.price;
         let side = cmd.side;
 
-        let (matching_buckets, keys_to_iterate): (&mut BTreeMap<i64, OrdersBucketNaive>, Vec<i64>) =
+        let (matching_buckets, keys_to_iterate): (&mut BTreeMap<u64, OrdersBucketNaive>, Vec<u64>) =
             if side == Side::Bid {
                 let keys: Vec<_> = self
                     .ask_buckets
@@ -429,7 +429,7 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
         }
     }
 
-    fn get_orders_num(&self, side: Side) -> i32 {
+    fn get_orders_num(&self, side: Side) -> u32 {
         (if side == Side::Ask {
             &self.ask_buckets
         } else {
@@ -440,7 +440,7 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
         .sum()
     }
 
-    fn get_total_orders_volume(&self, side: Side) -> i64 {
+    fn get_total_orders_volume(&self, side: Side) -> u64 {
         (if side == Side::Ask {
             &self.ask_buckets
         } else {
@@ -451,13 +451,13 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
         .sum()
     }
 
-    fn get_order_by_id(&self, order_id: i64) -> Option<&dyn OrderTrait> {
+    fn get_order_by_id(&self, order_id: u64) -> Option<&dyn OrderTrait> {
         self.order_id_map
             .get(&order_id)
             .map(|o| o as &dyn OrderTrait)
     }
 
-    fn find_user_orders(&self, user_id: i64) -> Vec<Order> {
+    fn find_user_orders(&self, user_id: u64) -> Vec<Order> {
         self.order_id_map
             .values()
             .filter(|o| o.user_id == user_id)
@@ -530,7 +530,7 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
         for (&price, bucket) in self.ask_buckets.iter().take(size) {
             data.ask_prices.push(price);
             data.ask_volumes.push(bucket.get_total_volume());
-            data.ask_orders.push(bucket.get_num_orders() as i64);
+            data.ask_orders.push(bucket.get_num_orders() as u64);
         }
     }
 
@@ -542,7 +542,7 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
         for (&price, bucket) in self.bid_buckets.iter().rev().take(size) {
             data.bid_prices.push(price);
             data.bid_volumes.push(bucket.get_total_volume());
-            data.bid_orders.push(bucket.get_num_orders() as i64);
+            data.bid_orders.push(bucket.get_num_orders() as u64);
         }
     }
 
