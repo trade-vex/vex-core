@@ -1,7 +1,7 @@
 use crate::events::EventHelper;
 use crate::{MatcherTradeEvent, OrderBook, OrderBookError, OrderBookImplType, OrderCommand};
 use borsh::{BorshDeserialize, BorshSerialize};
-use common::model::enums::{Side, OrderType};
+use common::model::enums::{OrderType, Side};
 use common::model::order::{Order, OrderTrait};
 use common::model::symbol_specification::CoreSymbolSpecification;
 use hashbrown::HashMap;
@@ -193,12 +193,12 @@ impl OrderBookNaiveImpl {
             size: cmd.size,
             filled,
             reserve_bid_price: cmd.reserve_bid_price,
-            action: cmd.action,
+            side: cmd.side,
             user_id: cmd.user_id,
             timestamp: cmd.timestamp,
         };
 
-        let buckets = if order.action == Side::Ask {
+        let buckets = if order.side == Side::Ask {
             &mut self.ask_buckets
         } else {
             &mut self.bid_buckets
@@ -224,10 +224,10 @@ impl OrderBookNaiveImpl {
         }
 
         let price = cmd.price;
-        let action = cmd.action;
+        let side = cmd.side;
 
         let (matching_buckets, keys_to_iterate): (&mut BTreeMap<i64, OrdersBucketNaive>, Vec<i64>) =
-            if action == Side::Bid {
+            if side == Side::Bid {
                 let keys: Vec<_> = self
                     .ask_buckets
                     .keys()
@@ -312,7 +312,7 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
             if order.user_id != cmd.user_id {
                 return Err(OrderBookError::UnknownOrderId);
             }
-            let buckets = if order.action == Side::Ask {
+            let buckets = if order.side == Side::Ask {
                 &mut self.ask_buckets
             } else {
                 &mut self.bid_buckets
@@ -354,7 +354,7 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
             let reduced_by = order.size - cmd.size;
             order.size = cmd.size;
 
-            let buckets = if order.action == Side::Ask {
+            let buckets = if order.side == Side::Ask {
                 &mut self.ask_buckets
             } else {
                 &mut self.bid_buckets
@@ -384,7 +384,7 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
 
             if self.symbol_spec.symbol_type
                 == common::model::enums::SymbolType::CurrencyExchangePair
-                && order.action == Side::Bid
+                && order.side == Side::Bid
                 && cmd.price > order.reserve_bid_price
             {
                 // Put the order back before returning
@@ -393,7 +393,7 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
             }
 
             // Remove from old bucket
-            let old_buckets = if order.action == Side::Ask {
+            let old_buckets = if order.side == Side::Ask {
                 &mut self.ask_buckets
             } else {
                 &mut self.bid_buckets
@@ -412,7 +412,7 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
             order.price = cmd.price;
 
             // Insert into new bucket
-            let new_buckets = if order.action == Side::Ask {
+            let new_buckets = if order.side == Side::Ask {
                 &mut self.ask_buckets
             } else {
                 &mut self.bid_buckets
@@ -429,8 +429,8 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
         }
     }
 
-    fn get_orders_num(&self, action: Side) -> i32 {
-        (if action == Side::Ask {
+    fn get_orders_num(&self, side: Side) -> i32 {
+        (if side == Side::Ask {
             &self.ask_buckets
         } else {
             &self.bid_buckets
@@ -440,8 +440,8 @@ impl<'a> OrderBook<'a> for OrderBookNaiveImpl {
         .sum()
     }
 
-    fn get_total_orders_volume(&self, action: Side) -> i64 {
-        (if action == Side::Ask {
+    fn get_total_orders_volume(&self, side: Side) -> i64 {
+        (if side == Side::Ask {
             &self.ask_buckets
         } else {
             &self.bid_buckets
