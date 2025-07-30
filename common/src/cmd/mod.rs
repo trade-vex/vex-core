@@ -46,15 +46,15 @@ impl From<OrderCommandType> for SbeOrderCommandType {
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct OrderCommand {
     pub command: OrderCommandType,
-    pub order_id: i64,
-    pub symbol_id: i32,
-    pub user_id: i64,
-    pub price: i64,
-    pub reserve_bid_price: i64,
-    pub size: i64,
+    pub order_id: u64,
+    pub symbol_id: u32,
+    pub user_id: u64,
+    pub price: u64,
+    pub reserve_bid_price: u64,
+    pub size: u64,
     pub side: Side,
     pub order_type: OrderType,
-    pub timestamp: i64,
+    pub timestamp: u64,
     pub matcher_event: Option<Box<MatcherTradeEvent>>,
 }
 impl Default for OrderCommand {
@@ -77,11 +77,11 @@ impl Default for OrderCommand {
 impl OrderCommand {
     pub fn new_order(
         order_type: OrderType,
-        order_id: i64,
-        user_id: i64,
-        price: i64,
-        reserve_bid_price: i64,
-        size: i64,
+        order_id: u64,
+        user_id: u64,
+        price: u64,
+        reserve_bid_price: u64,
+        size: u64,
         side: Side,
     ) -> Self {
         Self {
@@ -99,7 +99,7 @@ impl OrderCommand {
         }
     }
 
-    pub fn cancel(order_id: i64, user_id: i64) -> Self {
+    pub fn cancel(order_id: u64, user_id: u64) -> Self {
         Self {
             command: OrderCommandType::CancelOrder,
             order_id,
@@ -137,13 +137,13 @@ impl OrderCommand {
 }
 
 impl OrderTrait for OrderCommand {
-    fn price(&self) -> i64 {
+    fn price(&self) -> u64 {
         self.price
     }
-    fn size(&self) -> i64 {
+    fn size(&self) -> u64 {
         self.size
     }
-    fn filled(&self) -> i64 {
+    fn filled(&self) -> u64 {
         // filled is not a part of command, but calculated by matching engine
         // however, for FOK_BUDGET it is possible to calculate filled size based on events
         self.matcher_event
@@ -152,20 +152,20 @@ impl OrderTrait for OrderCommand {
             .unwrap_or(0)
     }
 
-    fn user_id(&self) -> i64 {
+    fn user_id(&self) -> u64 {
         self.user_id
     }
 
     fn side(&self) -> Side {
         self.side
     }
-    fn order_id(&self) -> i64 {
+    fn order_id(&self) -> u64 {
         self.order_id
     }
-    fn timestamp(&self) -> i64 {
+    fn timestamp(&self) -> u64 {
         self.timestamp
     }
-    fn reserve_bid_price(&self) -> i64 {
+    fn reserve_bid_price(&self) -> u64 {
         self.reserve_bid_price
     }
 }
@@ -173,27 +173,27 @@ impl OrderTrait for OrderCommand {
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct MatcherTradeEvent {
     pub event_type: MatcherEventType,
-    pub section: i32,
-    pub symbol_id: i32,
-    pub active_order_user_id: i64,
+    pub section: u32,
+    pub symbol_id: u32,
+    pub active_order_user_id: u64,
     pub taker_action: Side,
     pub active_order_completed: bool,
-    pub matched_order_id: i64,
-    pub maker_user_id: i64,
+    pub matched_order_id: u64,
+    pub maker_user_id: u64,
     pub matched_order_completed: bool,
-    pub price: i64,
-    pub size: i64,
-    pub bidder_hold_price: i64,
+    pub price: u64,
+    pub size: u64,
+    pub bidder_hold_price: u64,
 
     // Fee data
-    pub taker_fee: i64,
-    pub maker_fee: i64,
+    pub taker_fee: u64,
+    pub maker_fee: u64,
 
     pub next_event: Option<Box<MatcherTradeEvent>>,
 }
 
 impl MatcherTradeEvent {
-    pub fn calc_filled_size(&self) -> i64 {
+    pub fn calc_filled_size(&self) -> u64 {
         let mut size = 0;
         let mut current = Some(self);
         while let Some(event) = current {

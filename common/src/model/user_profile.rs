@@ -10,15 +10,15 @@ use crate::model::symbol_specification::CoreSymbolSpecification;
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct UserProfile {
-    pub uid: i64,
-    pub adjustments_counter: i64,
+    pub uid: u64,
+    pub adjustments_counter: u64,
     pub user_status: UserStatus,
-    pub positions: HashMap<i32, SymbolPositionRecord>,
-    pub accounts: HashMap<i32, i64>,
+    pub positions: HashMap<u32, SymbolPositionRecord>,
+    pub accounts: HashMap<u32, u64>,
 }
 
 impl UserProfile {
-    pub fn new(uid: i64, user_status: UserStatus) -> Self {
+    pub fn new(uid: u64, user_status: UserStatus) -> Self {
         Self {
             uid,
             adjustments_counter: 0,
@@ -33,7 +33,7 @@ impl UserProfile {
     pub fn hold_funds(
         &mut self,
         spec: &CoreSymbolSpecification,
-        amount: i64,
+        amount: u64,
         action: Side,
     ) -> bool {
         let position = self.positions.entry(spec.symbol_id).or_insert_with(|| {
@@ -63,7 +63,7 @@ impl UserProfile {
     }
 
     /// Releases previously held funds after an order is cancelled or reduced.
-    pub fn release_funds(&mut self, symbol: i32, amount: i64, action: Side) {
+    pub fn release_funds(&mut self, symbol: u32, amount: u64, action: Side) {
         if let Some(position) = self.positions.get_mut(&symbol) {
             position.release(amount, action);
             let currency = if action == Side::Bid {
@@ -81,8 +81,8 @@ impl UserProfile {
     pub fn settle_trade(
         &mut self,
         spec: &CoreSymbolSpecification,
-        price: i64,
-        size: i64,
+        price: u64,
+        size: u64,
         action: Side,
     ) {
         let base_currency = spec.base_currency;

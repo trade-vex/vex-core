@@ -57,7 +57,7 @@ impl CoreEngine {
     /// [Event Handlers] (market data, notifications, etc.)
     /// ```
     pub fn new(
-        symbol_specs: HashMap<u32, CoreMarketSpecification>,
+        symbol_specs: HashMap<u32, CoreSymbolSpecification>,
         journaling_processor: JournalingProcessor,
         events_handler: Arc<dyn EventsHandler>,
     ) -> (Self, OrderProducer) {
@@ -86,11 +86,11 @@ impl CoreEngine {
             
             // Add initial user profiles to this shard with funded accounts
             for user_id in [100, 101] {
-                let user_id = user_id as i64;
-                let shard_mask = (num_risk_engines - 1) as i64;
+                let user_id = user_id as u64;
+                let shard_mask = (num_risk_engines - 1) as u64;
                 
                 // Only add users that belong to this shard
-                if (user_id & shard_mask) == shard_id as i64 {
+                if (user_id & shard_mask) == shard_id as u64 {
                     let mut user_profile = common::model::user_profile::UserProfile::new(
                         user_id, 
                         common::model::user_profile::UserStatus::Active
@@ -119,23 +119,14 @@ impl CoreEngine {
 
         for shard_id in 0..num_matching_engines {
             let router = MatchingEngineRouter::new(shard_id, num_matching_engines as u64);
-            matching_engine_routers.push(Arc::new(Mutex::new(router)));
+            matching_engine_routers.push(Arc::new(std::sync::Mutex::new(router)));
         }
 
-        // Add all symbols to the appropriate matching engine shards
-        for &symbol_id in symbol_specs.keys() {
-            let shard_mask = (num_matching_engines - 1) as u64;
-            let owner_shard_id = (symbol_id as u64) & shard_mask;
-            let router_index = owner_shard_id as usize;
-
-            if let Some(router) = matching_engine_routers.get(router_index) {
-                let mut matching_engine = router.lock();
-                matching_engine.add_market(symbol_id);
-
-                info!(
-                    "Added symbol_id {} to MatchingEngine shard {} during initialization",
-                    symbol_id, router_index
-                );
+        // Create journaling handler for audit trail and recovery
+        let journaling_handler = {
+            let journaling_clone = journaling_arc.clone();
+            move |cmd: &OrderCommand, _sequence: u64, _end_of_batch: bool| {
+                journaling_clone.journal_command(cmd);
             }
         }
 
@@ -223,11 +214,11 @@ impl CoreEngine {
     /// Uses the same sharding logic as runtime processing: symbol_id & shard_mask
     /// This ensures symbols are distributed evenly across matching engine shards
     /// for optimal load balancing and memory usage.
-    pub fn add_symbol(&self, symbol_id: i32, book_type: orderbook::OrderBookImplType) {
+    pub fn add_symbol(&self, symbol_id: u32, book_type: orderbook::OrderBookImplType) {
         // Calculate which matching engine shard owns this symbol_id
-        let num_shards = self.matching_engine_routers.len() as i64;
+        let num_shards = self.matching_engine_routers.len() as u64;
         let shard_mask = num_shards - 1; // Power of 2 mask for efficient bitwise operations
-        let owner_shard_id = (symbol_id as i64) & shard_mask;
+        let owner_shard_id = (symbol_id as u64) & shard_mask;
         let router_index = owner_shard_id as usize;
 
         // Add symbol_id only to the owning shard for memory efficiency
@@ -254,10 +245,10 @@ impl CoreEngine {
     /// Routes the query to the correct risk engine shard based on user ID.
     /// This ensures consistent access to user data regardless of which
     /// risk engine shard is currently holding the user's state.
-    pub fn get_user_balance(&self, user_id: u64, currency: i32) -> Option<i64> {
+    pub fn get_user_balance(&self, user_id: u64, currency: u32) -> Option<u64> {
         // Route to the correct risk engine shard using the same logic as processing
-        let user_id_i64 = user_id as i64;
-        let num_shards = self.risk_engines.len() as i64;
+        let user_id_i64 = user_id as u64;
+        let num_shards = self.risk_engines.len() as u64;
         let shard_mask = num_shards - 1; // Power of 2 mask
         let risk_engine_index = (user_id_i64 & shard_mask) as usize;
 
@@ -280,7 +271,7 @@ impl CoreEngine {
     /// In a production system, this could be optimized by routing to the
     /// correct shard based on symbol_id, but searching all shards is safer
     /// for now since we don't store the symbol_id with the order_id.
-    pub fn get_order_filled(&self, order_id: i64) -> Option<i64> {
+    pub fn get_order_filled(&self, order_id: u64) -> Option<u64> {
         // Search across all matching engine router shards
         for (shard_id, router) in self.matching_engine_routers.iter().enumerate() {
             let matching_engine = router.lock().unwrap();

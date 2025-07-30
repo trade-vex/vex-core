@@ -10,9 +10,9 @@ use slab::Slab;
 use tracing::warn;
 
 pub struct OrderBookDirectImpl {
-    ask_price_buckets: TreeMap<i64, Bucket>,
-    bid_price_buckets: TreeMap<i64, Bucket>,
-    order_id_index: HashMap<i64, usize>,
+    ask_price_buckets: TreeMap<u64, Bucket>,
+    bid_price_buckets: TreeMap<u64, Bucket>,
+    order_id_index: HashMap<u64, usize>,
     orders: Slab<DirectOrder>,
     symbol_spec: CoreSymbolSpecification,
     best_ask_order: Option<usize>,
@@ -104,7 +104,7 @@ impl OrderBookDirectImpl {
     fn new_order_match_fok_budget(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError> {
         let budget = self.check_budget_to_fill(cmd.side(), cmd.size());
 
-        if budget != i64::MAX && (cmd.side() == Side::Ask || budget <= cmd.price()) {
+        if budget != u64::MAX && (cmd.side() == Side::Ask || budget <= cmd.price()) {
             self.try_match_instantly(cmd, 0);
         } else {
             EventHelper::attach_reject_event(cmd, cmd.size());
@@ -112,8 +112,8 @@ impl OrderBookDirectImpl {
         Ok(())
     }
 
-    fn check_budget_to_fill(&self, side: Side, mut size: i64) -> i64 {
-        let mut budget = 0i64;
+    fn check_budget_to_fill(&self, side: Side, mut size: u64) -> u64 {
+        let mut budget = 0;
 
         let mut next_key = if side == Side::Bid {
             self.best_ask_order
@@ -135,10 +135,10 @@ impl OrderBookDirectImpl {
             next_key = order.prev;
         }
 
-        if size == 0 { budget } else { i64::MAX }
+        if size == 0 { budget } else { u64::MAX }
     }
 
-    fn try_match_instantly(&mut self, cmd: &mut OrderCommand, filled: i64) -> i64 {
+    fn try_match_instantly(&mut self, cmd: &mut OrderCommand, filled: u64) -> u64 {
         let mut filled = filled;
         let mut remaining_size = cmd.size() - filled;
         if remaining_size <= 0 {
@@ -369,7 +369,7 @@ impl OrderBookDirectImpl {
         bucket.tail = Some(new_order_key);
     }
 
-    fn validate_chain(&self, side: Side, orders_in_chain: &mut hashbrown::HashSet<i64>) {
+    fn validate_chain(&self, side: Side, orders_in_chain: &mut hashbrown::HashSet<u64>) {
         let is_ask = side == Side::Ask;
         let buckets = if is_ask {
             &self.ask_price_buckets
@@ -381,12 +381,12 @@ impl OrderBookDirectImpl {
         } else {
             self.best_bid_order
         };
-
-        let mut last_price = -1i64;
+    
+        let mut last_price: Option<u64> = None;
         let mut orders_in_bucket = 0;
-        let mut volume_in_bucket = 0i64;
+        let mut volume_in_bucket = 0;
         let mut prev_order_key: Option<usize> = None;
-
+    
         while let Some(order_key) = current_order_key {
             let order = &self.orders[order_key];
             assert_eq!(order.side, side, "Order has wrong side");
@@ -394,31 +394,33 @@ impl OrderBookDirectImpl {
                 orders_in_chain.insert(order.order_id),
                 "Duplicate order in chain"
             );
-
-            if last_price != -1 && order.price != last_price {
-                // Moved to a new price bucket
-                let bucket = buckets.get(&last_price).unwrap();
-                assert_eq!(
-                    bucket.num_orders, orders_in_bucket,
-                    "Bucket order count mismatch"
-                );
-                assert_eq!(bucket.volume, volume_in_bucket, "Bucket volume mismatch");
-                orders_in_bucket = 0;
-                volume_in_bucket = 0;
+    
+            if let Some(price) = last_price {
+                if order.price != price {
+                    // Moved to a new price bucket
+                    let bucket = buckets.get(&price).unwrap();
+                    assert_eq!(
+                        bucket.num_orders, orders_in_bucket,
+                        "Bucket order count mismatch"
+                    );
+                    assert_eq!(bucket.volume, volume_in_bucket, "Bucket volume mismatch");
+                    orders_in_bucket = 0;
+                    volume_in_bucket = 0;
+                }
             }
-
+    
             orders_in_bucket += 1;
             volume_in_bucket += order.size - order.filled;
-
+    
             assert_eq!(order.next, prev_order_key, "Next pointer is incorrect");
-
-            last_price = order.price;
+    
+            last_price = Some(order.price);
             prev_order_key = Some(order_key);
             current_order_key = order.prev;
         }
-
-        if last_price != -1 {
-            let bucket = buckets.get(&last_price).unwrap();
+    
+        if let Some(price) = last_price {
+            let bucket = buckets.get(&price).unwrap();
             assert_eq!(
                 bucket.num_orders, orders_in_bucket,
                 "Last bucket order count mismatch"
@@ -433,14 +435,14 @@ impl OrderBookDirectImpl {
 
 #[derive(Clone, BorshSerialize, BorshDeserialize)]
 pub struct DirectOrder {
-    pub order_id: i64,
-    pub price: i64,
-    pub size: i64,
-    pub filled: i64,
-    pub reserve_bid_price: i64,
+    pub order_id: u64,
+    pub price: u64,
+    pub size: u64,
+    pub filled: u64,
+    pub reserve_bid_price: u64,
     pub side: Side,
-    pub user_id: i64,
-    pub timestamp: i64,
+    pub user_id: u64,
+    pub timestamp: u64,
 
     // Doubly-linked list pointers
     #[borsh(skip)]
@@ -450,28 +452,28 @@ pub struct DirectOrder {
 }
 
 impl OrderTrait for DirectOrder {
-    fn price(&self) -> i64 {
+    fn price(&self) -> u64 {
         self.price
     }
-    fn size(&self) -> i64 {
+    fn size(&self) -> u64 {
         self.size
     }
-    fn filled(&self) -> i64 {
+    fn filled(&self) -> u64 {
         self.filled
     }
-    fn user_id(&self) -> i64 {
+    fn user_id(&self) -> u64 {
         self.user_id
     }
     fn side(&self) -> Side {
         self.side
     }
-    fn order_id(&self) -> i64 {
+    fn order_id(&self) -> u64 {
         self.order_id
     }
-    fn timestamp(&self) -> i64 {
+    fn timestamp(&self) -> u64 {
         self.timestamp
     }
-    fn reserve_bid_price(&self) -> i64 {
+    fn reserve_bid_price(&self) -> u64 {
         self.reserve_bid_price
     }
 }
@@ -501,8 +503,8 @@ impl DirectOrder {
 
 #[derive(Clone, BorshSerialize, BorshDeserialize)]
 pub struct Bucket {
-    volume: i64,
-    num_orders: i32,
+    volume: u64,
+    num_orders: u32,
     tail: Option<usize>,
 }
 
@@ -630,7 +632,7 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
         Ok(())
     }
 
-    fn get_orders_num(&self, side: Side) -> i32 {
+    fn get_orders_num(&self, side: Side) -> u32 {
         let buckets = if side == Side::Ask {
             &self.ask_price_buckets
         } else {
@@ -639,7 +641,7 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
         buckets.values().map(|b| b.num_orders).sum()
     }
 
-    fn get_total_orders_volume(&self, side: Side) -> i64 {
+    fn get_total_orders_volume(&self, side: Side) -> u64 {
         let buckets = if side == Side::Ask {
             &self.ask_price_buckets
         } else {
@@ -648,14 +650,14 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
         buckets.values().map(|b| b.volume).sum()
     }
 
-    fn get_order_by_id(&self, order_id: i64) -> Option<&dyn OrderTrait> {
+    fn get_order_by_id(&self, order_id: u64) -> Option<&dyn OrderTrait> {
         self.order_id_index
             .get(&order_id)
             .and_then(|&key| self.orders.get(key))
             .map(|order| order as &dyn OrderTrait)
     }
 
-    fn find_user_orders(&self, user_id: i64) -> Vec<Order> {
+    fn find_user_orders(&self, user_id: u64) -> Vec<Order> {
         self.orders
             .iter()
             .map(|(_, order)| order)
@@ -726,7 +728,7 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
         for (&price, bucket) in self.ask_price_buckets.iter().take(size) {
             data.ask_prices.push(price);
             data.ask_volumes.push(bucket.volume);
-            data.ask_orders.push(bucket.num_orders as i64);
+            data.ask_orders.push(bucket.num_orders as u64);
         }
     }
 
@@ -738,7 +740,7 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
         for (&price, bucket) in self.bid_price_buckets.iter().rev().take(size) {
             data.bid_prices.push(price);
             data.bid_volumes.push(bucket.volume);
-            data.bid_orders.push(bucket.num_orders as i64);
+            data.bid_orders.push(bucket.num_orders as u64);
         }
     }
 
