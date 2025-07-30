@@ -1,4 +1,4 @@
-use common::cmd::OrderCommand;
+use common::cmd::{OrderCommand, OrderCommandType};
 use hashbrown::HashMap;
 use orderbook::OrderBook;
 use orderbook::OrderBookImplType;
@@ -77,18 +77,8 @@ impl MatchingEngineRouter {
     /// It implements the same command routing logic where each router only processes
     /// commands for symbols it owns
     pub fn process_order(&mut self, cmd: &mut OrderCommand) {
-        let command = cmd.command;
-
-        match command {
-            common::cmd::OrderCommandType::PlaceOrder
-            | common::cmd::OrderCommandType::CancelOrder
-            | common::cmd::OrderCommandType::MoveOrder
-            | common::cmd::OrderCommandType::ReduceOrder => {
-                // Process specific symbol_id group
-                if self.symbol_for_this_handler(cmd.symbol_id as i64) {
-                    self.process_matching_command(cmd);
-                }
-            }
+        if self.symbol_for_this_handler(cmd.symbol_id as i64) {
+            self.process_matching_command(cmd);
         }
     }
 
@@ -105,10 +95,9 @@ impl MatchingEngineRouter {
             );
 
             let result = match cmd.command {
-                common::cmd::OrderCommandType::PlaceOrder => order_book.new_order(cmd),
-                common::cmd::OrderCommandType::CancelOrder => order_book.cancel_order(cmd),
-                common::cmd::OrderCommandType::MoveOrder => order_book.move_order(cmd),
-                common::cmd::OrderCommandType::ReduceOrder => order_book.reduce_order(cmd),
+                OrderCommandType::PlaceLimitOrder => order_book.new_order(cmd),
+                OrderCommandType::PlaceMarketOrder => order_book.new_order(cmd),
+                OrderCommandType::CancelOrder => order_book.cancel_order(cmd),
             };
 
             if let Err(e) = result {

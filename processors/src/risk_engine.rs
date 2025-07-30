@@ -73,7 +73,7 @@ impl RiskEngine {
         );
         if matches!(
             cmd.command,
-            OrderCommandType::PlaceOrder | OrderCommandType::ReduceOrder
+            OrderCommandType::PlaceLimitOrder | OrderCommandType::PlaceMarketOrder
         ) {
             if cmd.size <= 0 || cmd.price <= 0 {
                 return Err(OrderBookError::InvalidArguments);
@@ -104,11 +104,6 @@ impl RiskEngine {
                 );
                 return Err(OrderBookError::InsufficientFunds);
             }
-        } else if matches!(cmd.command, OrderCommandType::MoveOrder) {
-            if cmd.price <= 0 {
-                return Err(OrderBookError::InvalidArguments);
-            }
-            // Do NOT call hold_funds for MoveOrder!
         }
 
         info!(
