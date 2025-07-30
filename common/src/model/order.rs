@@ -6,7 +6,7 @@ pub trait OrderTrait {
     fn size(&self) -> i64;
     fn filled(&self) -> i64;
     fn user_id(&self) -> i64;
-    fn action(&self) -> Side;
+    fn side(&self) -> Side;
     fn order_id(&self) -> i64;
     fn timestamp(&self) -> i64;
     fn reserve_bid_price(&self) -> i64;
@@ -19,7 +19,7 @@ pub struct Order {
     pub size: i64,
     pub filled: i64,
     pub reserve_bid_price: i64,
-    pub action: Side,
+    pub side: Side,
     pub user_id: i64,
     pub timestamp: i64,
 }
@@ -37,8 +37,8 @@ impl OrderTrait for Order {
     fn user_id(&self) -> i64 {
         self.user_id
     }
-    fn action(&self) -> Side {
-        self.action
+    fn side(&self) -> Side {
+        self.side
     }
     fn order_id(&self) -> i64 {
         self.order_id

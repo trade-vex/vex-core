@@ -52,7 +52,7 @@ pub struct OrderCommand {
     pub price: i64,
     pub reserve_bid_price: i64,
     pub size: i64,
-    pub action: Side,
+    pub side: Side,
     pub order_type: OrderType,
     pub timestamp: i64,
     pub matcher_event: Option<Box<MatcherTradeEvent>>,
@@ -67,7 +67,7 @@ impl Default for OrderCommand {
             price: 0,
             reserve_bid_price: 0,
             size: 0,
-            action: Side::Ask,          // Default action
+            side: Side::Ask,            // Default side
             order_type: OrderType::Gtc, // Default order type
             timestamp: 0,
             matcher_event: None,
@@ -82,7 +82,7 @@ impl OrderCommand {
         price: i64,
         reserve_bid_price: i64,
         size: i64,
-        action: Side,
+        side: Side,
     ) -> Self {
         Self {
             command: OrderCommandType::PlaceLimitOrder,
@@ -92,7 +92,7 @@ impl OrderCommand {
             price,
             reserve_bid_price,
             size,
-            action,
+            side,
             order_type,
             timestamp: 0,
             matcher_event: None,
@@ -108,7 +108,7 @@ impl OrderCommand {
             price: 0,
             reserve_bid_price: 0,
             size: 0,
-            action: Side::Ask,          // Will be ignored
+            side: Side::Ask,            // Will be ignored
             order_type: OrderType::Gtc, // Will be ignored
             timestamp: 0,
             matcher_event: None,
@@ -156,8 +156,8 @@ impl OrderTrait for OrderCommand {
         self.user_id
     }
 
-    fn action(&self) -> Side {
-        self.action
+    fn side(&self) -> Side {
+        self.side
     }
     fn order_id(&self) -> i64 {
         self.order_id
@@ -240,7 +240,7 @@ pub fn encode_order_command(order_command: OrderCommand, buf: &mut [u8]) -> SbeR
     encoder.price(order_command.price);
     encoder.reserve_bid_price(order_command.reserve_bid_price);
     encoder.size(order_command.size);
-    encoder.action(order_command.action.into());
+    encoder.side(order_command.side.into());
     encoder.order_type(order_command.order_type.into());
     encoder.timestamp(order_command.timestamp);
     Ok(())
@@ -259,7 +259,7 @@ pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
         price: decoder.price(),
         reserve_bid_price: decoder.reserve_bid_price(),
         size: decoder.size(),
-        action: decoder.action().try_into()?,
+        side: decoder.side().try_into()?,
         order_type: decoder.order_type().try_into()?,
         timestamp: decoder.timestamp(),
         matcher_event: None,

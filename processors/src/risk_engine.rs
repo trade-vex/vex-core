@@ -91,13 +91,13 @@ impl RiskEngine {
                 "[RiskEngine] Found symbol_id spec: {:?} for symbol_id {}",
                 spec, cmd.symbol_id
             );
-            let required_funds = if cmd.action == Side::Bid {
+            let required_funds = if cmd.side == Side::Bid {
                 cmd.price * cmd.size
             } else {
                 cmd.size
             };
 
-            if !user_profile.hold_funds(spec, required_funds, cmd.action) {
+            if !user_profile.hold_funds(spec, required_funds, cmd.side) {
                 warn!(
                     "[RiskEngine] Insufficient funds for user {} to place order {}",
                     cmd.user_id, cmd.order_id
