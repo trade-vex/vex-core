@@ -335,8 +335,8 @@ pub trait OrderBook<'a> {
     fn cancel_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError>;
     fn reduce_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError>;
     fn move_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError>;
-    fn get_orders_num(&self, action: Side) -> i32;
-    fn get_total_orders_volume(&self, action: Side) -> i64;
+    fn get_orders_num(&self, side: Side) -> i32;
+    fn get_total_orders_volume(&self, side: Side) -> i64;
     fn get_order_by_id(&self, order_id: i64) -> Option<&dyn OrderTrait>;
     fn find_user_orders(&self, user_id: i64) -> Vec<Order>;
     fn ask_orders_stream(

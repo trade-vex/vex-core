@@ -88,7 +88,7 @@ impl RiskEngine {
                 "[RiskEngine] Found symbol_id spec: {:?} for symbol_id {}",
                 spec, cmd.symbol_id
             );
-            let required_funds = if cmd.action == Side::Bid {
+            let required_funds = if cmd.side == Side::Bid {
                 cmd.price * cmd.size
             } else {
                 cmd.size
