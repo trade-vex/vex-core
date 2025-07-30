@@ -4,20 +4,20 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct SymbolPositionRecord {
-    pub user_id: i64,
-    pub symbol_id: i32,
-    pub base_currency: i32,
-    pub quote_currency: i32,
+    pub user_id: u64,
+    pub symbol_id: u32,
+    pub base_currency: u32,
+    pub quote_currency: u32,
     pub direction: PositionDirection,
-    pub open_volume: i64,
-    pub open_price_sum: i64,
-    pub profit: i64,
-    pub pending_sell_size: i64,
-    pub pending_buy_size: i64,
+    pub open_volume: u64,
+    pub open_price_sum: u64,
+    pub profit: u64,
+    pub pending_sell_size: u64,
+    pub pending_buy_size: u64,
 }
 
 impl SymbolPositionRecord {
-    pub fn new(user_id: i64, symbol_id: i32, base_currency: i32, quote_currency: i32) -> Self {
+    pub fn new(user_id: u64, symbol_id: u32, base_currency: u32, quote_currency: u32) -> Self {
         Self {
             user_id,
             symbol_id,
@@ -32,7 +32,7 @@ impl SymbolPositionRecord {
         }
     }
 
-    pub fn hold(&mut self, amount: i64, side: Side) {
+    pub fn hold(&mut self, amount: u64, side: Side) {
         if side == Side::Bid {
             self.pending_buy_size += amount;
         } else {
@@ -40,7 +40,7 @@ impl SymbolPositionRecord {
         }
     }
 
-    pub fn release(&mut self, amount: i64, side: Side) {
+    pub fn release(&mut self, amount: u64, side: Side) {
         match side {
             Side::Bid => self.pending_buy_size -= amount,
             Side::Ask => self.pending_sell_size -= amount,
@@ -48,14 +48,14 @@ impl SymbolPositionRecord {
     }
 
     /// Settles a trade by reducing the held amount.
-    pub fn settle(&mut self, amount: i64, side: Side) {
+    pub fn settle(&mut self, amount: u64, side: Side) {
         match side {
             Side::Bid => self.pending_buy_size -= amount,
             Side::Ask => self.pending_sell_size -= amount,
         }
     }
 
-    pub fn add_trade(&mut self, trade_price: i64, trade_size: i64, taker_action: Side) {
+    pub fn add_trade(&mut self, trade_price: u64, trade_size: u64, taker_action: Side) {
         let trade_direction = if taker_action == Side::Bid {
             PositionDirection::Short
         } else {

@@ -9,9 +9,9 @@ use tracing::{info, warn};
 /// Owns all order books and routes commands to the correct one.
 /// This is the Rust equivalent of `MatchingEngineRouter.java`.
 pub struct MatchingEngineRouter {
-    pub order_books: HashMap<i32, Box<dyn OrderBook<'static> + Send>>,
-    pub shard_id: i32,
-    pub shard_mask: i64,
+    pub order_books: HashMap<u32, Box<dyn OrderBook<'static> + Send>>,
+    pub shard_id: u32,
+    pub shard_mask: u64,
 }
 
 impl MatchingEngineRouter {
@@ -24,7 +24,7 @@ impl MatchingEngineRouter {
     /// # Reasoning
     /// This matches the exchangeCore constructor: `MatchingEngineRouter(shardId, matchingEnginesNum, ...)`
     /// The power-of-2 validation ensures efficient bitwise operations for symbol_id distribution.
-    pub fn new(shard_id: i32, num_shards: i64) -> Self {
+    pub fn new(shard_id: u32, num_shards: u64) -> Self {
         // Validate num_shards is power of 2
         if num_shards.count_ones() != 1 {
             panic!(
@@ -41,7 +41,7 @@ impl MatchingEngineRouter {
     }
 
     /// Adds a new symbol_id to the matching engine, creating a new order book for it.
-    pub fn add_symbol(&mut self, symbol_id: i32, book_type: OrderBookImplType) {
+    pub fn add_symbol(&mut self, symbol_id: u32, book_type: OrderBookImplType) {
         let spec = common::model::symbol_specification::TestConstants::symbol_spec_eth_xbt();
         let book: Box<dyn OrderBook + Send> = match book_type {
             OrderBookImplType::Naive => Box::new(OrderBookNaiveImpl::new(spec)),
@@ -66,8 +66,8 @@ impl MatchingEngineRouter {
     ///   - Symbol 1, 5, 9, 13... → Shard 1 (1 & 3 = 1)
     ///   - Symbol 2, 6, 10, 14... → Shard 2 (2 & 3 = 2)
     ///   - Symbol 3, 7, 11, 15... → Shard 3 (3 & 3 = 3)
-    pub fn symbol_for_this_handler(&self, symbol_id: i64) -> bool {
-        (self.shard_mask == 0) || ((symbol_id & self.shard_mask) == self.shard_id as i64)
+    pub fn symbol_for_this_handler(&self, symbol_id: u64) -> bool {
+        (self.shard_mask == 0) || ((symbol_id & self.shard_mask) == self.shard_id as u64)
     }
 
     /// Main entry point for processing orders
@@ -77,7 +77,7 @@ impl MatchingEngineRouter {
     /// It implements the same command routing logic where each router only processes
     /// commands for symbols it owns
     pub fn process_order(&mut self, cmd: &mut OrderCommand) {
-        if self.symbol_for_this_handler(cmd.symbol_id as i64) {
+        if self.symbol_for_this_handler(cmd.symbol_id as u64) {
             self.process_matching_command(cmd);
         }
     }
@@ -115,7 +115,7 @@ impl MatchingEngineRouter {
     }
 
     /// Get order books for external access
-    pub fn get_order_books(&self) -> &HashMap<i32, Box<dyn OrderBook<'static> + Send>> {
+    pub fn get_order_books(&self) -> &HashMap<u32, Box<dyn OrderBook<'static> + Send>> {
         &self.order_books
     }
 }

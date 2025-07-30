@@ -12,18 +12,18 @@ use tracing::{info, warn};
 /// Manages all user profiles and performs risk checks as well as settlements
 /// This is the Rust equivalent of `RiskEngine.java`.
 pub struct RiskEngine {
-    pub user_profiles: HashMap<i64, UserProfile>,
-    pub symbol_specs: HashMap<i32, CoreSymbolSpecification>,
+    pub user_profiles: HashMap<u64, UserProfile>,
+    pub symbol_specs: HashMap<u32, CoreSymbolSpecification>,
     // Sharding configuration
-    shard_id: i32,
-    shard_mask: i64,
+    shard_id: u32,
+    shard_mask: u64,
 }
 
 impl RiskEngine {
     pub fn new(
-        symbol_specs: HashMap<i32, CoreSymbolSpecification>,
-        shard_id: i32,
-        num_shards: i32,
+        symbol_specs: HashMap<u32, CoreSymbolSpecification>,
+        shard_id: u32,
+        num_shards: u32,
     ) -> Self {
         if num_shards.count_ones() != 1 {
             panic!("Number of shards must be a power of 2");
@@ -32,13 +32,13 @@ impl RiskEngine {
             user_profiles: HashMap::new(),
             symbol_specs,
             shard_id,
-            shard_mask: (num_shards - 1) as i64,
+            shard_mask: (num_shards - 1) as u64,
         }
     }
 
     /// Checks if a user ID is handled by this risk engine instance.
-    fn user_id_for_this_handler(&self, user_id: i64) -> bool {
-        (user_id & self.shard_mask) == self.shard_id as i64
+    fn user_id_for_this_handler(&self, user_id: u64) -> bool {
+        (user_id & self.shard_mask) == self.shard_id as u64
     }
 
     /// Pre-processes a command to validate it(DONE) and hold funds(TODOs).

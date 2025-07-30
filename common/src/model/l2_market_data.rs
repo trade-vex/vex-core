@@ -5,24 +5,24 @@ pub const L2_SIZE: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct L2MarketData {
-    pub ask_prices: Vec<i64>,
-    pub ask_volumes: Vec<i64>,
-    pub ask_orders: Vec<i64>,
-    pub bid_prices: Vec<i64>,
-    pub bid_volumes: Vec<i64>,
-    pub bid_orders: Vec<i64>,
-    pub timestamp: i64,
-    pub reference_seq: i64,
+    pub ask_prices: Vec<u64>,
+    pub ask_volumes: Vec<u64>,
+    pub ask_orders: Vec<u64>,
+    pub bid_prices: Vec<u64>,
+    pub bid_volumes: Vec<u64>,
+    pub bid_orders: Vec<u64>,
+    pub timestamp: u64,
+    pub reference_seq: u64,
 }
 
 impl L2MarketData {
     pub fn new(
-        ask_prices: Vec<i64>,
-        ask_volumes: Vec<i64>,
-        ask_orders: Vec<i64>,
-        bid_prices: Vec<i64>,
-        bid_volumes: Vec<i64>,
-        bid_orders: Vec<i64>,
+        ask_prices: Vec<u64>,
+        ask_volumes: Vec<u64>,
+        ask_orders: Vec<u64>,
+        bid_prices: Vec<u64>,
+        bid_volumes: Vec<u64>,
+        bid_orders: Vec<u64>,
     ) -> Self {
         Self {
             ask_prices,
@@ -57,11 +57,11 @@ impl L2MarketData {
         self.bid_prices.len()
     }
 
-    pub fn total_order_book_volume_ask(&self) -> i64 {
+    pub fn total_order_book_volume_ask(&self) -> u64 {
         self.ask_volumes.iter().sum()
     }
 
-    pub fn total_order_book_volume_bid(&self) -> i64 {
+    pub fn total_order_book_volume_bid(&self) -> u64 {
         self.bid_volumes.iter().sum()
     }
 }

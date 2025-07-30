@@ -7,22 +7,22 @@ use std::hash::{Hash, Hasher};
 /// This mirrors the Java CoreSymbolSpecification class exactly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct CoreSymbolSpecification {
-    pub symbol_id: i32,
+    pub symbol_id: u32,
     pub symbol_type: SymbolType,
 
     // Currency pair specification
-    pub base_currency: i32,  // base currency
-    pub quote_currency: i32, // quote/counter currency (OR futures contract currency)
-    pub base_scale_k: i64,   // base currency amount multiplier (lot size in base currency units)
-    pub quote_scale_k: i64,  // quote currency amount multiplier (step size in quote currency units)
+    pub base_currency: u32,  // base currency
+    pub quote_currency: u32, // quote/counter currency (OR futures contract currency)
+    pub base_scale_k: u64,   // base currency amount multiplier (lot size in base currency units)
+    pub quote_scale_k: u64,  // quote currency amount multiplier (step size in quote currency units)
 
     // Fees per lot in quote currency units
-    pub taker_fee: i64, // taker fee (should be >= maker fee)
-    pub maker_fee: i64, // maker fee
+    pub taker_fee: u64, // taker fee (should be >= maker fee)
+    pub maker_fee: u64, // maker fee
 
     // Margin settings (for type=FUTURES_CONTRACT only)
-    pub margin_buy: i64,  // buy margin (quote currency)
-    pub margin_sell: i64, // sell margin (quote currency)
+    pub margin_buy: u64,  // buy margin (quote currency)
+    pub margin_sell: u64, // sell margin (quote currency)
 }
 
 impl Default for CoreSymbolSpecification {
@@ -67,20 +67,20 @@ impl CoreSymbolSpecification {
 /// Builder for CoreSymbolSpecification to match Java's builder pattern
 #[derive(Debug, Default)]
 pub struct CoreSymbolSpecificationBuilder {
-    symbol_id: Option<i32>,
+    symbol_id: Option<u32>,
     symbol_type: Option<SymbolType>,
-    base_currency: Option<i32>,
-    quote_currency: Option<i32>,
-    base_scale_k: Option<i64>,
-    quote_scale_k: Option<i64>,
-    taker_fee: Option<i64>,
-    maker_fee: Option<i64>,
-    margin_buy: Option<i64>,
-    margin_sell: Option<i64>,
+    base_currency: Option<u32>,
+    quote_currency: Option<u32>,
+    base_scale_k: Option<u64>,
+    quote_scale_k: Option<u64>,
+    taker_fee: Option<u64>,
+    maker_fee: Option<u64>,
+    margin_buy: Option<u64>,
+    margin_sell: Option<u64>,
 }
 
 impl CoreSymbolSpecificationBuilder {
-    pub fn symbol_id(mut self, symbol_id: i32) -> Self {
+    pub fn symbol_id(mut self, symbol_id: u32) -> Self {
         self.symbol_id = Some(symbol_id);
         self
     }
@@ -90,42 +90,42 @@ impl CoreSymbolSpecificationBuilder {
         self
     }
 
-    pub fn base_currency(mut self, base_currency: i32) -> Self {
+    pub fn base_currency(mut self, base_currency: u32) -> Self {
         self.base_currency = Some(base_currency);
         self
     }
 
-    pub fn quote_currency(mut self, quote_currency: i32) -> Self {
+    pub fn quote_currency(mut self, quote_currency: u32) -> Self {
         self.quote_currency = Some(quote_currency);
         self
     }
 
-    pub fn base_scale_k(mut self, base_scale_k: i64) -> Self {
+    pub fn base_scale_k(mut self, base_scale_k: u64) -> Self {
         self.base_scale_k = Some(base_scale_k);
         self
     }
 
-    pub fn quote_scale_k(mut self, quote_scale_k: i64) -> Self {
+    pub fn quote_scale_k(mut self, quote_scale_k: u64) -> Self {
         self.quote_scale_k = Some(quote_scale_k);
         self
     }
 
-    pub fn taker_fee(mut self, taker_fee: i64) -> Self {
+    pub fn taker_fee(mut self, taker_fee: u64) -> Self {
         self.taker_fee = Some(taker_fee);
         self
     }
 
-    pub fn maker_fee(mut self, maker_fee: i64) -> Self {
+    pub fn maker_fee(mut self, maker_fee: u64) -> Self {
         self.maker_fee = Some(maker_fee);
         self
     }
 
-    pub fn margin_buy(mut self, margin_buy: i64) -> Self {
+    pub fn margin_buy(mut self, margin_buy: u64) -> Self {
         self.margin_buy = Some(margin_buy);
         self
     }
 
-    pub fn margin_sell(mut self, margin_sell: i64) -> Self {
+    pub fn margin_sell(mut self, margin_sell: u64) -> Self {
         self.margin_sell = Some(margin_sell);
         self
     }
@@ -150,15 +150,15 @@ impl CoreSymbolSpecificationBuilder {
 pub struct TestConstants;
 
 impl TestConstants {
-    pub const SYMBOL_MARGIN: i32 = 5991;
-    pub const SYMBOL_EXCHANGE: i32 = 9269;
-    pub const SYMBOL_EXCHANGE_FEE: i32 = 9340;
+    pub const SYMBOL_MARGIN: u32 = 5991;
+    pub const SYMBOL_EXCHANGE: u32 = 9269;
+    pub const SYMBOL_EXCHANGE_FEE: u32 = 9340;
 
-    pub const CURRENCY_EUR: i32 = 978;
-    pub const CURRENCY_USD: i32 = 840;
-    pub const CURRENCY_XBT: i32 = 3762; // satoshi, 1E-8
-    pub const CURRENCY_ETH: i32 = 3928; // szabo, 1E-6
-    pub const CURRENCY_LTC: i32 = 1005; // litoshi, 1E-8
+    pub const CURRENCY_EUR: u32 = 978;
+    pub const CURRENCY_USD: u32 = 840;
+    pub const CURRENCY_XBT: u32 = 3762; // satoshi, 1E-8
+    pub const CURRENCY_ETH: u32 = 3928; // szabo, 1E-6
+    pub const CURRENCY_LTC: u32 = 1005; // litoshi, 1E-8
 
     /// EUR/USD futures contract for margin trading
     pub fn symbol_spec_eur_usd() -> CoreSymbolSpecification {
