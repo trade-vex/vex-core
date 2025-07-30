@@ -180,8 +180,8 @@ pub enum PositionDirection {
 }
 
 impl PositionDirection {
-    pub fn of(action: Side) -> Self {
-        match action {
+    pub fn of(side: Side) -> Self {
+        match side {
             Side::Bid => Self::Long,
             Side::Ask => Self::Short,
         }

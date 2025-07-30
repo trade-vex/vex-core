@@ -14,7 +14,7 @@ impl EventHelper {
             event_type: MatcherEventType::Reject,
             symbol_id: cmd.symbol_id,
             active_order_user_id: cmd.user_id,
-            taker_action: cmd.action,
+            taker_action: cmd.side,
             active_order_completed: true, // A reject always finalizes the active order
             matched_order_id: 0,          // No matched order for a reject
             maker_user_id: 0,
@@ -41,7 +41,7 @@ impl EventHelper {
             },
             symbol_id: cmd.symbol_id,
             active_order_user_id: cmd.user_id,
-            taker_action: cmd.action,
+            taker_action: cmd.side,
             active_order_completed: is_cancel,
             matched_order_id: cmd.order_id,
             maker_user_id: cmd.user_id,
@@ -64,7 +64,7 @@ impl EventHelper {
             event_type: MatcherEventType::Trade,
             symbol_id: active_order_cmd.symbol_id,
             active_order_user_id: active_order_cmd.user_id,
-            taker_action: active_order_cmd.action,
+            taker_action: active_order_cmd.side,
             section: 0,                                            // TODO
             active_order_completed: active_order_cmd.size == size, // Simplified
             matched_order_id,
@@ -72,7 +72,7 @@ impl EventHelper {
             matched_order_completed: maker_filled,
             price,
             size,
-            bidder_hold_price: if active_order_cmd.action == Side::Ask {
+            bidder_hold_price: if active_order_cmd.side == Side::Ask {
                 active_order_cmd.reserve_bid_price
             } else {
                 0 // In naive impl, maker order is not available to get reserve price
@@ -93,7 +93,7 @@ impl EventHelper {
             event_type: MatcherEventType::OrderPlaced, // Using OrderPlaced type for order placement
             symbol_id: cmd.symbol_id,
             active_order_user_id: cmd.user_id,
-            taker_action: cmd.action,
+            taker_action: cmd.side,
             section: 0,
             active_order_completed: false, // Order is placed, not completed
             matched_order_id: cmd.order_id,

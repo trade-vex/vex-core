@@ -32,24 +32,24 @@ impl SymbolPositionRecord {
         }
     }
 
-    pub fn hold(&mut self, amount: i64, action: Side) {
-        if action == Side::Bid {
+    pub fn hold(&mut self, amount: i64, side: Side) {
+        if side == Side::Bid {
             self.pending_buy_size += amount;
         } else {
             self.pending_sell_size += amount;
         }
     }
 
-    pub fn release(&mut self, amount: i64, action: Side) {
-        match action {
+    pub fn release(&mut self, amount: i64, side: Side) {
+        match side {
             Side::Bid => self.pending_buy_size -= amount,
             Side::Ask => self.pending_sell_size -= amount,
         }
     }
 
     /// Settles a trade by reducing the held amount.
-    pub fn settle(&mut self, amount: i64, action: Side) {
-        match action {
+    pub fn settle(&mut self, amount: i64, side: Side) {
+        match side {
             Side::Bid => self.pending_buy_size -= amount,
             Side::Ask => self.pending_sell_size -= amount,
         }
