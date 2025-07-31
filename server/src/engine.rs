@@ -115,7 +115,7 @@ impl CoreEngine {
         // Create journaling handler for audit trail and recovery
         let journaling_handler = {
             let journaling_clone = journaling_arc.clone();
-            move |cmd: &OrderCommand, _sequence: u64, _end_of_batch: bool| {
+            move |cmd: &OrderCommand, _sequence: i64, _end_of_batch: bool| {
                 journaling_clone.journal_command(cmd);
             }
         };
@@ -257,16 +257,15 @@ impl CoreEngine {
     /// risk engine shard is currently holding the user's state.
     pub fn get_user_balance(&self, user_id: u64, currency: u32) -> Option<u64> {
         // Route to the correct risk engine shard using the same logic as processing
-        let user_id_i64 = user_id as u64;
         let num_shards = self.risk_engines.len() as u64;
         let shard_mask = num_shards - 1; // Power of 2 mask
-        let risk_engine_index = (user_id_i64 & shard_mask) as usize;
+        let risk_engine_index = (user_id & shard_mask) as usize;
 
         if let Some(risk_engine_mutex) = self.risk_engines.get(risk_engine_index) {
             let risk_engine = risk_engine_mutex.lock().unwrap();
             if let Some(balance) = risk_engine
                 .user_profiles
-                .get(&user_id_i64)
+                .get(&user_id)
                 .and_then(|profile| profile.accounts.get(&currency).copied())
             {
                 return Some(balance);
