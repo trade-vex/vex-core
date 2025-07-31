@@ -6,7 +6,7 @@
 macro_rules! create_risk_handler {
     ($shard_id:expr, $risk_engines:expr) => {{
         let risk_engines_clone = $risk_engines.clone();
-        move |cmd: &OrderCommand, _sequence: u64, _end_of_batch: bool| {
+        move |cmd: &OrderCommand, _sequence: i64, _end_of_batch: bool| {
             let mut engine = risk_engines_clone[$shard_id].lock().unwrap();
             let mut cmd_clone = cmd.clone();
 
@@ -28,7 +28,7 @@ macro_rules! create_matching_handler {
         let journaling = $journaling.clone();
         let risk_engines = $risk_engines.clone();
 
-        move |cmd: &OrderCommand, _sequence: u64, _end_of_batch: bool| {
+        move |cmd: &OrderCommand, _sequence: i64, _end_of_batch: bool| {
             // Lock the specific matching engine router shard
             let mut router_guard = router.lock().unwrap();
             let mut cmd_clone = cmd.clone();
