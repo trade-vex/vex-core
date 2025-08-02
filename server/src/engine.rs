@@ -27,13 +27,9 @@ pub type Producer = MultiProducer<OrderCommand, MultiConsumerBarrier>;
 ///
 /// Each processor runs on its own dedicated thread/core.
 pub struct CoreEngine {
-    /// Sharded risk engines for parallel risk processing
-    /// Each shard handles users based on user_id % num_shards
-    risk_engines: Arc<Vec<Mutex<RiskEngine>>>,
-
     /// Sharded matching engine routers for parallel order processing
     /// Each shard handles symbols based on symbol_id % num_shards
-    matching_engine_routers: Vec<Arc<Mutex<MatchingEngineRouter>>>,
+    matching_engine_routers: Vec<MatchingEngineRouter>,
 }
 
 impl CoreEngine {
@@ -105,12 +101,10 @@ impl CoreEngine {
         // Create 4 sharded matching engine routers for parallel order processing
         // Each router handles a subset of symbols: symbol_id & shard_mask
         let num_matching_engines = 4;
-        let mut matching_engine_routers = Vec::new();
-
-        for shard_id in 0..num_matching_engines {
-            let router = MatchingEngineRouter::new(shard_id, num_matching_engines as u64);
-            matching_engine_routers.push(Arc::new(std::sync::Mutex::new(router)));
-        }
+        // ✅ SINGLE ROUTER INSTANCE - NO REDUNDANCY
+        let matching_engine_routers: Vec<MatchingEngineRouter> = (0..num_matching_engines)
+            .map(|shard_id| MatchingEngineRouter::new(shard_id, num_matching_engines as u64))
+            .collect();
 
         // Create journaling handler for audit trail and recovery
         let journaling_handler = {
@@ -129,30 +123,32 @@ impl CoreEngine {
 
         // Create 4 separate matching engine handlers using macro
         // Each handler runs on its own thread/core
+        let mut matching_engine_routers_iter = matching_engine_routers.into_iter();
+
         let matching_handler_0 = create_matching_handler!(
             0,
-            matching_engine_routers,
+            matching_engine_routers_iter.next().unwrap(),
             events_handler_arc,
             journaling_arc,
             risk_engines_arc
         );
         let matching_handler_1 = create_matching_handler!(
             1,
-            matching_engine_routers,
+            matching_engine_routers_iter.next().unwrap(),
             events_handler_arc,
             journaling_arc,
             risk_engines_arc
         );
         let matching_handler_2 = create_matching_handler!(
             2,
-            matching_engine_routers,
+            matching_engine_routers_iter.next().unwrap(),
             events_handler_arc,
             journaling_arc,
             risk_engines_arc
         );
         let matching_handler_3 = create_matching_handler!(
             3,
-            matching_engine_routers,
+            matching_engine_routers_iter.next().unwrap(),
             events_handler_arc,
             journaling_arc,
             risk_engines_arc
@@ -187,9 +183,13 @@ impl CoreEngine {
             .handle_events_with(matching_handler_3)
             .build();
 
+        // ✅ Create a copy for external API access (add_symbol only)
+        let external_routers: Vec<MatchingEngineRouter> = (0..num_matching_engines)
+            .map(|shard_id| MatchingEngineRouter::new(shard_id, num_matching_engines as u64))
+            .collect();
+
         let engine = Self {
-            risk_engines: risk_engines_arc.clone(),
-            matching_engine_routers,
+            matching_engine_routers: external_routers, 
         };
 
         info!("  CoreEngine initialized ");
@@ -219,26 +219,19 @@ impl CoreEngine {
     
     }
 
-    /// Adds a symbol_id to the appropriate matching engine shard
-    ///
-    /// Uses the same sharding logic as runtime processing: symbol_id & shard_mask
-    /// This ensures symbols are distributed evenly across matching engine shards
-    /// for optimal load balancing and memory usage.
-    pub fn add_symbol(&self, symbol_id: u32, book_type: orderbook::OrderBookImplType) {
-        // Calculate which matching engine shard owns this symbol_id
+    ///  Direct access to router for add_symbol
+    pub fn add_symbol(&mut self, symbol_id: u32, book_type: orderbook::OrderBookImplType) {
         let num_shards = self.matching_engine_routers.len() as u64;
-        let shard_mask = num_shards - 1; // Power of 2 mask for efficient bitwise operations
-        let owner_shard_id = (symbol_id as u64) & shard_mask;
-        let router_index = owner_shard_id as usize;
+        let shard_mask = num_shards - 1;
+        let router_index = (symbol_id as u64 & shard_mask) as usize;
 
-        // Add symbol_id only to the owning shard for memory efficiency
-        if let Some(router) = self.matching_engine_routers.get(router_index) {
-            let mut matching_engine = router.lock().unwrap();
-            matching_engine.add_symbol(symbol_id, book_type);
-
+        //  DIRECT ACCESS - NO MUTEX!
+        if let Some(router) = self.matching_engine_routers.get_mut(router_index) {
+            router.add_symbol(symbol_id, book_type);
+            
             info!(
-                "Added symbol_id {} to MatchingEngine shard {} (owner_shard_id={})",
-                symbol_id, router_index, owner_shard_id
+                "Added symbol_id {} to MatchingEngine shard {}",
+                symbol_id, router_index
             );
         } else {
             warn!(
@@ -246,56 +239,5 @@ impl CoreEngine {
                 symbol_id, router_index
             );
         }
-    }
-
-    // The API handling logic will be removed and implemented in the gateway , currently placegolder for testing
-
-    /// Gets user balance from the appropriate risk engine shard
-    ///
-    /// Routes the query to the correct risk engine shard based on user ID.
-    /// This ensures consistent access to user data regardless of which
-    /// risk engine shard is currently holding the user's state.
-    pub fn get_user_balance(&self, user_id: u64, currency: u32) -> Option<u64> {
-        // Route to the correct risk engine shard using the same logic as processing
-        let num_shards = self.risk_engines.len() as u64;
-        let shard_mask = num_shards - 1; // Power of 2 mask
-        let risk_engine_index = (user_id & shard_mask) as usize;
-
-        if let Some(risk_engine_mutex) = self.risk_engines.get(risk_engine_index) {
-            let risk_engine = risk_engine_mutex.lock().unwrap();
-            if let Some(balance) = risk_engine
-                .user_profiles
-                .get(&user_id)
-                .and_then(|profile| profile.accounts.get(&currency).copied())
-            {
-                return Some(balance);
-            }
-        }
-        None
-    }
-
-    /// Gets order fill quantity from the appropriate matching engine shard
-    ///
-    /// Searches across all matching engine shards to find the order.
-    /// In a production system, this could be optimized by routing to the
-    /// correct shard based on symbol_id, but searching all shards is safer
-    /// for now since we don't store the symbol_id with the order_id.
-    pub fn get_order_filled(&self, order_id: u64) -> Option<u64> {
-        // Search across all matching engine router shards
-        for (shard_id, router) in self.matching_engine_routers.iter().enumerate() {
-            let matching_engine = router.lock().unwrap();
-
-            // Search all order books in this shard
-            for order_book in matching_engine.get_order_books().values() {
-                if let Some(order) = order_book.get_order_by_id(order_id) {
-                    info!(
-                        "Found order {} in MatchingEngine shard {}",
-                        order_id, shard_id
-                    );
-                    return Some(order.filled());
-                }
-            }
-        }
-        None
     }
 }

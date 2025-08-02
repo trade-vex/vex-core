@@ -31,7 +31,7 @@ pub fn init_exchange() -> (CoreEngine, Producer, Arc<SimpleEventsHandler>) {
     let events_handler = Arc::new(SimpleEventsHandler::new());
 
     // Create the Exchange Core with sharded risk engines and matching engines
-    let (core_engine, producer) =
+    let (mut core_engine, producer) =
         CoreEngine::new(symbol_specs, journaling_processor, events_handler.clone());
 
     core_engine.add_symbol(0, OrderBookImplType::Naive);
