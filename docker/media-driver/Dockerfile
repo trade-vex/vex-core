@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     openjdk-17-jdk-headless \
     git \
     libbsd-dev \
-    uuser_id-dev \
+    uuid-dev \
     libssl-dev \
     zlib1g-dev \
     doxygen \
@@ -36,7 +36,7 @@ FROM ubuntu:22.04 as runtime
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     libbsd0 \
-    libuuser_id1 \
+    libuuid1 \
     libssl3 \
     zlib1g \
     && rm -rf /var/lib/apt/lists/*
@@ -49,7 +49,7 @@ COPY --from=builder /build/aeron/cppbuild/Release/lib/ /usr/local/lib/
 RUN chmod +x /usr/local/bin/aeronmd
 
 # Default environment variables for Aeron C Media Driver
-ENV AERON_DIR=/opt/aeron
+ENV AERON_DIR=/opt/aeron-test-server
 ENV AERON_TERM_BUFFER_LENGTH=1048576
 ENV AERON_THREADING_MODE=DEDICATED
 ENV AERON_PRINT_CONFIGURATION=true

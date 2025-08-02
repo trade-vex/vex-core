@@ -13,7 +13,7 @@ services:
     ipc: "shareable"            # 🆕 Enable shared IPC namespace
     restart: unless-stopped
     volumes:
-      - /dev/shm:/opt
+      - /tmp:/opt
 
   # SBE Code Generator - generates Rust code from ordercmd.xml
   sbe-generator:
