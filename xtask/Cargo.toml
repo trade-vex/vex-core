@@ -22,7 +22,5 @@ vex-networking = { workspace = true }
 vex-config = { workspace = true }
 rusteron-client = { workspace = true }
 tracing = { workspace = true }
-disruptor = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
+disruptor = { workspace = true } 
 

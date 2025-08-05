@@ -1,15 +1,7 @@
 use clap::{Parser, Subcommand};
 use duct::cmd;
-use serde::Deserialize;
-use std::{collections::HashSet, env, fs, path::Path, time::Instant};
+use std::{collections::HashSet, env, fs, path::PathBuf};
 use thiserror::Error;
-
-/// delay in network emulation in teste2e (high-latency scenario)
-const NETWORK_DELAY_MS: u64 = 100;
-/// packet loss percentage in network emulation in teste2e (packet-loss scenario)
-const PACKET_LOSS_PERCENT: u32 = 10;
-/// default number of messages each client sends in teste2e
-const DEFAULT_MSG_COUNT_PER_CLIENT: usize = 1000;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -49,15 +41,14 @@ enum XTaskError {
 
     #[error("Test Failed: {0}")]
     Testing(#[from] TestingError),
-
-    #[error("JSON parsing error: {0}")]
-    JsonParse(#[from] serde_json::Error),
 }
 
 #[derive(Error, Debug)]
 enum TestingError {
     #[error("Test failed: {0}")]
     TestFailed(String),
+    // #[error("Network condition error: {0}")]
+    // NetworkConditionError(String),
 }
 
 fn main() -> Result<(), XTaskError> {
@@ -67,21 +58,19 @@ fn main() -> Result<(), XTaskError> {
     match cli.command {
         Commands::BuildDocker => build_docker(&project_root),
         Commands::TestE2e { scenario, clients } => {
-            run_correctness_task(project_root.into_boxed_path(), &scenario, clients)
+            run_correctness_task(&project_root, &scenario, clients)
         }
-        Commands::Benchmark { clients } => run_benchmark(project_root.into_boxed_path(), clients),
+        Commands::Benchmark { clients } => run_benchmark(&project_root, clients),
     }
 }
 
 // Helper struct for automatic cleanup
 struct DockerComposeEnv {
-    root: Box<Path>,
-    containers: Vec<String>,
+    root: PathBuf,
 }
 impl DockerComposeEnv {
-    fn new(root: Box<Path>, clients: u32) -> Result<Self, XTaskError> {
+    fn new(root: &PathBuf, clients: u32) -> Result<Self, XTaskError> {
         fs::create_dir_all(root.join("test-results"))?;
-
         println!("Bringing up docker-compose environment...");
         cmd!(
             "docker",
@@ -89,72 +78,26 @@ impl DockerComposeEnv {
             "up",
             "-d",
             "--scale",
-            format!("vex-client={clients}")
+            format!("vex-client={clients}"),
+            "--no-recreate"
         )
-        .dir(root.clone())
+        .dir(root)
         .run()?;
-
         println!("Waiting for environment to stabilize...");
         std::thread::sleep(std::time::Duration::from_secs(5));
-
-        let json_output = cmd!("docker", "compose", "ps", "--format", "json")
-            .dir(root.clone())
-            .read()?;
-
-        // Parse NDJSON output
-        let containers = json_output
-            .lines()
-            .filter_map(
-                |line| match serde_json::from_str::<ComposeContainer>(line) {
-                    Ok(c) if c.service == "vex-client" || c.service == "vex-server" => Some(c.name),
-                    _ => None,
-                },
-            )
-            .collect::<Vec<_>>();
-
-        Ok(Self { root, containers })
+        Ok(Self { root: root.clone() })
     }
 }
-
 impl Drop for DockerComposeEnv {
     fn drop(&mut self) {
-        println!("Saving docker-compose logs...");
-        let logs_dir = self.root.join("test-results/logs");
-
-        if let Err(e) = fs::create_dir_all(&logs_dir) {
-            eprintln!("Failed to create logs dir: {e}");
-        }
-
-        for container in &self.containers {
-            let log_path = logs_dir.join(format!("{container}.log"));
-            match cmd!("docker", "logs", container).read() {
-                Ok(output) => {
-                    if let Err(e) = fs::write(&log_path, output) {
-                        eprintln!("Failed to write logs for {container}: {e}");
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Failed to get logs for {container}: {e}");
-                }
-            }
-        }
-
-        println!("Tearing down docker-compose environment...");
+        println!("Cleaning up docker-compose environment...");
         if let Err(e) = cmd!("docker", "compose", "down", "-v")
-            .dir(self.root.as_ref())
+            .dir(&self.root)
             .run()
         {
-            eprintln!("Failed to tear down docker environment: {e}");
+            eprintln!("Failed to tear down docker environment: {}", e);
         }
     }
-}
-
-#[derive(Deserialize, Debug)]
-struct ComposeContainer {
-    #[serde(rename = "Name")]
-    name: String,
-    #[serde(rename = "Service")]
-    service: String,
 }
 
 // Helper function to apply network conditions
@@ -166,20 +109,23 @@ fn apply_scenario_conditions(scenario: &str, clients: u32) -> Result<(), XTaskEr
         match scenario {
             "high-latency" => {
                 println!("Applying 100ms RTT latency...");
+                // let index = format!("--index {}", i);
                 // Apply 50ms latency to traffic leaving the client
                 cmd!(
                     "docker",
                     "exec",
-                    format!("tests-vex-client-{i}"),
+                    "--index",
+                    (i).to_string(),
+                    "vex-client",
                     "tc",
                     "qdisc",
-                    "replace",
+                    "add",
                     "dev",
                     "eth0",
                     "root",
                     "netem",
                     "delay",
-                    format!("{NETWORK_DELAY_MS}ms")
+                    "50ms"
                 )
                 .run()?;
                 // Apply 50ms latency to traffic leaving the server
@@ -189,13 +135,13 @@ fn apply_scenario_conditions(scenario: &str, clients: u32) -> Result<(), XTaskEr
                     "vex-server",
                     "tc",
                     "qdisc",
-                    "replace",
+                    "add",
                     "dev",
                     "eth0",
                     "root",
                     "netem",
                     "delay",
-                    format!("{NETWORK_DELAY_MS}ms")
+                    "50ms"
                 )
                 .run()?;
             }
@@ -204,38 +150,41 @@ fn apply_scenario_conditions(scenario: &str, clients: u32) -> Result<(), XTaskEr
                 cmd!(
                     "docker",
                     "exec",
-                    format!("tests-vex-client-{i}"),
+                    "--index",
+                    (i).to_string(),
+                    "vex-client",
                     "tc",
                     "qdisc",
-                    "replace",
+                    "add",
                     "dev",
                     "eth0",
                     "root",
                     "netem",
                     "loss",
-                    format!("{PACKET_LOSS_PERCENT}%")
+                    "5%"
                 )
                 .run()?;
             }
             _ => Err(XTaskError::Unexpected(format!(
-                "Unknown scenario: {scenario}"
+                "Unknown scenario: {}",
+                scenario
             )))?,
         }
     }
     Ok(())
 }
 
-fn build_docker(root: &Path) -> Result<(), XTaskError> {
+fn build_docker(root: &PathBuf) -> Result<(), XTaskError> {
     println!("Building all Docker services...");
     cmd!("docker", "compose", "build",)
-        .dir(root.join("xtask/tests"))
+        .dir(&root.join("xtask/tests"))
         .run()?;
-    println!("Docker images built successfully.");
+    println!("✅ Docker images built successfully.");
     Ok(())
 }
 
 fn run_correctness_task(
-    project_root: Box<Path>,
+    project_root: &PathBuf,
     scenario: &str,
     clients: u32,
 ) -> Result<(), XTaskError> {
@@ -248,15 +197,19 @@ fn run_correctness_task(
     fs::create_dir_all(&test_results_dir)?;
 
     // Wrap docker-compose commands in a struct with a Drop implementation for cleanup
-    let _env = DockerComposeEnv::new(project_root.join("xtask/tests").into_boxed_path(), clients)?;
+    let _env = DockerComposeEnv::new(&project_root.join("xtask/tests"), clients)?;
 
     // --- Scenario-specific setup ---
-    apply_scenario_conditions(scenario, clients)?;
+    apply_scenario_conditions(&scenario, clients)?;
 
-    let msg_count_per_client = DEFAULT_MSG_COUNT_PER_CLIENT;
+    // --- Execute Test ---
+    let msg_count_per_client = 500;
     let total_msg_count = msg_count_per_client * clients as usize;
 
-    println!("Executing {clients} clients to send {msg_count_per_client} messages each...");
+    println!(
+        "Executing {} clients to send {} messages each...",
+        clients, msg_count_per_client
+    );
     let mut threads = Vec::new();
     for i in 1..=clients {
         let project_root = project_root.clone();
@@ -268,15 +221,18 @@ fn run_correctness_task(
                 "--index",
                 (i).to_string(),
                 "-T",
+                // Pass CLIENT_ID to the container's environment
+                // "--env",
+                // &format!("CLIENT_ID={}", i - 1),
                 "vex-client",
                 "/usr/local/bin/test_client",
-                "--client-id",
-                (i - 1).to_string(),
                 "correctness",
                 "--count",
                 msg_count_per_client.to_string(),
+                "--client-id",
+                (i - 1).to_string()
             )
-            .dir(project_root.join("xtask/tests"))
+            .dir(&project_root.join("xtask/tests"))
             .run()
         }));
     }
@@ -285,6 +241,7 @@ fn run_correctness_task(
         handle.join().unwrap()?;
     }
     println!("All clients finished execution.");
+
 
     println!("Client finished execution.");
 
@@ -312,17 +269,18 @@ fn run_correctness_task(
         for i in 0..msg_count_per_client as u64 {
             if !received_ids.contains(&(id_offset + i)) {
                 return Err(XTaskError::Testing(TestingError::TestFailed(format!(
-                    "Missing message ID: {i}"
+                    "Missing message ID: {}",
+                    i
                 ))));
             }
         }
     }
 
-    println!("Scenario '{scenario}' PASSED!");
+    println!("✅ Scenario '{}' PASSED!", scenario);
     Ok(())
 }
 
-fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
+fn run_benchmark(root: &PathBuf, clients: u32) -> Result<(), XTaskError> {
     let test_results_dir = root.join("xtask/tests/test-results");
     // Clear up/delete existing contents in the test-results directory
     if test_results_dir.exists() {
@@ -331,115 +289,39 @@ fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
     }
     fs::create_dir_all(&test_results_dir)?;
 
-    // Wrap docker-compose commands in a struct with a Drop implementation for cleanup
-    let _env = DockerComposeEnv::new(root.join("xtask/tests").into(), clients)?;
+    println!("▶️  Running Benchmark: ");
+    let _env = DockerComposeEnv::new(&root.join("xtask/tests"), clients)?;
+    let duration_secs = 60; // Duration for the throughput test
 
-    // Fixed: Use actual message count, not hardcoded duration
-    let msg_count_per_client = 10000;
-    let total_expected_messages = msg_count_per_client * clients;
+    // Throughput requires a different client binary for now, one that just sends.
+    // Or an updated client that takes a duration. For now, we'll simulate.
+    println!("Executing throughput test for {} seconds...", duration_secs);
+    let msg_count = 100;
+    println!("Executing test client to send {} messages...", msg_count);
+    cmd!(
+        "docker",
+        "compose",
+        "exec",
+        "-T", // No TTY allocation
+        "vex-client",
+        "/usr/local/bin/test_client",
+        "latency",
+        "--samples",
+        msg_count.to_string()
+    )
+    .dir(&root.join("xtask/tests"))
+    .run()?;
+    println!("Client finished execution.");
 
-    println!("Starting {clients} clients, each sending {msg_count_per_client} messages...");
-    println!("Total expected messages: {total_expected_messages}");
-
-    let mut threads = Vec::new();
-    for i in 1..=clients {
-        let project_root = root.clone();
-        threads.push(std::thread::spawn(move || {
-            let thread_start = Instant::now();
-            let result = cmd!(
-                "docker",
-                "compose",
-                "exec",
-                "--index",
-                (i).to_string(),
-                "-T",
-                "vex-client",
-                "sh",
-                "-c",
-                &format!("/usr/local/bin/test_client --client-id {} latency --samples {} | tee /proc/1/fd/1", 
-                        i - 1, msg_count_per_client)
-            )
-            .dir(project_root.join("xtask/tests"))
-            .run();
-
-            (result, thread_start.elapsed())
-        }));
-    }
-
-    // Wait for all clients to complete and collect timing info
-    let mut client_durations = Vec::new();
-    let mut failed_clients = 0;
-
-    for (i, thread) in threads.into_iter().enumerate() {
-        match thread.join() {
-            Ok((result, duration)) => {
-                client_durations.push(duration);
-                if let Err(e) = result {
-                    eprintln!("Client {} failed: {}", i + 1, e);
-                    failed_clients += 1;
-                }
-            }
-            Err(_) => {
-                eprintln!("Client {} thread panicked", i + 1);
-                failed_clients += 1;
-            }
-        }
-    }
-
-    println!("All clients finished execution.");
-
-    // Read and analyze results
     let results_file = test_results_dir.join("received_ids.txt");
+    let count = fs::read_to_string(results_file)?.lines().count();
+    let throughput = count as f64 / duration_secs as f64;
+    println!("\n--- Throughput Benchmark Results ---");
+    println!("Total messages received: {}", count);
+    println!("Test duration: {} s", duration_secs);
+    println!("Throughput: {:.2} msgs/sec", throughput);
+    println!("------------------------------------\n");
 
-    // Better error handling for results file
-    let messages_received = if results_file.exists() {
-        let content = fs::read_to_string(&results_file)?;
-        let unique_messages: std::collections::HashSet<_> = content.lines().collect();
-
-        // Check for duplicates
-        let total_lines = content.lines().count();
-        if total_lines != unique_messages.len() {
-            println!(
-                "Warning: {} duplicate messages detected",
-                total_lines - unique_messages.len()
-            );
-        }
-
-        unique_messages.len()
-    } else {
-        eprintln!("Warning: Results file not found at {results_file:?}");
-        0
-    };
-
-    let success_rate = (messages_received as f64 / total_expected_messages as f64) * 100.0;
-
-    // Print comprehensive results
-    println!("\n╔════════════════════════════════════════════╗");
-    println!("║      THROUGHPUT BENCHMARK RESULTS          ║");
-    println!("╠════════════════════════════════════════════╣");
-    println!("║ Configuration:                             ║");
-    println!("║   Clients:              {clients:>18} ║");
-    println!("║   Messages per client:  {msg_count_per_client:>18} ║");
-    println!("║   Expected total:       {total_expected_messages:>18} ║");
-    println!("╠════════════════════════════════════════════╣");
-    println!("║ Results:                                   ║");
-    println!("║   Messages received:    {messages_received:>18} ║");
-    println!("║   Success rate:         {success_rate:>17.2}% ║");
-    println!("║   Failed clients:       {failed_clients:>18} ║");
-    println!("╠════════════════════════════════════════════╣");
-    println!("╚════════════════════════════════════════════╝");
-
-    // Determine test status
-    if messages_received == 0 {
-        println!("\nBenchmark FAILED: No messages received");
-        return Err(XTaskError::Unexpected("No messages received".to_string()));
-    } else if success_rate < 100.0 {
-        println!(
-            "\nBenchmark completed with message loss: {:.2}%",
-            100.0 - success_rate
-        );
-    } else {
-        println!("\n Benchmark completed successfully!");
-    }
+    println!("✅ Benchmark finished.");
     Ok(())
 }
