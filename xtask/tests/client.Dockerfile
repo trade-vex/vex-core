@@ -2,9 +2,9 @@
 FROM rust:1.88 as builder
 WORKDIR /usr/src/app
 RUN apt-get update && apt-get install -y wget iproute2 build-essential clang pkg-config git \
-    && wget https://github.com/Kitware/CMake/releases/download/v3.30.0/cmake-3.30.0-linux-x86_64.tar.gz \
-    && tar -xzvf cmake-3.30.0-linux-x86_64.tar.gz --strip-components=1 -C /usr/local \
-    && rm cmake-3.30.0-linux-x86_64.tar.gz
+    && wget https://github.com/Kitware/CMake/releases/download/v3.30.0/cmake-3.30.0-linux-aarch64.tar.gz \
+    && tar -xzvf cmake-3.30.0-linux-aarch64.tar.gz --strip-components=1 -C /usr/local \
+    && rm cmake-3.30.0-linux-aarch64.tar.gz
 COPY . .
 # Build the dedicated 'test_server' binary
 RUN ls -a
