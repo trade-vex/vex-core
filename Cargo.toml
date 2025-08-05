@@ -22,12 +22,7 @@ resolver = "2"
 members = [
     "common", 
     "vex-config",
-    "networking",
-    "processors",
-    "order",
-    "xtask",
-    "orderbook" ,
-    "server", 
+    "utils", "xtask",
 ]
 
 [workspace.dependencies]
