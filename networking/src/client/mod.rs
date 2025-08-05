@@ -22,7 +22,7 @@ use common::cmd::{OrderCommand, encode_order_command};
 const ALL_GATEWAYS_STREAM_ID: i32 = 1001;
 const GATEWAY_CORE_STREAM_ID: i32 = 1002;
 // const HEARTBEAT_STREAM_ID: i32 = 1003;
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 // const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const MESSAGE_RETRY_COUNT: usize = 5;
 const MESSAGE_RETRY_DELAY: Duration = Duration::from_millis(100);
