@@ -12,7 +12,7 @@ members = [
     "processors", 
     "server", 
     "vex-config",
-    "utils",
+    "utils", "xtask",
 ]
 
 [workspace.dependencies]
