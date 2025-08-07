@@ -593,42 +593,56 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
             return Err(OrderBookError::ReduceFailedWrongSize);
         }
 
-        let order_key = self.order_id_index.get(&cmd.order_id()).copied().ok_or(OrderBookError::UnknownOrderId)?;
+        let order_key = self
+            .order_id_index
+            .get(&cmd.order_id())
+            .copied()
+            .ok_or(OrderBookError::UnknownOrderId)?;
 
         // Use a scope to determine the action while avoiding complex borrows.
         let (reduce_by, can_remove, order_action);
         {
             let order = &self.orders[order_key];
-            if order.uid() != cmd.uid() { return Err(OrderBookError::UnknownOrderId); }
+            if order.uid() != cmd.uid() {
+                return Err(OrderBookError::UnknownOrderId);
+            }
 
             let remaining_size = order.size() - order.filled();
             reduce_by = std::cmp::min(remaining_size, requested_reduce_size);
             can_remove = reduce_by == remaining_size;
             order_action = order.action();
         }
-        
+
         cmd.action = order_action;
 
         if can_remove {
             let order_clone = self.orders[order_key].clone();
             self.remove_order(order_key);
-            cmd.attach_matcher_event(EventHelper::send_reduce_event(&order_clone, reduce_by, true));
+            cmd.attach_matcher_event(EventHelper::send_reduce_event(
+                &order_clone,
+                reduce_by,
+                true,
+            ));
         } else {
             let order_to_reduce = &mut self.orders[order_key];
             order_to_reduce.size -= reduce_by;
-            
+
             let price = order_to_reduce.price();
-            let buckets = if order_action == OrderAction::Ask { &mut self.ask_price_buckets } else { &mut self.bid_price_buckets };
+            let buckets = if order_action == OrderAction::Ask {
+                &mut self.ask_price_buckets
+            } else {
+                &mut self.bid_price_buckets
+            };
             if let Some(bucket) = buckets.get_mut(&price) {
                 bucket.volume -= reduce_by;
             }
 
-        cmd.matcher_event = Some(EventHelper::send_reduce_event(
-            order_to_reduce,
-            reduce_by,
-            false,
-        ));
-    }
+            cmd.matcher_event = Some(EventHelper::send_reduce_event(
+                order_to_reduce,
+                reduce_by,
+                false,
+            ));
+        }
 
         Ok(())
     }
@@ -657,11 +671,11 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
         order_to_move.price = cmd.price();
 
         cmd.action = order_to_move.action;
-        cmd.size = order_to_move.size; 
-        
+        cmd.size = order_to_move.size;
+
         let total_filled = self.try_match_instantly(cmd, order_to_move.filled);
         order_to_move.filled = total_filled;
-        
+
         // If not fully filled, insert the remainder back onto the book.
         if order_to_move.size > order_to_move.filled {
             self.insert_order(order_to_move);
