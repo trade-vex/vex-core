@@ -169,6 +169,7 @@ impl OrderBookDirectImpl {
             let maker_order_size;
             let maker_order_filled;
             let maker_order_prev;
+            let _maker_action;
 
             {
                 let maker_order = &self.orders[maker_key];
@@ -176,6 +177,7 @@ impl OrderBookDirectImpl {
                 maker_order_size = maker_order.size;
                 maker_order_filled = maker_order.filled;
                 maker_order_prev = maker_order.prev;
+                _maker_action = maker_order.action;
             }
 
             let can_match = if is_bid_action {
@@ -198,6 +200,18 @@ impl OrderBookDirectImpl {
                 maker_order_mut.filled += trade_size;
 
                 let maker_filled = maker_order_mut.filled == maker_order_mut.size;
+
+                if !maker_filled {
+                    // Only subtract from volume if not going to remove order
+                    let buckets = if cmd.action() == OrderAction::Ask {
+                        &mut self.bid_price_buckets
+                    } else {
+                        &mut self.ask_price_buckets
+                    };
+                    if let Some(bucket) = buckets.get_mut(&maker_order_mut.price) {
+                        bucket.volume -= trade_size;
+                    }
+                }
 
                 let trade_event = MatcherTradeEvent {
                     event_type: MatcherEventType::Trade,
