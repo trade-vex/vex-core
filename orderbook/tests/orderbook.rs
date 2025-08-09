@@ -206,3 +206,182 @@ fn test_partial_reduce_updates_all_state_consistently() {
         "Order size INSIDE the bucket must also be updated"
     );
 }
+
+#[test]
+fn test_partial_match_updates_bucket_volume_direct() {
+    let mut order_book = create_order_book_direct();
+
+    // Place a large BID order (the maker). Size 100 at price 50000.
+    let mut maker_cmd =
+        OrderCommand::new_order(OrderType::Gtc, 1, 100, 50000, 0, 100, OrderAction::Bid);
+    order_book.new_order(&mut maker_cmd).unwrap();
+
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Bid), 100);
+
+    let maker_order = order_book.get_order_by_id(1).unwrap();
+    assert_eq!(maker_order.size(), 100);
+    assert_eq!(maker_order.filled(), 0);
+
+    // Place a smaller ASK order (the taker) at a marketable price. Size 30.
+    let mut taker_cmd =
+        OrderCommand::new_order(OrderType::Gtc, 2, 200, 49900, 0, 30, OrderAction::Ask);
+    order_book.new_order(&mut taker_cmd).unwrap();
+
+    // The taker (ASK) order should be completely filled and gone.
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Ask), 0);
+    assert!(order_book.get_order_by_id(2).is_none());
+
+    // The maker (BID) order should still be on the book, but partially filled.
+    let maker_order_after_trade = order_book.get_order_by_id(1).unwrap();
+    assert_eq!(maker_order_after_trade.size(), 100);
+    assert_eq!(
+        maker_order_after_trade.filled(),
+        30,
+        "Maker order should be filled by 30"
+    );
+
+    assert_eq!(
+        order_book.get_total_orders_volume(OrderAction::Bid),
+        70,
+        "Bucket volume must be updated after partial match"
+    );
+}
+
+#[test]
+fn test_reduce_order_full_amount_direct() {
+    let mut order_book = create_order_book_direct();
+
+    // Place an order
+    let mut cmd = OrderCommand::new_order(OrderType::Gtc, 1, 100, 50000, 0, 100, OrderAction::Bid);
+    order_book.new_order(&mut cmd).unwrap();
+
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Bid), 100);
+
+    // Reduce the order by its full remaining size (should succeed now)
+    let mut reduce_cmd = OrderCommand::reduce(1, 100, 100);
+    let result = order_book.reduce_order(&mut reduce_cmd);
+
+    assert!(
+        result.is_ok(),
+        "Should be able to reduce order by full amount"
+    );
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Bid), 0);
+    assert!(
+        order_book.get_order_by_id(1).is_none(),
+        "Order should be removed"
+    );
+}
+
+#[test]
+fn test_reduce_order_partial_then_full_direct() {
+    let mut order_book = create_order_book_direct();
+
+    // Place an order with size 100, partially filled
+    let mut maker_cmd =
+        OrderCommand::new_order(OrderType::Gtc, 1, 100, 50000, 0, 100, OrderAction::Bid);
+    order_book.new_order(&mut maker_cmd).unwrap();
+
+    // Partially match it with a small ask
+    let mut taker_cmd =
+        OrderCommand::new_order(OrderType::Gtc, 2, 200, 49900, 0, 20, OrderAction::Ask);
+    order_book.new_order(&mut taker_cmd).unwrap();
+
+    // Now we have an order with size=100, filled=20, remaining=80
+    let order = order_book.get_order_by_id(1).unwrap();
+    assert_eq!(order.size(), 100);
+    assert_eq!(order.filled(), 20);
+
+    // First reduce by 30 (remaining becomes 50)
+    let mut reduce1 = OrderCommand::reduce(1, 100, 30);
+    order_book.reduce_order(&mut reduce1).unwrap();
+
+    let order = order_book.get_order_by_id(1).unwrap();
+    assert_eq!(order.size(), 70); // 100 - 30
+    assert_eq!(order.filled(), 20);
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Bid), 50); // 70 - 20 filled
+
+    // Now reduce by the full remaining amount (50)
+    let mut reduce2 = OrderCommand::reduce(1, 100, 50);
+    order_book.reduce_order(&mut reduce2).unwrap();
+
+    assert!(
+        order_book.get_order_by_id(1).is_none(),
+        "Order should be removed"
+    );
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Bid), 0);
+}
+
+#[test]
+fn test_move_order_crosses_spread_direct() {
+    let mut order_book = create_order_book_direct();
+
+    // Place a BID order at 49900
+    let mut bid_cmd =
+        OrderCommand::new_order(OrderType::Gtc, 1, 200, 49900, 0, 50, OrderAction::Bid);
+    order_book.new_order(&mut bid_cmd).unwrap();
+
+    // Place an ASK order at 50100 (above the bid, no match)
+    let mut ask_cmd =
+        OrderCommand::new_order(OrderType::Gtc, 2, 100, 50100, 0, 50, OrderAction::Ask);
+    order_book.new_order(&mut ask_cmd).unwrap();
+
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Bid), 50);
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Ask), 50);
+
+    // Move the ASK order to 49800 (crosses the spread, should match immediately)
+    let mut move_cmd = OrderCommand::move_order(2, 100, 49800);
+    order_book.move_order(&mut move_cmd).unwrap();
+
+    // Both orders should be fully matched and removed
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Bid), 0);
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Ask), 0);
+    assert!(order_book.get_order_by_id(1).is_none());
+    assert!(order_book.get_order_by_id(2).is_none());
+
+    // Verify trade events were generated
+    let mut events = Vec::new();
+    let mut current_event = move_cmd.matcher_event;
+    while let Some(event) = current_event {
+        if event.event_type == MatcherEventType::Trade {
+            events.push(event.clone());
+        }
+        current_event = event.next_event;
+    }
+    assert_eq!(events.len(), 1, "Should generate one trade event");
+    assert_eq!(events[0].size, 50, "Trade size should be 50");
+}
+
+#[test]
+fn test_move_order_partial_match_direct() {
+    let mut order_book = create_order_book_direct();
+
+    // Place a small BID order at 49900
+    let mut bid_cmd =
+        OrderCommand::new_order(OrderType::Gtc, 1, 200, 49900, 0, 30, OrderAction::Bid);
+    order_book.new_order(&mut bid_cmd).unwrap();
+
+    // Place a larger ASK order at 50100
+    let mut ask_cmd =
+        OrderCommand::new_order(OrderType::Gtc, 2, 100, 50100, 0, 100, OrderAction::Ask);
+    order_book.new_order(&mut ask_cmd).unwrap();
+
+    // Move the ASK order to cross the spread
+    let mut move_cmd = OrderCommand::move_order(2, 100, 49800);
+    order_book.move_order(&mut move_cmd).unwrap();
+
+    // BID should be fully matched and removed
+    assert!(order_book.get_order_by_id(1).is_none());
+
+    // ASK should be partially filled and still on the book at new price
+    let ask_order = order_book.get_order_by_id(2).unwrap();
+    assert_eq!(ask_order.price(), 49800, "Order should be at new price");
+    assert_eq!(ask_order.size(), 100);
+    assert_eq!(ask_order.filled(), 30, "Should be partially filled");
+
+    assert_eq!(
+        order_book.get_total_orders_volume(OrderAction::Ask),
+        70,
+        "Remaining volume should be 70"
+    );
+    assert_eq!(order_book.get_total_orders_volume(OrderAction::Bid), 0);
+}
