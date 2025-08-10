@@ -1,5 +1,5 @@
 use super::enums::SymbolType;
-use borsh::{BorshDeserialize, BorshSerialize, to_vec};
+use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 
@@ -33,7 +33,7 @@ impl CoreSymbolSpecification {
 
 /// Calculate the state hash for this symbol specification
 impl Hash for CoreSymbolSpecification {
-    fn hash<H: Hasher> (&self, state: &mut H) {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         let encoded = to_vec(self).unwrap();
         state.write(&encoded);
     }

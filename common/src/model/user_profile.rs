@@ -1,5 +1,5 @@
 use crate::model::symbol_position_record::SymbolPositionRecord;
-use borsh::{BorshDeserialize, BorshSerialize, to_vec};
+use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use hashbrown::HashMap;
 use std::hash::{Hash, Hasher};
 // TODO ...
@@ -29,7 +29,6 @@ impl UserProfile {
 /// Implements a state hash for data integrity checks, similar to the Java version.
 /// It works by serializing the entire struct into bytes and then hashing those bytes.
 impl Hash for UserProfile {
-
     fn hash<H: Hasher>(&self, state: &mut H) {
         let encoded = to_vec(self).expect("UserProfile serialization should never fail");
         state.write(&encoded);
