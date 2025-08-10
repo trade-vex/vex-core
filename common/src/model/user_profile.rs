@@ -31,7 +31,7 @@ impl UserProfile {
 impl Hash for UserProfile {
 
     fn hash<H: Hasher>(&self, state: &mut H) {
-        let encoded = to_vec(self).unwrap();
+        let encoded = to_vec(self).expect("UserProfile serialization should never fail");
         state.write(&encoded);
     }
 }
