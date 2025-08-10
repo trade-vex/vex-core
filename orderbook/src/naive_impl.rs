@@ -218,6 +218,10 @@ impl OrderBookNaiveImpl {
         bucket.put(&order);
         self.order_id_map.insert(order.order_id, order);
 
+        // Generate an OrderPlaced event for the remaining size
+        let placed_event = EventHelper::create_order_placed_event(cmd, remaining_size);
+        cmd.attach_matcher_event(placed_event);
+
         Ok(())
     }
 
