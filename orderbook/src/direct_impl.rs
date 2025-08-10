@@ -1379,23 +1379,19 @@ mod tests {
             let restored_l2 = restored.get_l2_market_data_snapshot(10);
             assert_eq!(
                 current_l2.ask_prices, restored_l2.ask_prices,
-                "Round {}",
-                round
+                "Round {round}"
             );
             assert_eq!(
                 current_l2.ask_volumes, restored_l2.ask_volumes,
-                "Round {}",
-                round
+                "Round {round}"
             );
             assert_eq!(
                 current_l2.bid_prices, restored_l2.bid_prices,
-                "Round {}",
-                round
+                "Round {round}"
             );
             assert_eq!(
                 current_l2.bid_volumes, restored_l2.bid_volumes,
-                "Round {}",
-                round
+                "Round {round}"
             );
 
             restored.validate_internal_state();

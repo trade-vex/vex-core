@@ -84,19 +84,27 @@ fn should_work_with_different_symbol_types() {
     assert_eq!(futures_book.get_symbol_spec().symbol_id, 5991);
 }
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 #[test]
 fn should_calculate_state_hash() {
     let symbol_spec = TestConstants::symbol_spec_eth_xbt();
-    let hash1 = symbol_spec.state_hash();
+    let mut hasher1 = DefaultHasher::new();
+    symbol_spec.hash(&mut hasher1);
+    let hash1 = hasher1.finish();
 
     // Same spec should produce same hash
     let symbol_spec2 = TestConstants::symbol_spec_eth_xbt();
-    let hash2 = symbol_spec2.state_hash();
+    let mut hasher2 = DefaultHasher::new();
+    symbol_spec2.hash(&mut hasher2);
+    let hash2 = hasher2.finish();
     assert_eq!(hash1, hash2);
 
     // Different spec should produce different hash
     let symbol_spec3 = TestConstants::symbol_spec_eur_usd();
-    let hash3 = symbol_spec3.state_hash();
+    let mut hasher3 = DefaultHasher::new();
+    symbol_spec3.hash(&mut hasher3);
+    let hash3 = hasher3.finish();
     assert_ne!(hash1, hash3);
 }
 
