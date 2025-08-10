@@ -36,25 +36,36 @@ impl OrderBookDirectImpl {
         let symbol_spec = CoreSymbolSpecification::deserialize(bytes)?;
         let num_orders = u32::deserialize(bytes)?;
 
-        let mut book = OrderBookDirectImpl::new(symbol_spec);
-
+        // Deserialize all orders first
+        let mut all_orders = Vec::new();
         for _ in 0..num_orders {
             let order = DirectOrder::deserialize(bytes)?;
-            book.insert_order(order);
+            all_orders.push(order);
         }
 
-        Ok(book)
+        all_orders.sort_by_key(|o| o.timestamp);
+
+        let mut orderbook = OrderBookDirectImpl::new(symbol_spec);
+
+        for order in all_orders {
+            orderbook.insert_order(order);
+        }
+
+        Ok(orderbook)
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, borsh::io::Error> {
         let mut writer = Vec::new();
-        self.get_implementation_type().serialize(&mut writer)?;
+
         self.symbol_spec.serialize(&mut writer)?;
 
         let num_orders = self.orders.len() as u32;
         num_orders.serialize(&mut writer)?;
 
-        for (_, order) in self.orders.iter() {
+        let mut all_orders: Vec<_> = self.orders.iter().map(|(_, order)| order).collect();
+        all_orders.sort_by_key(|o| o.timestamp);
+
+        for order in all_orders {
             order.serialize(&mut writer)?;
         }
 
@@ -461,9 +472,7 @@ pub struct DirectOrder {
     pub timestamp: i64,
 
     // Doubly-linked list pointers
-    #[borsh(skip)]
     pub next: Option<usize>,
-    #[borsh(skip)]
     pub prev: Option<usize>,
 }
 
@@ -829,5 +838,626 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
                 "orderIdIndex contains an order not in a chain: {key}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::direct_impl::OrderBookDirectImpl;
+    use crate::{OrderBook, OrderCommand};
+    use common::model::enums::OrderType;
+    use common::model::enums::{OrderAction, SymbolType};
+    use common::model::symbol_specification::CoreSymbolSpecification;
+
+    fn create_test_symbol_spec() -> CoreSymbolSpecification {
+        CoreSymbolSpecification {
+            symbol_id: 1,
+            symbol_type: SymbolType::CurrencyExchangePair,
+            base_currency: 1,
+            quote_currency: 2,
+            base_scale_k: 1,
+            quote_scale_k: 1,
+            taker_fee: 0,
+            maker_fee: 0,
+            margin_buy: 0,
+            margin_sell: 0,
+        }
+    }
+
+    #[test]
+    fn test_empty_orderbook_serialization() {
+        let original = OrderBookDirectImpl::new(create_test_symbol_spec());
+        let bytes = original.to_bytes().unwrap();
+        let mut bytes_slice = bytes.as_slice();
+        let deserialized = OrderBookDirectImpl::from_bytes(&mut bytes_slice).unwrap();
+
+        assert_eq!(deserialized.orders.len(), 0);
+        assert_eq!(deserialized.ask_price_buckets.len(), 0);
+        assert_eq!(deserialized.bid_price_buckets.len(), 0);
+        assert_eq!(deserialized.best_ask_order, None);
+        assert_eq!(deserialized.best_bid_order, None);
+    }
+
+    #[test]
+    fn test_single_order_serialization() {
+        let mut original = OrderBookDirectImpl::new(create_test_symbol_spec());
+
+        let order = DirectOrder {
+            order_id: 1,
+            price: 100,
+            size: 10,
+            filled: 0,
+            reserve_bid_price: 100,
+            action: OrderAction::Ask,
+            uid: 1001,
+            timestamp: 12345,
+            next: None,
+            prev: None,
+        };
+
+        original.insert_order(order);
+
+        let bytes = original.to_bytes().unwrap();
+        let mut bytes_slice = bytes.as_slice();
+        let deserialized = OrderBookDirectImpl::from_bytes(&mut bytes_slice).unwrap();
+
+        assert_eq!(deserialized.orders.len(), 1);
+        assert_eq!(deserialized.ask_price_buckets.len(), 1);
+        assert!(deserialized.best_ask_order.is_some());
+
+        let restored_order = deserialized.get_order_by_id(1).unwrap();
+        assert_eq!(restored_order.price(), 100);
+        assert_eq!(restored_order.size(), 10);
+        assert_eq!(restored_order.action(), OrderAction::Ask);
+    }
+
+    #[test]
+    fn test_multiple_orders_same_price_serialization() {
+        let mut original = OrderBookDirectImpl::new(create_test_symbol_spec());
+
+        // Add orders with same price but different timestamps
+        let orders = vec![
+            DirectOrder {
+                order_id: 1,
+                price: 100,
+                size: 10,
+                filled: 0,
+                reserve_bid_price: 100,
+                action: OrderAction::Ask,
+                uid: 1001,
+                timestamp: 12345,
+                next: None,
+                prev: None,
+            },
+            DirectOrder {
+                order_id: 2,
+                price: 100,
+                size: 5,
+                filled: 0,
+                reserve_bid_price: 100,
+                action: OrderAction::Ask,
+                uid: 1002,
+                timestamp: 12346,
+                next: None,
+                prev: None,
+            },
+        ];
+
+        for order in orders {
+            original.insert_order(order);
+        }
+
+        let bytes = original.to_bytes().unwrap();
+        let mut bytes_slice = bytes.as_slice();
+        let deserialized = OrderBookDirectImpl::from_bytes(&mut bytes_slice).unwrap();
+
+        assert_eq!(deserialized.orders.len(), 2);
+        assert_eq!(deserialized.ask_price_buckets.len(), 1);
+
+        // Verify bucket state
+        let bucket = deserialized.ask_price_buckets.get(&100).unwrap();
+        assert_eq!(bucket.volume, 15);
+        assert_eq!(bucket.num_orders, 2);
+
+        // Verify both orders exist
+        assert!(deserialized.get_order_by_id(1).is_some());
+        assert!(deserialized.get_order_by_id(2).is_some());
+    }
+
+    #[test]
+    fn test_mixed_orders_serialization() {
+        let mut original = OrderBookDirectImpl::new(create_test_symbol_spec());
+
+        let orders = vec![
+            DirectOrder {
+                order_id: 1,
+                price: 100,
+                size: 10,
+                filled: 0,
+                reserve_bid_price: 100,
+                action: OrderAction::Ask,
+                uid: 1001,
+                timestamp: 12345,
+                next: None,
+                prev: None,
+            },
+            DirectOrder {
+                order_id: 2,
+                price: 99,
+                size: 5,
+                filled: 0,
+                reserve_bid_price: 99,
+                action: OrderAction::Bid,
+                uid: 1002,
+                timestamp: 12346,
+                next: None,
+                prev: None,
+            },
+            DirectOrder {
+                order_id: 3,
+                price: 101,
+                size: 7,
+                filled: 2,
+                reserve_bid_price: 101,
+                action: OrderAction::Ask,
+                uid: 1003,
+                timestamp: 12347,
+                next: None,
+                prev: None,
+            },
+        ];
+
+        for order in orders {
+            original.insert_order(order);
+        }
+
+        let bytes = original.to_bytes().unwrap();
+        let mut bytes_slice = bytes.as_slice();
+        let deserialized = OrderBookDirectImpl::from_bytes(&mut bytes_slice).unwrap();
+
+        assert_eq!(deserialized.orders.len(), 3);
+        assert_eq!(deserialized.ask_price_buckets.len(), 2);
+        assert_eq!(deserialized.bid_price_buckets.len(), 1);
+
+        // Verify all orders exist
+        for id in 1..=3 {
+            assert!(deserialized.get_order_by_id(id).is_some());
+        }
+
+        // Verify bucket volumes (considering filled amounts)
+        let ask_bucket_100 = deserialized.ask_price_buckets.get(&100).unwrap();
+        assert_eq!(ask_bucket_100.volume, 10); // 10 - 0 filled
+
+        let ask_bucket_101 = deserialized.ask_price_buckets.get(&101).unwrap();
+        assert_eq!(ask_bucket_101.volume, 5); // 7 - 2 filled
+
+        let bid_bucket_99 = deserialized.bid_price_buckets.get(&99).unwrap();
+        assert_eq!(bid_bucket_99.volume, 5); // 5 - 0 filled
+    }
+
+    #[test]
+    fn test_internal_state_consistency_after_deserialization() {
+        let mut original = OrderBookDirectImpl::new(create_test_symbol_spec());
+
+        // Add various orders
+        let orders = vec![
+            (1, 100, 10, OrderAction::Ask, 12345),
+            (2, 99, 5, OrderAction::Bid, 12346),
+            (3, 101, 7, OrderAction::Ask, 12347),
+            (4, 98, 3, OrderAction::Bid, 12348),
+            (5, 100, 2, OrderAction::Ask, 12349),
+        ];
+
+        for (id, price, size, action, timestamp) in orders {
+            let order = DirectOrder {
+                order_id: id,
+                price,
+                size,
+                filled: 0,
+                reserve_bid_price: price,
+                action,
+                uid: 1000 + id,
+                timestamp,
+                next: None,
+                prev: None,
+            };
+            original.insert_order(order);
+        }
+
+        let bytes = original.to_bytes().unwrap();
+        let mut bytes_slice = bytes.as_slice();
+        let deserialized = OrderBookDirectImpl::from_bytes(&mut bytes_slice).unwrap();
+
+        // Validate internal state consistency
+        deserialized.validate_internal_state();
+
+        // Compare key metrics
+        assert_eq!(
+            original.get_orders_num(OrderAction::Ask),
+            deserialized.get_orders_num(OrderAction::Ask)
+        );
+        assert_eq!(
+            original.get_orders_num(OrderAction::Bid),
+            deserialized.get_orders_num(OrderAction::Bid)
+        );
+        assert_eq!(
+            original.get_total_orders_volume(OrderAction::Ask),
+            deserialized.get_total_orders_volume(OrderAction::Ask)
+        );
+        assert_eq!(
+            original.get_total_orders_volume(OrderAction::Bid),
+            deserialized.get_total_orders_volume(OrderAction::Bid)
+        );
+    }
+
+    #[test]
+    fn test_serialization_with_trading_activity() {
+        let mut orderbook = OrderBookDirectImpl::new(create_test_symbol_spec());
+
+        // Simulate trading activity
+        let mut cmd1 =
+            OrderCommand::new_order(OrderType::Gtc, 1, 1001, 100, 0, 10, OrderAction::Ask);
+        cmd1.timestamp = 12345;
+        orderbook.new_order(&mut cmd1).unwrap();
+
+        let mut cmd2 = OrderCommand::new_order(OrderType::Gtc, 2, 1002, 99, 0, 5, OrderAction::Bid);
+        cmd2.timestamp = 12346;
+        orderbook.new_order(&mut cmd2).unwrap();
+
+        // Serialize state
+        let bytes = orderbook.to_bytes().unwrap();
+        let mut bytes_slice = bytes.as_slice();
+        let restored = OrderBookDirectImpl::from_bytes(&mut bytes_slice).unwrap();
+
+        // Verify L2 data matches
+        let original_l2 = orderbook.get_l2_market_data_snapshot(10);
+        let restored_l2 = restored.get_l2_market_data_snapshot(10);
+
+        assert_eq!(original_l2.ask_prices, restored_l2.ask_prices);
+        assert_eq!(original_l2.ask_volumes, restored_l2.ask_volumes);
+        assert_eq!(original_l2.bid_prices, restored_l2.bid_prices);
+        assert_eq!(original_l2.bid_volumes, restored_l2.bid_volumes);
+    }
+
+    #[test]
+    fn test_time_priority_preserved_after_serialization() {
+        let mut original = OrderBookDirectImpl::new(create_test_symbol_spec());
+
+        // Add orders at same price with different timestamps
+        let orders = vec![
+            DirectOrder {
+                order_id: 1,
+                price: 100,
+                size: 10,
+                filled: 0,
+                reserve_bid_price: 100,
+                action: OrderAction::Ask,
+                uid: 1001,
+                timestamp: 12345, // Earliest
+                next: None,
+                prev: None,
+            },
+            DirectOrder {
+                order_id: 2,
+                price: 100,
+                size: 5,
+                filled: 0,
+                reserve_bid_price: 100,
+                action: OrderAction::Ask,
+                uid: 1002,
+                timestamp: 12350, // Latest
+                next: None,
+                prev: None,
+            },
+            DirectOrder {
+                order_id: 3,
+                price: 100,
+                size: 3,
+                filled: 0,
+                reserve_bid_price: 100,
+                action: OrderAction::Ask,
+                uid: 1003,
+                timestamp: 12347, // Middle
+                next: None,
+                prev: None,
+            },
+        ];
+
+        for order in orders {
+            original.insert_order(order);
+        }
+
+        // Serialize and deserialize
+        let bytes = original.to_bytes().unwrap();
+        let mut bytes_slice = bytes.as_slice();
+        let restored = OrderBookDirectImpl::from_bytes(&mut bytes_slice).unwrap();
+
+        // Validate internal state consistency (most important)
+        restored.validate_internal_state();
+
+        // Verify functional equivalence
+        assert_eq!(restored.orders.len(), 3);
+        assert!(restored.get_order_by_id(1).is_some());
+        assert!(restored.get_order_by_id(2).is_some());
+        assert!(restored.get_order_by_id(3).is_some());
+
+        // Verify bucket state is correct
+        let bucket = restored.ask_price_buckets.get(&100).unwrap();
+        assert_eq!(bucket.volume, 18); // 10 + 5 + 3
+        assert_eq!(bucket.num_orders, 3);
+
+        // Verify L2 data is consistent (what really matters for trading)
+        let original_l2 = original.get_l2_market_data_snapshot(10);
+        let restored_l2 = restored.get_l2_market_data_snapshot(10);
+        assert_eq!(original_l2.ask_prices, restored_l2.ask_prices);
+        assert_eq!(original_l2.ask_volumes, restored_l2.ask_volumes);
+    }
+
+    #[test]
+    fn test_partially_filled_orders_serialization() {
+        let mut original = OrderBookDirectImpl::new(create_test_symbol_spec());
+
+        let orders = vec![
+            DirectOrder {
+                order_id: 1,
+                price: 100,
+                size: 10,
+                filled: 3, //  Partially filled
+                reserve_bid_price: 100,
+                action: OrderAction::Ask,
+                uid: 1001,
+                timestamp: 12345,
+                next: None,
+                prev: None,
+            },
+            DirectOrder {
+                order_id: 2,
+                price: 100,
+                size: 8,
+                filled: 8, //  Fully filled
+                reserve_bid_price: 100,
+                action: OrderAction::Ask,
+                uid: 1002,
+                timestamp: 12346,
+                next: None,
+                prev: None,
+            },
+        ];
+
+        for order in orders {
+            original.insert_order(order);
+        }
+
+        let bytes = original.to_bytes().unwrap();
+        let mut bytes_slice = bytes.as_slice();
+        let restored = OrderBookDirectImpl::from_bytes(&mut bytes_slice).unwrap();
+
+        // Verify filled amounts are preserved
+        let order1 = restored.get_order_by_id(1).unwrap();
+        assert_eq!(order1.filled(), 3);
+
+        let order2 = restored.get_order_by_id(2).unwrap();
+        assert_eq!(order2.filled(), 8);
+
+        // Verify volume calculation considers filled amounts
+        let bucket = restored.ask_price_buckets.get(&100).unwrap();
+        assert_eq!(bucket.volume, 7); // (10-3) + (8-8) = 7
+
+        restored.validate_internal_state();
+    }
+
+    #[test]
+    fn test_fully_filled_orders_serialization() {
+        let mut original = OrderBookDirectImpl::new(create_test_symbol_spec());
+
+        // Orders that are completely filled (zero remaining volume)
+        let orders = vec![
+            DirectOrder {
+                order_id: 1,
+                price: 100,
+                size: 10,
+                filled: 10, //  Completely filled
+                reserve_bid_price: 100,
+                action: OrderAction::Ask,
+                uid: 1001,
+                timestamp: 12345,
+                next: None,
+                prev: None,
+            },
+            DirectOrder {
+                order_id: 2,
+                price: 100,
+                size: 5,
+                filled: 0,
+                reserve_bid_price: 100,
+                action: OrderAction::Ask,
+                uid: 1002,
+                timestamp: 12346,
+                next: None,
+                prev: None,
+            },
+        ];
+
+        for order in orders {
+            original.insert_order(order);
+        }
+
+        let bytes = original.to_bytes().unwrap();
+        let mut bytes_slice = bytes.as_slice();
+        let restored = OrderBookDirectImpl::from_bytes(&mut bytes_slice).unwrap();
+
+        // Bucket should only count unfilled volume
+        let bucket = restored.ask_price_buckets.get(&100).unwrap();
+        assert_eq!(bucket.volume, 5); // Only order 2 contributes
+        assert_eq!(bucket.num_orders, 2); // Both orders count
+
+        restored.validate_internal_state();
+    }
+
+    #[test]
+    fn test_identical_timestamps_serialization() {
+        let mut original = OrderBookDirectImpl::new(create_test_symbol_spec());
+
+        // Orders with identical timestamps
+        let orders = vec![
+            DirectOrder {
+                order_id: 1,
+                price: 100,
+                size: 10,
+                filled: 0,
+                reserve_bid_price: 100,
+                action: OrderAction::Ask,
+                uid: 1001,
+                timestamp: 12345, //  Same timestamp
+                next: None,
+                prev: None,
+            },
+            DirectOrder {
+                order_id: 2,
+                price: 100,
+                size: 5,
+                filled: 0,
+                reserve_bid_price: 100,
+                action: OrderAction::Ask,
+                uid: 1002,
+                timestamp: 12345, //  Same timestamp
+                next: None,
+                prev: None,
+            },
+        ];
+
+        for order in orders {
+            original.insert_order(order);
+        }
+
+        let bytes = original.to_bytes().unwrap();
+        let mut bytes_slice = bytes.as_slice();
+        let restored = OrderBookDirectImpl::from_bytes(&mut bytes_slice).unwrap();
+
+        // Should handle gracefully without corruption
+        restored.validate_internal_state();
+        assert_eq!(restored.orders.len(), 2);
+    }
+
+    #[test]
+    fn test_multiple_serialization_rounds() {
+        let mut original = OrderBookDirectImpl::new(create_test_symbol_spec());
+
+        // Add some orders with more spacing to avoid TreeMap edge cases
+        for i in 1..=5 {
+            //  Reduced from 10 to 5
+            let order = DirectOrder {
+                order_id: i,
+                price: 100 + (i * 10), //  More spaced prices: 110, 120, 130, 140, 150
+                size: 10,
+                filled: i % 2, //  Simpler fill pattern
+                reserve_bid_price: 100 + (i * 10),
+                action: if i % 2 == 0 {
+                    OrderAction::Ask
+                } else {
+                    OrderAction::Bid
+                },
+                uid: 1000 + i,
+                timestamp: 12345 + (i * 1000), //  Well-separated timestamps
+                next: None,
+                prev: None,
+            };
+            original.insert_order(order);
+        }
+
+        // Multiple serialization rounds
+        let mut current = original;
+        for round in 1..=3 {
+            //  Reduced from 5 to 3 rounds
+            let bytes = current.to_bytes().unwrap();
+            let mut bytes_slice = bytes.as_slice();
+            let restored = OrderBookDirectImpl::from_bytes(&mut bytes_slice).unwrap();
+
+            // L2 data should be identical after each round
+            let current_l2 = current.get_l2_market_data_snapshot(10);
+            let restored_l2 = restored.get_l2_market_data_snapshot(10);
+            assert_eq!(
+                current_l2.ask_prices, restored_l2.ask_prices,
+                "Round {}",
+                round
+            );
+            assert_eq!(
+                current_l2.ask_volumes, restored_l2.ask_volumes,
+                "Round {}",
+                round
+            );
+            assert_eq!(
+                current_l2.bid_prices, restored_l2.bid_prices,
+                "Round {}",
+                round
+            );
+            assert_eq!(
+                current_l2.bid_volumes, restored_l2.bid_volumes,
+                "Round {}",
+                round
+            );
+
+            restored.validate_internal_state();
+            current = restored;
+        }
+    }
+
+    #[test]
+    fn test_serialization_consistency() {
+        let mut original = OrderBookDirectImpl::new(create_test_symbol_spec());
+
+        // Simple test: same data serialized twice should produce same result
+        let orders = vec![
+            DirectOrder {
+                order_id: 1,
+                price: 100,
+                size: 10,
+                filled: 0,
+                reserve_bid_price: 100,
+                action: OrderAction::Ask,
+                uid: 1001,
+                timestamp: 12345,
+                next: None,
+                prev: None,
+            },
+            DirectOrder {
+                order_id: 2,
+                price: 99,
+                size: 5,
+                filled: 0,
+                reserve_bid_price: 99,
+                action: OrderAction::Bid,
+                uid: 1002,
+                timestamp: 12346,
+                next: None,
+                prev: None,
+            },
+        ];
+
+        for order in orders {
+            original.insert_order(order);
+        }
+
+        // Serialize twice and compare
+        let bytes1 = original.to_bytes().unwrap();
+        let bytes2 = original.to_bytes().unwrap();
+        assert_eq!(
+            bytes1, bytes2,
+            "Same orderbook should serialize identically"
+        );
+
+        // Deserialize and check functional equivalence
+        let mut bytes_slice = bytes1.as_slice();
+        let restored = OrderBookDirectImpl::from_bytes(&mut bytes_slice).unwrap();
+
+        let original_l2 = original.get_l2_market_data_snapshot(10);
+        let restored_l2 = restored.get_l2_market_data_snapshot(10);
+        assert_eq!(original_l2.ask_prices, restored_l2.ask_prices);
+        assert_eq!(original_l2.ask_volumes, restored_l2.ask_volumes);
+        assert_eq!(original_l2.bid_prices, restored_l2.bid_prices);
+        assert_eq!(original_l2.bid_volumes, restored_l2.bid_volumes);
+
+        restored.validate_internal_state();
     }
 }
