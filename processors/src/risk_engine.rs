@@ -7,7 +7,7 @@ use orderbook::OrderBookError;
 /// Manages all user profiles and performs risk checks as well as settlements
 /// This is the Rust equivalent of `RiskEngine.java`.
 pub struct RiskEngine {
-    pub user_profiles: HashMap<i64, UserProfile>,
+    user_profiles: HashMap<i64, UserProfile>,
 }
 
 impl RiskEngine {
@@ -23,7 +23,7 @@ impl RiskEngine {
         let _user_profile = self
             .user_profiles
             .get_mut(&cmd.uid)
-            .ok_or(OrderBookError::UnsupportedCommand)?;
+            .ok_or(OrderBookError::UnknownUserId)?;
 
         // check 1:Check `user_profile.user_status`.
         if _user_profile.user_status != common::model::user_profile::UserStatus::Active {
@@ -54,6 +54,14 @@ impl RiskEngine {
             "[RiskEngine] Handling settlement for event: {:?}",
             event.event_type
         );
+    }
+
+    pub fn get_user_profile(&self, uid: i64) -> Option<&UserProfile> {
+        self.user_profiles.get(&uid)
+    }
+    
+    pub fn add_user_profile(&mut self, uid: i64, profile: UserProfile) {
+        self.user_profiles.insert(uid, profile);
     }
 }
 
