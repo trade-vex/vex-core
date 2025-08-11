@@ -23,7 +23,7 @@ impl RiskEngine {
         let _user_profile = self
             .user_profiles
             .get_mut(&cmd.uid)
-            .ok_or(OrderBookError::UnsupportedCommand)?;
+            .ok_or(OrderBookError::UnknownUserId)?;
 
         // check 1:Check `user_profile.user_status`.
         if _user_profile.user_status != common::model::user_profile::UserStatus::Active {

@@ -20,6 +20,7 @@ pub enum OrderBookError {
     MoveFailedPriceOverRiskLimit,
     ReduceFailedWrongSize,
     InvalidArguments,
+    UnknownUserId,
 }
 
 impl fmt::Display for OrderBookError {
@@ -33,6 +34,7 @@ impl fmt::Display for OrderBookError {
             }
             OrderBookError::ReduceFailedWrongSize => write!(f, "Reduce failed: invalid size"),
             OrderBookError::InvalidArguments => write!(f, "Invalid arguments"),
+            OrderBookError::UnknownUserId => write!(f, "Unknown user ID"),
         }
     }
 }
