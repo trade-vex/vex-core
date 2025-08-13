@@ -142,6 +142,18 @@ impl PositionDirection {
     }
 } 
 
+/// Type of balance modification operation.
+///
+/// * `Adjustment` — Changes the account balance by the specified amount.
+///   Used for deposits, withdrawals, or other manual balance corrections.
+///
+/// * `Suspend` — Removes an inactive client profile from the core in order to
+///   increase performance. Account balances should be first adjusted to zero
+///   with `BalanceAdjustmentType::Suspend`. No open margin positions are allowed
+///   in the suspended profile. However, in some cases the profile can come back
+///   with positions and non-zero balances if pending orders or pending commands
+///   were not processed yet. Therefore, resume operations must be able to merge
+///   the profile.
 
 #[derive(
     Debug,
