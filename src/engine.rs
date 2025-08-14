@@ -75,22 +75,19 @@ impl CoreEngine {
             while let Some(event_box) = current_event {
                 let mut event = *event_box;
                 current_event = event.next_event.take();
-                println!("[Sequential Core] Processing event: {:?}", event);
+                println!("[Sequential Core] Processing event: {event:?}");
 
                 // 3a. Journal the resulting event. -- excali 0
                 self.journaling_processor.journal_event(&event);
-                println!("[Sequential Core] Event journaled: {:?}", event);
+                println!("[Sequential Core] Event journaled: {event:?}");
 
                 // 3b. Risk Engine handles financial settlement. -- excali 8a
                 self.risk_engine.handle_event(&event);
-                println!("[Sequential Core] Risk Engine processed event: {:?}", event);
+                println!("[Sequential Core] Risk Engine processed event: {event:?}");
 
                 // 3c. External handler sends results to clients. -- excali 8b
                 self.events_handler.handle_event(event.clone()).await;
-                println!(
-                    "[Sequential Core] Event sent to external handler: {:?}",
-                    event
-                );
+                println!("[Sequential Core] Event sent to external handler: {event:?}");
             }
         }
         println!("[Sequential Core] Engine stopped.");
