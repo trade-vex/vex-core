@@ -20,7 +20,13 @@ impl SimpleEventsHandler {
 // #[async_trait]
 impl EventsHandler for SimpleEventsHandler {
     fn handle_event(&self, event: MatcherTradeEvent) {
-        let mut events = self.events.lock().unwrap();
+        let mut events = match self.events.lock() {
+            Ok(events) => events,
+            Err(poisoned) => {
+                tracing::warn!("Events mutex was poisoned, recovering data");
+                poisoned.into_inner()
+            }
+        };
         info!(
             "[SimpleEventsHandler] Received final event: {:?}",
             event.event_type
