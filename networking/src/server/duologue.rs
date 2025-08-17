@@ -7,15 +7,14 @@ use crate::utils::{
 use common::cmd::OrderCommand;
 use disruptor::{MultiProducer, MultiConsumerBarrier};
 use rusteron_client::{
-    Aeron, AeronAvailableImageCallback, AeronCError, AeronImage, AeronNotificationLogger,
-    AeronSubscription, AeronUnavailableImageCallback, Handler,
+    Aeron, AeronAvailableImageCallback, AeronCError, AeronImage, AeronNotificationLogger, AeronSubscription, AeronUnavailableImageCallback, Handler
 };
 use tracing::{error, info};
 
 pub const DUOLOGUE_STREAM_ID: i32 = 1002;
 
 pub struct Duologue {
-    pub fragment_handler: FragmentHandler,
+    pub fragment_handler: Handler<FragmentHandler>,
     pub session_id: i32,
     pub gateway_id: String,
     pub subscription: AeronSubscription,
@@ -73,7 +72,7 @@ impl Duologue {
         };
 
         Ok(Self {
-            fragment_handler,
+            fragment_handler: Handler::leak(fragment_handler),
             gateway_id: gateway_id.to_string(),
             port_data,
             port_control,
@@ -86,7 +85,7 @@ impl Duologue {
 
     pub fn poll(&mut self) -> Result<i32, AeronCError> {
         self.subscription
-            .poll(Some(&Handler::leak(&mut self.fragment_handler)), 2048)
+            .poll( Some(&mut self.fragment_handler), 2048)
     }
 
     pub fn is_expired(&self) -> bool {
@@ -104,6 +103,7 @@ impl Duologue {
     pub fn close(&mut self) -> Result<(), AeronCError> {
         self.is_closed = true;
         self.subscription.close::<AeronNotificationLogger>(None)?;
+        self.fragment_handler.release();
         Ok(())
     }
 }

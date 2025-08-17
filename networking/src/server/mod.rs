@@ -26,27 +26,27 @@
 //! server.start().unwrap(); // Runs indefinitely
 //! ```
 
+mod cmd_handler;
 mod duologue;
 mod gateway_handler;
 mod gateway_manager;
-mod cmd_handler;
 
-use common::cmd::OrderCommand;
-use disruptor::{MultiProducer, MultiConsumerBarrier};
-use vex_config::CoreNetworkingConfig;
 use crate::server::gateway_handler::{
     GatewayImageAvailableHandler, GatewayImageUnavailableHandler, HandshakeMessageHandler,
 };
-use crossbeam::utils::CachePadded;
 use crate::server::gateway_manager::GatewayManager;
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
+use common::cmd::OrderCommand;
+use crossbeam::utils::CachePadded;
+use disruptor::{MultiConsumerBarrier, MultiProducer};
 use rusteron_client::{Aeron, AeronCError, AeronContext, Handler};
 use rusteron_media_driver::AeronIdleStrategy;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{error, info, instrument};
+use vex_config::CoreNetworkingConfig;
 
 /// Stream ID for gateway communication
 const ALL_GATEWAYS_STREAM_ID: i32 = 1001;
@@ -85,11 +85,16 @@ pub struct VexCoreServer {
     gateways: Rc<GatewayManager>,
     /// Last cleanup timestamp (atomic)
     last_cleanup_nanos: CachePadded<AtomicU64>,
+    /// shutdown flag
+    shutdown: AtomicBool,
 }
 
 impl VexCoreServer {
     /// Creates a new VEX Core instance
-    pub fn new(config: CoreNetworkingConfig, producer: MultiProducer<OrderCommand, MultiConsumerBarrier>) -> Result<Self, ServerError> {
+    pub fn new(
+        config: CoreNetworkingConfig,
+        producer: MultiProducer<OrderCommand, MultiConsumerBarrier>,
+    ) -> Result<Self, ServerError> {
         // Validate configuration
         Self::validate_config(&config)?;
 
@@ -107,23 +112,23 @@ impl VexCoreServer {
             gateways: Rc::new(GatewayManager::new(config.clone(), aeron, producer)?),
             config,
             last_cleanup_nanos: CachePadded::new(AtomicU64::new(now_nanos)),
+            shutdown: AtomicBool::new(false),
         })
     }
 
     /// Starts the VEX Core server
     #[instrument(skip(self))]
     pub fn start(&mut self) -> Result<(), ServerError> {
-        info!("Starting VEX Core '{}'", self.config.core_id);
-
         // Create publication for sending responses to gateways
-        let (subscription, mut handshake_handler) = self.setup_networking()?;
+        let (subscription, handshake_handler) = self.setup_networking()?;
 
         info!("VEX Core '{}' started successfully", self.config.core_id);
 
+        let mut handler = Handler::leak(handshake_handler);
         // Main event loop
-        loop {
+        while !self.shutdown.load(Ordering::SeqCst) {
             // Process incoming handshake messages
-            subscription.poll(Some(&Handler::leak(&mut handshake_handler)), 10)?;
+            subscription.poll(Some(&handler), 10)?;
 
             // Poll all active gateway sessions (lock-free)
             if let Err(e) = self.gateways.poll() {
@@ -135,6 +140,8 @@ impl VexCoreServer {
 
             AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
         }
+        handler.release();
+        Ok(())
     }
 
     /// Performs periodic cleanup of expired gateways (lock-free)
@@ -179,11 +186,6 @@ impl VexCoreServer {
         &self.config
     }
 
-    // /// Gets the number of connected gateways (lock-free)
-    // pub fn connected_gateway_count(&self) -> usize {
-    //     self.gateways.active_gateway_count()
-    // }
-
     /// Checks if a gateway is connected (lock-free)
     pub fn is_gateway_connected(&self, gateway_id: &str) -> bool {
         self.gateways.is_gateway_connected(gateway_id)
@@ -198,6 +200,7 @@ impl VexCoreServer {
     pub fn shutdown(&mut self) -> Result<(), ServerError> {
         info!("Shutting down VEX Core '{}'", self.config.core_id);
         self.gateways.shutdown_all_gateways()?;
+        self.shutdown.store(true, Ordering::SeqCst);
         info!("VEX Core '{}' shut down successfully", self.config.core_id);
         Ok(())
     }
@@ -271,5 +274,14 @@ impl VexCoreServer {
 
         Ok((subscription, handshake_handler))
     }
-}
 
+    /// Number of connected gateways
+    pub fn connected_gateway_count(&self) -> usize {
+        self.gateways.active_gateways_count()
+    }
+
+    /// Checks if there are no connected gateways
+    pub fn is_empty(&self) -> bool {
+        self.gateways.is_empty()
+    }
+}

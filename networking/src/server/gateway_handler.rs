@@ -27,7 +27,7 @@ impl HandshakeMessageHandler {
     }
 }
 
-impl AeronFragmentHandlerCallback for &mut HandshakeMessageHandler {
+impl AeronFragmentHandlerCallback for HandshakeMessageHandler {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) {
         let session_id = match header.get_values() {
             Ok(values) => values.frame.session_id,
