@@ -1,0 +1,10 @@
+[package]
+name = "sbe-order"
+version = "0.1.0"
+authors = ["sbetool"]
+description = "SBE schema for OrderCommand"
+edition = "2021"
+
+[lib]
+name = "sbe_order"
+path = "src/lib.rs"

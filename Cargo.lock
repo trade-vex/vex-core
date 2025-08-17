@@ -356,7 +356,7 @@ dependencies = [
  "borsh",
  "hashbrown 0.15.4",
  "num_enum",
- "sbe_order",
+ "sbe-order",
  "serde",
  "thiserror 2.0.12",
  "tracing",
@@ -1996,7 +1996,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sbe_order"
+name = "sbe-order"
 version = "0.1.0"
 
 [[package]]
@@ -3118,6 +3118,8 @@ dependencies = [
  "duct",
  "hdrhistogram",
  "rusteron-client",
+ "serde",
+ "serde_json",
  "thiserror 2.0.12",
  "tracing",
  "tracing-subscriber",
