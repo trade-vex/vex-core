@@ -8,7 +8,7 @@ use crate::model::symbol_specification::CoreSymbolSpecification;
 // positions: IntObjectHashMap<SymbolPositionRecord>
 // accounts: IntLongHashMap
 
-#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, Clone)]
 pub struct UserProfile {
     pub uid: u64,
     pub adjustments_counter: u64,
