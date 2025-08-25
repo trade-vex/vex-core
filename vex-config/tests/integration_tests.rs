@@ -195,7 +195,7 @@ fn test_configuration_merging() -> Result<(), Box<dyn std::error::Error>> {
     assert_ne!(base_config.logging.level, original_level);
 
     assert_eq!(base_config.core_networking.initial_port, 12345);
-    assert_eq!(base_config.core_networking.enable_authentication, true);
+    assert!(base_config.core_networking.enable_authentication);
     assert_eq!(
         base_config.logging.level,
         vex_config::logging::LogLevel::Error
@@ -376,7 +376,7 @@ fn test_auto_loading() {
             // Expected when no config files exist
         }
         Err(e) => {
-            panic!("Unexpected error during auto loading: {}", e);
+            panic!("Unexpected error during auto loading: {e}");
         }
     }
 

@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Logging level: {}", config.logging.level);
         }
         Err(e) => {
-            println!("Failed to load auto config: {}", e);
+            println!("Failed to load auto config: {e}");
             println!("This is expected if no config files exist");
         }
     }
@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Environment::Test,
         Environment::Production,
     ] {
-        println!("2. Loading configuration for {} environment...", env);
+        println!("2. Loading configuration for {env} environment...");
 
         let config = VexConfig::load_for_environment(env.clone()).unwrap_or_else(|_| {
             println!("   → Using default configuration (no files found)");
@@ -61,14 +61,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Valid configuration
     match config.validate() {
         Ok(_) => println!("Configuration is valid"),
-        Err(e) => println!("Configuration validation failed: {}", e),
+        Err(e) => println!("Configuration validation failed: {e}"),
     }
 
     // Invalid configuration
     config.core_networking.initial_port = 0; // Invalid port
     match config.validate() {
         Ok(_) => println!("Expected validation to fail"),
-        Err(e) => println!("Validation correctly failed: {}", e),
+        Err(e) => println!("Validation correctly failed: {e}"),
     }
 
     println!();
