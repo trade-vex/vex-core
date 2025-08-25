@@ -203,7 +203,7 @@ version = "1.0.0"
     // Validate the custom configuration
     match custom_config.validate() {
         Ok(_) => println!("Custom configuration is valid"),
-        Err(e) => println!("Custom configuration validation failed: {}", e),
+        Err(e) => println!("Custom configuration validation failed: {e}"),
     }
 
     println!();
