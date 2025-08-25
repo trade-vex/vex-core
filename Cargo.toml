@@ -23,9 +23,11 @@ resolver = "2"
 members = [
     "common",
     "orderbook",
+    "vex-config"
 ]
 
 [workspace.dependencies]
 borsh = { version = "1.5.7", default-features = false, features = ["hashbrown", "derive", "de_strict_order"] }
 hashbrown = "0.15.4"
-
+thiserror = "2.0.12"
+tracing = "0.1"
