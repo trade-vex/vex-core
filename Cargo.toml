@@ -23,10 +23,15 @@ resolver = "2"
 members = [
     "common",
     "orderbook",
-    "vex-config"
+    "vex-config",
+    "networking",
+    "order"
 ]
 
 [workspace.dependencies]
+common = { path = "./common"}
+vex-config = { path = "./vex-config" }
+sbe_order = { path = "./order" }
 borsh = { version = "1.5.7", default-features = false, features = ["hashbrown", "derive", "de_strict_order"] }
 hashbrown = "0.15.4"
 thiserror = "2.0.12"
