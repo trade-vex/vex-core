@@ -49,9 +49,8 @@
 //! subscriber.start();
 //! ```
 //!
-pub mod client;
-pub mod publisher;
-pub mod subscriber;
+//!
 
-// Re-export main types for convenience
-pub use subscriber::{AeronSubscriber, SubscriberError};
+pub mod client;
+pub mod server;
+pub mod utils;
