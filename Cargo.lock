@@ -2109,6 +2109,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "common",
+ "ctrlc",
  "disruptor",
  "hashbrown 0.15.4",
  "orderbook",
