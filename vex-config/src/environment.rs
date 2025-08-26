@@ -24,11 +24,11 @@ impl Environment {
         let env_vars = ["VEX_ENV", "ENVIRONMENT", "ENV", "NODE_ENV"];
 
         for var in &env_vars {
-            if let Ok(value) = std::env::var(var) {
-                if let Ok(env) = value.parse::<Environment>() {
-                    tracing::info!("Detected environment '{}' from {}", env, var);
-                    return env;
-                }
+            if let Ok(value) = std::env::var(var)
+                && let Ok(env) = value.parse::<Environment>()
+            {
+                tracing::info!("Detected environment '{}' from {}", env, var);
+                return env;
             }
         }
 
