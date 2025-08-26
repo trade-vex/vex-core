@@ -18,7 +18,6 @@ async-trait = "0.1"
 hashbrown.workspace = true
 disruptor = "3.4.0"
 ctrlc = "3.4"
-tikv-jemallocator = { workspace = true }
 
 [dev-dependencies]
 rusteron-client = { workspace = true }
