@@ -1,0 +1,66 @@
+# VEX Core Configuration with Symbol Specifications
+# Environment: Development
+
+environment = "Development"
+
+[core_networking]
+core_id = 0
+initial_port = 8080
+max_gateways = 16
+enable_authentication = false
+
+[gateway_networking]
+gateway_id = 1
+gateway_channels = 8
+gateway_threads = 4
+gateway_timeout = 5
+
+[logging]
+level = "INFO"
+enable_console = true
+enable_file = true
+enable_json = false
+max_file_size = "100MB"
+max_files = 10
+
+# Symbol Specifications Configuration
+[symbols]
+
+  # ETH/XBT Currency Exchange Pair
+  [symbols.symbols.9269]
+  symbol_id = 9269
+  symbol_type = "CurrencyExchangePair"
+  base_currency = 3928    # ETH (szabo, 1E-6)
+  quote_currency = 3762   # XBT (satoshi, 1E-8)
+  base_scale_k = 100000   # 1 lot = 100K szabo (0.1 ETH)
+  quote_scale_k = 10      # 1 step = 10 satoshi
+  taker_fee = 0
+  maker_fee = 0
+  margin_buy = 0
+  margin_sell = 0
+
+  # EUR/USD Futures Contract
+  [symbols.symbols.5991]
+  symbol_id = 5991
+  symbol_type = "FuturesContract"
+  base_currency = 978     # EUR
+  quote_currency = 840    # USD
+  base_scale_k = 1
+  quote_scale_k = 1
+  taker_fee = 0
+  maker_fee = 0
+  margin_buy = 2200       # Buy margin in USD
+  margin_sell = 3210      # Sell margin in USD
+
+  # XBT/LTC Currency Exchange Pair (with fees)
+  [symbols.symbols.9340]
+  symbol_id = 9340
+  symbol_type = "CurrencyExchangePair"
+  base_currency = 3762    # XBT (satoshi, 1E-8)
+  quote_currency = 1005   # LTC (litoshi, 1E-8)
+  base_scale_k = 1000000  # 1 lot = 1M satoshi (0.01 BTC)
+  quote_scale_k = 10000   # 1 step = 10K litoshi
+  taker_fee = 1900        # 1900 litoshi per lot
+  maker_fee = 700         # 700 litoshi per lot
+  margin_buy = 0
+  margin_sell = 0

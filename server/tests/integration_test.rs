@@ -130,7 +130,10 @@ async fn test_end_to_end_exchange_flow() {
         info!("server_config: {:?}", server_config);
 
         // Initialize the exchange core using init_exchange
-        let (mut core, producer, _handler) = init_exchange();
+        use common::model::symbol_specification::TestConstants;
+        let mut symbol_specs = hashbrown::HashMap::new();
+        symbol_specs.insert(0, TestConstants::symbol_spec_eth_xbt());
+        let (mut core, producer, _handler) = init_exchange(symbol_specs);
         
         // Start the core engine with networking
         core.run(producer,server_config);

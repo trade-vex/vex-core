@@ -11,7 +11,8 @@ toml = "0.8"
 config = "0.14"
 thiserror.workspace = true
 tracing.workspace = true
-common = { workspace = true }
+hashbrown = { version = "0.15", features = ["serde"] }
+common = { path = "../common" }
 
 [dev-dependencies]
 tempfile = "3.12"
@@ -24,3 +25,7 @@ path = "examples/basic.rs"
 [[example]]
 name = "custom"
 path = "examples/custom.rs"
+
+[[example]]
+name = "symbol_config"
+path = "examples/symbol_config.rs"

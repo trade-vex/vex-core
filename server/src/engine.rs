@@ -205,7 +205,7 @@ impl CoreEngine {
     /// Uses the same sharding logic as runtime processing: symbol_id & shard_mask
     /// This ensures symbols are distributed evenly across matching engine shards
     /// for optimal load balancing and memory usage.
-    pub fn add_symbol(&self, symbol_id: u32, book_type: orderbook::OrderBookImplType) {
+    pub fn add_symbol(&self, symbol_id: u32, spec: CoreSymbolSpecification, book_type: orderbook::OrderBookImplType) {
         // Calculate which matching engine shard owns this symbol_id
         let num_shards = self.matching_engine_routers.len() as u64;
         let shard_mask = num_shards - 1; // Power of 2 mask for efficient bitwise operations
@@ -215,7 +215,7 @@ impl CoreEngine {
         // Add symbol_id only to the owning shard for memory efficiency
         if let Some(router) = self.matching_engine_routers.get(router_index) {
             let mut matching_engine = router.lock().unwrap();
-            matching_engine.add_symbol(symbol_id, book_type);
+            matching_engine.add_symbol(symbol_id, spec, book_type);
 
             info!(
                 "Added symbol_id {} to MatchingEngine shard {} (owner_shard_id={})",
