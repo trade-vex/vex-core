@@ -41,10 +41,8 @@ impl MatchingEngineRouter {
     }
 
     /// Adds a new symbol_id to the matching engine, creating a new order book for it.
-    /// TODO : Remove the current hardcoded logic in this function and use a different approach to dynamically add symbols 
-    /// to the matching engine without having to restart it
-    pub fn add_symbol(&mut self, symbol_id: u32, book_type: OrderBookImplType) {
-        let spec = common::model::symbol_specification::TestConstants::symbol_spec_eth_xbt();
+    /// Uses the provided symbol specification instead of hardcoded values
+    pub fn add_symbol(&mut self, symbol_id: u32, spec: common::model::symbol_specification::CoreSymbolSpecification, book_type: OrderBookImplType) {
         let book: Box<dyn OrderBook + Send> = match book_type {
             OrderBookImplType::Naive => Box::new(OrderBookNaiveImpl::new(spec)),
             OrderBookImplType::Direct => Box::new(OrderBookDirectImpl::new(spec)),
