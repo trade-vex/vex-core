@@ -1,6 +1,13 @@
 use crate::model::enums::{MatcherEventType, OrderAction, OrderType};
 use crate::model::order::OrderTrait;
 use borsh::{BorshDeserialize, BorshSerialize};
+use sbe_order::message_header_codec::MessageHeaderDecoder;
+use sbe_order::order_command_message_codec::{
+    OrderCommandMessageDecoder, OrderCommandMessageEncoder,
+};
+use sbe_order::order_command_type::OrderCommandType as SbeOrderCommandType;
+use sbe_order::{message_header_codec, ReadBuf, SbeResult, WriteBuf};
+use serde::de::value::Error as SerdeError;
 
 // TODO: translate OrderCommand
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -23,6 +30,26 @@ pub enum OrderCommandType {
     //    PERSIST_STATE_RISK,
     //
     //    GROUPING_CONTROL,
+}
+
+impl From<SbeOrderCommandType> for OrderCommandType {
+    fn from(value: SbeOrderCommandType) -> Self {
+        match value {
+            SbeOrderCommandType::PlaceLimitOrder => Self::PlaceOrder,
+            SbeOrderCommandType::CancelOrder => Self::CancelOrder,
+            _ => panic!("Unsupported SBE OrderCommandType: {value:?}"),
+        }
+    }
+}
+
+impl From<OrderCommandType> for SbeOrderCommandType {
+    fn from(val: OrderCommandType) -> Self {
+        match val {
+            OrderCommandType::PlaceOrder => SbeOrderCommandType::PlaceLimitOrder,
+            OrderCommandType::CancelOrder => SbeOrderCommandType::CancelOrder,
+            _ => panic!("Unsupported OrderCommandType: {val:?}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
@@ -239,4 +266,43 @@ impl Default for MatcherTradeEvent {
             next_event: None,
         }
     }
+}
+
+pub fn encode_order_command(order_command: OrderCommand, buf: &mut [u8]) -> SbeResult<()> {
+    let write_buf = WriteBuf::new(buf);
+    let mut encoder = OrderCommandMessageEncoder::default();
+    encoder = encoder.wrap(write_buf, message_header_codec::ENCODED_LENGTH);
+    encoder = encoder.header(0).parent()?;
+    encoder.command(order_command.command.into());
+    encoder.order_id(order_command.order_id);
+    encoder.symbol_id(order_command.symbol);
+    encoder.user_id(order_command.uid);
+    encoder.price(order_command.price);
+    encoder.reserve_bid_price(order_command.reserve_bid_price);
+    encoder.size(order_command.size);
+    encoder.side(order_command.action.into());
+    encoder.order_type(order_command.order_type.into());
+    encoder.timestamp(order_command.timestamp);
+    Ok(())
+}
+
+pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
+    let buf = ReadBuf::new(buf);
+    let mut decoder = OrderCommandMessageDecoder::default();
+    let header = MessageHeaderDecoder::default().wrap(buf, 0);
+    decoder = decoder.header(header, 0);
+    Ok(OrderCommand {
+        command: decoder.command().into(),
+        order_id: decoder.order_id(),
+        symbol: decoder.symbol_id(),
+        uid: decoder.user_id(),
+        price: decoder.price(),
+        reserve_bid_price: decoder.reserve_bid_price(),
+        size: decoder.size(),
+        action: decoder.side().into(),
+        order_type: decoder.order_type().into(),
+        timestamp: decoder.timestamp(),
+        matcher_event: None,
+        user_cookie: 0,
+    })
 }

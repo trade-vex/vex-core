@@ -249,12 +249,12 @@ impl VexGateway {
     }
 
     /// Starts the gateway and establishes connection to VEX Core
-    pub fn start<AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback>(
+    pub fn start<AeronFragmentHandlerHandlerImpl>(
         &mut self,
         handler: AeronFragmentHandlerHandlerImpl,
     ) -> Result<(), GatewayError>
     where
-        AeronFragmentHandlerHandlerImpl: Send + 'static,
+        AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback + Send + 'static,
     {
         info!("Starting VEX Gateway '{}'", self.config.gateway_id);
 
@@ -352,7 +352,7 @@ impl VexGateway {
     }
 
     /// Establishes dedicated communication channel with VEX Core
-    fn establish_dedicated_channel<AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback>(
+    fn establish_dedicated_channel<AeronFragmentHandlerHandlerImpl>(
         &mut self,
         port: u16,
         control_port: u16,
@@ -360,7 +360,7 @@ impl VexGateway {
         handler: AeronFragmentHandlerHandlerImpl,
     ) -> Result<(), GatewayError>
     where
-        AeronFragmentHandlerHandlerImpl: Send + 'static,
+        AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback + Send + 'static,
     {
         info!(
             "Gateway '{}': Establishing dedicated channel with session ID: {}",
@@ -401,13 +401,13 @@ impl VexGateway {
     }
 
     /// Starts polling for incoming messages in a separate thread
-    fn start_message_polling<AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback>(
+    fn start_message_polling<AeronFragmentHandlerHandlerImpl>(
         &self,
         subscription: AeronSubscription,
         handler: AeronFragmentHandlerHandlerImpl,
     ) -> Result<(), GatewayError>
     where
-        AeronFragmentHandlerHandlerImpl: Send + 'static,
+        AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback + Send + 'static,
     {
         // Start polling thread
         let gateway_id = self.config.gateway_id.clone();
@@ -517,7 +517,7 @@ impl VexGateway {
 
         // Retry sending with exponential backoff
         for attempt in 0..MESSAGE_RETRY_COUNT {
-            let result = publication.offer::<AeronReservedValueSupplierLogger>(&value, None);
+            let result = publication.offer::<AeronReservedValueSupplierLogger>(value, None);
 
             if result >= 0 {
                 return Ok(());

@@ -165,10 +165,7 @@ pub fn new_subscription_with_handlers<
     )
 }
 
-pub fn send_message(
-    publication: &AeronPublication,
-    buffer: &[u8],
-) -> Result<(), AeronCError> {
+pub fn send_message(publication: &AeronPublication, buffer: &[u8]) -> Result<(), AeronCError> {
     let result = publication.offer::<AeronReservedValueSupplierLogger>(buffer, None);
     if result < 0 {
         return Err(AeronCError::from_code(result as i32));
