@@ -1,5 +1,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use num_enum::TryFromPrimitive;
+use sbe_order::order_type::OrderType as SbeOrderType;
+use sbe_order::side::Side as SbeSide;
 use serde::{Deserialize, Serialize};
 
 #[derive(
@@ -30,6 +32,25 @@ impl OrderAction {
     }
 }
 
+impl From<SbeSide> for OrderAction {
+    fn from(value: SbeSide) -> Self {
+        match value {
+            SbeSide::Bid => Self::Bid,
+            SbeSide::Ask => Self::Ask,
+            SbeSide::NullVal => panic!("Unsupported"),
+        }
+    }
+}
+
+impl From<OrderAction> for SbeSide {
+    fn from(val: OrderAction) -> Self {
+        match val {
+            OrderAction::Ask => SbeSide::Ask,
+            OrderAction::Bid => SbeSide::Bid,
+        }
+    }
+}
+
 #[derive(
     Debug,
     PartialEq,
@@ -53,6 +74,31 @@ pub enum OrderType {
     // Fill or Kill - execute immediately completely or not at all
     Fok = 3,       // with price cap
     FokBudget = 4, // total amount cap
+}
+
+impl From<SbeOrderType> for OrderType {
+    fn from(value: SbeOrderType) -> Self {
+        match value {
+            SbeOrderType::Gtc => Self::Gtc,
+            SbeOrderType::Ioc => Self::Ioc,
+            SbeOrderType::IocBudget => Self::IocBudget,
+            SbeOrderType::Fok => Self::Fok,
+            SbeOrderType::FokBudget => Self::FokBudget,
+            _ => panic!("Unsupported SBE OrderType: {value:?}"),
+        }
+    }
+}
+
+impl From<OrderType> for SbeOrderType {
+    fn from(val: OrderType) -> Self {
+        match val {
+            OrderType::Gtc => SbeOrderType::Gtc,
+            OrderType::Ioc => SbeOrderType::Ioc,
+            OrderType::IocBudget => SbeOrderType::IocBudget,
+            OrderType::Fok => SbeOrderType::Fok,
+            OrderType::FokBudget => SbeOrderType::FokBudget,
+        }
+    }
 }
 
 #[derive(

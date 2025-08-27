@@ -1,5 +1,5 @@
 use common::cmd::{OrderCommand, OrderCommandType, decode_order_command};
-use common::model::enums::{OrderType, Side};
+use common::model::enums::{OrderAction, OrderType};
 use disruptor::{BusySpin, ProcessorSettings, build_multi_producer};
 use rusteron_client::{AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port};
 use std::time::Duration;
@@ -72,17 +72,18 @@ fn test_client_server_communication() {
         }
 
         let mut order_command = OrderCommand {
-            command: OrderCommandType::PlaceLimitOrder,
-            user_id: 1,
+            command: OrderCommandType::PlaceOrder,
+            uid: 1,
             reserve_bid_price: 150,
             size: 100,
             order_type: OrderType::Gtc,
             timestamp: 1,
             matcher_event: None,
-            side: Side::Ask,
+            action: OrderAction::Ask,
             order_id: 1,
-            symbol_id: 3124,
+            symbol: 3124,
             price: 150,
+            user_cookie: 42,
         };
         for i in 0..10 {
             order_command.order_id = i;
@@ -97,20 +98,24 @@ fn test_client_server_communication() {
         server_config.initial_port = server_addr.port();
         server_config.initial_control_port = server_addr.port() + 1;
         info!("server_config: {:?}", server_config);
-        let producer = build_multi_producer(1024, || OrderCommand::default(), BusySpin)
-            .pin_at_core(1)
-            .handle_events_with({
-                move |cmd: &OrderCommand, _, _| {
-                    info!("Server received OrderCommand Core 1: {:?}", cmd);
-                }
-            })
-            .pin_at_core(2)
-            .handle_events_with({
-                move |cmd: &OrderCommand, _, _| {
-                    info!("Server processing OrderCommand Core 2: {:?}", cmd);
-                }
-            })
-            .build();
+        let producer = build_multi_producer(
+            1024,
+            || OrderCommand::new_order(OrderType::Gtc, 1, 23, 42, 32, 100, OrderAction::Ask),
+            BusySpin,
+        )
+        .pin_at_core(1)
+        .handle_events_with({
+            move |cmd: &OrderCommand, _, _| {
+                info!("Server received OrderCommand Core 1: {:?}", cmd);
+            }
+        })
+        .pin_at_core(2)
+        .handle_events_with({
+            move |cmd: &OrderCommand, _, _| {
+                info!("Server processing OrderCommand Core 2: {:?}", cmd);
+            }
+        })
+        .build();
         let mut server = VexCoreServer::new(server_config, producer).unwrap();
         match server.start() {
             Ok(()) => println!("Server run() completed successfully (unexpected)"),

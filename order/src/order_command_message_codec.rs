@@ -190,9 +190,7 @@ pub mod encoder {
             let offset = self.offset + 47;
             self.get_buf_mut().put_i64_at(offset, value);
         }
-
     }
-
 } // end encoder
 
 pub mod decoder {
@@ -330,8 +328,5 @@ pub mod decoder {
         pub fn timestamp(&self) -> i64 {
             self.get_buf().get_i64_at(self.offset + 47)
         }
-
     }
-
 } // end decoder
-

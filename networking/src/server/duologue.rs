@@ -5,9 +5,10 @@ use crate::utils::{
     new_publication_with_mdc_and_session, new_subsciption_with_handlers_and_session,
 };
 use common::cmd::OrderCommand;
-use disruptor::{MultiProducer, MultiConsumerBarrier};
+use disruptor::{MultiConsumerBarrier, MultiProducer};
 use rusteron_client::{
-    Aeron, AeronAvailableImageCallback, AeronCError, AeronImage, AeronNotificationLogger, AeronSubscription, AeronUnavailableImageCallback, Handler
+    Aeron, AeronAvailableImageCallback, AeronCError, AeronImage, AeronNotificationLogger,
+    AeronSubscription, AeronUnavailableImageCallback, Handler,
 };
 use tracing::{error, info};
 
@@ -24,6 +25,7 @@ pub struct Duologue {
     pub is_closed: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 impl Duologue {
     pub fn new(
         aeron: &Aeron,
@@ -85,7 +87,7 @@ impl Duologue {
 
     pub fn poll(&mut self) -> Result<i32, AeronCError> {
         self.subscription
-            .poll( Some(&mut self.fragment_handler), 2048)
+            .poll(Some(&self.fragment_handler), 2048)
     }
 
     pub fn is_expired(&self) -> bool {

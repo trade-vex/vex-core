@@ -1,8 +1,8 @@
 use crate::server::duologue::Duologue;
-use crate::utils::{send_message, send_message_with_retries, PortAllocator, SessionAllocator};
+use crate::utils::{PortAllocator, SessionAllocator, send_message, send_message_with_retries};
 use common::cmd::OrderCommand;
 use dashmap::DashMap;
-use disruptor::{MultiProducer, MultiConsumerBarrier};
+use disruptor::{MultiConsumerBarrier, MultiProducer};
 use rusteron_client::{Aeron, AeronPublication};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,7 +36,11 @@ pub struct GatewayManager {
 
 impl GatewayManager {
     /// Creates a new gateway manager
-    pub fn new(config: CoreNetworkingConfig, aeron: Rc<Aeron>, producer: MultiProducer<OrderCommand, MultiConsumerBarrier>) -> Result<Self, ServerError> {
+    pub fn new(
+        config: CoreNetworkingConfig,
+        aeron: Rc<Aeron>,
+        producer: MultiProducer<OrderCommand, MultiConsumerBarrier>,
+    ) -> Result<Self, ServerError> {
         Ok(Self {
             gateway_session_addresses: DashMap::new(),
             gateway_sessions: DashMap::new(),
