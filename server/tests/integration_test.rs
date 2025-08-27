@@ -155,7 +155,18 @@ struct TestOrderCommandHandler {
 //             *event = order.clone();
 //         });
 
-//         info!("Published order {}", i + 1);
+        // Initialize the exchange core using init_exchange
+        use common::model::symbol_specification::TestConstants;
+        let mut symbol_specs = hashbrown::HashMap::new();
+        symbol_specs.insert(0, TestConstants::symbol_spec_eth_xbt());
+        let (mut core, producer, _handler) = init_exchange(symbol_specs);
+        
+        // Start the core engine with networking
+        core.run(producer,server_config);
+        
+        // Keep the server running for the test duration
+        thread::sleep(Duration::from_secs(5));
+    });
 
 //         // Small delay between orders to allow processing
 //         thread::sleep(Duration::from_millis(10));

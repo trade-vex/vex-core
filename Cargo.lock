@@ -2734,7 +2734,7 @@ version = "0.1.0"
 dependencies = [
  "common",
  "config",
- "hashbrown 0.15.5",
+ "hashbrown 0.15.4",
  "serde",
  "serde_json",
  "serde_yaml",

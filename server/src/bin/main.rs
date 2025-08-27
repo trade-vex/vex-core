@@ -32,12 +32,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Max gateways: {}", config.core_networking.max_gateways);
     info!("Authentication enabled: {}", config.core_networking.enable_authentication);
 
-    // Initialize the exchange core
+    // Initialize the exchange core with symbol specifications from config
     info!("Initializing exchange core...");
-    let (mut core_engine, producer, _events_handler) = init_exchange();
+    let symbol_specs = config.symbols.symbols.clone();
+    info!("Loading {} symbols from configuration", symbol_specs.len());
+    
+    let (mut core_engine, producer, _events_handler) = init_exchange(symbol_specs.clone());
     
     info!("Exchange core initialized successfully");
-    info!("Added symbol 0 with Naive order book implementation");
+    for symbol_id in symbol_specs.keys() {
+        info!("Added symbol {} with Naive order book implementation", symbol_id);
+    }
 
     // Start the core engine with networking
     info!("Starting core engine with networking...");
