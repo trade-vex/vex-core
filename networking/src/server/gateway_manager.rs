@@ -133,12 +133,12 @@ impl GatewayManager {
         self.check_duplicate_connection(publication, session_id, gateway_id)?;
 
         // Authenticate if enabled
-        if self.config.enable_authentication {
-            if let Err(e) = self.authenticate_gateway(gateway_id, &encryption_key.to_string()) {
-                let error_msg = format!("{session_id} {gateway_id} REJECT Authentication failed");
-                send_message(publication, error_msg.as_bytes())?;
-                return Err(e);
-            }
+        if self.config.enable_authentication
+            && let Err(e) = self.authenticate_gateway(gateway_id, &encryption_key.to_string())
+        {
+            let error_msg = format!("{session_id} {gateway_id} REJECT Authentication failed");
+            send_message(publication, error_msg.as_bytes())?;
+            return Err(e);
         }
 
         // Allocate resources and create session
@@ -272,17 +272,17 @@ impl GatewayManager {
         gateway_id: &str,
         gateway_address: &str,
     ) -> Result<(), ServerError> {
-        if let Some(count_entry) = self.address_connection_count.get(gateway_address) {
-            if count_entry.load(Ordering::Relaxed) >= self.config.max_connections_per_address as u64
-            {
-                let error_msg =
-                    format!("{session_id} {gateway_id} REJECT Too many connections from address");
-                send_message(publication, error_msg.as_bytes())?;
-                return Err(ServerError::CapacityExceededError(
-                    "Too many connections from this address".to_string(),
-                ));
-            }
+        if let Some(count_entry) = self.address_connection_count.get(gateway_address)
+            && count_entry.load(Ordering::Relaxed) >= self.config.max_connections_per_address as u64
+        {
+            let error_msg =
+                format!("{session_id} {gateway_id} REJECT Too many connections from address");
+            send_message(publication, error_msg.as_bytes())?;
+            return Err(ServerError::CapacityExceededError(
+                "Too many connections from this address".to_string(),
+            ));
         }
+
         Ok(())
     }
 
@@ -380,12 +380,12 @@ impl GatewayManager {
             self.port_allocator.free(gateway_session.port_control);
 
             // Update connection count
-            if let Some((_id, address)) = self.gateway_session_addresses.remove(&session_id) {
-                if let Some(count) = self.address_connection_count.get_mut(&address) {
-                    let _ = count.fetch_sub(1, Ordering::Relaxed);
-                    if count.load(Ordering::Relaxed) == 0 {
-                        self.address_connection_count.remove(&address);
-                    }
+            if let Some((_id, address)) = self.gateway_session_addresses.remove(&session_id)
+                && let Some(count) = self.address_connection_count.get_mut(&address)
+            {
+                let _ = count.fetch_sub(1, Ordering::Relaxed);
+                if count.load(Ordering::Relaxed) == 0 {
+                    self.address_connection_count.remove(&address);
                 }
             }
         }

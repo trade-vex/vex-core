@@ -86,8 +86,7 @@ impl Duologue {
     }
 
     pub fn poll(&mut self) -> Result<i32, AeronCError> {
-        self.subscription
-            .poll(Some(&self.fragment_handler), 2048)
+        self.subscription.poll(Some(&self.fragment_handler), 2048)
     }
 
     pub fn is_expired(&self) -> bool {
