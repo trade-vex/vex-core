@@ -128,3 +128,326 @@ impl Default for MatchingEngineRouter {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use common::model::enums::{OrderType, Side, SymbolType};
+    use common::model::symbol_specification::CoreSymbolSpecification;
+
+    fn create_test_symbol_spec(symbol_id: u32) -> CoreSymbolSpecification {
+        CoreSymbolSpecification {
+            symbol_id,
+            symbol_type: SymbolType::CurrencyExchangePair,
+            base_currency: 1,   // BTC
+            quote_currency: 2,  // USD
+            base_scale_k: 1,
+            quote_scale_k: 1,
+            taker_fee: 0,
+            maker_fee: 0,
+            margin_buy: 0,
+            margin_sell: 0,
+        }
+    }
+
+    fn create_test_order_command(
+        user_id: u64,
+        symbol_id: u32,
+        price: u64,
+        size: u64,
+        side: Side,
+        command_type: OrderCommandType,
+        order_id: u64,
+    ) -> OrderCommand {
+        OrderCommand {
+            command: command_type,
+            order_id,
+            symbol_id,
+            user_id,
+            price,
+            reserve_bid_price: 0,
+            size,
+            side,
+            order_type: OrderType::Gtc,
+            timestamp: 0,
+            matcher_event: None,
+        }
+    }
+
+    #[test]
+    fn test_new_matching_engine_router() {
+        let router = MatchingEngineRouter::new(1, 4);
+        
+        assert_eq!(router.shard_id, 1);
+        assert_eq!(router.shard_mask, 3); // 4-1 = 3
+        assert!(router.order_books.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid number of shards 3 - must be power of 2")]
+    fn test_new_matching_engine_router_invalid_shards() {
+        MatchingEngineRouter::new(0, 3); // 3 is not a power of 2
+    }
+
+    #[test]
+    fn test_symbol_for_this_handler() {
+        let router = MatchingEngineRouter::new(1, 4);
+        
+        // Symbol ID 5 should be handled by shard 1 (5 & 3 = 1)
+        assert!(router.symbol_for_this_handler(5));
+        
+        // Symbol ID 6 should not be handled by shard 1 (6 & 3 = 2)
+        assert!(!router.symbol_for_this_handler(6));
+        
+        // Symbol ID 1 should be handled by shard 1 (1 & 3 = 1)
+        assert!(router.symbol_for_this_handler(1));
+        
+        // Symbol ID 9 should be handled by shard 1 (9 & 3 = 1)
+        assert!(router.symbol_for_this_handler(9));
+    }
+
+    #[test]
+    fn test_symbol_for_this_handler_single_shard() {
+        let router = MatchingEngineRouter::new(0, 1);
+        
+        // With shard_mask = 0, all symbols should be handled
+        assert!(router.symbol_for_this_handler(0));
+        assert!(router.symbol_for_this_handler(1));
+        assert!(router.symbol_for_this_handler(100));
+        assert!(router.symbol_for_this_handler(999));
+    }
+
+    #[test]
+    fn test_add_symbol_naive() {
+        let mut router = MatchingEngineRouter::new(0, 1);
+        let spec = create_test_symbol_spec(123);
+        
+        router.add_symbol(123, spec, OrderBookImplType::Naive);
+        
+        assert_eq!(router.order_books.len(), 1);
+        assert!(router.order_books.contains_key(&123));
+    }
+
+    #[test]
+    fn test_add_symbol_direct() {
+        let mut router = MatchingEngineRouter::new(0, 1);
+        let spec = create_test_symbol_spec(456);
+        
+        router.add_symbol(456, spec, OrderBookImplType::Direct);
+        
+        assert_eq!(router.order_books.len(), 1);
+        assert!(router.order_books.contains_key(&456));
+    }
+
+    #[test]
+    fn test_add_multiple_symbols() {
+        let mut router = MatchingEngineRouter::new(0, 1);
+        
+        router.add_symbol(1, create_test_symbol_spec(1), OrderBookImplType::Naive);
+        router.add_symbol(2, create_test_symbol_spec(2), OrderBookImplType::Direct);
+        router.add_symbol(3, create_test_symbol_spec(3), OrderBookImplType::Naive);
+        
+        assert_eq!(router.order_books.len(), 3);
+        assert!(router.order_books.contains_key(&1));
+        assert!(router.order_books.contains_key(&2));
+        assert!(router.order_books.contains_key(&3));
+    }
+
+    #[test]
+    fn test_process_order_wrong_shard() {
+        let mut router = MatchingEngineRouter::new(1, 4);
+        router.add_symbol(1, create_test_symbol_spec(1), OrderBookImplType::Naive);
+        
+        // Create order for symbol 2, which belongs to shard 2 (2 & 3 = 2)
+        let mut cmd = create_test_order_command(
+            100, 2, 1000, 10, Side::Bid, OrderCommandType::PlaceLimitOrder, 1
+        );
+        
+        // Should be ignored since symbol 2 doesn't belong to shard 1
+        router.process_order(&mut cmd);
+        
+        // Verify that the order book for symbol 1 is still empty
+        if let Some(order_book) = router.order_books.get(&1) {
+            assert_eq!(order_book.get_orders_num(Side::Ask), 0);
+            assert_eq!(order_book.get_orders_num(Side::Bid), 0);
+        }
+    }
+
+    #[test]
+    fn test_process_order_correct_shard() {
+        let mut router = MatchingEngineRouter::new(1, 4);
+        router.add_symbol(1, create_test_symbol_spec(1), OrderBookImplType::Naive);
+        
+        // Create order for symbol 1, which belongs to shard 1 (1 & 3 = 1)
+        let mut cmd = create_test_order_command(
+            100, 1, 1000, 10, Side::Bid, OrderCommandType::PlaceLimitOrder, 1
+        );
+        
+        router.process_order(&mut cmd);
+        
+        // Verify that the order was processed
+        if let Some(order_book) = router.order_books.get(&1) {
+            assert_eq!(order_book.get_orders_num(Side::Bid), 1);
+            assert_eq!(order_book.get_orders_num(Side::Ask), 0);
+        }
+    }
+
+    #[test]
+    fn test_process_order_no_orderbook() {
+        let mut router = MatchingEngineRouter::new(1, 4);
+        // Don't add any order books
+        
+        // Create order for symbol 1
+        let mut cmd = create_test_order_command(
+            100, 1, 1000, 10, Side::Bid, OrderCommandType::PlaceLimitOrder, 1
+        );
+        
+        // Should not panic, just log a warning
+        router.process_order(&mut cmd);
+        
+        // Verify no order books exist
+        assert!(router.order_books.is_empty());
+    }
+
+    #[test]
+    fn test_process_limit_order() {
+        let mut router = MatchingEngineRouter::new(0, 1);
+        router.add_symbol(1, create_test_symbol_spec(1), OrderBookImplType::Naive);
+        
+        let mut bid_cmd = create_test_order_command(
+            100, 1, 1000, 10, Side::Bid, OrderCommandType::PlaceLimitOrder, 1
+        );
+        let mut ask_cmd = create_test_order_command(
+            101, 1, 1100, 5, Side::Ask, OrderCommandType::PlaceLimitOrder, 2
+        );
+        
+        router.process_order(&mut bid_cmd);
+        router.process_order(&mut ask_cmd);
+        
+        if let Some(order_book) = router.order_books.get(&1) {
+            assert_eq!(order_book.get_orders_num(Side::Bid), 1);
+            assert_eq!(order_book.get_orders_num(Side::Ask), 1);
+        }
+    }
+
+    #[test]
+    fn test_process_cancel_order() {
+        let mut router = MatchingEngineRouter::new(0, 1);
+        router.add_symbol(1, create_test_symbol_spec(1), OrderBookImplType::Naive);
+        
+        // Place a limit order first
+        let mut place_cmd = create_test_order_command(
+            100, 1, 1000, 10, Side::Bid, OrderCommandType::PlaceLimitOrder, 1
+        );
+        router.process_order(&mut place_cmd);
+        
+        // Verify the order was placed
+        if let Some(order_book) = router.order_books.get(&1) {
+            assert_eq!(order_book.get_orders_num(Side::Bid), 1);
+        }
+        
+        // Cancel the order
+        let mut cancel_cmd = create_test_order_command(
+            100, 1, 0, 0, Side::Bid, OrderCommandType::CancelOrder, 1
+        );
+        router.process_order(&mut cancel_cmd);
+        
+        // Verify the order was cancelled
+        if let Some(order_book) = router.order_books.get(&1) {
+            assert_eq!(order_book.get_orders_num(Side::Bid), 0);
+        }
+    }
+
+    #[test]
+    fn test_get_order_books() {
+        let mut router = MatchingEngineRouter::new(0, 1);
+        router.add_symbol(1, create_test_symbol_spec(1), OrderBookImplType::Naive);
+        router.add_symbol(2, create_test_symbol_spec(2), OrderBookImplType::Direct);
+        
+        let order_books = router.get_order_books();
+        assert_eq!(order_books.len(), 2);
+        assert!(order_books.contains_key(&1));
+        assert!(order_books.contains_key(&2));
+    }
+
+    #[test]
+    fn test_sharding_distribution() {
+        // Test that symbols are properly distributed across 4 shards
+        let shards = [
+            MatchingEngineRouter::new(0, 4),
+            MatchingEngineRouter::new(1, 4),
+            MatchingEngineRouter::new(2, 4),
+            MatchingEngineRouter::new(3, 4),
+        ];
+        
+        // Test symbols 0-15 to verify distribution
+        for symbol_id in 0u64..16 {
+            let expected_shard = (symbol_id & 3) as usize;
+            
+            for (shard_idx, shard) in shards.iter().enumerate() {
+                if shard_idx == expected_shard {
+                    assert!(shard.symbol_for_this_handler(symbol_id),
+                        "Symbol {} should be handled by shard {}", symbol_id, shard_idx);
+                } else {
+                    assert!(!shard.symbol_for_this_handler(symbol_id),
+                        "Symbol {} should NOT be handled by shard {}", symbol_id, shard_idx);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_matching_across_multiple_orders() {
+        let mut router = MatchingEngineRouter::new(0, 1);
+        router.add_symbol(1, create_test_symbol_spec(1), OrderBookImplType::Naive);
+        
+        // Place multiple orders at different price levels
+        let orders = vec![
+            create_test_order_command(100, 1, 1000, 10, Side::Bid, OrderCommandType::PlaceLimitOrder, 1),
+            create_test_order_command(101, 1, 1100, 15, Side::Ask, OrderCommandType::PlaceLimitOrder, 2),
+            create_test_order_command(102, 1, 1050, 5, Side::Bid, OrderCommandType::PlaceLimitOrder, 3),
+            create_test_order_command(103, 1, 1200, 8, Side::Ask, OrderCommandType::PlaceLimitOrder, 4),
+        ];
+        
+        for mut order in orders {
+            router.process_order(&mut order);
+        }
+        
+        if let Some(order_book) = router.order_books.get(&1) {
+            assert_eq!(order_book.get_orders_num(Side::Bid), 2); // Two bid orders
+            assert_eq!(order_book.get_orders_num(Side::Ask), 2); // Two ask orders
+        }
+    }
+
+    #[test]
+    fn test_default_matching_engine_router() {
+        let router = MatchingEngineRouter::default();
+        
+        assert_eq!(router.shard_id, 0);
+        assert_eq!(router.shard_mask, 0); // Single shard (1-1=0)
+        assert!(router.order_books.is_empty());
+    }
+
+    #[test]
+    fn test_process_order_invalid_symbol_type() {
+        let mut router = MatchingEngineRouter::new(0, 1);
+        router.add_symbol(1, create_test_symbol_spec(1), OrderBookImplType::Naive);
+        
+        // Create an order with an invalid/unsupported command type scenario
+        let mut cmd = create_test_order_command(
+            100, 1, 1000, 10, Side::Bid, OrderCommandType::PlaceLimitOrder, 1
+        );
+        
+        // Change symbol_id to one that doesn't exist
+        cmd.symbol_id = 999;
+        
+        // Should not panic, just handle gracefully
+        router.process_order(&mut cmd);
+        
+        // Original symbol should be unaffected
+        if let Some(order_book) = router.order_books.get(&1) {
+            assert_eq!(order_book.get_orders_num(Side::Bid), 0);
+            assert_eq!(order_book.get_orders_num(Side::Ask), 0);
+        }
+    }
+}
