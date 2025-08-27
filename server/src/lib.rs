@@ -18,6 +18,12 @@ use crate::{
 /// This creates the core engine and adds symbols dynamically
 pub fn init_exchange() -> (CoreEngine, Producer, Arc<SimpleEventsHandler>) {
     // Create symbol_id specifications for the risk engine
+    // This is placeholder , remove this from here , it comes as an input to the init_exchange
+    // function which takes in the symbol specs from vex_config
+    // TODO : 1. Update vex_config to load symbol symbol specs from toml , yml for something similar
+    //           and desearilze it into CoreSymbolSpecification struct
+    //        2. Update main.rs to provide the symbol spec as an input to the init_exchange function
+    //        3. Update lib.rs accordingly and use those symbol specs to build core engine
     let mut symbol_specs = HashMap::new();
     let mut spec = CoreSymbolSpecification::default();
     spec.base_currency = 1; // BTC
