@@ -1,19 +1,19 @@
 //! Symbol specifications configuration
-//!
+//! 
 //! This module provides configuration management for trading symbols and their specifications.
 //! It supports loading symbols from configuration files and provides validation and management.
 
-use crate::{ConfigError, Environment, Result};
-use common::MarketType;
-use common::model::market_specification::CoreMarketSpecification;
-use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
+use hashbrown::HashMap;
+use common::model::symbol_specification::CoreSymbolSpecification;
+use common::model::enums::SymbolType;
+use crate::{Environment, ConfigError, Result};
 
 /// Configuration for trading symbols
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolSpecificationConfig {
-    /// Map of market_id to symbol specification
-    pub symbols: HashMap<u32, CoreMarketSpecification>,
+    /// Map of symbol_id to symbol specification
+    pub symbols: HashMap<u32, CoreSymbolSpecification>,
 }
 
 impl SymbolSpecificationConfig {
@@ -33,31 +33,35 @@ impl SymbolSpecificationConfig {
         // ETH/XBT currency exchange pair
         symbols.insert(
             9269,
-            CoreMarketSpecification {
-                market_id: 9269,
-                market_type: MarketType::CurrencyExchangePair,
-                base_currency: 3928,   // ETH (szabo)
-                quote_currency: 3762,  // XBT (satoshi)
+            CoreSymbolSpecification {
+                symbol_id: 9269,
+                symbol_type: SymbolType::CurrencyExchangePair,
+                base_currency: 3928, // ETH (szabo)
+                quote_currency: 3762, // XBT (satoshi)
                 base_scale_k: 100_000, // 1 lot = 100K szabo (0.1 ETH)
-                quote_scale_k: 10,     // 1 step = 10 satoshi
+                quote_scale_k: 10, // 1 step = 10 satoshi
                 taker_fee: 0,
                 maker_fee: 0,
-            },
+                margin_buy: 0,
+                margin_sell: 0,
+            }
         );
 
         // EUR/USD futures contract
         symbols.insert(
             5991,
-            CoreMarketSpecification {
-                market_id: 5991,
-                market_type: MarketType::FuturesContract,
-                base_currency: 978,  // EUR
+            CoreSymbolSpecification {
+                symbol_id: 5991,
+                symbol_type: SymbolType::FuturesContract,
+                base_currency: 978, // EUR
                 quote_currency: 840, // USD
                 base_scale_k: 1,
                 quote_scale_k: 1,
                 taker_fee: 0,
                 maker_fee: 0,
-            },
+                margin_buy: 2200,
+                margin_sell: 3210,
+            }
         );
 
         Self { symbols }
@@ -70,16 +74,18 @@ impl SymbolSpecificationConfig {
         // XBT/LTC currency exchange pair with fees
         symbols.insert(
             9340,
-            CoreMarketSpecification {
-                market_id: 9340,
-                market_type: MarketType::CurrencyExchangePair,
-                base_currency: 3762,     // XBT (satoshi)
-                quote_currency: 1005,    // LTC (litoshi)
+            CoreSymbolSpecification {
+                symbol_id: 9340,
+                symbol_type: SymbolType::CurrencyExchangePair,
+                base_currency: 3762, // XBT (satoshi)
+                quote_currency: 1005, // LTC (litoshi)
                 base_scale_k: 1_000_000, // 1 lot = 1M satoshi (0.01 BTC)
-                quote_scale_k: 10_000,   // 1 step = 10K litoshi
-                taker_fee: 1900,         // taker fee 1900 litoshi per 1 lot
-                maker_fee: 700,          // maker fee 700 litoshi per 1 lot
-            },
+                quote_scale_k: 10_000, // 1 step = 10K litoshi
+                taker_fee: 1900, // taker fee 1900 litoshi per 1 lot
+                maker_fee: 700, // maker fee 700 litoshi per 1 lot
+                margin_buy: 0,
+                margin_sell: 0,
+            }
         );
 
         // Include development symbols as well for testing
@@ -98,38 +104,43 @@ impl SymbolSpecificationConfig {
 
     /// Validate the symbol configuration
     pub fn validate(&self) -> Result<()> {
-        for (market_id, spec) in &self.symbols {
-            // Validate market_id matches the key
-            if *market_id != spec.market_id {
-                return Err(ConfigError::ValidationError(format!(
-                    "Symbol ID mismatch: key {} != spec.market_id {}",
-                    market_id, spec.market_id
-                )));
+        for (symbol_id, spec) in &self.symbols {
+            // Validate symbol_id matches the key
+            if *symbol_id != spec.symbol_id {
+                return Err(ConfigError::ValidationError(
+                    format!("Symbol ID mismatch: key {} != spec.symbol_id {}", symbol_id, spec.symbol_id)
+                ));
             }
 
             // Validate scale factors are non-zero
             if spec.base_scale_k == 0 {
-                return Err(ConfigError::ValidationError(format!(
-                    "Symbol {}: base_scale_k cannot be zero",
-                    market_id
-                )));
+                return Err(ConfigError::ValidationError(
+                    format!("Symbol {}: base_scale_k cannot be zero", symbol_id)
+                ));
             }
 
             if spec.quote_scale_k == 0 {
-                return Err(ConfigError::ValidationError(format!(
-                    "Symbol {}: quote_scale_k cannot be zero",
-                    market_id
-                )));
+                return Err(ConfigError::ValidationError(
+                    format!("Symbol {}: quote_scale_k cannot be zero", symbol_id)
+                ));
             }
 
             // Validate fees
             if spec.taker_fee < spec.maker_fee {
-                return Err(ConfigError::ValidationError(format!(
-                    "Symbol {}: taker_fee ({}) should be >= maker_fee ({})",
-                    market_id, spec.taker_fee, spec.maker_fee
-                )));
+                return Err(ConfigError::ValidationError(
+                    format!("Symbol {}: taker_fee ({}) should be >= maker_fee ({})", 
+                        symbol_id, spec.taker_fee, spec.maker_fee)
+                ));
             }
 
+            // Validate margin requirements for futures contracts
+            if spec.symbol_type == SymbolType::FuturesContract {
+                if spec.margin_buy == 0 || spec.margin_sell == 0 {
+                    return Err(ConfigError::ValidationError(
+                        format!("Symbol {}: futures contract must have non-zero margin requirements", symbol_id)
+                    ));
+                }
+            }
         }
 
         Ok(())
@@ -143,30 +154,30 @@ impl SymbolSpecificationConfig {
     }
 
     /// Get symbol specification by ID
-    pub fn get_symbol(&self, market_id: u32) -> Option<&CoreMarketSpecification> {
-        self.symbols.get(&market_id)
+    pub fn get_symbol(&self, symbol_id: u32) -> Option<&CoreSymbolSpecification> {
+        self.symbols.get(&symbol_id)
     }
 
     /// Get all symbol IDs
-    pub fn get_market_ids(&self) -> Vec<u32> {
+    pub fn get_symbol_ids(&self) -> Vec<u32> {
         self.symbols.keys().copied().collect()
     }
 
     /// Add a new symbol specification
-    pub fn add_symbol(&mut self, spec: CoreMarketSpecification) -> Result<()> {
+    pub fn add_symbol(&mut self, spec: CoreSymbolSpecification) -> Result<()> {
         // Validate the specification first
         let temp_config = SymbolSpecificationConfig {
-            symbols: [(spec.market_id, spec.clone())].into_iter().collect(),
+            symbols: [(spec.symbol_id, spec.clone())].into_iter().collect(),
         };
         temp_config.validate()?;
 
-        self.symbols.insert(spec.market_id, spec);
+        self.symbols.insert(spec.symbol_id, spec);
         Ok(())
     }
 
     /// Remove a symbol specification
-    pub fn remove_symbol(&mut self, market_id: u32) -> Option<CoreMarketSpecification> {
-        self.symbols.remove(&market_id)
+    pub fn remove_symbol(&mut self, symbol_id: u32) -> Option<CoreSymbolSpecification> {
+        self.symbols.remove(&symbol_id)
     }
 
     /// Check if configuration is empty
@@ -212,11 +223,11 @@ mod tests {
     }
 
     #[test]
-    fn test_validation_market_id_mismatch() {
+    fn test_validation_symbol_id_mismatch() {
         let mut symbols = HashMap::new();
-        let mut spec = CoreMarketSpecification::default();
-        spec.market_id = 123;
-        symbols.insert(456, spec); // Mismatch: key 456 != spec.market_id 123
+        let mut spec = CoreSymbolSpecification::default();
+        spec.symbol_id = 123;
+        symbols.insert(456, spec); // Mismatch: key 456 != spec.symbol_id 123
 
         let config = SymbolSpecificationConfig { symbols };
         assert!(config.validate().is_err());
@@ -225,8 +236,8 @@ mod tests {
     #[test]
     fn test_validation_zero_scale() {
         let mut symbols = HashMap::new();
-        let mut spec = CoreMarketSpecification::default();
-        spec.market_id = 123;
+        let mut spec = CoreSymbolSpecification::default();
+        spec.symbol_id = 123;
         spec.base_scale_k = 0; // Invalid: zero scale
         symbols.insert(123, spec);
 
@@ -237,8 +248,8 @@ mod tests {
     #[test]
     fn test_validation_taker_fee_less_than_maker() {
         let mut symbols = HashMap::new();
-        let mut spec = CoreMarketSpecification::default();
-        spec.market_id = 123;
+        let mut spec = CoreSymbolSpecification::default();
+        spec.symbol_id = 123;
         spec.base_scale_k = 1;
         spec.quote_scale_k = 1;
         spec.taker_fee = 100;

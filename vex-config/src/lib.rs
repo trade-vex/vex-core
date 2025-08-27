@@ -7,16 +7,11 @@
 pub mod environment;
 pub mod error;
 pub mod loader;
-pub mod logging;
-pub mod networking;
 pub mod symbols;
 
 pub use environment::Environment;
 pub use error::{ConfigError, Result};
 pub use loader::ConfigLoader;
-pub use logging::LoggingConfig;
-pub use networking::{CoreNetworkingConfig, GatewayNetworkingConfig};
-use serde::{Deserialize, Serialize};
 pub use symbols::SymbolSpecificationConfig;
 
 /// Main configuration structure that combines all VEX Core configuration modules
@@ -118,7 +113,7 @@ impl VexConfig {
             .merge_with(&other.gateway_networking)?;
         self.logging.merge_with(&other.logging)?;
         self.symbols.merge_with(&other.symbols)?;
-
+        
         Ok(())
     }
 

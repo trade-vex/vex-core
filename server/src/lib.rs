@@ -15,15 +15,8 @@ use crate::{
 
 /// Sets up the entire Exchange Core application with all processors.
 ///
-/// This creates the core engine and adds symbols dynamically
-pub fn init_exchange() -> (CoreEngine, Producer, Arc<SimpleEventsHandler>) {
-    // Create symbol_id specifications for the risk engine
-    let mut symbol_specs = HashMap::new();
-    let mut spec = CoreSymbolSpecification::default();
-    spec.base_currency = 1; // BTC
-    spec.quote_currency = 2; // USD
-    symbol_specs.insert(0, spec);
-
+/// This creates the core engine and adds symbols from the provided configuration
+pub fn init_exchange(symbol_specs: HashMap<u32, CoreSymbolSpecification>) -> (CoreEngine, Producer, Arc<SimpleEventsHandler>) {
     // Initialize journaling processor for audit trail
     let journaling_processor = JournalingProcessor::new();
 
@@ -31,12 +24,13 @@ pub fn init_exchange() -> (CoreEngine, Producer, Arc<SimpleEventsHandler>) {
     let events_handler = Arc::new(SimpleEventsHandler::new());
 
     // Create the Exchange Core with sharded risk engines and matching engines
-    // Symbols are automatically added to matching engines during initialization
-    let (core_engine, producer) = CoreEngine::new(
-        symbol_specs.clone(),
-        journaling_processor,
-        events_handler.clone(),
-    );
+    let (core_engine, producer) =
+        CoreEngine::new(symbol_specs.clone(), journaling_processor, events_handler.clone());
+
+    // Add all symbols to the matching engines with default order book implementation
+    for (&symbol_id, spec) in &symbol_specs {
+        core_engine.add_symbol(symbol_id, spec.clone(), OrderBookImplType::Naive);
+    }
 
     (core_engine, producer, events_handler)
 }
