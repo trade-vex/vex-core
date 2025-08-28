@@ -2054,6 +2054,7 @@ dependencies = [
  "disruptor",
  "hashbrown 0.15.4",
  "orderbook",
+ "parking_lot",
  "processors",
  "rusteron-client",
  "tokio",

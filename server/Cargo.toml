@@ -5,9 +5,13 @@ edition = "2024"
 
 [dependencies]
 # Workspace crates containing our data models and order book logic
-common = { path = "../common" }
-orderbook = { path = "../orderbook" }
-processors = { path = "../processors" }
+common = { workspace = true }
+orderbook = { workspace = true }
+processors = { workspace = true }
+vex-config = { workspace = true }
+vex-networking = { workspace = true }
+utils = { workspace = true }
+parking_lot = {workspace = true}
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"

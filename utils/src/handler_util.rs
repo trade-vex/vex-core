@@ -7,7 +7,7 @@ macro_rules! create_risk_handler {
     ($shard_id:expr, $risk_engines:expr) => {{
         let risk_engines_clone = $risk_engines.clone();
         move |cmd: &OrderCommand, _sequence: i64, _end_of_batch: bool| {
-            let mut engine = risk_engines_clone[$shard_id].lock().unwrap();
+            let mut engine = risk_engines_clone[$shard_id].lock();
             let mut cmd_clone = cmd.clone();
 
             if let Err(e) = engine.pre_process_command(&mut cmd_clone) {
@@ -30,7 +30,7 @@ macro_rules! create_matching_handler {
 
         move |cmd: &OrderCommand, _sequence: i64, _end_of_batch: bool| {
             // Lock the specific matching engine router shard
-            let mut router_guard = router.lock().unwrap();
+            let mut router_guard = router.lock();
             let mut cmd_clone = cmd.clone();
 
             // Each router filters internally based on symbol_id ownership
@@ -56,7 +56,7 @@ macro_rules! create_matching_handler {
                 let active_order_user_id = event.active_order_user_id;
                 let active_order_shard = (active_order_user_id & shard_mask) as usize;
                 if let Some(risk_engine_mutex) = risk_engines.get(active_order_shard) {
-                    let mut risk_engine = risk_engine_mutex.lock().unwrap();
+                    let mut risk_engine = risk_engine_mutex.lock();
                     risk_engine.handle_event(&event); // Risk release (R2)
                 }
 
@@ -65,7 +65,7 @@ macro_rules! create_matching_handler {
                 if maker_user_id != active_order_user_id {
                     let maker_shard = (maker_user_id & shard_mask) as usize;
                     if let Some(risk_engine_mutex) = risk_engines.get(maker_shard) {
-                        let mut risk_engine = risk_engine_mutex.lock().unwrap();
+                        let mut risk_engine = risk_engine_mutex.lock();
                         risk_engine.handle_event(&event); // Risk release (R2)
                     }
                 }
