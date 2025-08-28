@@ -373,6 +373,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "processors"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "common",
+ "hashbrown",
+ "orderbook",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -642,7 +655,9 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "common",
+ "hashbrown",
  "orderbook",
+ "processors",
  "tokio",
  "tracing",
  "tracing-subscriber",
