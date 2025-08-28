@@ -30,3 +30,29 @@ rusteron-media-driver = "0.1.143"
 tracing = "0.1.41"
 disruptor = "3.4.0"
 parking_lot = "0.12"
+
+[profile.release]
+# Link Time Optimization - enables cross-crate inlining and optimization
+# "fat" performs LTO across the entire dependency graph for maximum performance
+lto = "fat"
+
+# Use single codegen unit to maximize optimization opportunities
+# Trades longer compile time for better runtime performance and smaller binaries
+codegen-units = 1
+
+# Maximum optimization level - enables all LLVM optimizations
+# Includes aggressive inlining, loop unrolling, and vectorization
+opt-level = 3
+
+# Remove debug symbols from the final binary
+# Significantly reduces binary size for production deployments
+strip = true
+
+# Disable debug information generation
+# Works in conjunction with strip=true to ensure no debug overhead
+debug = false
+
+# Apply maximum optimization to all dependencies
+# Ensures third-party crates are fully optimized for trading performance
+[profile.release.package."*"]
+opt-level = 3
