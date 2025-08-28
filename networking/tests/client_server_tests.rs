@@ -50,6 +50,7 @@ fn create_test_addresses() -> (SocketAddr, SocketAddr) {
 }
 
 #[test_log::test]
+#[ignore = "This test needs media drivers running, Tests will be added in x-tasks"]
 fn test_client_server_communication() {
     // This test demonstrates the actual usage of run() methods
     let (server_addr, _client_addr) = create_test_addresses();
