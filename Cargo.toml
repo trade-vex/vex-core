@@ -24,7 +24,8 @@ hashbrown.workspace = true
 resolver = "2"
 members = [
     "common",
-    "orderbook", "processors",
+    "orderbook",
+    "processors",
 ]
 
 [workspace.dependencies]
