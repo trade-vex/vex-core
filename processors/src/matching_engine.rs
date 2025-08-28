@@ -1,9 +1,9 @@
 use common::cmd::OrderCommand;
 use hashbrown::HashMap;
-use orderbook::{OrderBook, OrderBookError};
 use orderbook::OrderBookImplType;
 use orderbook::direct_impl::OrderBookDirectImpl;
 use orderbook::naive_impl::OrderBookNaiveImpl;
+use orderbook::{OrderBook, OrderBookError};
 
 /// Custom error type for routing failures.
 #[derive(Debug)]
