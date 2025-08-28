@@ -11,6 +11,7 @@ processors = { workspace = true }
 vex-config = { workspace = true }
 vex-networking = { workspace = true }
 utils = { workspace = true }
+parking_lot = {workspace = true}
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"

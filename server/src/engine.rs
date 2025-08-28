@@ -10,7 +10,7 @@ use processors::{
 };
 use vex_config::CoreNetworkingConfig;
 use std::sync::Arc;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::thread;
 use tracing::{info, warn};
 use vex_networking::server::VexCoreServer;
@@ -109,7 +109,7 @@ impl CoreEngine {
 
         for shard_id in 0..num_matching_engines {
             let router = MatchingEngineRouter::new(shard_id, num_matching_engines as u64);
-            matching_engine_routers.push(Arc::new(std::sync::Mutex::new(router)));
+            matching_engine_routers.push(Arc::new(Mutex::new(router)));
         }
 
         // Create journaling handler for audit trail and recovery
@@ -233,7 +233,7 @@ impl CoreEngine {
 
         // Add symbol_id only to the owning shard for memory efficiency
         if let Some(router) = self.matching_engine_routers.get(router_index) {
-            let mut matching_engine = router.lock().unwrap();
+            let mut matching_engine = router.lock();
             matching_engine.add_symbol(symbol_id, spec, book_type);
 
             info!(
@@ -262,7 +262,7 @@ impl CoreEngine {
         let risk_engine_index = (user_id & shard_mask) as usize;
 
         if let Some(risk_engine_mutex) = self.risk_engines.get(risk_engine_index) {
-            let risk_engine = risk_engine_mutex.lock().unwrap();
+            let risk_engine = risk_engine_mutex.lock();
             if let Some(balance) = risk_engine
                 .user_profiles
                 .get(&user_id)
@@ -283,7 +283,7 @@ impl CoreEngine {
     pub fn get_order_filled(&self, order_id: u64) -> Option<u64> {
         // Search across all matching engine router shards
         for (shard_id, router) in self.matching_engine_routers.iter().enumerate() {
-            let matching_engine = router.lock().unwrap();
+            let matching_engine = router.lock();
 
             // Search all order books in this shard
             for order_book in matching_engine.get_order_books().values() {
