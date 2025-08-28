@@ -34,7 +34,7 @@ pub fn init_exchange() -> (CoreEngine, Producer, Arc<SimpleEventsHandler>) {
     let (core_engine, producer) =
         CoreEngine::new(symbol_specs, journaling_processor, events_handler.clone());
 
-    core_engine.add_symbol(0, OrderBookImplType::Naive);
+    core_engine.add_symbol(0, OrderBookImplType::Direct);
 
     (core_engine, producer, events_handler)
 }

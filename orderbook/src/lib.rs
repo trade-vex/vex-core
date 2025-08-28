@@ -5,12 +5,10 @@ use common::model::order::{Order, OrderTrait};
 use common::model::symbol_specification::CoreSymbolSpecification;
 use std::fmt;
 
-pub use common::cmd::{MatcherTradeEvent, OrderCommand, OrderCommandType};
-pub use common::model::enums::SymbolType;
+use common::cmd::{MatcherTradeEvent, OrderCommand};
 
 pub mod direct_impl;
 pub mod events;
-pub mod naive_impl;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum OrderBookError {
@@ -74,10 +72,10 @@ pub fn from_bytes<'a>(
 ) -> Result<Box<dyn OrderBook<'a> + 'a>, borsh::io::Error> {
     let impl_type = OrderBookImplType::deserialize(bytes)?;
     match impl_type {
-        OrderBookImplType::Naive => {
-            let book = naive_impl::OrderBookNaiveImpl::from_bytes(bytes)?;
-            Ok(Box::new(book))
-        }
+        // OrderBookImplType::Naive => {
+        //     let book = naive_impl::OrderBookNaiveImpl::from_bytes(bytes)?;
+        //     Ok(Box::new(book))
+        // }
         OrderBookImplType::Direct => {
             let book = direct_impl::OrderBookDirectImpl::from_bytes(bytes)?;
             Ok(Box::new(book))
@@ -87,7 +85,7 @@ pub fn from_bytes<'a>(
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, BorshSerialize, BorshDeserialize)]
 pub enum OrderBookImplType {
-    Naive,
+    // Naive,
     Direct,
 }
 

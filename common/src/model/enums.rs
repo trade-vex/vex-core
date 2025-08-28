@@ -1,109 +1,11 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use num_enum::TryFromPrimitive;
-use sbe_order::order_type::OrderType as SbeOrderType;
+use sbe_order::order_command_type::OrderCommandType as SbeOrderCommandType;
 use sbe_order::side::Side as SbeSide;
+use sbe_order::time_in_force::TimeInForce as SbeTimeInForce;
 use serde::de::Error;
 use serde::de::value::Error as SerdeError;
 use serde::{Deserialize, Serialize};
-
-#[derive(
-    Debug,
-    PartialEq,
-    Eq,
-    Clone,
-    Copy,
-    TryFromPrimitive,
-    Serialize,
-    Deserialize,
-    BorshSerialize,
-    BorshDeserialize,
-)]
-#[borsh(use_discriminant = true)]
-#[repr(u8)]
-pub enum Side {
-    Ask = 0,
-    Bid = 1,
-}
-
-impl Side {
-    pub fn opposite(&self) -> Side {
-        match self {
-            Side::Ask => Side::Bid,
-            Side::Bid => Side::Ask,
-        }
-    }
-}
-
-impl From<Side> for SbeSide {
-    fn from(value: Side) -> Self {
-        match value {
-            Side::Ask => SbeSide::Ask,
-            Side::Bid => SbeSide::Bid,
-        }
-    }
-}
-
-impl TryFrom<SbeSide> for Side {
-    type Error = SerdeError;
-    fn try_from(value: SbeSide) -> Result<Self, Self::Error> {
-        match value {
-            SbeSide::Ask => Ok(Side::Ask),
-            SbeSide::Bid => Ok(Side::Bid),
-            SbeSide::NullVal => Err(SerdeError::custom("NullVal")),
-        }
-    }
-}
-
-#[derive(
-    Debug,
-    PartialEq,
-    Eq,
-    Clone,
-    Copy,
-    TryFromPrimitive,
-    Serialize,
-    Deserialize,
-    BorshSerialize,
-    BorshDeserialize,
-)]
-#[borsh(use_discriminant = true)]
-#[repr(u8)]
-pub enum OrderType {
-    // Good till Cancel - equivalent to regular limit order
-    Gtc = 0,
-    // Immediate or Cancel - equivalent to strict-risk market order
-    Ioc = 1,       // with price cap
-    IocBudget = 2, // with total amount cap
-    // Fill or Kill - execute immediately completely or not at all
-    Fok = 3,       // with price cap
-    FokBudget = 4, // total amount cap
-}
-
-impl From<OrderType> for SbeOrderType {
-    fn from(value: OrderType) -> Self {
-        match value {
-            OrderType::Gtc => SbeOrderType::Gtc,
-            OrderType::Ioc => SbeOrderType::Ioc,
-            OrderType::IocBudget => SbeOrderType::IocBudget,
-            OrderType::Fok => SbeOrderType::Fok,
-            OrderType::FokBudget => SbeOrderType::FokBudget,
-        }
-    }
-}
-
-impl TryFrom<SbeOrderType> for OrderType {
-    type Error = SerdeError;
-    fn try_from(value: SbeOrderType) -> Result<Self, Self::Error> {
-        match value {
-            SbeOrderType::Gtc => Ok(OrderType::Gtc),
-            SbeOrderType::Ioc => Ok(OrderType::Ioc),
-            SbeOrderType::IocBudget => Ok(OrderType::IocBudget),
-            SbeOrderType::Fok => Ok(OrderType::Fok),
-            SbeOrderType::FokBudget => Ok(OrderType::FokBudget),
-            SbeOrderType::NullVal => Err(SerdeError::custom("NullVal")),
-        }
-    }
-}
 
 #[derive(
     Debug,
@@ -192,6 +94,111 @@ impl PositionDirection {
             PositionDirection::Empty => 0,
             PositionDirection::Long => 1,
             PositionDirection::Short => -1,
+        }
+    }
+}
+
+/// The specific action the command represents.
+///
+/// This serves as the primary discriminant for the `OrderCommand` struct.
+#[derive(Debug, Clone)]
+#[repr(u8)]
+pub enum OrderCommandType {
+    /// A command to place a new order. All fields in `OrderCommand` are relevant.
+    PlaceOrder,
+    /// A command to cancel an existing order. Only `order_id`, `user_id`, and
+    /// `symbol_id` are relevant. Other fields should be ignored.
+    CancelOrder,
+}
+
+impl TryFrom<SbeOrderCommandType> for OrderCommandType {
+    type Error = SerdeError;
+
+    fn try_from(value: SbeOrderCommandType) -> Result<Self, Self::Error> {
+        match value {
+            SbeOrderCommandType::PlaceOrder => Ok(OrderCommandType::PlaceOrder),
+            SbeOrderCommandType::CancelOrder => Ok(OrderCommandType::CancelOrder),
+            SbeOrderCommandType::NullVal => Err(SerdeError::custom("NullVal")), // Maybe handle NullVal specially
+        }
+    }
+}
+
+impl Into<SbeOrderCommandType> for OrderCommandType {
+    fn into(self) -> SbeOrderCommandType {
+        match self {
+            OrderCommandType::PlaceOrder => SbeOrderCommandType::PlaceOrder,
+            OrderCommandType::CancelOrder => SbeOrderCommandType::CancelOrder,
+        }
+    }
+}
+
+/// The time-in-force policy for a `PlaceOrder` command.
+#[derive(
+    Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
+)]
+#[repr(u8)]
+pub enum TimeInForce {
+    /// Good-Till-Canceled: The order rests on the book until filled or canceled.
+    /// This policy is only valid for limit orders.
+    Gtc,
+    /// Immediate-Or-Cancel: The order executes against any available volume
+    /// immediately and any unfilled portion is canceled.
+    Ioc,
+    /// Fill-Or-Kill: The order must be filled in its entirety immediately,
+    /// otherwise the entire order is canceled.
+    Fok,
+}
+
+impl TryFrom<SbeTimeInForce> for TimeInForce {
+    type Error = SerdeError;
+
+    fn try_from(value: SbeTimeInForce) -> Result<Self, Self::Error> {
+        match value {
+            SbeTimeInForce::Gtc => Ok(TimeInForce::Gtc),
+            SbeTimeInForce::Ioc => Ok(TimeInForce::Ioc),
+            SbeTimeInForce::Fok => Ok(TimeInForce::Fok),
+            _ => Err(SerdeError::custom("Unknown TimeInForce variant")),
+        }
+    }
+}
+
+impl Into<SbeTimeInForce> for TimeInForce {
+    fn into(self) -> SbeTimeInForce {
+        match self {
+            TimeInForce::Gtc => SbeTimeInForce::Gtc,
+            TimeInForce::Ioc => SbeTimeInForce::Ioc,
+            TimeInForce::Fok => SbeTimeInForce::Fok,
+        }
+    }
+}
+
+/// Represents the side of the order book.
+#[derive(
+    Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, BorshSerialize, BorshDeserialize,
+)]
+#[repr(u8)]
+pub enum Side {
+    Ask,
+    Bid,
+}
+
+impl TryFrom<SbeSide> for Side {
+    type Error = SerdeError;
+
+    fn try_from(value: SbeSide) -> Result<Self, Self::Error> {
+        match value {
+            SbeSide::Ask => Ok(Side::Ask),
+            SbeSide::Bid => Ok(Side::Bid),
+            SbeSide::NullVal => Err(SerdeError::custom("NullVal")), // Maybe handle NullVal specially
+        }
+    }
+}
+
+impl Into<SbeSide> for Side {
+    fn into(self) -> SbeSide {
+        match self {
+            Side::Ask => SbeSide::Ask,
+            Side::Bid => SbeSide::Bid,
         }
     }
 }

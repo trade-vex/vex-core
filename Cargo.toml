@@ -23,7 +23,7 @@ vex-config = { path = "./vex-config" }
 vex-networking = { path = "./networking" }
 processors = { path = "./processors" }
 orderbook = { path = "./orderbook" }
-sbe-order = {path = "./sbe-order" }
+sbe_order = {path = "./sbe-order" }
 utils = { path = "./utils" }
 borsh = { version = "1.5.7", default-features = false, features = ["hashbrown", "derive", "de_strict_order"] }
 hashbrown = "0.15.4"

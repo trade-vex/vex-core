@@ -5,10 +5,15 @@ RUN apt-get update && apt-get install -y wget iproute2 build-essential clang pkg
     && wget https://github.com/Kitware/CMake/releases/download/v3.30.0/cmake-3.30.0-linux-x86_64.tar.gz \
     && tar -xzvf cmake-3.30.0-linux-x86_64.tar.gz --strip-components=1 -C /usr/local \
     && rm cmake-3.30.0-linux-x86_64.tar.gz
+
+RUN rustup component add rustfmt
+
+# Cache deps
+COPY ./xtask/tests/.docker-cache-layer/ ./
+RUN cargo build --release
+
 COPY . .
 # Build the dedicated 'test_server' binary
-RUN ls -a
-RUN rustup component add rustfmt    
 RUN cargo build --release --bin test_server --package xtask
 
 # ---- Final Stage ----

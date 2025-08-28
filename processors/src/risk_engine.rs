@@ -1,8 +1,6 @@
 use common::cmd::MatcherTradeEvent;
 use common::cmd::OrderCommand;
-use common::cmd::OrderCommandType;
-use common::model::enums::MatcherEventType;
-use common::model::enums::Side;
+use common::model::enums::{MatcherEventType, OrderCommandType, Side};
 use common::model::symbol_specification::CoreSymbolSpecification;
 use common::model::user_profile::UserProfile;
 use hashbrown::HashMap;
@@ -71,25 +69,22 @@ impl RiskEngine {
             "[RiskEngine] Validating arguments for order {}",
             cmd.order_id
         );
-        if matches!(
-            cmd.command,
-            OrderCommandType::PlaceLimitOrder | OrderCommandType::PlaceMarketOrder
-        ) {
+        if matches!(cmd.command, OrderCommandType::PlaceOrder) {
             if cmd.size <= 0 || cmd.price <= 0 {
                 return Err(OrderBookError::InvalidArguments);
             }
             info!(
-                "[RiskEngine] Looking up symbol_id spec for symbol_id {}",
-                cmd.symbol_id
+                "[RiskEngine] Looking up market_id spec for market_id {}",
+                cmd.market_id
             );
             let spec = self
                 .symbol_specs
-                .get(&cmd.symbol_id)
+                .get(&cmd.market_id)
                 .ok_or(OrderBookError::UnsupportedCommand)?;
 
             info!(
-                "[RiskEngine] Found symbol_id spec: {:?} for symbol_id {}",
-                spec, cmd.symbol_id
+                "[RiskEngine] Found market_id spec: {:?} for market_id {}",
+                spec, cmd.market_id
             );
             let required_funds = if cmd.side == Side::Bid {
                 cmd.price * cmd.size
@@ -127,7 +122,7 @@ impl RiskEngine {
 
         match event.event_type {
             MatcherEventType::Trade => {
-                let spec = self.symbol_specs.get(&event.symbol_id).unwrap();
+                let spec = self.symbol_specs.get(&event.market_id).unwrap();
 
                 if let Some(maker_profile) = self.user_profiles.get_mut(&event.maker_user_id) {
                     maker_profile.settle_trade(
@@ -141,18 +136,24 @@ impl RiskEngine {
                         },
                     );
                 }
-                if let Some(taker_profile) = self.user_profiles.get_mut(&event.active_order_user_id) {
+                if let Some(taker_profile) = self.user_profiles.get_mut(&event.active_order_user_id)
+                {
                     taker_profile.settle_trade(spec, event.price, event.size, event.taker_action);
                 }
             }
             MatcherEventType::Reduce | MatcherEventType::Cancel => {
-                if let Some(user_profile) = self.user_profiles.get_mut(&event.active_order_user_id) {
+                if let Some(user_profile) = self.user_profiles.get_mut(&event.active_order_user_id)
+                {
                     let released_amount = if event.taker_action == Side::Bid {
                         event.price * event.size
                     } else {
                         event.size
                     };
-                    user_profile.release_funds(event.symbol_id, released_amount, event.taker_action);
+                    user_profile.release_funds(
+                        event.market_id,
+                        released_amount,
+                        event.taker_action,
+                    );
                 }
             }
             MatcherEventType::OrderPlaced => {

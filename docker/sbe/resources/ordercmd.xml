@@ -17,9 +17,8 @@
 
         <!-- enums -->
         <enum name="OrderCommandType" encodingType="uint8" description="Order command types">
-            <validValue name="PlaceLimitOrder" value="0">0</validValue>
-            <validValue name="PlaceMarketOrder" value="1">1</validValue>
-            <validValue name="CancelOrder" value="2">2</validValue>
+            <validValue name="PlaceOrder" value="0">0</validValue>
+            <validValue name="CancelOrder" value="1">1</validValue>
         </enum>
 
         <enum name="Side" encodingType="uint8" description="Order Side types">
@@ -27,26 +26,23 @@
             <validValue name="Bid" value="1">1</validValue>
         </enum>
 
-        <enum name="OrderType" encodingType="uint8" description="Order type specifications">
+        <enum name="TimeInForce" encodingType="uint8" description="Order type specifications">
             <validValue name="Gtc" value="0">0</validValue>
             <validValue name="Ioc" value="1">1</validValue>
-            <validValue name="IocBudget" value="2">2</validValue>
-            <validValue name="Fok" value="3">3</validValue>
-            <validValue name="FokBudget" value="4">4</validValue>
+            <validValue name="Fok" value="2">2</validValue>
         </enum>
     </types>
 
     <!-- Message -->
-    <message name="OrderCommandMessage" id="1" blockLength="59" semanticType="OrderCommand">
+    <message name="OrderCommandMessage" id="1" blockLength="47" semanticType="OrderCommand">
         <field name="command" id="1" type="OrderCommandType"/>
         <field name="order_id" id="2" type="uint64"/>
-        <field name="symbol_id" id="3" type="uint32"/>
+        <field name="market_id" id="3" type="uint32"/>
         <field name="user_id" id="4" type="uint64"/>
         <field name="price" id="5" type="uint64"/>
-        <field name="reserve_bid_price" id="6" type="uint64"/>
-        <field name="size" id="7" type="uint64"/>
-        <field name="side" id="8" type="Side"/>
-        <field name="order_type" id="9" type="OrderType"/>
-        <field name="timestamp" id="10" type="uint64"/>
+        <field name="size" id="6" type="uint64"/>
+        <field name="side" id="7" type="Side"/>
+        <field name="time_in_force" id="8" type="TimeInForce"/>
+        <field name="timestamp" id="9" type="uint64"/>
     </message>
 </sbe:messageSchema>

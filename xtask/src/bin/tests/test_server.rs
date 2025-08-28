@@ -18,6 +18,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     server_config.context_dir = env::var("VEX_CONTEXT_DIR").unwrap_or("/dev/shm/aeron-test-server".to_string());
     server_config.initial_port = listen_port;
     server_config.initial_control_port = listen_port + 1;
+    server_config.max_gateways = 15;
+    server_config.max_connections_per_address = 10;
     let results_path = "/results/received_ids.txt";
     let file = Arc::new(Mutex::new(
         OpenOptions::new().create(true).write(true).truncate(true).open(results_path)?

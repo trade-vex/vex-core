@@ -1,5 +1,6 @@
-use common::cmd::{OrderCommand, OrderCommandType, decode_order_command};
-use common::model::enums::{OrderType, Side};
+use common::cmd::{OrderCommand, decode_order_command};
+use common::model::enums::OrderCommandType;
+use common::model::enums::{Side, TimeInForce};
 use disruptor::{BusySpin, ProcessorSettings, build_multi_producer};
 use rusteron_client::{AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port};
 use std::time::Duration;
@@ -72,21 +73,20 @@ fn test_client_server_communication() {
         }
 
         let mut order_command = OrderCommand {
-            command: OrderCommandType::PlaceLimitOrder,
+            command: OrderCommandType::PlaceOrder,
             user_id: 1,
-            reserve_bid_price: 150,
             size: 100,
-            order_type: OrderType::Gtc,
+            time_in_force: TimeInForce::Gtc,
             timestamp: 1,
             matcher_event: None,
             side: Side::Ask,
             order_id: 1,
-            symbol_id: 3124,
+            market_id: 3124,
             price: 150,
         };
         for i in 0..10 {
             order_command.order_id = i;
-            client.send_order_command(&order_command)?;
+            client.send_order_command(order_command.clone())?;
             std::thread::sleep(Duration::from_millis(10));
         }
         Ok(())

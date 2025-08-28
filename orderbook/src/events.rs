@@ -1,7 +1,7 @@
 //! This module contains helpers for creating and managing matcher events.
 use crate::OrderCommand;
 use common::cmd::MatcherTradeEvent;
-use common::model::enums::{MatcherEventType, Side};
+use common::model::enums::MatcherEventType;
 use common::model::symbol_specification::CoreSymbolSpecification;
 
 pub struct EventHelper;
@@ -12,7 +12,7 @@ impl EventHelper {
     pub fn attach_reject_event(cmd: &mut OrderCommand, rejected_size: u64) {
         let reject_event = MatcherTradeEvent {
             event_type: MatcherEventType::Reject,
-            symbol_id: cmd.symbol_id,
+            market_id: cmd.market_id,
             active_order_user_id: cmd.user_id,
             taker_action: cmd.side,
             active_order_completed: true, // A reject always finalizes the active order
@@ -39,7 +39,7 @@ impl EventHelper {
             } else {
                 MatcherEventType::Reduce
             },
-            symbol_id: cmd.symbol_id,
+            market_id: cmd.market_id,
             active_order_user_id: cmd.user_id,
             taker_action: cmd.side,
             active_order_completed: is_cancel,
@@ -62,7 +62,7 @@ impl EventHelper {
     ) -> Box<MatcherTradeEvent> {
         Box::new(MatcherTradeEvent {
             event_type: MatcherEventType::Trade,
-            symbol_id: active_order_cmd.symbol_id,
+            market_id: active_order_cmd.market_id,
             active_order_user_id: active_order_cmd.user_id,
             taker_action: active_order_cmd.side,
             section: 0,                                            // TODO
@@ -72,11 +72,11 @@ impl EventHelper {
             matched_order_completed: maker_filled,
             price,
             size,
-            bidder_hold_price: if active_order_cmd.side == Side::Ask {
-                active_order_cmd.reserve_bid_price
-            } else {
-                0 // In naive impl, maker order is not available to get reserve price
-            },
+            // bidder_hold_price: if active_order_cmd.side == Side::Ask {
+            //     active_order_cmd.reserve_bid_price
+            // } else {
+            //     0 // In naive impl, maker order is not available to get reserve price
+            // },
             taker_fee: size * spec.taker_fee,
             maker_fee: size * spec.maker_fee,
             next_event: None,
@@ -91,7 +91,7 @@ impl EventHelper {
     ) -> Box<MatcherTradeEvent> {
         Box::new(MatcherTradeEvent {
             event_type: MatcherEventType::OrderPlaced, // Using OrderPlaced type for order placement
-            symbol_id: cmd.symbol_id,
+            market_id: cmd.market_id,
             active_order_user_id: cmd.user_id,
             taker_action: cmd.side,
             section: 0,
@@ -101,7 +101,7 @@ impl EventHelper {
             matched_order_completed: false,
             price: cmd.price,
             size: placed_size,
-            bidder_hold_price: cmd.reserve_bid_price,
+            // bidder_hold_price: cmd.reserve_bid_price,
             taker_fee: 0, // No fees for placement
             maker_fee: 0,
             next_event: None,

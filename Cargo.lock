@@ -356,7 +356,7 @@ dependencies = [
  "borsh",
  "hashbrown 0.15.4",
  "num_enum",
- "sbe-order",
+ "sbe_order",
  "serde",
  "thiserror 2.0.12",
  "tracing",
@@ -1996,7 +1996,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sbe-order"
+name = "sbe_order"
 version = "0.1.0"
 
 [[package]]

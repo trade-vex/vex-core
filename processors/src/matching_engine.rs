@@ -1,9 +1,10 @@
-use common::cmd::{OrderCommand, OrderCommandType};
+use common::cmd::OrderCommand;
+use common::model::enums::OrderCommandType;
 use hashbrown::HashMap;
 use orderbook::OrderBook;
 use orderbook::OrderBookImplType;
 use orderbook::direct_impl::OrderBookDirectImpl;
-use orderbook::naive_impl::OrderBookNaiveImpl;
+// use orderbook::naive_impl::OrderBookNaiveImpl;
 use tracing::{info, warn};
 
 /// Owns all order books and routes commands to the correct one.
@@ -44,7 +45,7 @@ impl MatchingEngineRouter {
     pub fn add_symbol(&mut self, symbol_id: u32, book_type: OrderBookImplType) {
         let spec = common::model::symbol_specification::TestConstants::symbol_spec_eth_xbt();
         let book: Box<dyn OrderBook + Send> = match book_type {
-            OrderBookImplType::Naive => Box::new(OrderBookNaiveImpl::new(spec)),
+            // OrderBookImplType::Naive => Box::new(OrderBookNaiveImpl::new(spec)),
             OrderBookImplType::Direct => Box::new(OrderBookDirectImpl::new(spec)),
         };
         self.order_books.insert(symbol_id, book);
@@ -77,7 +78,7 @@ impl MatchingEngineRouter {
     /// It implements the same command routing logic where each router only processes
     /// commands for symbols it owns
     pub fn process_order(&mut self, cmd: &mut OrderCommand) {
-        if self.symbol_for_this_handler(cmd.symbol_id as u64) {
+        if self.symbol_for_this_handler(cmd.market_id as u64) {
             self.process_matching_command(cmd);
         }
     }
@@ -88,15 +89,14 @@ impl MatchingEngineRouter {
     /// This method implements the core matching logic, similar to exchangeCore's `processMatchingCommand`.
     /// It routes commands to the appropriate orderbook.
     fn process_matching_command(&mut self, cmd: &mut OrderCommand) {
-        if let Some(order_book) = self.order_books.get_mut(&cmd.symbol_id) {
+        if let Some(order_book) = self.order_books.get_mut(&cmd.market_id) {
             info!(
                 "[Router {}] Processing command for symbol_id {}",
-                self.shard_id, cmd.symbol_id
+                self.shard_id, cmd.market_id
             );
 
             let result = match cmd.command {
-                OrderCommandType::PlaceLimitOrder => order_book.new_order(cmd),
-                OrderCommandType::PlaceMarketOrder => order_book.new_order(cmd),
+                OrderCommandType::PlaceOrder => order_book.new_order(cmd),
                 OrderCommandType::CancelOrder => order_book.cancel_order(cmd),
             };
 
@@ -109,7 +109,7 @@ impl MatchingEngineRouter {
         } else {
             warn!(
                 "[Router {}] No order book found for symbol_id {}",
-                self.shard_id, cmd.symbol_id
+                self.shard_id, cmd.market_id
             );
         }
     }

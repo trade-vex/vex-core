@@ -566,7 +566,7 @@ impl VexGateway {
     }
 
     /// Sends an OrderCommand to the core
-    pub fn send_order_command(&mut self, order_command: &OrderCommand) -> Result<(), GatewayError> {
+    pub fn send_order_command(&mut self, order_command: OrderCommand) -> Result<(), GatewayError> {
         // Check if we're connected
         if !self.is_connected() {
             return Err(GatewayError::NotConnected);
@@ -579,18 +579,16 @@ impl VexGateway {
 
         // Serialize OrderCommand
         let mut buffer = vec![0u8; self.config.max_message_size];
-        encode_order_command(order_command.clone(), &mut buffer).map_err(|e| {
-            GatewayError::ProtocolError(format!("Failed to encode OrderCommand: {e:?}"))
-        })?;
 
         // Send the binary message directly
         debug!(
-            "Gateway '{}': Sending OrderCommand: {:?}",
-            self.config.gateway_id, order_command
+            "Gateway '{}': Sending OrderCommand, Order ID: {:?}",
+            self.config.gateway_id, order_command.order_id
         );
 
-        // // Calculate actual encoded size (you may need to adjust this based on your encoding)
-        // let encoded_size = std::cmp::min(buffer.len(), self.config.max_message_size);
+        encode_order_command(order_command, &mut buffer).map_err(|e| {
+            GatewayError::ProtocolError(format!("Failed to encode OrderCommand: {e:?}"))
+        })?;
 
         // Send using the buffer directly
         for attempt in 0..MESSAGE_RETRY_COUNT {

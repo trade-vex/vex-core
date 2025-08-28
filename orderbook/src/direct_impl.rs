@@ -2,7 +2,7 @@ use crate::events::EventHelper;
 use crate::{MatcherTradeEvent, OrderBook, OrderBookError, OrderBookImplType, OrderCommand};
 use blart::TreeMap;
 use borsh::{BorshDeserialize, BorshSerialize};
-use common::model::enums::{MatcherEventType, OrderType, Side, SymbolType};
+use common::model::enums::{MatcherEventType, Side, TimeInForce};
 use common::model::order::{Order, OrderTrait};
 use common::model::symbol_specification::CoreSymbolSpecification;
 use hashbrown::HashMap;
@@ -78,7 +78,6 @@ impl OrderBookDirectImpl {
             price: cmd.price(),
             size: cmd.size(),
             filled: filled_size,
-            reserve_bid_price: cmd.reserve_bid_price(),
             side: cmd.side(),
             user_id: cmd.user_id(),
             timestamp: cmd.timestamp(),
@@ -99,43 +98,6 @@ impl OrderBookDirectImpl {
             EventHelper::attach_reject_event(cmd, rejected_size);
         }
         Ok(())
-    }
-
-    fn new_order_match_fok_budget(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError> {
-        let budget = self.check_budget_to_fill(cmd.side(), cmd.size());
-
-        if budget != u64::MAX && (cmd.side() == Side::Ask || budget <= cmd.price()) {
-            self.try_match_instantly(cmd, 0);
-        } else {
-            EventHelper::attach_reject_event(cmd, cmd.size());
-        }
-        Ok(())
-    }
-
-    fn check_budget_to_fill(&self, side: Side, mut size: u64) -> u64 {
-        let mut budget = 0;
-
-        let mut next_key = if side == Side::Bid {
-            self.best_ask_order
-        } else {
-            self.best_bid_order
-        };
-
-        while let Some(key) = next_key {
-            if size == 0 {
-                break;
-            }
-            let order = &self.orders[key];
-            let available_size = order.size - order.filled;
-            let trade_size = std::cmp::min(size, available_size);
-
-            budget += trade_size * order.price;
-            size -= trade_size;
-
-            next_key = order.prev;
-        }
-
-        if size == 0 { budget } else { u64::MAX }
     }
 
     fn try_match_instantly(&mut self, cmd: &mut OrderCommand, filled: u64) -> u64 {
@@ -204,11 +166,11 @@ impl OrderBookDirectImpl {
                     matched_order_completed: maker_filled,
                     price: maker_order_mut.price,
                     size: trade_size,
-                    bidder_hold_price: if cmd.side() == Side::Ask {
-                        cmd.reserve_bid_price()
-                    } else {
-                        maker_order_mut.reserve_bid_price
-                    },
+                    // bidder_hold_price: if cmd.side() == Side::Ask {
+                    //     cmd.reserve_bid_price()
+                    // } else {
+                    //     maker_order_mut.reserve_bid_price
+                    // },
                     ..MatcherTradeEvent::default()
                 };
 
@@ -381,12 +343,12 @@ impl OrderBookDirectImpl {
         } else {
             self.best_bid_order
         };
-    
+
         let mut last_price: Option<u64> = None;
         let mut orders_in_bucket = 0;
         let mut volume_in_bucket = 0;
         let mut prev_order_key: Option<usize> = None;
-    
+
         while let Some(order_key) = current_order_key {
             let order = &self.orders[order_key];
             assert_eq!(order.side, side, "Order has wrong side");
@@ -394,7 +356,7 @@ impl OrderBookDirectImpl {
                 orders_in_chain.insert(order.order_id),
                 "Duplicate order in chain"
             );
-    
+
             if let Some(price) = last_price {
                 if order.price != price {
                     // Moved to a new price bucket
@@ -408,17 +370,17 @@ impl OrderBookDirectImpl {
                     volume_in_bucket = 0;
                 }
             }
-    
+
             orders_in_bucket += 1;
             volume_in_bucket += order.size - order.filled;
-    
+
             assert_eq!(order.next, prev_order_key, "Next pointer is incorrect");
-    
+
             last_price = Some(order.price);
             prev_order_key = Some(order_key);
             current_order_key = order.prev;
         }
-    
+
         if let Some(price) = last_price {
             let bucket = buckets.get(&price).unwrap();
             assert_eq!(
@@ -439,7 +401,6 @@ pub struct DirectOrder {
     pub price: u64,
     pub size: u64,
     pub filled: u64,
-    pub reserve_bid_price: u64,
     pub side: Side,
     pub user_id: u64,
     pub timestamp: u64,
@@ -473,9 +434,6 @@ impl OrderTrait for DirectOrder {
     fn timestamp(&self) -> u64 {
         self.timestamp
     }
-    fn reserve_bid_price(&self) -> u64 {
-        self.reserve_bid_price
-    }
 }
 
 impl PartialEq for DirectOrder {
@@ -493,7 +451,6 @@ impl DirectOrder {
             price: self.price,
             size: self.size,
             filled: self.filled,
-            reserve_bid_price: self.reserve_bid_price,
             side: self.side,
             user_id: self.user_id,
             timestamp: self.timestamp,
@@ -535,12 +492,11 @@ impl<'a> Iterator for OrderBookDirectIterator<'a> {
 
 impl<'a> OrderBook<'a> for OrderBookDirectImpl {
     fn new_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError> {
-        match cmd.order_type {
-            OrderType::Gtc => self.new_order_place_gtc(cmd),
-            OrderType::Ioc => self.new_order_match_ioc(cmd),
-            OrderType::FokBudget => self.new_order_match_fok_budget(cmd),
+        match cmd.time_in_force {
+            TimeInForce::Gtc => self.new_order_place_gtc(cmd),
+            TimeInForce::Ioc => self.new_order_match_ioc(cmd),
             _ => {
-                warn!("Unsupported order type: {:?}", cmd.order_type);
+                warn!("Unsupported order type: {:?}", cmd.time_in_force);
                 EventHelper::attach_reject_event(cmd, cmd.size());
                 Err(OrderBookError::UnsupportedCommand)
             }
@@ -616,12 +572,12 @@ impl<'a> OrderBook<'a> for OrderBookDirectImpl {
 
         let mut order_to_move = self.orders[*order_key].clone();
 
-        if self.symbol_spec.symbol_type == SymbolType::CurrencyExchangePair
-            && order_to_move.side == Side::Bid
-            && cmd.price > order_to_move.reserve_bid_price
-        {
-            return Err(OrderBookError::MoveFailedPriceOverRiskLimit);
-        }
+        // if self.symbol_spec.symbol_type == SymbolType::CurrencyExchangePair
+        //     && order_to_move.side == Side::Bid
+        //     && cmd.price > order_to_move.reserve_bid_price
+        // {
+        //     return Err(OrderBookError::MoveFailedPriceOverRiskLimit);
+        // }
 
         self.remove_order(*order_key);
 

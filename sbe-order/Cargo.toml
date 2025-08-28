@@ -1,5 +1,5 @@
 [package]
-name = "sbe-order"
+name = "sbe_order"
 version = "0.1.0"
 authors = ["sbetool"]
 description = "SBE schema for OrderCommand"

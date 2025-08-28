@@ -7,7 +7,7 @@ pub use crate::SBE_SCHEMA_ID;
 pub use crate::SBE_SCHEMA_VERSION;
 pub use crate::SBE_SEMANTIC_VERSION;
 
-pub const SBE_BLOCK_LENGTH: u16 = 59;
+pub const SBE_BLOCK_LENGTH: u16 = 47;
 pub const SBE_TEMPLATE_ID: u16 = 1;
 
 pub mod encoder {
@@ -87,7 +87,7 @@ pub mod encoder {
             self.get_buf_mut().put_u64_at(offset, value);
         }
 
-        /// primitive field 'symbol_id'
+        /// primitive field 'market_id'
         /// - min value: 0
         /// - max value: 4294967294
         /// - null value: 0xffffffff_u32
@@ -97,7 +97,7 @@ pub mod encoder {
         /// - encodedLength: 4
         /// - version: 0
         #[inline]
-        pub fn symbol_id(&mut self, value: u32) {
+        pub fn market_id(&mut self, value: u32) {
             let offset = self.offset + 9;
             self.get_buf_mut().put_u32_at(offset, value);
         }
@@ -132,7 +132,7 @@ pub mod encoder {
             self.get_buf_mut().put_u64_at(offset, value);
         }
 
-        /// primitive field 'reserve_bid_price'
+        /// primitive field 'size'
         /// - min value: 0
         /// - max value: -2
         /// - null value: 0xffffffffffffffff_u64
@@ -142,37 +142,22 @@ pub mod encoder {
         /// - encodedLength: 8
         /// - version: 0
         #[inline]
-        pub fn reserve_bid_price(&mut self, value: u64) {
-            let offset = self.offset + 29;
-            self.get_buf_mut().put_u64_at(offset, value);
-        }
-
-        /// primitive field 'size'
-        /// - min value: 0
-        /// - max value: -2
-        /// - null value: 0xffffffffffffffff_u64
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 37
-        /// - encodedLength: 8
-        /// - version: 0
-        #[inline]
         pub fn size(&mut self, value: u64) {
-            let offset = self.offset + 37;
+            let offset = self.offset + 29;
             self.get_buf_mut().put_u64_at(offset, value);
         }
 
         /// REQUIRED enum
         #[inline]
         pub fn side(&mut self, value: side::Side) {
-            let offset = self.offset + 45;
+            let offset = self.offset + 37;
             self.get_buf_mut().put_u8_at(offset, value as u8)
         }
 
         /// REQUIRED enum
         #[inline]
-        pub fn order_type(&mut self, value: order_type::OrderType) {
-            let offset = self.offset + 46;
+        pub fn time_in_force(&mut self, value: time_in_force::TimeInForce) {
+            let offset = self.offset + 38;
             self.get_buf_mut().put_u8_at(offset, value as u8)
         }
 
@@ -182,12 +167,12 @@ pub mod encoder {
         /// - null value: 0xffffffffffffffff_u64
         /// - characterEncoding: null
         /// - semanticType: null
-        /// - encodedOffset: 47
+        /// - encodedOffset: 39
         /// - encodedLength: 8
         /// - version: 0
         #[inline]
         pub fn timestamp(&mut self, value: u64) {
-            let offset = self.offset + 47;
+            let offset = self.offset + 39;
             self.get_buf_mut().put_u64_at(offset, value);
         }
 
@@ -285,7 +270,7 @@ pub mod decoder {
 
         /// primitive field - 'REQUIRED'
         #[inline]
-        pub fn symbol_id(&self) -> u32 {
+        pub fn market_id(&self) -> u32 {
             self.get_buf().get_u32_at(self.offset + 9)
         }
 
@@ -303,32 +288,26 @@ pub mod decoder {
 
         /// primitive field - 'REQUIRED'
         #[inline]
-        pub fn reserve_bid_price(&self) -> u64 {
-            self.get_buf().get_u64_at(self.offset + 29)
-        }
-
-        /// primitive field - 'REQUIRED'
-        #[inline]
         pub fn size(&self) -> u64 {
-            self.get_buf().get_u64_at(self.offset + 37)
+            self.get_buf().get_u64_at(self.offset + 29)
         }
 
         /// REQUIRED enum
         #[inline]
         pub fn side(&self) -> side::Side {
-            self.get_buf().get_u8_at(self.offset + 45).into()
+            self.get_buf().get_u8_at(self.offset + 37).into()
         }
 
         /// REQUIRED enum
         #[inline]
-        pub fn order_type(&self) -> order_type::OrderType {
-            self.get_buf().get_u8_at(self.offset + 46).into()
+        pub fn time_in_force(&self) -> time_in_force::TimeInForce {
+            self.get_buf().get_u8_at(self.offset + 38).into()
         }
 
         /// primitive field - 'REQUIRED'
         #[inline]
         pub fn timestamp(&self) -> u64 {
-            self.get_buf().get_u64_at(self.offset + 47)
+            self.get_buf().get_u64_at(self.offset + 39)
         }
 
     }
