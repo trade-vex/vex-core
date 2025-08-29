@@ -109,14 +109,9 @@ impl CoreEngine {
             }
         }
 
-        // Create 4 separate risk engine R1 handlers using macro
-        // Each handler runs on its own thread/core
-        let risk_r1_handler_0 = create_risk_handler!(0, risk_engines_arc);
-        let risk_r1_handler_1 = create_risk_handler!(1, risk_engines_arc);
-        let risk_r1_handler_2 = create_risk_handler!(2, risk_engines_arc);
-        let risk_r1_handler_3 = create_risk_handler!(3, risk_engines_arc);
 
-        // Build the second ring buffer first 
+
+        // Build the second ring buffer first (the producer of this is required as an input in matching_engine_royter handler)
         let matcher_event_producer = build_multi_producer(buffer_size, matcher_event_factory, BusySpin)
             // Stage 1: Journaling for raw events
             .pin_at_core(10)
@@ -141,12 +136,7 @@ impl CoreEngine {
             .handle_events_with(create_event_handler!(events_handler_arc))
             .build();
 
-        // Create 4 separate matching engine handlers using macro
-        // Each handler runs on its own thread/core
-        let matching_handler_0 = create_matching_handler!(0, matching_engine_routers, matcher_event_producer);
-        let matching_handler_1 = create_matching_handler!(1, matching_engine_routers, matcher_event_producer);
-        let matching_handler_2 = create_matching_handler!(2, matching_engine_routers, matcher_event_producer);
-        let matching_handler_3 = create_matching_handler!(3, matching_engine_routers, matcher_event_producer);
+
 
         // Build the disruptor pipeline
         // This creates the same dependency graph and parallelism as exchangeCore
@@ -157,34 +147,27 @@ impl CoreEngine {
             // Stage 2: Risk Engine R1 - 4 parallel handlers (equivalent to riskEngines.forEach)
             // Each handler processes ALL events but filters internally based on user ID
             .pin_at_core(2)
-            .handle_events_with(risk_r1_handler_0)
+            .handle_events_with(create_risk_handler!(0, risk_engines_arc))
             .pin_at_core(3)
-            .handle_events_with(risk_r1_handler_1)
+            .handle_events_with(create_risk_handler!(1, risk_engines_arc))
             .pin_at_core(4)
-            .handle_events_with(risk_r1_handler_2)
+            .handle_events_with(create_risk_handler!(2, risk_engines_arc))
             .pin_at_core(5)
-            .handle_events_with(risk_r1_handler_3)
+            .handle_events_with(create_risk_handler!(3, risk_engines_arc))
             .and_then() // Creates dependency: matching engines wait for risk engines
             // Stage 3: Matching Engine - 4 parallel handlers
             // Each handler processes ALL events but filters internally based on symbol_id ID
             .pin_at_core(6)
-            .handle_events_with(matching_handler_0)
+            .handle_events_with(create_matching_handler!(0, matching_engine_routers, matcher_event_producer))
             .pin_at_core(7)
-            .handle_events_with(matching_handler_1)
+            .handle_events_with(create_matching_handler!(1, matching_engine_routers, matcher_event_producer))
             .pin_at_core(8)
-            .handle_events_with(matching_handler_2)
+            .handle_events_with(create_matching_handler!(2, matching_engine_routers, matcher_event_producer))
             .pin_at_core(9)
-            .handle_events_with(matching_handler_3)
+            .handle_events_with(create_matching_handler!(3, matching_engine_routers, matcher_event_producer))
             .build();
 
         let engine = Self {};
-
-        info!("  CoreEngine initialized ");
-        info!("  - 4 parallel Risk Engines (R1) on cores 2-5");
-        info!("  - 4 parallel Matching Engines on cores 6-9");
-        info!("  - Journaling on core 1");
-        info!("  - Risk Engine R2 embedded in matching engine event processing");
-
         (engine, producer)
     }
 
