@@ -22,7 +22,7 @@ resolver = "2"
 members = [
     "common", 
     "vex-config",
-    "utils", "xtask",
+    "xtask",
 ]
 
 [workspace.dependencies]
@@ -32,6 +32,7 @@ sbe_order = { path = "./order" }
 vex-networking = { path = "./networking" }
 vex-orderbook = { path = "./orderbook" }
 processors = { path = "./processors" }
+orderbook = { path = "./orderbook" }
 borsh = { version = "1.5.7", default-features = false, features = ["hashbrown", "derive", "de_strict_order"] }
 hashbrown = "0.15.4"
 thiserror = "2.0.12"
