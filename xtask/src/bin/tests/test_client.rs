@@ -1,14 +1,14 @@
 use clap::{Parser, Subcommand};
+use common::cmd::{OrderCommand, OrderCommandType, decode_order_command};
+use common::model::enums::{OrderType, Side};
 use hdrhistogram::Histogram;
+use rusteron_client::{AeronFragmentHandlerCallback, AeronHeader};
 use std::env;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
-use rusteron_client::{AeronFragmentHandlerCallback, AeronHeader};
 use tracing::{error, info};
 use vex_config::GatewayNetworkingConfig;
 use vex_networking::client::VexGateway;
-use common::cmd::{decode_order_command, OrderCommand, OrderCommandType};
-use common::model::enums::{OrderType, Side};
 
 #[derive(Parser, Debug)]
 #[command(name = "test_client")]
@@ -66,7 +66,6 @@ impl AeronFragmentHandlerCallback for OrderCommandHandler {
     }
 }
 
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Cli::parse();
     // Read configuration from environment variables provided by docker-compose
@@ -82,7 +81,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let mut client_config = GatewayNetworkingConfig::test_defaults(); // Use your test defaults
-    client_config.context_dir = env::var("VEX_CONTEXT_DIR").unwrap_or("/dev/shm/aeron-test-client".to_string());
+    client_config.context_dir =
+        env::var("VEX_CONTEXT_DIR").unwrap_or("/dev/shm/aeron-test-client".to_string());
     client_config.core_address = server_host;
     client_config.core_port = server_port;
     client_config.core_control_port = server_port + 1;
@@ -114,7 +114,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run_correctness_test(client: &mut VexGateway, count: u64, client_id: u64) -> Result<(), Box<dyn std::error::Error>> {
+fn run_correctness_test(
+    client: &mut VexGateway,
+    count: u64,
+    client_id: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("Client-{} sending {} messages...", client_id, count);
     for i in 0..count {
         let order_command = OrderCommand {

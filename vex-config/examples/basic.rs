@@ -13,12 +13,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("1. Loading configuration with auto-detected environment...");
     match VexConfig::load_auto() {
         Ok(config) => {
-            println!("Loaded config for environment: {}", config.environment());
             println!(
-                "Core networking port: {}",
+                "   ✓ Loaded config for environment: {}",
+                config.environment()
+            );
+            println!(
+                "   ✓ Core networking port: {}",
                 config.core_networking.initial_port
             );
-            println!("Logging level: {}", config.logging.level);
+            println!("   ✓ Logging level: {}", config.logging.level);
         }
         Err(e) => {
             println!("Failed to load auto config: {e}");
@@ -34,22 +37,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Environment::Test,
         Environment::Production,
     ] {
-        println!("2. Loading configuration for {env} environment...");
+        println!("2. Loading configuration for {} environment...", env);
 
         let config = VexConfig::load_for_environment(env.clone()).unwrap_or_else(|_| {
             println!("   → Using default configuration (no files found)");
             VexConfig::new(env)
         });
 
-        println!("Environment: {}", config.environment());
-        println!("Core ID: {}", config.core_networking.core_id);
+        println!("   ✓ Environment: {}", config.environment());
+        println!("   ✓ Core ID: {}", config.core_networking.core_id);
         println!(
-            "Authentication enabled: {}",
+            "   ✓ Authentication enabled: {}",
             config.core_networking.enable_authentication
         );
-        println!("Max gateways: {}", config.core_networking.max_gateways);
-        println!("Log format: {:?}", config.logging.format);
-        println!("Gateway ID: {}", config.gateway_networking.gateway_id);
+        println!("   ✓ Max gateways: {}", config.core_networking.max_gateways);
+        println!("   ✓ Log format: {:?}", config.logging.format);
+        println!("   ✓ Gateway ID: {}", config.gateway_networking.gateway_id);
         println!();
     }
 

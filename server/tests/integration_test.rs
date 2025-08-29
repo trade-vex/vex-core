@@ -1,13 +1,13 @@
 use common::cmd::{OrderCommand, OrderCommandType, decode_order_command};
-use common::model::enums::{Side, OrderType};
+use common::model::enums::{OrderType, Side};
 use server::init_exchange;
 
-use vex_networking::client::{GatewayError, VexGateway};
 use rusteron_client::{AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port};
 use std::time::Duration;
 use std::{net::SocketAddr, thread};
 use tracing::{error, info};
 use vex_config::{CoreNetworkingConfig, GatewayNetworkingConfig};
+use vex_networking::client::{GatewayError, VexGateway};
 
 /// Fragment handler for processing OrderCommand messages from core
 struct TestOrderCommandHandler {
@@ -133,7 +133,7 @@ async fn test_end_to_end_exchange_flow() {
         let mut symbol_specs = hashbrown::HashMap::new();
         symbol_specs.insert(0, TestConstants::symbol_spec_eth_xbt());
         let (mut core, producer, _handler) = init_exchange(symbol_specs);
-        
+
         // Start the core engine with networking
         core.run(producer, server_config);
 
