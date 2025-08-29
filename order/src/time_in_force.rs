@@ -1,13 +1,13 @@
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
-pub enum OrderType {
+pub enum TimeInForce {
     Gtc = 0x0_u8, 
     Ioc = 0x1_u8, 
     Fok = 0x2_u8, 
     #[default]
     NullVal = 0xff_u8, 
 }
-impl From<u8> for OrderType {
+impl From<u8> for TimeInForce {
     #[inline]
     fn from(v: u8) -> Self {
         match v {
@@ -18,18 +18,18 @@ impl From<u8> for OrderType {
         }
     }
 }
-impl From<OrderType> for u8 {
+impl From<TimeInForce> for u8 {
     #[inline]
-    fn from(v: OrderType) -> Self {
+    fn from(v: TimeInForce) -> Self {
         match v {
-            OrderType::Gtc => 0x0_u8, 
-            OrderType::Ioc => 0x1_u8, 
-            OrderType::Fok => 0x2_u8, 
-            OrderType::NullVal => 0xff_u8,
+            TimeInForce::Gtc => 0x0_u8, 
+            TimeInForce::Ioc => 0x1_u8, 
+            TimeInForce::Fok => 0x2_u8, 
+            TimeInForce::NullVal => 0xff_u8,
         }
     }
 }
-impl core::str::FromStr for OrderType {
+impl core::str::FromStr for TimeInForce {
     type Err = ();
 
     #[inline]
@@ -42,7 +42,7 @@ impl core::str::FromStr for OrderType {
         }
     }
 }
-impl core::fmt::Display for OrderType {
+impl core::fmt::Display for TimeInForce {
     #[inline]
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {

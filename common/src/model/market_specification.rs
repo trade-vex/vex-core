@@ -1,0 +1,106 @@
+use serde::{Deserialize, Serialize};
+use crate::MarketType;
+
+/// Core symbol specification that defines trading parameters for a symbol.
+/// This mirrors the Java CoreMarketSpecification class exactly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoreMarketSpecification {
+    pub market_id: u32,
+    pub market_type: MarketType,
+
+    // Currency pair specification
+    pub base_currency: u32,  // base currency
+    pub quote_currency: u32, // quote/counter currency (OR futures contract currency)
+    pub base_scale_k: u64,   // base currency amount multiplier (lot size in base currency units)
+    pub quote_scale_k: u64,  // quote currency amount multiplier (step size in quote currency units)
+
+    // Fees per lot in quote currency units
+    pub taker_fee: u64, // taker fee (should be >= maker fee)
+    pub maker_fee: u64, // maker fee
+}
+
+impl CoreMarketSpecification {
+    pub fn builder() -> CoreMarketSpecificationBuilder {
+        CoreMarketSpecificationBuilder::default()
+    }
+}
+
+/// Builder for CoreMarketSpecification to match Java's builder pattern
+#[derive(Debug, Default)]
+pub struct CoreMarketSpecificationBuilder {
+    market_id: Option<u32>,
+    market_type: Option<MarketType>,
+    base_currency: Option<u32>,
+    quote_currency: Option<u32>,
+    base_scale_k: Option<u64>,
+    quote_scale_k: Option<u64>,
+    taker_fee: Option<u64>,
+    maker_fee: Option<u64>,
+    margin_buy: Option<u64>,
+    margin_sell: Option<u64>,
+}
+
+impl CoreMarketSpecificationBuilder {
+    pub fn market_id(mut self, market_id: u32) -> Self {
+        self.market_id = Some(market_id);
+        self
+    }
+
+    pub fn market_type(mut self, market_type: MarketType) -> Self {
+        self.market_type = Some(market_type);
+        self
+    }
+
+    pub fn base_currency(mut self, base_currency: u32) -> Self {
+        self.base_currency = Some(base_currency);
+        self
+    }
+
+    pub fn quote_currency(mut self, quote_currency: u32) -> Self {
+        self.quote_currency = Some(quote_currency);
+        self
+    }
+
+    pub fn base_scale_k(mut self, base_scale_k: u64) -> Self {
+        self.base_scale_k = Some(base_scale_k);
+        self
+    }
+
+    pub fn quote_scale_k(mut self, quote_scale_k: u64) -> Self {
+        self.quote_scale_k = Some(quote_scale_k);
+        self
+    }
+
+    pub fn taker_fee(mut self, taker_fee: u64) -> Self {
+        self.taker_fee = Some(taker_fee);
+        self
+    }
+
+    pub fn maker_fee(mut self, maker_fee: u64) -> Self {
+        self.maker_fee = Some(maker_fee);
+        self
+    }
+
+    pub fn margin_buy(mut self, margin_buy: u64) -> Self {
+        self.margin_buy = Some(margin_buy);
+        self
+    }
+
+    pub fn margin_sell(mut self, margin_sell: u64) -> Self {
+        self.margin_sell = Some(margin_sell);
+        self
+    }
+
+    pub fn build(self) -> Result<CoreMarketSpecification, &'static str> {
+        Ok(CoreMarketSpecification {
+            market_id: self.market_id.ok_or("market_id is required")?,
+            market_type: self.market_type.ok_or("market_type is required")?,
+            base_currency: self.base_currency.ok_or("base_currency is required")?,
+            quote_currency: self.quote_currency.ok_or("quote_currency is required")?,
+            base_scale_k: self.base_scale_k.ok_or("base_scale_k is required")?,
+            quote_scale_k: self.quote_scale_k.ok_or("quote_scale_k is required")?,
+            taker_fee: self.taker_fee.unwrap_or(0),
+            maker_fee: self.maker_fee.unwrap_or(0),
+        })
+    }
+}
