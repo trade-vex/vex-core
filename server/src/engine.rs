@@ -72,30 +72,7 @@ impl CoreEngine {
         let mut risk_engines = Vec::new();
 
         for shard_id in 0..num_risk_engines {
-            let mut risk_engine = RiskEngine::new(symbol_specs.clone(), shard_id, num_risk_engines);
-            
-            // Add initial user profiles to this shard with funded accounts
-            for user_id in [100, 101] {
-                let user_id = user_id as u64;
-                let shard_mask = (num_risk_engines - 1) as u64;
-                
-                // Only add users that belong to this shard
-                if (user_id & shard_mask) == shard_id as u64 {
-                    let mut user_profile = common::model::user_profile::UserProfile::new(
-                        user_id, 
-                        common::model::user_profile::UserStatus::Active
-                    );
-                    
-                    // Fund the user with initial balances
-                    user_profile.accounts.insert(1, 1000000); // 1M base currency
-                    user_profile.accounts.insert(2, 1000000); // 1M quote currency
-                    
-                    risk_engine.user_profiles.insert(user_id, user_profile);
-                    
-                    info!("Added user {} to RiskEngine shard {} with initial balances", user_id, shard_id);
-                }
-            }
-            
+            let risk_engine = RiskEngine::new(symbol_specs.clone(), shard_id, num_risk_engines);
             risk_engines.push(risk_engine);
         }
 
