@@ -22,6 +22,24 @@ pub struct CoreEngine {
 }
 
 impl CoreEngine {
+    /// Creates a new CoreEngine
+    ///
+    /// Architecture:
+    /// ```
+    /// [Publishers]
+    ///      ↓
+    /// [Disruptor Ring Buffer]
+    ///      ↓
+    /// [Journaling] (Core 1)
+    ///      ↓
+    /// [Risk Engine R1] (Cores 2-5) - 4 parallel shards for risk hold
+    ///      ↓
+    /// [Matching Engine] (Cores 6-9) - 4 parallel shards for order processing
+    ///      ↓
+    /// [Risk Engine R2] (embedded in matching engine event processing)
+    ///      ↓
+    /// [Event Handlers] (market data, notifications, etc.)
+    /// ```
     pub fn new(
         symbol_specs: HashMap<u32, CoreSymbolSpecification>,
         journaling_processor: JournalingProcessor,
@@ -229,56 +247,5 @@ impl CoreEngine {
                 symbol_id, router_index
             );
         }
-    }
-
-    // The API handling logic will be removed and implemented in the gateway , currently placegolder for testing
-
-    /// Gets user balance from the appropriate risk engine shard
-    ///
-    /// Routes the query to the correct risk engine shard based on user ID.
-    /// This ensures consistent access to user data regardless of which
-    /// risk engine shard is currently holding the user's state.
-    pub fn get_user_balance(&self, user_id: u64, currency: u32) -> Option<u64> {
-        // Route to the correct risk engine shard using the same logic as processing
-        let num_shards = self.risk_engines.len() as u64;
-        let shard_mask = num_shards - 1; // Power of 2 mask
-        let risk_engine_index = (user_id & shard_mask) as usize;
-
-        if let Some(risk_engine_mutex) = self.risk_engines.get(risk_engine_index) {
-            let risk_engine = risk_engine_mutex.lock();
-            if let Some(balance) = risk_engine
-                .user_profiles
-                .get(&user_id)
-                .and_then(|profile| profile.accounts.get(&currency).copied())
-            {
-                return Some(balance);
-            }
-        }
-        None
-    }
-
-    /// Gets order fill quantity from the appropriate matching engine shard
-    ///
-    /// Searches across all matching engine shards to find the order.
-    /// In a production system, this could be optimized by routing to the
-    /// correct shard based on symbol_id, but searching all shards is safer
-    /// for now since we don't store the symbol_id with the order_id.
-    pub fn get_order_filled(&self, order_id: u64) -> Option<u64> {
-        // Search across all matching engine router shards
-        for (shard_id, router) in self.matching_engine_routers.iter().enumerate() {
-            let matching_engine = router.lock();
-
-            // Search all order books in this shard
-            for order_book in matching_engine.get_order_books().values() {
-                if let Some(order) = order_book.get_order_by_id(order_id) {
-                    info!(
-                        "Found order {} in MatchingEngine shard {}",
-                        order_id, shard_id
-                    );
-                    return Some(order.filled());
-                }
-            }
-        }
-        None
     }
 }
