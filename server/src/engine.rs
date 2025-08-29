@@ -51,8 +51,9 @@ impl CoreEngine {
         journaling_processor: JournalingProcessor,
         events_handler: Arc<dyn EventsHandler>,
     ) -> (Self, OrderProducer) {
-        let factory = || OrderCommand::default();
-        let buffer_size = 1024;
+        let order_factory = || OrderCommand::default();
+        let event_factory = || ProcessedOrderEvent::default();
+        let buffer_size = 1024; // Power of 2 for disruptor efficiency
 
         // Using Arc to share stateful processors with the main thread and the consumer threads.
         let journaling_arc = Arc::new(journaling_processor);
@@ -149,7 +150,7 @@ impl CoreEngine {
 
         // Build the disruptor pipeline
         // This creates the same dependency graph and parallelism as exchangeCore
-        let producer = build_multi_producer(buffer_size, factory, BusySpin)
+        let producer = build_multi_producer(buffer_size, order_factory, BusySpin)
             // Stage 1: Journaling
             .pin_at_core(1)
             .handle_events_with(move |cmd: &OrderCommand, _, _| {
