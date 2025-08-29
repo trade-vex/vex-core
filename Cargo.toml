@@ -30,6 +30,7 @@ rusteron-media-driver = "0.1.143"
 tracing = "0.1.41"
 disruptor = "3.4.0"
 parking_lot = "0.12"
+tikv-jemallocator = "0.5"
 
 [profile.release]
 # Link Time Optimization - enables cross-crate inlining and optimization
@@ -53,6 +54,5 @@ strip = true
 debug = false
 
 # Apply maximum optimization to all dependencies
-# Ensures third-party crates are fully optimized for trading performance
 [profile.release.package."*"]
 opt-level = 3
