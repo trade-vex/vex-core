@@ -41,7 +41,7 @@ impl RiskEngine {
 
     /// Pre-processes a command to validate it(DONE) and hold funds(TODOs).
     /// This is the first stage(excali-5a, excali-5b) of processing for any command that can affect a user.
-    pub fn pre_process_command(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError> {
+    pub fn pre_process_command(&mut self, cmd: &OrderCommand) -> Result<(), OrderBookError> {
         // Process only if the command is for a user managed by this shard
         if !self.user_id_for_this_handler(cmd.user_id) {
             return Ok(()); // Not for this shard, skip
