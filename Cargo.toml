@@ -12,14 +12,22 @@ members = [
     "processors", 
     "server",
     "vex-config"
+    "order",
+    "xtask"
 ]
 
 [workspace.dependencies]
 common = { path = "./common"}
 vex-config = { path = "./vex-config" }
 sbe_order = { path = "./order" }
+vex-networking = { path = "./networking" }
 borsh = { version = "1.5.7", default-features = false, features = ["hashbrown", "derive", "de_strict_order"] }
 hashbrown = "0.15.4"
 thiserror = "2.0.12"
+rusteron-client = "0.1.143"
+rusteron-media-driver = "0.1.143"
+disruptor = "3.4.0"
+serde = { version = "1.0.203", features = ["derive"] }
+serde_json = "1.0"
 tracing = "0.1"
 rusteron-client = "0.1.132"

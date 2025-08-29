@@ -1,0 +1,66 @@
+services:
+  media-driver:
+    build:
+      context: .
+      dockerfile: media-driver.Dockerfile
+    container_name: media-driver
+    volumes:
+      - ./bin/:/output
+    # This service runs once to generate code, then exits
+    restart: "no"
+
+  vex-server:
+    build:
+      context: ../../
+      dockerfile: xtask/tests/server.Dockerfile
+    container_name: vex-server
+    depends_on:
+      media-driver:
+        condition: service_completed_successfully
+    environment:
+      - VEX_SERVER_HOST=vex-server
+      - VEX_SERVER_PORT=3521
+      - AERON_DIR=/dev/shm/aeron-test-server
+      - AERON_RESERVED_SESSION_ID_LOW=1
+      - AERON_RESERVED_SESSION_ID_HIGH=2147483647
+      - LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+      - RUST_LOG=debug
+    ipc: shareable # Allows aeronmd and test_server to share memory.
+    privileged: true
+    shm_size: '512m'
+    volumes:
+      - ./test-results:/results
+    networks:
+      vex-testing-net:
+        ipv4_address: 172.28.1.10
+
+  vex-client:
+    build:
+      context: ../../
+      dockerfile: ./xtask/tests/client.Dockerfile
+    # container_name: vex-client
+    depends_on:
+      media-driver:
+        condition: service_completed_successfully
+    environment:
+      # Config for the client to find the server.
+      - VEX_SERVER_HOST=vex-server
+      - VEX_SERVER_PORT=3521
+      - AERON_DIR=/dev/shm/aeron-test-client
+      - LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+      - RUST_LOG=debug
+    ipc: shareable
+    privileged: true
+    shm_size: '512m'
+    volumes:
+      - ./test-results:/results
+    networks:
+      - vex-testing-net
+
+networks:
+  vex-testing-net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16
