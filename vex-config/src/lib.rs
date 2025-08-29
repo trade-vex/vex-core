@@ -1,22 +1,22 @@
 //! VEX Configuration Management
-//! 
+//!
 //! This crate provides comprehensive configuration management for VEX Core,
 //! supporting multiple environments (dev, test, prod) with advanced configuration operations.
 //! Features auto-detection of environment from environment variables and multiple loading strategies.
 
 pub mod environment;
-pub mod networking;
-pub mod logging;
 pub mod error;
 pub mod loader;
+pub mod logging;
+pub mod networking;
 pub mod symbols;
 
-use serde::{Deserialize, Serialize};
 pub use environment::Environment;
-pub use networking::{CoreNetworkingConfig, GatewayNetworkingConfig};
-pub use logging::LoggingConfig;
 pub use error::{ConfigError, Result};
 pub use loader::ConfigLoader;
+pub use logging::LoggingConfig;
+pub use networking::{CoreNetworkingConfig, GatewayNetworkingConfig};
+use serde::{Deserialize, Serialize};
 pub use symbols::SymbolSpecificationConfig;
 
 /// Main configuration structure that combines all VEX Core configuration modules
@@ -63,7 +63,10 @@ impl VexConfig {
     }
 
     /// Load configuration with custom search paths and environment
-    pub fn load_with_options(environment: Option<Environment>, search_paths: Vec<String>) -> Result<Self> {
+    pub fn load_with_options(
+        environment: Option<Environment>,
+        search_paths: Vec<String>,
+    ) -> Result<Self> {
         ConfigLoader::new()
             .with_search_paths(search_paths)
             .load_with_environment(environment)
@@ -72,7 +75,7 @@ impl VexConfig {
     /// Save configuration to a file (format determined by extension)
     pub fn save_to_file<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
         self.validate()?;
-        
+
         let path = path.as_ref();
         let content = match path.extension().and_then(|ext| ext.to_str()) {
             Some("toml") => toml::to_string_pretty(self)
@@ -81,14 +84,15 @@ impl VexConfig {
                 .map_err(|e| ConfigError::SerializationError(e.to_string()))?,
             Some("yaml") | Some("yml") => serde_yaml::to_string(self)
                 .map_err(|e| ConfigError::SerializationError(e.to_string()))?,
-            _ => return Err(ConfigError::ValidationError(
-                "Unsupported file format. Use .toml, .json, .yaml, or .yml".to_string()
-            )),
+            _ => {
+                return Err(ConfigError::ValidationError(
+                    "Unsupported file format. Use .toml, .json, .yaml, or .yml".to_string(),
+                ));
+            }
         };
-        
-        std::fs::write(path, content)
-            .map_err(|e| ConfigError::IoError(e.to_string()))?;
-        
+
+        std::fs::write(path, content).map_err(|e| ConfigError::IoError(e.to_string()))?;
+
         Ok(())
     }
 
@@ -105,15 +109,16 @@ impl VexConfig {
     pub fn merge_with(&mut self, other: &Self) -> Result<()> {
         if self.environment != other.environment {
             return Err(ConfigError::ValidationError(
-                "Cannot merge configurations with different environments".to_string()
+                "Cannot merge configurations with different environments".to_string(),
             ));
         }
-        
+
         self.core_networking.merge_with(&other.core_networking)?;
-        self.gateway_networking.merge_with(&other.gateway_networking)?;
+        self.gateway_networking
+            .merge_with(&other.gateway_networking)?;
         self.logging.merge_with(&other.logging)?;
         self.symbols.merge_with(&other.symbols)?;
-        
+
         Ok(())
     }
 

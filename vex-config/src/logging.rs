@@ -1,6 +1,6 @@
 //! Logging configuration for VEX Core
 
-use crate::{Environment, ConfigError, Result};
+use crate::{ConfigError, Environment, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -149,14 +149,12 @@ impl LoggingConfig {
         Self {
             level: LogLevel::Info,
             format: LogFormat::Json,
-            outputs: vec![
-                LogOutput::File {
-                    path: "/tmp/vex-test.log".to_string(),
-                    rotate: true,
-                    max_size: Some(10 * 1024 * 1024), // 10MB
-                    max_files: Some(5),
-                }
-            ],
+            outputs: vec![LogOutput::File {
+                path: "/tmp/vex-test.log".to_string(),
+                rotate: true,
+                max_size: Some(10 * 1024 * 1024), // 10MB
+                max_files: Some(5),
+            }],
             module_levels,
             include_location: false,
             include_timestamp: true,
@@ -193,7 +191,7 @@ impl LoggingConfig {
                 LogOutput::Syslog {
                     facility: "daemon".to_string(),
                     ident: "vex-core".to_string(),
-                }
+                },
             ],
             module_levels,
             include_location: false,
@@ -215,7 +213,9 @@ impl LoggingConfig {
     /// Validate the logging configuration
     pub fn validate(&self) -> Result<()> {
         if self.outputs.is_empty() {
-            return Err(ConfigError::logging("At least one log output must be configured"));
+            return Err(ConfigError::logging(
+                "At least one log output must be configured",
+            ));
         }
 
         for output in &self.outputs {
@@ -223,11 +223,15 @@ impl LoggingConfig {
         }
 
         if self.sampling_rate < 0.0 || self.sampling_rate > 1.0 {
-            return Err(ConfigError::logging("Sampling rate must be between 0.0 and 1.0"));
+            return Err(ConfigError::logging(
+                "Sampling rate must be between 0.0 and 1.0",
+            ));
         }
 
         if self.async_buffer_size == 0 {
-            return Err(ConfigError::logging("Async buffer size must be greater than 0"));
+            return Err(ConfigError::logging(
+                "Async buffer size must be greater than 0",
+            ));
         }
 
         // Validate module level overrides
@@ -236,7 +240,9 @@ impl LoggingConfig {
                 return Err(ConfigError::logging("Module name cannot be empty"));
             }
             if *level == LogLevel::Off && module == "vex_core" {
-                return Err(ConfigError::logging("Cannot disable logging for core module"));
+                return Err(ConfigError::logging(
+                    "Cannot disable logging for core module",
+                ));
             }
         }
 
@@ -246,11 +252,16 @@ impl LoggingConfig {
     /// Validate a specific log output configuration
     fn validate_output(&self, output: &LogOutput) -> Result<()> {
         match output {
-            LogOutput::File { path, max_size, max_files, .. } => {
+            LogOutput::File {
+                path,
+                max_size,
+                max_files,
+                ..
+            } => {
                 if path.is_empty() {
                     return Err(ConfigError::logging("Log file path cannot be empty"));
                 }
-                
+
                 if let Some(size) = max_size {
                     if *size == 0 {
                         return Err(ConfigError::logging("Max file size must be greater than 0"));
@@ -259,13 +270,13 @@ impl LoggingConfig {
                         return Err(ConfigError::logging("Max file size should be at least 1KB"));
                     }
                 }
-                
+
                 if let Some(files) = max_files {
                     if *files == 0 {
                         return Err(ConfigError::logging("Max files must be greater than 0"));
                     }
                 }
-            },
+            }
             LogOutput::Syslog { facility, ident } => {
                 if facility.is_empty() {
                     return Err(ConfigError::logging("Syslog facility cannot be empty"));
@@ -273,7 +284,7 @@ impl LoggingConfig {
                 if ident.is_empty() {
                     return Err(ConfigError::logging("Syslog ident cannot be empty"));
                 }
-            },
+            }
             LogOutput::Stdout | LogOutput::Stderr => {
                 // No specific validation needed for stdout/stderr
             }
@@ -287,12 +298,12 @@ impl LoggingConfig {
         for (module, level) in &other.module_levels {
             self.module_levels.insert(module.clone(), level.clone());
         }
-        
+
         // Merge custom fields
         for (key, value) in &other.custom_fields {
             self.custom_fields.insert(key.clone(), value.clone());
         }
-        
+
         // Replace other fields
         self.level = other.level.clone();
         self.format = other.format.clone();
@@ -304,7 +315,7 @@ impl LoggingConfig {
         self.async_logging = other.async_logging;
         self.async_buffer_size = other.async_buffer_size;
         self.sampling_rate = other.sampling_rate;
-        
+
         Ok(())
     }
 
@@ -329,7 +340,7 @@ impl LoggingConfig {
             Some(m) => self.get_module_level(m),
             None => &self.level,
         };
-        
+
         level >= effective_level && *effective_level != LogLevel::Off
     }
 }
@@ -351,7 +362,7 @@ impl Ord for LogLevel {
             LogLevel::Error => 4,
             LogLevel::Off => 5,
         };
-        
+
         let other_order = match other {
             LogLevel::Trace => 0,
             LogLevel::Debug => 1,
@@ -360,7 +371,7 @@ impl Ord for LogLevel {
             LogLevel::Error => 4,
             LogLevel::Off => 5,
         };
-        
+
         self_order.cmp(&other_order)
     }
 }
@@ -395,7 +406,7 @@ mod tests {
     fn test_module_level_resolution() {
         let mut config = LoggingConfig::development_defaults();
         config.set_module_level("test_module".to_string(), LogLevel::Error);
-        
+
         assert_eq!(config.get_module_level("test_module"), &LogLevel::Error);
         assert_eq!(config.get_module_level("unknown_module"), &config.level);
     }
@@ -404,7 +415,7 @@ mod tests {
     fn test_is_enabled() {
         let mut config = LoggingConfig::production_defaults(); // Info level
         config.set_module_level("debug_module".to_string(), LogLevel::Debug);
-        
+
         assert!(config.is_enabled(&LogLevel::Info, None));
         assert!(!config.is_enabled(&LogLevel::Debug, None));
         assert!(config.is_enabled(&LogLevel::Debug, Some("debug_module")));

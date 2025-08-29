@@ -1,6 +1,6 @@
 //! Configuration loader with advanced loading strategies
 
-use crate::{VexConfig, Environment, ConfigError, Result};
+use crate::{ConfigError, Environment, Result, VexConfig};
 use config::{Config, File, FileFormat};
 use std::path::Path;
 
@@ -60,11 +60,14 @@ impl ConfigLoader {
     pub fn load_from_file<P: AsRef<Path>>(self, path: P) -> Result<VexConfig> {
         let path = path.as_ref();
         if !path.exists() {
-            return Err(ConfigError::not_found(format!("Config file not found: {}", path.display())));
+            return Err(ConfigError::not_found(format!(
+                "Config file not found: {}",
+                path.display()
+            )));
         }
 
         let mut builder = Config::builder();
-        
+
         // Add the specific file
         let format = self.detect_file_format(path)?;
         builder = builder.add_source(File::from(path).format(format));
@@ -74,13 +77,13 @@ impl ConfigLoader {
             builder = builder.add_source(
                 config::Environment::with_prefix(prefix)
                     .try_parsing(true)
-                    .separator("__")
+                    .separator("__"),
             );
         }
 
         let config = builder.build()?;
         let vex_config: VexConfig = config.try_deserialize()?;
-        
+
         vex_config.validate()?;
         Ok(vex_config)
     }
@@ -88,7 +91,7 @@ impl ConfigLoader {
     /// Load configuration with optional environment and custom settings
     pub fn load_with_environment(self, environment: Option<Environment>) -> Result<VexConfig> {
         let env = environment.unwrap_or_else(Environment::detect);
-        
+
         let mut builder = Config::builder();
 
         // Get search paths
@@ -120,7 +123,7 @@ impl ConfigLoader {
         // If no files found but missing files are allowed, return default config
         if !files_found && self.allow_missing {
             let mut default_config = VexConfig::new(env.clone());
-            
+
             // Still apply environment variable overrides if configured
             if let Some(prefix) = &self.env_prefix {
                 // Apply environment variables to the default config
@@ -128,7 +131,7 @@ impl ConfigLoader {
                 // you might want to use a more sophisticated merging strategy
                 default_config = self.apply_env_vars_to_config(default_config, prefix, &env)?;
             }
-            
+
             default_config.validate()?;
             return Ok(default_config);
         }
@@ -139,29 +142,34 @@ impl ConfigLoader {
             builder = builder.add_source(
                 config::Environment::with_prefix(&env_prefix)
                     .try_parsing(true)
-                    .separator("__")
+                    .separator("__"),
             );
-            
+
             // Also add general VEX prefix
             builder = builder.add_source(
                 config::Environment::with_prefix(prefix)
                     .try_parsing(true)
-                    .separator("__")
+                    .separator("__"),
             );
         }
 
         let config = builder.build()?;
         let mut vex_config: VexConfig = config.try_deserialize()?;
-        
+
         // Ensure environment matches what we expect
         vex_config.environment = env;
-        
+
         vex_config.validate()?;
         Ok(vex_config)
     }
 
     /// Apply environment variables to a config (simplified implementation)
-    fn apply_env_vars_to_config(&self, config: VexConfig, _prefix: &str, _env: &Environment) -> Result<VexConfig> {
+    fn apply_env_vars_to_config(
+        &self,
+        config: VexConfig,
+        _prefix: &str,
+        _env: &Environment,
+    ) -> Result<VexConfig> {
         // For now, just return the config as-is
         // In a full implementation, you would parse environment variables and apply them
         Ok(config)
@@ -174,7 +182,9 @@ impl ConfigLoader {
             Some("yaml") | Some("yml") => Ok(FileFormat::Yaml),
             Some("json") => Ok(FileFormat::Json),
             Some("ini") => Ok(FileFormat::Ini),
-            Some(ext) => Err(ConfigError::parse(format!("Unsupported file format: {ext}"))),
+            Some(ext) => Err(ConfigError::parse(format!(
+                "Unsupported file format: {ext}"
+            ))),
             None => Err(ConfigError::parse("No file extension found")),
         }
     }
@@ -193,12 +203,24 @@ mod tests {
     #[test]
     fn test_detect_file_format() {
         let loader = ConfigLoader::new();
-        
-        assert!(matches!(loader.detect_file_format(Path::new("config.toml")).unwrap(), FileFormat::Toml));
-        assert!(matches!(loader.detect_file_format(Path::new("config.yaml")).unwrap(), FileFormat::Yaml));
-        assert!(matches!(loader.detect_file_format(Path::new("config.yml")).unwrap(), FileFormat::Yaml));
-        assert!(matches!(loader.detect_file_format(Path::new("config.json")).unwrap(), FileFormat::Json));
-        
+
+        assert!(matches!(
+            loader.detect_file_format(Path::new("config.toml")).unwrap(),
+            FileFormat::Toml
+        ));
+        assert!(matches!(
+            loader.detect_file_format(Path::new("config.yaml")).unwrap(),
+            FileFormat::Yaml
+        ));
+        assert!(matches!(
+            loader.detect_file_format(Path::new("config.yml")).unwrap(),
+            FileFormat::Yaml
+        ));
+        assert!(matches!(
+            loader.detect_file_format(Path::new("config.json")).unwrap(),
+            FileFormat::Json
+        ));
+
         assert!(loader.detect_file_format(Path::new("config.txt")).is_err());
         assert!(loader.detect_file_format(Path::new("config")).is_err());
     }

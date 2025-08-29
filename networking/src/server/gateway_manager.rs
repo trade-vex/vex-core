@@ -1,12 +1,12 @@
 use crate::server::duologue::Duologue;
 use crate::utils::{PortAllocator, SessionAllocator, send_message};
 use common::cmd::OrderCommand;
+use crossbeam::queue::SegQueue;
 use dashmap::DashMap;
-use disruptor::{MultiProducer, MultiConsumerBarrier};
+use disruptor::{MultiConsumerBarrier, MultiProducer};
 use rusteron_client::{Aeron, AeronPublication};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use crossbeam::queue::SegQueue;
 use tracing::{debug, error, info};
 use vex_config::CoreNetworkingConfig;
 
@@ -39,7 +39,11 @@ pub struct GatewayManager {
 
 impl GatewayManager {
     /// Creates a new gateway manager
-    pub fn new(config: CoreNetworkingConfig, aeron: Rc<Aeron>, producer: MultiProducer<OrderCommand, MultiConsumerBarrier>) -> Result<Self, ServerError> {
+    pub fn new(
+        config: CoreNetworkingConfig,
+        aeron: Rc<Aeron>,
+        producer: MultiProducer<OrderCommand, MultiConsumerBarrier>,
+    ) -> Result<Self, ServerError> {
         let buffer_pool = SegQueue::new();
 
         // Pre-populate buffer pool

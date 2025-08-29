@@ -22,7 +22,7 @@ impl Environment {
     /// Checks VEX_ENV, ENVIRONMENT, ENV, and NODE_ENV in that order
     pub fn detect() -> Self {
         let env_vars = ["VEX_ENV", "ENVIRONMENT", "ENV", "NODE_ENV"];
-        
+
         for var in &env_vars {
             if let Ok(value) = std::env::var(var) {
                 if let Ok(env) = value.parse::<Environment>() {
@@ -31,7 +31,7 @@ impl Environment {
                 }
             }
         }
-        
+
         tracing::warn!("No valid environment variable found, defaulting to development");
         Environment::Development
     }
@@ -107,7 +107,9 @@ impl FromStr for Environment {
             "development" | "dev" | "develop" => Ok(Environment::Development),
             "test" | "testing" => Ok(Environment::Test),
             "production" | "prod" => Ok(Environment::Production),
-            _ => Err(format!("Invalid environment: '{s}'. Valid options: development, test, production")),
+            _ => Err(format!(
+                "Invalid environment: '{s}'. Valid options: development, test, production"
+            )),
         }
     }
 }
@@ -118,13 +120,25 @@ mod tests {
 
     #[test]
     fn test_environment_from_str() {
-        assert_eq!("development".parse::<Environment>().unwrap(), Environment::Development);
-        assert_eq!("dev".parse::<Environment>().unwrap(), Environment::Development);
+        assert_eq!(
+            "development".parse::<Environment>().unwrap(),
+            Environment::Development
+        );
+        assert_eq!(
+            "dev".parse::<Environment>().unwrap(),
+            Environment::Development
+        );
         assert_eq!("test".parse::<Environment>().unwrap(), Environment::Test);
         assert_eq!("testing".parse::<Environment>().unwrap(), Environment::Test);
-        assert_eq!("production".parse::<Environment>().unwrap(), Environment::Production);
-        assert_eq!("prod".parse::<Environment>().unwrap(), Environment::Production);
-        
+        assert_eq!(
+            "production".parse::<Environment>().unwrap(),
+            Environment::Production
+        );
+        assert_eq!(
+            "prod".parse::<Environment>().unwrap(),
+            Environment::Production
+        );
+
         assert!("invalid".parse::<Environment>().is_err());
     }
 

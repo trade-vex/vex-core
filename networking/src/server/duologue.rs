@@ -5,7 +5,7 @@ use crate::utils::{
     new_publication_with_mdc_and_session, new_subsciption_with_handlers_and_session,
 };
 use common::cmd::OrderCommand;
-use disruptor::{MultiProducer, MultiConsumerBarrier};
+use disruptor::{MultiConsumerBarrier, MultiProducer};
 use rusteron_client::{
     Aeron, AeronAvailableImageCallback, AeronCError, AeronImage, AeronNotificationLogger,
     AeronSubscription, AeronUnavailableImageCallback, Handler,

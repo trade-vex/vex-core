@@ -26,20 +26,19 @@
 //! server.start().unwrap(); // Runs indefinitely
 //! ```
 
+mod cmd_handler;
 mod duologue;
 mod gateway_handler;
 mod gateway_manager;
-mod cmd_handler;
 
-use common::cmd::OrderCommand;
-use disruptor::{MultiProducer, MultiConsumerBarrier};
-use vex_config::CoreNetworkingConfig;
 use crate::server::gateway_handler::{
     GatewayImageAvailableHandler, GatewayImageUnavailableHandler, HandshakeMessageHandler,
 };
-use crossbeam::utils::CachePadded;
 use crate::server::gateway_manager::GatewayManager;
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
+use common::cmd::OrderCommand;
+use crossbeam::utils::CachePadded;
+use disruptor::{MultiConsumerBarrier, MultiProducer};
 use rusteron_client::{Aeron, AeronCError, AeronContext, Handler};
 use rusteron_media_driver::AeronIdleStrategy;
 use std::rc::Rc;
@@ -47,6 +46,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{error, info, instrument};
+use vex_config::CoreNetworkingConfig;
 
 /// Stream ID for gateway communication
 const ALL_GATEWAYS_STREAM_ID: i32 = 1001;
@@ -89,7 +89,10 @@ pub struct VexCoreServer {
 
 impl VexCoreServer {
     /// Creates a new VEX Core instance
-    pub fn new(config: CoreNetworkingConfig, producer: MultiProducer<OrderCommand, MultiConsumerBarrier>) -> Result<Self, ServerError> {
+    pub fn new(
+        config: CoreNetworkingConfig,
+        producer: MultiProducer<OrderCommand, MultiConsumerBarrier>,
+    ) -> Result<Self, ServerError> {
         // Validate configuration
         Self::validate_config(&config)?;
 
@@ -272,4 +275,3 @@ impl VexCoreServer {
         Ok((subscription, handshake_handler))
     }
 }
-

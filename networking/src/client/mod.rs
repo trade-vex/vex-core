@@ -11,12 +11,12 @@ use thiserror::Error;
 use tracing::{debug, error, info, warn};
 // use serde::{Deserialize, Serialize};
 
-use vex_config::GatewayNetworkingConfig;
 use crate::utils::{
     new_publication, new_publication_with_session, new_subscription_with_mdc,
     new_subscription_with_mdc_and_session,
 };
 use common::cmd::{OrderCommand, encode_order_command};
+use vex_config::GatewayNetworkingConfig;
 
 // Constants for stream identification and timeouts
 const ALL_GATEWAYS_STREAM_ID: i32 = 1001;
