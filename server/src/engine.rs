@@ -1,7 +1,6 @@
-use crate::{
-    create_event_handler, create_matching_handler, create_risk_handler, create_risk_r2_handler,
-};
-use common::cmd::{MatcherTradeEvent, OrderCommand};
+use crate::events::EventsHandler;
+use crate::{create_risk_handler, create_matching_handler};
+use common::cmd::OrderCommand;
 use common::model::symbol_specification::CoreSymbolSpecification;
 use disruptor::{
     BusySpin, MultiConsumerBarrier, MultiProducer, ProcessorSettings, build_multi_producer,
@@ -18,8 +17,7 @@ use tracing::{info, warn};
 use vex_config::CoreNetworkingConfig;
 use vex_networking::server::VexCoreServer;
 
-pub type OrderProducer = MultiProducer<OrderCommand, MultiConsumerBarrier>;
-pub type ProcessedOrderProducer = MultiProducer<MatcherTradeEvent, MultiConsumerBarrier>;
+pub type Producer = MultiProducer<OrderCommand, MultiConsumerBarrier>;
 
 /// This follows the exact same architecture as the  ExchangeCore:
 /// 1. Multiple parallel Risk Engines (R1) for risk hold/pre-processing
