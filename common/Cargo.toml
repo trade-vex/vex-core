@@ -5,10 +5,7 @@ edition = "2021"
 
 [dependencies]
 borsh.workspace = true
-hashbrown.workspace = true
 thiserror.workspace = true
 serde = { version = "1.0.203", features = ["derive"] }
-tracing = "0.1.40"
 sbe_order.workspace = true
-thiserror.workspace = true
 ahash = "0.8.12"
