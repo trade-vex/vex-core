@@ -1,6 +1,6 @@
 use crate::events::EventsHandler;
 use crate::{create_matching_handler, create_risk_handler};
-use common::cmd::{OrderCommand, ProcessedOrderEvent};
+use common::cmd::{OrderCommand, MatcherTradeEvent};
 use common::model::symbol_specification::CoreSymbolSpecification;
 use disruptor::{
     BusySpin, MultiConsumerBarrier, MultiProducer, ProcessorSettings, build_multi_producer,
@@ -17,7 +17,7 @@ use vex_config::CoreNetworkingConfig;
 use vex_networking::server::VexCoreServer;
 
 pub type OrderProducer = MultiProducer<OrderCommand, MultiConsumerBarrier>;
-pub type ProcessedOrderProducer = MultiProducer<ProcessedOrderEvent, MultiConsumerBarrier>;
+pub type ProcessedOrderProducer = MultiProducer<MatcherTradeEvent, MultiConsumerBarrier>;
 
 /// This follows the exact same architecture as the  ExchangeCore:
 /// 1. Multiple parallel Risk Engines (R1) for risk hold/pre-processing
@@ -52,7 +52,7 @@ impl CoreEngine {
         events_handler: Arc<dyn EventsHandler>,
     ) -> (Self, OrderProducer) {
         let order_factory = || OrderCommand::default();
-        let event_factory = || ProcessedOrderEvent::default();
+        let event_factory = || MatcherTradeEvent::default();
         let buffer_size = 1024; // Power of 2 for disruptor efficiency
 
         // Using Arc to share stateful processors with the main thread and the consumer threads.
