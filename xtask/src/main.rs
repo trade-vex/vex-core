@@ -56,8 +56,6 @@ enum XTaskError {
 enum TestingError {
     #[error("Test failed: {0}")]
     TestFailed(String),
-    // #[error("Network condition error: {0}")]
-    // NetworkConditionError(String),
 }
 
 fn main() -> Result<(), XTaskError> {
@@ -97,7 +95,6 @@ impl DockerComposeEnv {
         println!("Waiting for environment to stabilize...");
         std::thread::sleep(std::time::Duration::from_secs(5));
 
-        // Get full container names
         let json_output = cmd!("docker", "compose", "ps", "--format", "json")
             .dir(root.clone())
             .read()?;
@@ -167,7 +164,6 @@ fn apply_scenario_conditions(scenario: &str, clients: u32) -> Result<(), XTaskEr
         match scenario {
             "high-latency" => {
                 println!("Applying 100ms RTT latency...");
-                // let index = format!("--index {}", i);
                 // Apply 50ms latency to traffic leaving the client
                 cmd!(
                     "docker",
@@ -236,7 +232,7 @@ fn build_docker(root: &Path) -> Result<(), XTaskError> {
     cmd!("docker", "compose", "build",)
         .dir(root.join("xtask/tests"))
         .run()?;
-    println!("✅ Docker images built successfully.");
+    println!("Docker images built successfully.");
     Ok(())
 }
 
@@ -325,7 +321,7 @@ fn run_correctness_task(
         }
     }
 
-    println!("✅ Scenario '{scenario}' PASSED!");
+    println!("Scenario '{scenario}' PASSED!");
     Ok(())
 }
 
@@ -413,14 +409,14 @@ fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
         let total_lines = content.lines().count();
         if total_lines != unique_messages.len() {
             println!(
-                "⚠️  Warning: {} duplicate messages detected",
+                "Warning: {} duplicate messages detected",
                 total_lines - unique_messages.len()
             );
         }
 
         unique_messages.len()
     } else {
-        eprintln!("⚠️  Warning: Results file not found at {results_file:?}");
+        eprintln!("Warning: Results file not found at {results_file:?}");
         0
     };
 
@@ -494,15 +490,15 @@ fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
 
     // Determine test status
     if messages_received == 0 {
-        println!("\n❌ Benchmark FAILED: No messages received");
+        println!("\nBenchmark FAILED: No messages received");
         return Err(XTaskError::Unexpected("No messages received".to_string()));
     } else if success_rate < 100.0 {
         println!(
-            "\n⚠️  Benchmark completed with message loss: {:.2}%",
+            "\nBenchmark completed with message loss: {:.2}%",
             100.0 - success_rate
         );
     } else {
-        println!("\n✅ Benchmark completed successfully!");
+        println!("\n Benchmark completed successfully!");
     }
     Ok(())
 }

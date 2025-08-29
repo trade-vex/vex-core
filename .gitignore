@@ -5,3 +5,5 @@
 # Build
 **/target
 **/build
+**/bin
+**/test-results

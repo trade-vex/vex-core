@@ -14,7 +14,6 @@ use vex_config::CoreNetworkingConfig;
 use vex_networking::server::VexCoreServer;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Read configuration from environment variables
     tracing_subscriber::fmt::init();
     let server_host = env::var("VEX_SERVER_HOST").unwrap_or("127.0.0.1".to_string());
     let listen_port: u16 = env::var("VEX_SERVER_PORT")?.parse()?;
@@ -61,9 +60,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut server = VexCoreServer::new(server_config, producer)?;
 
-    // Start the server's event loop
     println!("Server listening for messages...");
-    server.start()?; // This will run indefinitely
+    server.start()?;
 
     Ok(())
 }

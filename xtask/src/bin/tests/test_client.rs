@@ -34,8 +34,6 @@ enum Mode {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Cli::parse();
-    // Read configuration from environment variables provided by docker-compose
-    // start logging
     tracing_subscriber::fmt::init();
     let server_host = env::var("VEX_SERVER_HOST").unwrap_or("127.0.0.1".to_string());
     let server_port: u16 = env::var("VEX_SERVER_PORT")?.parse()?;
@@ -132,12 +130,10 @@ fn run_latency_test(
         };
 
         let start_time = Instant::now();
-        // The timestamp field is used to carry the start time as nanoseconds
         command.timestamp = start_time.elapsed().as_nanos() as i64; // This is a placeholder for a real timestamping mechanism
 
         client.send_order_command(&command)?;
 
-        // --- Conceptual: Wait for the acknowledgment ---
         let ack = rx.recv_timeout(Duration::from_secs(5))?;
         if ack.order_id == order_id as i64 {
             println!(
