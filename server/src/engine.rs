@@ -1,4 +1,5 @@
 use crate::events::EventsHandler;
+use crate::{create_risk_handler, create_matching_handler};
 use common::cmd::OrderCommand;
 use common::model::symbol_specification::CoreSymbolSpecification;
 use disruptor::{
@@ -14,9 +15,6 @@ use parking_lot::Mutex;
 use std::thread;
 use tracing::{info, warn};
 use vex_networking::server::VexCoreServer;
-
-// Import macros from utils crate
-use utils::{create_matching_handler, create_risk_handler};
 
 pub type Producer = MultiProducer<OrderCommand, MultiConsumerBarrier>;
 
