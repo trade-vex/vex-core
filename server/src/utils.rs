@@ -30,7 +30,7 @@ macro_rules! create_risk_r2_handler {
             // Route to risk engine shard for active order user
             let active_order_user_id = event.active_order_user_id;
             let active_order_shard = (active_order_user_id & shard_mask) as usize;
-            
+
             // Only process if this event belongs to our shard
             if active_order_shard == $shard_id {
                 if let Some(risk_engine_mutex) = risk_engines_clone.get($shard_id) {
@@ -43,7 +43,7 @@ macro_rules! create_risk_r2_handler {
             let maker_user_id = event.maker_user_id;
             if maker_user_id != active_order_user_id {
                 let maker_shard = (maker_user_id & shard_mask) as usize;
-                
+
                 // Only process if this event belongs to our shard
                 if maker_shard == $shard_id {
                     if let Some(risk_engine_mutex) = risk_engines_clone.get($shard_id) {
@@ -90,12 +90,12 @@ macro_rules! create_matching_handler {
                 loop {
                     let mut event = *event_box;
                     let next_event = event.next_event.take();
-                    
+
                     // Publish raw event directly
                     let _ = matcher_event_producer.publish(|published_event| {
                         *published_event = event;
                     });
-                    
+
                     // Move to next event or break
                     match next_event {
                         Some(next) => event_box = next,
