@@ -1,6 +1,6 @@
 use crate::events::EventsHandler;
-use crate::{create_risk_handler, create_matching_handler};
-use common::cmd::OrderCommand;
+use crate::{create_matching_handler, create_risk_handler};
+use common::cmd::{OrderCommand, ProcessedOrderEvent};
 use common::model::symbol_specification::CoreSymbolSpecification;
 use disruptor::{
     BusySpin, MultiConsumerBarrier, MultiProducer, ProcessorSettings, build_multi_producer,
@@ -11,13 +11,13 @@ use processors::{
     journaling::JournalingProcessor, matching_engine::MatchingEngineRouter, risk_engine::RiskEngine, events::EventsHandler
 };
 use std::sync::Arc;
-use parking_lot::Mutex;
 use std::thread;
 use tracing::{info, warn};
 use vex_config::CoreNetworkingConfig;
 use vex_networking::server::VexCoreServer;
 
-pub type Producer = MultiProducer<OrderCommand, MultiConsumerBarrier>;
+pub type OrderProducer = MultiProducer<OrderCommand, MultiConsumerBarrier>;
+pub type ProcessedOrderProducer = MultiProducer<ProcessedOrderEvent, MultiConsumerBarrier>;
 
 /// This follows the exact same architecture as the  ExchangeCore:
 /// 1. Multiple parallel Risk Engines (R1) for risk hold/pre-processing
@@ -25,15 +25,7 @@ pub type Producer = MultiProducer<OrderCommand, MultiConsumerBarrier>;
 /// 3. Risk Engine release (R2) for settlement (embedded in matching engine events)
 ///
 /// Each processor runs on its own dedicated thread/core.
-pub struct CoreEngine {
-    /// Sharded risk engines for parallel risk processing
-    /// Each shard handles users based on user_id % num_shards
-    risk_engines: Arc<Vec<Mutex<RiskEngine>>>,
-
-    /// Sharded matching engine routers for parallel order processing
-    /// Each shard handles symbols based on symbol_id % num_shards
-    matching_engine_routers: Vec<Arc<Mutex<MatchingEngineRouter>>>,
-}
+pub struct CoreEngine {}
 
 impl CoreEngine {
     /// Creates a new CoreEngine
@@ -59,8 +51,7 @@ impl CoreEngine {
         journaling_processor: JournalingProcessor,
         events_handler: Arc<dyn EventsHandler>,
     ) -> (Self, OrderProducer) {
-        let order_factory = || OrderCommand::default();
-        let matcher_event_factory = || ProcessedOrderCommand::new(Status::Rejected, 0, 0, Side::Ask);
+        let factory = || OrderCommand::default();
         let buffer_size = 1024; // Power of 2 for disruptor efficiency
 
         // Using Arc to share stateful processors with the main thread and the consumer threads.
@@ -120,11 +111,24 @@ impl CoreEngine {
             matching_engine_routers.push(Arc::new(Mutex::new(router)));
         }
 
-        // Create journaling handler for audit trail and recovery
-        let journaling_handler = {
-            let journaling_clone = journaling_arc.clone();
-            move |cmd: &OrderCommand, _sequence: u64, _end_of_batch: bool| {
-                journaling_clone.journal_command(cmd);
+        // Add all symbols to the appropriate matching engine shards
+        for (&symbol_id, spec) in &symbol_specs {
+            let shard_mask = (num_matching_engines - 1) as u64;
+            let owner_shard_id = (symbol_id as u64) & shard_mask;
+            let router_index = owner_shard_id as usize;
+
+            if let Some(router) = matching_engine_routers.get(router_index) {
+                let mut matching_engine = router.lock();
+                matching_engine.add_symbol(
+                    symbol_id,
+                    spec.clone(),
+                    orderbook::OrderBookImplType::Naive,
+                );
+
+                info!(
+                    "Added symbol_id {} to MatchingEngine shard {} during initialization",
+                    symbol_id, router_index
+                );
             }
         }
 
@@ -158,7 +162,7 @@ impl CoreEngine {
 
         // Build the disruptor pipeline
         // This creates the same dependency graph and parallelism as exchangeCore
-        let producer = build_multi_producer(buffer_size, order_factory, BusySpin)
+        let producer = build_multi_producer(buffer_size, factory, BusySpin)
             // Stage 1: Journaling
             .pin_at_core(1)
             .handle_events_with(move |cmd: &OrderCommand, _, _| {
@@ -174,7 +178,7 @@ impl CoreEngine {
             .pin_at_core(5)
             .handle_events_with(create_risk_handler!(3, risk_engines_arc))
             .and_then() // Creates dependency: matching engines wait for risk engines
-            // Stage 3: Matching Engine - 4 parallel handlers (equivalent to Java's disruptor.after(procR1))
+            // Stage 3: Matching Engine - 4 parallel handlers
             // Each handler processes ALL events but filters internally based on symbol_id ID
             .pin_at_core(6)
             .handle_events_with(create_matching_handler!(0, matching_engine_routers, matcher_event_producer))
@@ -187,6 +191,13 @@ impl CoreEngine {
             .build();
 
         let engine = Self {};
+
+        info!("  CoreEngine initialized ");
+        info!("  - 4 parallel Risk Engines (R1) on cores 2-5");
+        info!("  - 4 parallel Matching Engines on cores 6-9");
+        info!("  - Journaling on core 1");
+        info!("  - Risk Engine R2 embedded in matching engine event processing");
+
         (engine, producer)
     }
 
@@ -204,35 +215,5 @@ impl CoreEngine {
                 Err(e) => println!("Server run() error: {e}"),
             }
         });
-    
-    }
-
-    /// Adds a symbol_id to the appropriate matching engine shard
-    ///
-    /// Uses the same sharding logic as runtime processing: symbol_id & shard_mask
-    /// This ensures symbols are distributed evenly across matching engine shards
-    /// for optimal load balancing and memory usage.
-    pub fn add_symbol(&self, symbol_id: u32, spec: CoreSymbolSpecification, book_type: orderbook::OrderBookImplType) {
-        // Calculate which matching engine shard owns this symbol_id
-        let num_shards = self.matching_engine_routers.len() as u64;
-        let shard_mask = num_shards - 1; // Power of 2 mask for efficient bitwise operations
-        let owner_shard_id = (symbol_id as u64) & shard_mask;
-        let router_index = owner_shard_id as usize;
-
-        // Add symbol_id only to the owning shard for memory efficiency
-        if let Some(router) = self.matching_engine_routers.get(router_index) {
-            let mut matching_engine = router.lock();
-            matching_engine.add_symbol(symbol_id, spec, book_type);
-
-            info!(
-                "Added symbol_id {} to MatchingEngine shard {} (owner_shard_id={})",
-                symbol_id, router_index, owner_shard_id
-            );
-        } else {
-            warn!(
-                "Failed to add symbol_id {}: router index {} out of bounds",
-                symbol_id, router_index
-            );
-        }
     }
 }
