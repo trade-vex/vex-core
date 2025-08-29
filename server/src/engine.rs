@@ -1,5 +1,5 @@
 use crate::events::EventsHandler;
-use crate::{create_matching_handler, create_risk_handler};
+use crate::{create_matching_handler, create_risk_handler, create_risk_r2_handler, create_event_handler};
 use common::cmd::{OrderCommand, MatcherTradeEvent};
 use common::model::symbol_specification::CoreSymbolSpecification;
 use disruptor::{
@@ -52,7 +52,7 @@ impl CoreEngine {
         events_handler: Arc<dyn EventsHandler>,
     ) -> (Self, OrderProducer) {
         let order_factory = || OrderCommand::default();
-        let event_factory = || MatcherTradeEvent::default();
+        let matcher_event_factory = || MatcherTradeEvent::default();
         let buffer_size = 1024; // Power of 2 for disruptor efficiency
 
         let journaling_arc = Arc::new(journaling_processor);
@@ -116,36 +116,37 @@ impl CoreEngine {
         let risk_r1_handler_2 = create_risk_handler!(2, risk_engines_arc);
         let risk_r1_handler_3 = create_risk_handler!(3, risk_engines_arc);
 
+        // Build the second ring buffer first 
+        let matcher_event_producer = build_multi_producer(buffer_size, matcher_event_factory, BusySpin)
+            // Stage 1: Journaling for raw events
+            .pin_at_core(10)
+            .handle_events_with({
+                let journaling_clone = journaling_arc.clone();
+                move |event: &MatcherTradeEvent, _sequence: i64, _end_of_batch: bool| {
+                    journaling_clone.journal_event(event);
+                }
+            })
+            // Stage 2: Risk Engine R2 - 4 parallel handlers
+            .pin_at_core(11)
+            .handle_events_with(create_risk_r2_handler!(0, risk_engines_arc))
+            .pin_at_core(12)
+            .handle_events_with(create_risk_r2_handler!(1, risk_engines_arc))
+            .pin_at_core(13)
+            .handle_events_with(create_risk_r2_handler!(2, risk_engines_arc))
+            .pin_at_core(14)
+            .handle_events_with(create_risk_r2_handler!(3, risk_engines_arc))
+            .and_then() // Creates dependency: event handlers wait for risk engines
+            // Stage 3: Event Handlers
+            .pin_at_core(15)
+            .handle_events_with(create_event_handler!(events_handler_arc))
+            .build();
+
         // Create 4 separate matching engine handlers using macro
         // Each handler runs on its own thread/core
-        let matching_handler_0 = create_matching_handler!(
-            0,
-            matching_engine_routers,
-            events_handler_arc,
-            journaling_arc,
-            risk_engines_arc
-        );
-        let matching_handler_1 = create_matching_handler!(
-            1,
-            matching_engine_routers,
-            events_handler_arc,
-            journaling_arc,
-            risk_engines_arc
-        );
-        let matching_handler_2 = create_matching_handler!(
-            2,
-            matching_engine_routers,
-            events_handler_arc,
-            journaling_arc,
-            risk_engines_arc
-        );
-        let matching_handler_3 = create_matching_handler!(
-            3,
-            matching_engine_routers,
-            events_handler_arc,
-            journaling_arc,
-            risk_engines_arc
-        );
+        let matching_handler_0 = create_matching_handler!(0, matching_engine_routers, matcher_event_producer);
+        let matching_handler_1 = create_matching_handler!(1, matching_engine_routers, matcher_event_producer);
+        let matching_handler_2 = create_matching_handler!(2, matching_engine_routers, matcher_event_producer);
+        let matching_handler_3 = create_matching_handler!(3, matching_engine_routers, matcher_event_producer);
 
         // Build the disruptor pipeline
         // This creates the same dependency graph and parallelism as exchangeCore
