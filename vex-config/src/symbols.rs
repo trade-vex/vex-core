@@ -1,13 +1,13 @@
 //! Symbol specifications configuration
-//! 
+//!
 //! This module provides configuration management for trading symbols and their specifications.
 //! It supports loading symbols from configuration files and provides validation and management.
 
-use serde::{Deserialize, Serialize};
-use hashbrown::HashMap;
-use common::model::symbol_specification::CoreSymbolSpecification;
+use crate::{ConfigError, Environment, Result};
 use common::model::enums::SymbolType;
-use crate::{Environment, ConfigError, Result};
+use common::model::symbol_specification::CoreSymbolSpecification;
+use hashbrown::HashMap;
+use serde::{Deserialize, Serialize};
 
 /// Configuration for trading symbols
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,15 +36,15 @@ impl SymbolSpecificationConfig {
             CoreSymbolSpecification {
                 symbol_id: 9269,
                 symbol_type: SymbolType::CurrencyExchangePair,
-                base_currency: 3928, // ETH (szabo)
-                quote_currency: 3762, // XBT (satoshi)
+                base_currency: 3928,   // ETH (szabo)
+                quote_currency: 3762,  // XBT (satoshi)
                 base_scale_k: 100_000, // 1 lot = 100K szabo (0.1 ETH)
-                quote_scale_k: 10, // 1 step = 10 satoshi
+                quote_scale_k: 10,     // 1 step = 10 satoshi
                 taker_fee: 0,
                 maker_fee: 0,
                 margin_buy: 0,
                 margin_sell: 0,
-            }
+            },
         );
 
         // EUR/USD futures contract
@@ -53,7 +53,7 @@ impl SymbolSpecificationConfig {
             CoreSymbolSpecification {
                 symbol_id: 5991,
                 symbol_type: SymbolType::FuturesContract,
-                base_currency: 978, // EUR
+                base_currency: 978,  // EUR
                 quote_currency: 840, // USD
                 base_scale_k: 1,
                 quote_scale_k: 1,
@@ -61,7 +61,7 @@ impl SymbolSpecificationConfig {
                 maker_fee: 0,
                 margin_buy: 2200,
                 margin_sell: 3210,
-            }
+            },
         );
 
         Self { symbols }
@@ -77,15 +77,15 @@ impl SymbolSpecificationConfig {
             CoreSymbolSpecification {
                 symbol_id: 9340,
                 symbol_type: SymbolType::CurrencyExchangePair,
-                base_currency: 3762, // XBT (satoshi)
-                quote_currency: 1005, // LTC (litoshi)
+                base_currency: 3762,     // XBT (satoshi)
+                quote_currency: 1005,    // LTC (litoshi)
                 base_scale_k: 1_000_000, // 1 lot = 1M satoshi (0.01 BTC)
-                quote_scale_k: 10_000, // 1 step = 10K litoshi
-                taker_fee: 1900, // taker fee 1900 litoshi per 1 lot
-                maker_fee: 700, // maker fee 700 litoshi per 1 lot
+                quote_scale_k: 10_000,   // 1 step = 10K litoshi
+                taker_fee: 1900,         // taker fee 1900 litoshi per 1 lot
+                maker_fee: 700,          // maker fee 700 litoshi per 1 lot
                 margin_buy: 0,
                 margin_sell: 0,
-            }
+            },
         );
 
         // Include development symbols as well for testing
@@ -107,38 +107,42 @@ impl SymbolSpecificationConfig {
         for (symbol_id, spec) in &self.symbols {
             // Validate symbol_id matches the key
             if *symbol_id != spec.symbol_id {
-                return Err(ConfigError::ValidationError(
-                    format!("Symbol ID mismatch: key {} != spec.symbol_id {}", symbol_id, spec.symbol_id)
-                ));
+                return Err(ConfigError::ValidationError(format!(
+                    "Symbol ID mismatch: key {} != spec.symbol_id {}",
+                    symbol_id, spec.symbol_id
+                )));
             }
 
             // Validate scale factors are non-zero
             if spec.base_scale_k == 0 {
-                return Err(ConfigError::ValidationError(
-                    format!("Symbol {}: base_scale_k cannot be zero", symbol_id)
-                ));
+                return Err(ConfigError::ValidationError(format!(
+                    "Symbol {}: base_scale_k cannot be zero",
+                    symbol_id
+                )));
             }
 
             if spec.quote_scale_k == 0 {
-                return Err(ConfigError::ValidationError(
-                    format!("Symbol {}: quote_scale_k cannot be zero", symbol_id)
-                ));
+                return Err(ConfigError::ValidationError(format!(
+                    "Symbol {}: quote_scale_k cannot be zero",
+                    symbol_id
+                )));
             }
 
             // Validate fees
             if spec.taker_fee < spec.maker_fee {
-                return Err(ConfigError::ValidationError(
-                    format!("Symbol {}: taker_fee ({}) should be >= maker_fee ({})", 
-                        symbol_id, spec.taker_fee, spec.maker_fee)
-                ));
+                return Err(ConfigError::ValidationError(format!(
+                    "Symbol {}: taker_fee ({}) should be >= maker_fee ({})",
+                    symbol_id, spec.taker_fee, spec.maker_fee
+                )));
             }
 
             // Validate margin requirements for futures contracts
             if spec.symbol_type == SymbolType::FuturesContract {
                 if spec.margin_buy == 0 || spec.margin_sell == 0 {
-                    return Err(ConfigError::ValidationError(
-                        format!("Symbol {}: futures contract must have non-zero margin requirements", symbol_id)
-                    ));
+                    return Err(ConfigError::ValidationError(format!(
+                        "Symbol {}: futures contract must have non-zero margin requirements",
+                        symbol_id
+                    )));
                 }
             }
         }

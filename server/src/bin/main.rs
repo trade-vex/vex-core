@@ -1,9 +1,9 @@
 use server::init_exchange;
-use vex_config::{VexConfig, Environment};
-use tracing::{info, error, warn};
-use tracing_subscriber::fmt;
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
+use tracing::{error, info, warn};
+use tracing_subscriber::fmt;
+use vex_config::{Environment, VexConfig};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -12,13 +12,16 @@ static GLOBAL: Jemalloc = Jemalloc;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing subscriber for logging
     fmt::init();
-    
+
     // Load configuration with auto-detected environment
     let config = match VexConfig::load_auto() {
         Ok(config) => {
-            info!("Loaded configuration for environment: {}", config.environment);
+            info!(
+                "Loaded configuration for environment: {}",
+                config.environment
+            );
             config
-        },
+        }
         Err(e) => {
             warn!("Failed to load configuration from files: {}", e);
             info!("Using default Development configuration");
@@ -36,18 +39,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Core ID: {}", config.core_networking.core_id);
     info!("Network port: {}", config.core_networking.initial_port);
     info!("Max gateways: {}", config.core_networking.max_gateways);
-    info!("Authentication enabled: {}", config.core_networking.enable_authentication);
+    info!(
+        "Authentication enabled: {}",
+        config.core_networking.enable_authentication
+    );
 
     // Initialize the exchange core with symbol specifications from config
     info!("Initializing exchange core...");
     let symbol_specs = config.symbols.symbols.clone();
     info!("Loading {} symbols from configuration", symbol_specs.len());
-    
+
     let (mut core_engine, producer, _events_handler) = init_exchange(symbol_specs.clone());
-    
+
     info!("Exchange core initialized successfully");
     for symbol_id in symbol_specs.keys() {
-        info!("Added symbol {} with Naive order book implementation", symbol_id);
+        info!(
+            "Added symbol {} with Naive order book implementation",
+            symbol_id
+        );
     }
 
     // Start the core engine with networking

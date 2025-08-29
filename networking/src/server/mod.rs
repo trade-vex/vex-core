@@ -252,14 +252,4 @@ impl VexCoreServer {
 
         Ok((subscription, handshake_handler))
     }
-
-    /// Number of connected gateways
-    pub fn connected_gateway_count(&self) -> usize {
-        self.gateways.active_gateways_count()
-    }
-
-    /// Checks if there are no connected gateways
-    pub fn is_empty(&self) -> bool {
-        self.gateways.is_empty()
-    }
 }

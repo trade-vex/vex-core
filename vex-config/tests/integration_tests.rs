@@ -151,6 +151,8 @@ fn test_environment_variable_overrides() -> Result<(), Box<dyn std::error::Error
         .allow_missing_files()
         .load_for_environment(Environment::Development)?;
 
+    // For now, just verify the config loads and has default values
+    // In a full implementation, env vars would override these defaults
     assert_eq!(config.environment, Environment::Development);
     assert!(config.core_networking.initial_port > 0); // Should have some valid port
 
@@ -195,7 +197,7 @@ fn test_configuration_merging() -> Result<(), Box<dyn std::error::Error>> {
     assert_ne!(base_config.logging.level, original_level);
 
     assert_eq!(base_config.core_networking.initial_port, 12345);
-    assert!(base_config.core_networking.enable_authentication);
+    assert_eq!(base_config.core_networking.enable_authentication, true);
     assert_eq!(
         base_config.logging.level,
         vex_config::logging::LogLevel::Error

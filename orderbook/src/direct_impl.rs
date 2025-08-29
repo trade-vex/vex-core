@@ -381,12 +381,12 @@ impl OrderBookDirectImpl {
         } else {
             self.best_bid_order
         };
-    
+
         let mut last_price: Option<u64> = None;
         let mut orders_in_bucket = 0;
         let mut volume_in_bucket = 0;
         let mut prev_order_key: Option<usize> = None;
-    
+
         while let Some(order_key) = current_order_key {
             let order = &self.orders[order_key];
             assert_eq!(order.side, side, "Order has wrong side");
@@ -394,7 +394,7 @@ impl OrderBookDirectImpl {
                 orders_in_chain.insert(order.order_id),
                 "Duplicate order in chain"
             );
-    
+
             if let Some(price) = last_price {
                 if order.price != price {
                     // Moved to a new price bucket
@@ -408,17 +408,17 @@ impl OrderBookDirectImpl {
                     volume_in_bucket = 0;
                 }
             }
-    
+
             orders_in_bucket += 1;
             volume_in_bucket += order.size - order.filled;
-    
+
             assert_eq!(order.next, prev_order_key, "Next pointer is incorrect");
-    
+
             last_price = Some(order.price);
             prev_order_key = Some(order_key);
             current_order_key = order.prev;
         }
-    
+
         if let Some(price) = last_price {
             let bucket = buckets.get(&price).unwrap();
             assert_eq!(
