@@ -160,3 +160,133 @@ async fn test_end_to_end_exchange_flow() {
     
     info!("End-to-end exchange flow test completed successfully");
 }
+
+#[test]
+fn end_to_end_test_no_aeron() {
+    use common::cmd::{OrderCommand, OrderCommandType};
+    use common::model::enums::{Side, OrderType};
+    use common::model::symbol_specification::TestConstants;
+    use disruptor::Producer;
+    use hashbrown::HashMap;
+    use std::thread;
+    use std::time::Duration;
+    use tracing::info;
+
+    // Initialize logging for the test
+    tracing_subscriber::fmt::init();
+    info!("Starting end-to-end test without Aeron networking");
+
+    // Create symbol specifications
+    let mut symbol_specs = HashMap::new();
+    symbol_specs.insert(0, TestConstants::symbol_spec_eth_xbt());
+
+    // Initialize the exchange core using init_exchange
+    let (_core_engine, mut producer, events_handler) = init_exchange(symbol_specs);
+
+    // Create test orders
+    let test_orders = vec![
+        // Place a limit buy order
+        OrderCommand {
+            command: OrderCommandType::PlaceLimitOrder,
+            order_id: 1,
+            symbol_id: 0,
+            user_id: 100,
+            price: 9630, // 9630 satoshi per szabo
+            reserve_bid_price: 0,
+            size: 100_000, // 1 lot (0.1 ETH)
+            side: Side::Bid,
+            order_type: OrderType::Gtc,
+            timestamp: 1,
+            matcher_event: None,
+        },
+        // Place a limit sell order at the same price (should match)
+        OrderCommand {
+            command: OrderCommandType::PlaceLimitOrder,
+            order_id: 2,
+            symbol_id: 0,
+            user_id: 101,
+            price: 9630, // Same price as buy order
+            reserve_bid_price: 0,
+            size: 50_000, // 0.5 lot (0.05 ETH) - partial fill
+            side: Side::Ask,
+            order_type: OrderType::Gtc,
+            timestamp: 2,
+            matcher_event: None,
+        },
+        // Place another sell order at a higher price (should not match)
+        OrderCommand {
+            command: OrderCommandType::PlaceLimitOrder,
+            order_id: 3,
+            symbol_id: 0,
+            user_id: 102,
+            price: 9640, // Higher price than buy order
+            reserve_bid_price: 0,
+            size: 100_000, // 1 lot
+            side: Side::Ask,
+            order_type: OrderType::Gtc,
+            timestamp: 3,
+            matcher_event: None,
+        },
+        // Cancel the first buy order
+        OrderCommand::cancel(1, 100),
+    ];
+
+    // Publish orders to the exchange
+    info!("Publishing {} orders to the exchange", test_orders.len());
+    for (i, order) in test_orders.iter().enumerate() {
+        info!("Publishing order {}: {:?}", i + 1, order);
+        
+        // Publish the order to the disruptor
+        producer.publish(|event| {
+            *event = order.clone();
+        });
+        
+        info!("Published order {}", i + 1);
+        
+        // Small delay between orders to allow processing
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    // Wait for all orders to be processed
+    info!("Waiting for order processing to complete...");
+    thread::sleep(Duration::from_millis(500));
+
+    // Verify the results
+    let events = events_handler.events.lock().unwrap();
+    info!("Received {} events from the exchange", events.len());
+
+    // Print all events for debugging
+    for (i, event) in events.iter().enumerate() {
+        info!("Event {}: {:?}", i + 1, event);
+    }
+
+    // Verify that we received trade events
+    assert!(!events.is_empty(), "Expected to receive trade events");
+
+    // Check for specific trade events
+    let trade_events: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == common::model::enums::MatcherEventType::Trade)
+        .collect();
+
+    info!("Found {} trade events", trade_events.len());
+
+    // Verify that we have at least one trade (from the matching orders)
+    assert!(
+        trade_events.len() >= 1,
+        "Expected at least one trade event from matching orders"
+    );
+
+    // Verify the trade details
+    if let Some(trade) = trade_events.first() {
+        assert_eq!(trade.symbol_id, 0, "Trade should be for symbol 0");
+        assert_eq!(trade.price, 9630, "Trade price should be 9630");
+        assert_eq!(trade.size, 50_000, "Trade size should be 50,000 (partial fill)");
+        assert_eq!(trade.active_order_user_id, 101, "Active order user should be 101 (seller)");
+        assert_eq!(trade.maker_user_id, 100, "Maker user should be 100 (buyer)");
+        assert!(trade.active_order_completed, "Seller order should be completed (full fill)");
+        assert!(!trade.matched_order_completed, "Buyer order should not be completed (partial fill)");
+    }
+
+    info!("End-to-end test completed successfully!");
+}
