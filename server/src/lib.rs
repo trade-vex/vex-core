@@ -1,5 +1,6 @@
 pub mod engine;
 pub mod events;
+pub mod utils;
 
 use std::sync::Arc;
 

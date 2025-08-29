@@ -1,4 +1,5 @@
 use crate::events::EventsHandler;
+use crate::{create_risk_handler, create_matching_handler};
 use common::cmd::OrderCommand;
 use disruptor::BusySpin;
 use disruptor::ProcessorSettings;
@@ -9,8 +10,16 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use std::thread;
 use tracing::{info, warn};
-/// The central processing unit of the exchange, running a sequential pipeline.
-/// This is the equivalent of `CoreEngine.java` orchestrating the processors.
+use vex_networking::server::VexCoreServer;
+
+pub type Producer = MultiProducer<OrderCommand, MultiConsumerBarrier>;
+
+/// This follows the exact same architecture as the  ExchangeCore:
+/// 1. Multiple parallel Risk Engines (R1) for risk hold/pre-processing
+/// 2. Multiple parallel Matching Engines for order processing  
+/// 3. Risk Engine release (R2) for settlement (embedded in matching engine events)
+///
+/// Each processor runs on its own dedicated thread/core.
 pub struct CoreEngine {
     /// Sharded risk engines for parallel risk processing
     /// Each shard handles users based on user_id % num_shards

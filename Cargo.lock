@@ -2061,7 +2061,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "utils",
  "vex-config",
  "vex-networking",
 ]
