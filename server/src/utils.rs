@@ -8,9 +8,8 @@ macro_rules! create_risk_handler {
         let risk_engines_clone = $risk_engines.clone();
         move |cmd: &OrderCommand, _sequence: i64, _end_of_batch: bool| {
             let mut engine = risk_engines_clone[$shard_id].lock();
-            let mut cmd_clone = cmd.clone();
 
-            if let Err(e) = engine.pre_process_command(&mut cmd_clone) {
+            if let Err(e) = engine.pre_process_command(cmd) {
                 warn!("[RiskEngine_{}] Risk check failed: {:?}", $shard_id, e);
                 return;
             }
