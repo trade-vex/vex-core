@@ -1,4 +1,4 @@
-use common::model::enums::{Side, OrderType};
+use common::model::enums::{OrderType, Side};
 use common::model::symbol_specification::TestConstants;
 use orderbook::naive_impl::OrderBookNaiveImpl;
 use orderbook::{OrderBook, OrderCommand};
@@ -29,11 +29,9 @@ fn test_cancel_order() {
 #[test]
 fn test_simple_matching() {
     let mut order_book = create_order_book();
-    let mut ask_cmd =
-        OrderCommand::new_order(OrderType::Gtc, 1, 100, 50000, 0, 10, Side::Ask);
+    let mut ask_cmd = OrderCommand::new_order(OrderType::Gtc, 1, 100, 50000, 0, 10, Side::Ask);
     order_book.new_order(&mut ask_cmd).unwrap();
-    let mut bid_cmd =
-        OrderCommand::new_order(OrderType::Gtc, 2, 101, 50000, 0, 5, Side::Bid);
+    let mut bid_cmd = OrderCommand::new_order(OrderType::Gtc, 2, 101, 50000, 0, 5, Side::Bid);
     order_book.new_order(&mut bid_cmd).unwrap();
     assert_eq!(order_book.get_orders_num(Side::Ask), 1);
     assert_eq!(order_book.get_orders_num(Side::Bid), 0);

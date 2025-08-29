@@ -1,6 +1,7 @@
 use crate::server::duologue::Duologue;
 use crate::utils::{PortAllocator, SessionAllocator, send_message, send_message_with_retries};
 use common::cmd::OrderCommand;
+use crossbeam::queue::SegQueue;
 use dashmap::DashMap;
 use disruptor::{MultiConsumerBarrier, MultiProducer};
 use rusteron_client::{Aeron, AeronPublication};
@@ -38,9 +39,16 @@ impl GatewayManager {
     /// Creates a new gateway manager
     pub fn new(
         config: CoreNetworkingConfig,
-        aeron: Arc<Aeron>,
+        aeron: Rc<Aeron>,
         producer: MultiProducer<OrderCommand, MultiConsumerBarrier>,
     ) -> Result<Self, ServerError> {
+        let buffer_pool = SegQueue::new();
+
+        // Pre-populate buffer pool
+        for _ in 0..16 {
+            buffer_pool.push(vec![0u8; 2048]);
+        }
+
         Ok(Self {
             gateway_session_addresses: DashMap::new(),
             gateway_sessions: DashMap::new(),

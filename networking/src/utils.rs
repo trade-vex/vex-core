@@ -1,3 +1,14 @@
+use dashmap::DashSet;
+use rand::Rng;
+use rand::{seq::SliceRandom, thread_rng};
+use rusteron_client::{
+    Aeron, AeronAvailableImageCallback, AeronAvailableImageLogger, AeronCError, AeronPublication,
+    AeronReservedValueSupplierLogger, AeronSubscription, AeronUnavailableImageCallback,
+    AeronUnavailableImageLogger, Handler,
+};
+use std::{ffi::CString, time::Duration};
+use tracing::info;
+
 use crate::server::ServerError;
 use dashmap::DashSet;
 use rand::Rng;
@@ -10,8 +21,6 @@ use rusteron_client::{
 use std::thread;
 use std::{ffi::CString, time::Duration};
 use tracing::error;
-
-const MESSAGE_RETRY_COUNT: usize = 5;
 
 pub fn new_publication(
     aeron: &Aeron,
@@ -36,7 +45,7 @@ pub fn new_publication_with_mdc_and_session(
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic|session-id={session_id}"
     ))
-    .expect("Creation of CString failed");
+    .unwrap();
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -46,11 +55,19 @@ pub fn new_publication_with_mdc(
     port: u16,
     stream_id: i32,
 ) -> Result<AeronPublication, AeronCError> {
+    info!(
+        "server: new_publication_with_mdc: address: {}, port: {}, stream_id: {}",
+        address, port, stream_id
+    );
     let control_endpoint = format!("{address}:{port}");
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic"
     ))
-    .expect("Creation of CString failed");
+    .unwrap();
+    info!(
+        "server: new_publication_with_mdc: uri: {}",
+        uri.to_string_lossy()
+    );
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -65,7 +82,7 @@ pub fn new_publication_with_session(
     let uri = CString::new(format!(
         "aeron:udp?endpoint={endpoint}|session-id={session_id}"
     ))
-    .expect("Creation of CString failed");
+    .unwrap();
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -76,10 +93,18 @@ pub fn new_subscription_with_mdc(
     stream_id: i32,
 ) -> Result<AeronSubscription, AeronCError> {
     let control_endpoint = format!("{address}:{port}");
+    info!(
+        "client: new_subsciption_with_mdc: control_endpoint: {}",
+        control_endpoint
+    );
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic"
     ))
-    .expect("Creation of CString failed");
+    .unwrap();
+    info!(
+        "client: new_subsciption_with_mdc: uri: {}",
+        uri.to_string_lossy()
+    );
     let available_logger = AeronAvailableImageLogger {};
     let available_handler = Handler::leak(available_logger);
     let unavailable_logger = AeronUnavailableImageLogger {};
@@ -104,7 +129,7 @@ pub fn new_subscription_with_mdc_and_session(
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic|session-id={session_id}"
     ))
-    .expect("Creation of CString failed");
+    .unwrap();
     let available_logger = AeronAvailableImageLogger {};
     let available_handler = Handler::leak(available_logger);
     let unavailable_logger = AeronUnavailableImageLogger {};
@@ -127,19 +152,19 @@ pub fn new_subsciption_with_handlers_and_session<
     port: u16,
     stream_id: i32,
     session_id: i32,
-    on_image_available: Option<&Handler<X>>,
-    on_image_unavailable: Option<&Handler<Y>>,
+    on_image_available: X,
+    on_image_unavailable: Y,
 ) -> Result<AeronSubscription, AeronCError> {
     let endpoint = format!("{address}:{port}");
     let uri = CString::new(format!(
         "aeron:udp?endpoint={endpoint}|session-id={session_id}"
     ))
-    .expect("Creation of CString failed");
+    .unwrap();
     aeron.add_subscription(
         &uri,
         stream_id,
-        on_image_available,
-        on_image_unavailable,
+        Some(&Handler::leak(on_image_available)),
+        Some(&Handler::leak(on_image_unavailable)),
         Duration::from_secs(1),
     )
 }
@@ -152,17 +177,16 @@ pub fn new_subscription_with_handlers<
     address: &str,
     port: u16,
     stream_id: i32,
-    on_image_available: Option<&Handler<X>>,
-    on_image_unavailable: Option<&Handler<Y>>,
+    on_image_available: X,
+    on_image_unavailable: Y,
 ) -> Result<AeronSubscription, AeronCError> {
     let endpoint = format!("{address}:{port}");
-    let uri =
-        CString::new(format!("aeron:udp?endpoint={endpoint}")).expect("Creation of CString failed");
+    let uri = CString::new(format!("aeron:udp?endpoint={endpoint}")).unwrap();
     aeron.add_subscription(
         &uri,
         stream_id,
-        on_image_available,
-        on_image_unavailable,
+        Some(&Handler::leak(on_image_available)),
+        Some(&Handler::leak(on_image_unavailable)),
         Duration::from_secs(1),
     )
 }
@@ -225,18 +249,10 @@ impl PortAllocator {
             ));
         }
 
-        if max_ports == 0 {
-            return Err(ServerError::ResourceAllocationError(
-                "Max ports must be greater than 0".to_string(),
-            ));
-        }
-        let hi_u32 = port_base as u32 + (max_ports as u32) - 1;
-        if hi_u32 > u16::MAX as u32 {
-            return Err(ServerError::ResourceAllocationError(
-                "Port range exceeds u16::MAX".to_string(),
-            ));
-        }
-        let port_hi = hi_u32 as u16;
+        let port_hi = port_base.checked_add(max_ports as u16 - 1).ok_or_else(|| {
+            ServerError::ResourceAllocationError("Port range exceeds u16::MAX".to_string())
+        })?;
+
         let port_range = port_base..=port_hi;
 
         Ok(Self {
@@ -337,7 +353,7 @@ impl SessionAllocator {
     /// # Errors
     /// Returns `ResourceAllocationError` if max < min
     pub fn new(min: i32, max: i32) -> Result<Self, ServerError> {
-        if max <= min {
+        if max < min {
             return Err(ServerError::ResourceAllocationError(format!(
                 "Maximum value {max} must be >= minimum value {min}"
             )));

@@ -37,6 +37,7 @@ use crate::server::gateway_handler::{
 use crate::server::gateway_manager::GatewayManager;
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
 use common::cmd::OrderCommand;
+use crossbeam::utils::CachePadded;
 use disruptor::{MultiConsumerBarrier, MultiProducer};
 use rusteron_client::{Aeron, AeronCError, AeronContext, Handler};
 use rusteron_media_driver::AeronIdleStrategy;
@@ -274,15 +275,5 @@ impl VexCoreServer {
             HandshakeMessageHandler::new(Arc::clone(&self.gateways), publication);
 
         Ok((subscription, handshake_handler))
-    }
-
-    /// Number of connected gateways
-    pub fn connected_gateway_count(&self) -> usize {
-        self.gateways.active_gateways_count()
-    }
-
-    /// Checks if there are no connected gateways
-    pub fn is_empty(&self) -> bool {
-        self.gateways.is_empty()
     }
 }

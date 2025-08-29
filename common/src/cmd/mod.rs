@@ -265,3 +265,10 @@ pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
         matcher_event: None,
     })
 }
+
+#[derive(Default, Clone)]
+pub struct ProcessedOrderEvent {
+    pub original_order_id: u64,
+    pub symbol_id: u32,
+    pub matcher_events: Vec<MatcherTradeEvent>,
+}

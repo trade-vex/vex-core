@@ -59,9 +59,9 @@ version = "1.0.0"
     fs::write(&base_config_path, base_config)?;
     fs::write(&override_config_path, override_config)?;
 
-    println!("Created base config: {}", base_config_path.display());
+    println!("   ✓ Created base config: {}", base_config_path.display());
     println!(
-        "Created override config: {}",
+        "   ✓ Created override config: {}",
         override_config_path.display()
     );
 
@@ -75,15 +75,15 @@ version = "1.0.0"
         .allow_missing_files()
         .load_for_environment(Environment::Development)?;
 
-    println!("Loaded base configuration");
-    println!("Core port: {}", config.core_networking.initial_port);
-    println!("Core ID: {}", config.core_networking.core_id);
+    println!("   ✓ Loaded base configuration");
+    println!("   ✓ Core port: {}", config.core_networking.initial_port);
+    println!("   ✓ Core ID: {}", config.core_networking.core_id);
     println!(
-        "Authentication: {}",
+        "   ✓ Authentication: {}",
         config.core_networking.enable_authentication
     );
-    println!("Gateway ID: {}", config.gateway_networking.gateway_id);
-    println!("Logging level: {}", config.logging.level);
+    println!("   ✓ Gateway ID: {}", config.gateway_networking.gateway_id);
+    println!("   ✓ Logging level: {}", config.logging.level);
 
     println!();
 
@@ -93,25 +93,37 @@ version = "1.0.0"
     let mut base_config = VexConfig::load_from_file(&base_config_path)?;
     let override_config = VexConfig::load_from_file(&override_config_path)?;
 
-    println!("Before merge:");
-    println!("Port: {}", base_config.core_networking.initial_port);
+    println!("   Before merge:");
+    println!("     - Port: {}", base_config.core_networking.initial_port);
     println!(
-        "Authentication: {}",
+        "     - Authentication: {}",
         base_config.core_networking.enable_authentication
     );
-    println!("Max gateways: {}", base_config.core_networking.max_gateways);
-    println!("Async logging: {}", base_config.logging.async_logging);
+    println!(
+        "     - Max gateways: {}",
+        base_config.core_networking.max_gateways
+    );
+    println!(
+        "     - Async logging: {}",
+        base_config.logging.async_logging
+    );
 
     base_config.merge_with(&override_config)?;
 
-    println!("After merge:");
-    println!("Port: {}", base_config.core_networking.initial_port);
+    println!("   After merge:");
+    println!("     - Port: {}", base_config.core_networking.initial_port);
     println!(
-        "Authentication: {}",
+        "     - Authentication: {}",
         base_config.core_networking.enable_authentication
     );
-    println!("Max gateways: {}", base_config.core_networking.max_gateways);
-    println!("Async logging: {}", base_config.logging.async_logging);
+    println!(
+        "     - Max gateways: {}",
+        base_config.core_networking.max_gateways
+    );
+    println!(
+        "     - Async logging: {}",
+        base_config.logging.async_logging
+    );
 
     println!();
 
@@ -135,17 +147,17 @@ version = "1.0.0"
         .allow_missing_files()
         .load_for_environment(Environment::Development)?;
 
-    println!("Environment variables applied:");
+    println!("   ✓ Environment variables applied:");
     println!(
-        "Port (from env): {}",
+        "     - Port (from env): {}",
         config_with_env.core_networking.initial_port
     );
     println!(
-        "Logging level (from env): {}",
+        "     - Logging level (from env): {}",
         config_with_env.logging.level
     );
     println!(
-        "Max message size (from env): {}",
+        "     - Max message size (from env): {}",
         config_with_env.gateway_networking.max_message_size
     );
 
@@ -184,21 +196,24 @@ version = "1.0.0"
         .logging
         .add_custom_field("component".to_string(), "custom".to_string());
 
-    println!("Custom configuration created:");
-    println!("Core ID: {}", custom_config.core_networking.core_id);
+    println!("   ✓ Custom configuration created:");
+    println!("     - Core ID: {}", custom_config.core_networking.core_id);
     println!(
-        "Max gateways: {}",
+        "     - Max gateways: {}",
         custom_config.core_networking.max_gateways
     );
     println!(
-        "Networking log level: {:?}",
+        "     - Networking log level: {:?}",
         custom_config.logging.get_module_level("networking")
     );
     println!(
-        "Orderbook log level: {:?}",
+        "     - Orderbook log level: {:?}",
         custom_config.logging.get_module_level("orderbook")
     );
-    println!("Custom fields: {:?}", custom_config.logging.custom_fields);
+    println!(
+        "     - Custom fields: {:?}",
+        custom_config.logging.custom_fields
+    );
 
     // Validate the custom configuration
     match custom_config.validate() {
@@ -219,9 +234,9 @@ version = "1.0.0"
     custom_config.save_to_file(&json_path)?;
     custom_config.save_to_file(&yaml_path)?;
 
-    println!("Saved TOML: {}", toml_path.display());
-    println!("Saved JSON: {}", json_path.display());
-    println!("Saved YAML: {}", yaml_path.display());
+    println!("   ✓ Saved TOML: {}", toml_path.display());
+    println!("   ✓ Saved JSON: {}", json_path.display());
+    println!("   ✓ Saved YAML: {}", yaml_path.display());
 
     // Show file sizes
     println!("   File sizes:");
