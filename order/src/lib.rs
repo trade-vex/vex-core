@@ -1,15 +1,16 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::all)]
 #![allow(non_camel_case_types)]
+
 #![allow(ambiguous_glob_reexports)]
 
-use ::core::convert::TryInto;
+use ::core::{convert::TryInto};
 
 pub mod message_header_codec;
 pub mod order_command_message_codec;
 pub mod order_command_type;
-pub mod order_type;
 pub mod side;
+pub mod time_in_force;
 
 pub const SBE_SCHEMA_ID: u16 = 1;
 pub const SBE_SCHEMA_VERSION: u16 = 1;
@@ -76,9 +77,7 @@ impl<'a> ReadBuf<'a> {
 
     #[inline]
     pub(crate) fn get_bytes_at<const N: usize>(slice: &[u8], index: usize) -> [u8; N] {
-        slice[index..index + N]
-            .try_into()
-            .expect("slice with incorrect length")
+        slice[index..index+N].try_into().expect("slice with incorrect length")
     }
 
     #[inline]
@@ -133,8 +132,9 @@ impl<'a> ReadBuf<'a> {
 
     #[inline]
     pub fn get_slice_at(&self, index: usize, len: usize) -> &[u8] {
-        &self.data[index..index + len]
+        &self.data[index..index+len]
     }
+
 }
 
 #[derive(Debug, Default)]
@@ -216,3 +216,4 @@ impl<'a> From<&'a mut WriteBuf<'a>> for &'a mut [u8] {
         buf.data
     }
 }
+

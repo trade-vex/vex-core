@@ -1,67 +1,46 @@
-use borsh::{BorshDeserialize, BorshSerialize};
-use serde::{Deserialize, Serialize};
-
-pub const L2_SIZE: usize = 32;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
-pub struct L2MarketData {
-    pub ask_prices: Vec<i64>,
-    pub ask_volumes: Vec<i64>,
-    pub ask_orders: Vec<i64>,
-    pub bid_prices: Vec<i64>,
-    pub bid_volumes: Vec<i64>,
-    pub bid_orders: Vec<i64>,
-    pub timestamp: i64,
-    pub reference_seq: i64,
+/// Represents Level 2 market data with a fixed number of price levels.
+///
+/// `LEVEL` is a const generic parameter that defines the depth of the order book
+/// for both asks and bids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct L2MarketData<const LEVEL: usize> {
+    pub ask_prices: [u64; LEVEL],
+    pub ask_volumes: [u64; LEVEL],
+    pub ask_orders: [u64; LEVEL],
+    pub bid_prices: [u64; LEVEL],
+    pub bid_volumes: [u64; LEVEL],
+    pub bid_orders: [u64; LEVEL],
+    pub timestamp: u64,
+    pub reference_seq: u64,
 }
 
-impl L2MarketData {
-    pub fn new(
-        ask_prices: Vec<i64>,
-        ask_volumes: Vec<i64>,
-        ask_orders: Vec<i64>,
-        bid_prices: Vec<i64>,
-        bid_volumes: Vec<i64>,
-        bid_orders: Vec<i64>,
-    ) -> Self {
+impl<const LEVEL: usize> L2MarketData<LEVEL> {
+    /// Creates a new, empty `L2MarketData` instance with all values initialized to zero.
+    pub fn new() -> Self {
         Self {
-            ask_prices,
-            ask_volumes,
-            ask_orders,
-            bid_prices,
-            bid_volumes,
-            bid_orders,
+            ask_prices: [0; LEVEL],
+            ask_volumes: [0; LEVEL],
+            ask_orders: [0; LEVEL],
+            bid_prices: [0; LEVEL],
+            bid_volumes: [0; LEVEL],
+            bid_orders: [0; LEVEL],
             timestamp: 0,
             reference_seq: 0,
         }
     }
 
-    pub fn with_size(ask_size: usize, bid_size: usize) -> Self {
-        Self {
-            ask_prices: vec![0; ask_size],
-            ask_volumes: vec![0; ask_size],
-            ask_orders: vec![0; ask_size],
-            bid_prices: vec![0; bid_size],
-            bid_volumes: vec![0; bid_size],
-            bid_orders: vec![0; bid_size],
-            timestamp: 0,
-            reference_seq: 0,
-        }
+    /// Returns the depth of the order book.
+    pub fn depth(&self) -> usize {
+        LEVEL
     }
 
-    pub fn ask_size(&self) -> usize {
-        self.ask_prices.len()
-    }
-
-    pub fn bid_size(&self) -> usize {
-        self.bid_prices.len()
-    }
-
-    pub fn total_order_book_volume_ask(&self) -> i64 {
+    /// Calculates the total volume on the ask side of the order book.
+    pub fn total_ask_volume(&self) -> u64 {
         self.ask_volumes.iter().sum()
     }
 
-    pub fn total_order_book_volume_bid(&self) -> i64 {
+    /// Calculates the total volume on the bid side of the order book.
+    pub fn total_bid_volume(&self) -> u64 {
         self.bid_volumes.iter().sum()
     }
 }

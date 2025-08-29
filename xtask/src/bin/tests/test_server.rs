@@ -1,7 +1,4 @@
-use common::{
-    cmd::OrderCommand,
-    model::enums::{OrderAction, OrderType},
-};
+use common::cmd::OrderCommand;
 use disruptor::{BusySpin, ProcessorSettings, build_multi_producer};
 use std::io::Write;
 use std::{
@@ -14,10 +11,11 @@ use vex_config::CoreNetworkingConfig;
 use vex_networking::server::VexCoreServer;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Read configuration from environment variables
     tracing_subscriber::fmt::init();
     let server_host = env::var("VEX_SERVER_HOST").unwrap_or("127.0.0.1".to_string());
     let listen_port: u16 = env::var("VEX_SERVER_PORT")?.parse()?;
-    println!("Server starting on port {listen_port}");
+    println!("Server starting on port {}", listen_port);
 
     let mut server_config = CoreNetworkingConfig::test_defaults();
     server_config.local_address = server_host;
@@ -37,31 +35,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     // A dummy consumer that just logs the received command
-    let producer = build_multi_producer(
-        1024,
-        || OrderCommand::new_order(OrderType::Gtc, 1, 2, 3, 4, 5, OrderAction::Ask),
-        BusySpin,
-    )
-    .pin_at_core(1)
-    .handle_events_with({
-        move |cmd: &OrderCommand, _, _| {
-            info!("Server received OrderCommand Core 1: {:?}", cmd);
-        }
-    })
-    .pin_at_core(2)
-    .handle_events_with({
-        move |cmd: &OrderCommand, _, _| {
-            let mut f = file.lock().unwrap();
-            writeln!(f, "{}", cmd.order_id).expect("Failed to write to results file");
-            info!("Server processing OrderCommand Core 2: {:?}", cmd);
-        }
-    })
-    .build();
+    let producer = build_multi_producer(1024, || OrderCommand::default(), BusySpin)
+        .pin_at_core(1)
+        .handle_events_with({
+            move |cmd: &OrderCommand, _, _| {
+                info!("Server received OrderCommand Core 1: {:?}", cmd);
+            }
+        })
+        .pin_at_core(2)
+        .handle_events_with({
+            move |cmd: &OrderCommand, _, _| {
+                let mut f = file.lock().unwrap();
+                writeln!(f, "{}", cmd.order_id).expect("Failed to write to results file");
+                info!("Server processing OrderCommand Core 2: {:?}", cmd);
+            }
+        })
+        .build();
 
     let mut server = VexCoreServer::new(server_config, producer)?;
 
+    // Start the server's event loop
     println!("Server listening for messages...");
-    server.start()?;
+    server.start()?; // This will run indefinitely
 
     Ok(())
 }
