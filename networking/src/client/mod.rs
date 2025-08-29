@@ -1,26 +1,22 @@
+use rand;
+use rusteron_client::{
+    Aeron, AeronCError, AeronContext, AeronFragmentAssembler, AeronFragmentHandlerCallback,
+    AeronHeader, AeronPublication, AeronReservedValueSupplierLogger, AeronSubscription, Handler,
+};
+use rusteron_media_driver::AeronIdleStrategy;
+use std::ffi::CString;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
+use thiserror::Error;
+use tracing::{debug, error, info, warn};
+// use serde::{Deserialize, Serialize};
+
 use crate::utils::{
     new_publication, new_publication_with_session, new_subscription_with_mdc,
     new_subscription_with_mdc_and_session,
 };
 use common::cmd::{OrderCommand, encode_order_command};
-use rand;
-use rusteron_client::{
-    Aeron, AeronCError, AeronContext, AeronFragmentHandlerCallback, AeronHeader, AeronPublication,
-    AeronReservedValueSupplierLogger, AeronSubscription, Handler,
-};
-use rusteron_media_driver::AeronIdleStrategy;
-use std::ffi::CString;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
-use thiserror::Error;
-use tracing::{debug, error, info, warn};
 use vex_config::GatewayNetworkingConfig;
-
-mod cmd_handler;
-
-pub use cmd_handler::OrderCommandHandler;
 
 // Constants for stream identification and timeouts
 const ALL_GATEWAYS_STREAM_ID: i32 = 1001;

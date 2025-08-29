@@ -1,5 +1,5 @@
 //! Tests for serialization and deserialization of the order book.
-use common::model::enums::{Side, OrderType};
+use common::model::enums::{OrderType, Side};
 use common::model::symbol_specification::TestConstants;
 use orderbook::naive_impl::OrderBookNaiveImpl;
 use orderbook::{OrderBook, OrderCommand};

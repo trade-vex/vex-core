@@ -242,7 +242,6 @@ fn run_correctness_task(
     }
     println!("All clients finished execution.");
 
-
     println!("Client finished execution.");
 
     // --- Verify Results ---
