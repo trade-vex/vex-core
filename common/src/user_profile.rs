@@ -40,7 +40,7 @@ impl UserBalance {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BalanceKey {
     user_id: UserId,
-    market_id: MarketId,
+    asset_id: MarketId,
 }
 
 pub struct BalanceStore {
@@ -69,30 +69,30 @@ impl BalanceStore {
     pub fn get_balance(
         &self,
         user_id: UserId,
-        market_id: MarketId,
+        asset_id: MarketId,
     ) -> Result<UserBalance, BalanceError> {
-        let key = BalanceKey { user_id, market_id };
+        let key = BalanceKey { user_id, asset_id };
         match self.balances.get(&key) {
             Some(balance) => Ok(*balance),
-            None => Err(BalanceError::UserNotFound { user_id, market_id }),
+            None => Err(BalanceError::UserNotFound { user_id, asset_id }),
         }
     }
 
-    pub fn set_balance(&mut self, user_id: UserId, market_id: MarketId, balance: UserBalance) {
-        let key = BalanceKey { user_id, market_id };
+    pub fn set_balance(&mut self, user_id: UserId, asset_id: MarketId, balance: UserBalance) {
+        let key = BalanceKey { user_id, asset_id };
         self.balances.insert(key, balance);
     }
 
     pub fn update_available(
         &mut self,
         user_id: UserId,
-        market_id: MarketId,
+        asset_id: MarketId,
         amount: u64,
     ) -> Result<(), BalanceError> {
-        let key = BalanceKey { user_id, market_id };
+        let key = BalanceKey { user_id, asset_id };
         match self.balances.get_mut(&key) {
             Some(balance) => balance.available = amount,
-            None => return Err(BalanceError::UserNotFound { user_id, market_id }),
+            None => return Err(BalanceError::UserNotFound { user_id, asset_id }),
         };
         Ok(())
     }
@@ -100,13 +100,13 @@ impl BalanceStore {
     pub fn update_locked(
         &mut self,
         user_id: UserId,
-        market_id: MarketId,
+        asset_id: MarketId,
         amount: u64,
     ) -> Result<(), BalanceError> {
-        let key = BalanceKey { user_id, market_id };
+        let key = BalanceKey { user_id, asset_id };
         match self.balances.get_mut(&key) {
             Some(balance) => balance.locked = amount,
-            None => return Err(BalanceError::UserNotFound { user_id, market_id }),
+            None => return Err(BalanceError::UserNotFound { user_id, asset_id }),
         };
         Ok(())
     }
@@ -115,13 +115,13 @@ impl BalanceStore {
     pub fn lock_funds(
         &mut self,
         user_id: UserId,
-        market_id: MarketId,
+        asset_id: MarketId,
         amount: u64,
     ) -> Result<(), BalanceError> {
-        let key = BalanceKey { user_id, market_id };
+        let key = BalanceKey { user_id, asset_id };
         let balance = match self.balances.get_mut(&key) {
             Some(balance) => balance,
-            None => return Err(BalanceError::UserNotFound { user_id, market_id }),
+            None => return Err(BalanceError::UserNotFound { user_id, asset_id }),
         };
 
         if balance.available >= amount {
@@ -140,13 +140,13 @@ impl BalanceStore {
     pub fn unlock_funds(
         &mut self,
         user_id: UserId,
-        market_id: MarketId,
+        asset_id: MarketId,
         amount: u64,
     ) -> Result<(), BalanceError> {
-        let key = BalanceKey { user_id, market_id };
+        let key = BalanceKey { user_id, asset_id };
         let balance = match self.balances.get_mut(&key) {
             Some(balance) => balance,
-            None => return Err(BalanceError::UserNotFound { user_id, market_id }),
+            None => return Err(BalanceError::UserNotFound { user_id, asset_id }),
         };
 
         if balance.locked >= amount {
@@ -165,13 +165,13 @@ impl BalanceStore {
     pub fn consume_locked(
         &mut self,
         user_id: UserId,
-        market_id: MarketId,
+        asset_id: MarketId,
         amount: u64,
     ) -> Result<(), BalanceError> {
-        let key = BalanceKey { user_id, market_id };
+        let key = BalanceKey { user_id, asset_id };
         let balance = match self.balances.get_mut(&key) {
             Some(balance) => balance,
-            None => return Err(BalanceError::UserNotFound { user_id, market_id }),
+            None => return Err(BalanceError::UserNotFound { user_id, asset_id }),
         };
 
         if balance.locked >= amount {
@@ -209,6 +209,6 @@ pub enum BalanceError {
     #[error("user not found")]
     UserNotFound {
         user_id: UserId,
-        market_id: MarketId,
+        asset_id: MarketId,
     },
 }
