@@ -73,16 +73,13 @@ fn test_client_server_communication() {
         }
 
         let mut order_command = OrderCommand {
-            command: OrderCommandType::PlaceLimitOrder,
+            command: OrderCommandType::PlaceOrder,
             user_id: 1,
-            reserve_bid_price: 150,
             size: 100,
-            order_type: OrderType::Gtc,
             timestamp: 1,
-            matcher_event: None,
             side: Side::Ask,
             order_id: 1,
-            symbol_id: 3124,
+            market_id: 3124,
             price: 150,
             time_in_force: TimeInForce::Gtc,
         };

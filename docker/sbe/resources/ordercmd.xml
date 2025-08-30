@@ -39,14 +39,14 @@
     <!-- Message -->
     <message name="OrderCommandMessage" id="1" blockLength="59" semanticType="OrderCommand">
         <field name="command" id="1" type="OrderCommandType"/>
-        <field name="order_id" id="2" type="uint64"/>
-        <field name="symbol_id" id="3" type="uint32"/>
-        <field name="user_id" id="4" type="uint64"/>
-        <field name="price" id="5" type="uint64"/>
-        <field name="reserve_bid_price" id="6" type="uint64"/>
-        <field name="size" id="7" type="uint64"/>
+        <field name="order_id" id="2" type="int64"/>
+        <field name="symbol_id" id="3" type="int32"/>
+        <field name="user_id" id="4" type="int64"/>
+        <field name="price" id="5" type="int64"/>
+        <field name="reserve_bid_price" id="6" type="int64"/>
+        <field name="size" id="7" type="int64"/>
         <field name="side" id="8" type="Side"/>
         <field name="order_type" id="9" type="OrderType"/>
-        <field name="timestamp" id="10" type="uint64"/>
+        <field name="timestamp" id="10" type="int64"/>
     </message>
 </sbe:messageSchema>
