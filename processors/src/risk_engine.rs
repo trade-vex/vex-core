@@ -119,7 +119,7 @@ impl RiskEngine {
     }
 
     /// Handles events coming from the matching engine to settle funds
-    pub fn handle_event(&mut self, event: &MatcherTradeEvent, market_id: u32, taker_side: Side) {
+    pub fn handle_event(&mut self, event: &MatcherTradeEvent) {
         // Process only if the event is for a user managed by this shard
         if !self.user_id_for_this_handler(event.active_order_user_id)
             && !self.user_id_for_this_handler(event.maker_user_id)
