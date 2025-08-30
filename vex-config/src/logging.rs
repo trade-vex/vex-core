@@ -271,10 +271,10 @@ impl LoggingConfig {
                     }
                 }
 
-                if let Some(files) = max_files {
-                    if *files == 0 {
-                        return Err(ConfigError::logging("Max files must be greater than 0"));
-                    }
+                if let Some(files) = max_files
+                    && *files == 0
+                {
+                    return Err(ConfigError::logging("Max files must be greater than 0"));
                 }
             }
             LogOutput::Syslog { facility, ident } => {

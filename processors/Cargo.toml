@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 common = { workspace = true }
 vex-orderbook = { workspace = true }
-thiserror = { workspace = true }
 
 # High-level async runtime and message passing channels
 tokio = { version = "1", features = ["full"] }
