@@ -78,7 +78,7 @@ macro_rules! create_event_handler {
                 // Handle all chained events
                 let mut current_event = event.next_event.as_ref();
                 while let Some(next_event) = current_event {
-                    events_handler.handle_event(next_event.clone());
+                    events_handler.handle_event((**next_event).clone());
                     current_event = next_event.next_event.as_ref();
                 }
             }

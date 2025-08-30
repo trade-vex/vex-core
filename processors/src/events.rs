@@ -27,8 +27,8 @@ impl EventsHandler for SimpleEventsHandler {
             }
         };
         info!(
-            "[SimpleEventsHandler] Received final event: {:?}",
-            event.event_type
+            "[SimpleEventsHandler] Received final event: Price {}, Size {}, Matched Order ID {}",
+            event.price, event.size, event.matched_order_id
         );
         events.push(event);
     }
