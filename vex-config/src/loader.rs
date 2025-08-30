@@ -166,12 +166,32 @@ impl ConfigLoader {
     /// Apply environment variables to a config (simplified implementation)
     fn apply_env_vars_to_config(
         &self,
-        config: VexConfig,
-        _prefix: &str,
-        _env: &Environment,
+        mut config: VexConfig,
+        prefix: &str,
+        env: &Environment,
     ) -> Result<VexConfig> {
-        // For now, just return the config as-is
-        // In a full implementation, you would parse environment variables and apply them
+        // Create environment variable sources with both general and environment-specific prefixes
+        let general_source = config::Environment::with_prefix(prefix)
+            .try_parsing(true)
+            .separator("__");
+
+        let env_specific_prefix = format!("{}_{}", prefix, env.env_prefix());
+        let env_specific_source = config::Environment::with_prefix(&env_specific_prefix)
+            .try_parsing(true)
+            .separator("__");
+
+        // Build a config with just environment variables
+        let env_config = Config::builder()
+            .add_source(general_source)
+            .add_source(env_specific_source)
+            .build()?;
+
+        // If we have any environment variables, deserialize them and merge with our config
+        // Deserialize env vars into VexConfig (will only set fields that are specified)
+        if let Ok(env_overrides) = env_config.try_deserialize::<VexConfig>() {
+            config.merge_with(&env_overrides)?;
+        }
+
         Ok(config)
     }
 

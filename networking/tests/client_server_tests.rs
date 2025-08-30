@@ -50,6 +50,7 @@ fn create_test_addresses() -> (SocketAddr, SocketAddr) {
 }
 
 #[test_log::test]
+#[ignore = "This test needs media drivers running, Tests will be added in x-tasks"]
 fn test_client_server_communication() {
     // This test demonstrates the actual usage of run() methods
     let (server_addr, _client_addr) = create_test_addresses();
@@ -72,17 +73,15 @@ fn test_client_server_communication() {
         }
 
         let mut order_command = OrderCommand {
-            command: OrderCommandType::PlaceLimitOrder,
+            command: OrderCommandType::PlaceOrder,
             user_id: 1,
-            reserve_bid_price: 150,
             size: 100,
-            order_type: OrderType::Gtc,
             timestamp: 1,
-            matcher_event: None,
             side: Side::Ask,
             order_id: 1,
-            symbol_id: 3124,
+            market_id: 3124,
             price: 150,
+            time_in_force: TimeInForce::Gtc,
         };
         for i in 0..10 {
             order_command.order_id = i;
@@ -97,20 +96,24 @@ fn test_client_server_communication() {
         server_config.initial_port = server_addr.port();
         server_config.initial_control_port = server_addr.port() + 1;
         info!("server_config: {:?}", server_config);
-        let producer = build_multi_producer(1024, || OrderCommand::default(), BusySpin)
-            .pin_at_core(1)
-            .handle_events_with({
-                move |cmd: &OrderCommand, _, _| {
-                    info!("Server received OrderCommand Core 1: {:?}", cmd);
-                }
-            })
-            .pin_at_core(2)
-            .handle_events_with({
-                move |cmd: &OrderCommand, _, _| {
-                    info!("Server processing OrderCommand Core 2: {:?}", cmd);
-                }
-            })
-            .build();
+        let producer = build_multi_producer(
+            1024,
+            || OrderCommand::new_order(TimeInForce::Gtc, 1, 23, 32, 100, Side::Ask),
+            BusySpin,
+        )
+        .pin_at_core(1)
+        .handle_events_with({
+            move |cmd: &OrderCommand, _, _| {
+                info!("Server received OrderCommand Core 1: {:?}", cmd);
+            }
+        })
+        .pin_at_core(2)
+        .handle_events_with({
+            move |cmd: &OrderCommand, _, _| {
+                info!("Server processing OrderCommand Core 2: {:?}", cmd);
+            }
+        })
+        .build();
         let mut server = VexCoreServer::new(server_config, producer).unwrap();
         match server.start() {
             Ok(()) => println!("Server run() completed successfully (unexpected)"),

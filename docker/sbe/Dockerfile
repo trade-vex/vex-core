@@ -1,4 +1,4 @@
-FROM rust:1.87-slim as builder
+FROM rust:1.87-slim AS builder
 
 # Install Java + Gradle for SBE
 RUN apt-get update && apt-get install -y \

@@ -1,7 +1,12 @@
 use crate::server::duologue::Duologue;
+<<<<<<< HEAD
 use crate::utils::{PortAllocator, SessionAllocator, send_message};
 use common::cmd::OrderCommand;
 use crossbeam::queue::SegQueue;
+=======
+use crate::utils::{PortAllocator, SessionAllocator, send_message, send_message_with_retries};
+use common::cmd::OrderCommand;
+>>>>>>> chore/refactor-common-ob
 use dashmap::DashMap;
 use disruptor::{MultiConsumerBarrier, MultiProducer};
 use rusteron_client::{Aeron, AeronPublication};
@@ -31,8 +36,11 @@ pub struct GatewayManager {
     port_allocator: PortAllocator,
     /// Session ID allocator
     session_allocator: SessionAllocator,
+<<<<<<< HEAD
     /// Reusable message buffers
     buffer_pool: SegQueue<Vec<u8>>,
+=======
+>>>>>>> chore/refactor-common-ob
     /// Producer that sends commands to the disruptor ring
     producer: MultiProducer<OrderCommand, MultiConsumerBarrier>,
 }
@@ -44,6 +52,7 @@ impl GatewayManager {
         aeron: Rc<Aeron>,
         producer: MultiProducer<OrderCommand, MultiConsumerBarrier>,
     ) -> Result<Self, ServerError> {
+<<<<<<< HEAD
         let buffer_pool = SegQueue::new();
 
         // Pre-populate buffer pool
@@ -51,6 +60,8 @@ impl GatewayManager {
             buffer_pool.push(vec![0u8; 2048]);
         }
 
+=======
+>>>>>>> chore/refactor-common-ob
         Ok(Self {
             gateway_session_addresses: DashMap::new(),
             gateway_sessions: DashMap::new(),
@@ -67,16 +78,22 @@ impl GatewayManager {
             )
             .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?,
             config,
+<<<<<<< HEAD
             buffer_pool,
+=======
+>>>>>>> chore/refactor-common-ob
             producer,
         })
     }
 
+<<<<<<< HEAD
     /// Returns the number of active gateway sessions
     pub fn len(&self) -> usize {
         self.gateway_sessions.len()
     }
 
+=======
+>>>>>>> chore/refactor-common-ob
     /// Returns is the gateway manager is empty
     pub fn is_empty(&self) -> bool {
         self.gateway_sessions.is_empty()
@@ -115,7 +132,11 @@ impl GatewayManager {
             .ok_or_else(|| ServerError::GatewayMessageError("Empty message".to_string()))?;
         if hello != "HELLO" {
             let error_msg = format!("{session_id} unknown REJECT Malformed HELLO message");
+<<<<<<< HEAD
             self.send_message_with_pool(publication, &error_msg)?;
+=======
+            send_message(publication, error_msg.as_bytes())?;
+>>>>>>> chore/refactor-common-ob
             return Err(ServerError::GatewayMessageError(
                 "Malformed HELLO message".to_string(),
             ));
@@ -136,7 +157,11 @@ impl GatewayManager {
         // Validate gateway ID
         if gateway_id.is_empty() {
             let error_msg = format!("{session_id} {gateway_id} REJECT Empty gateway ID");
+<<<<<<< HEAD
             self.send_message_with_pool(publication, &error_msg)?;
+=======
+            send_message(publication, error_msg.as_bytes())?;
+>>>>>>> chore/refactor-common-ob
             return Err(ServerError::GatewayMessageError(
                 "Empty gateway ID".to_string(),
             ));
@@ -149,12 +174,21 @@ impl GatewayManager {
         self.check_duplicate_connection(publication, session_id, gateway_id)?;
 
         // Authenticate if enabled
+<<<<<<< HEAD
         if self.config.enable_authentication {
             if let Err(e) = self.authenticate_gateway(gateway_id, &encryption_key.to_string()) {
                 let error_msg = format!("{session_id} {gateway_id} REJECT Authentication failed");
                 self.send_message_with_pool(publication, &error_msg)?;
                 return Err(e);
             }
+=======
+        if self.config.enable_authentication
+            && let Err(e) = self.authenticate_gateway(gateway_id, &encryption_key.to_string())
+        {
+            let error_msg = format!("{session_id} {gateway_id} REJECT Authentication failed");
+            send_message(publication, error_msg.as_bytes())?;
+            return Err(e);
+>>>>>>> chore/refactor-common-ob
         }
 
         // Allocate resources and create session
@@ -167,7 +201,11 @@ impl GatewayManager {
             "{} {} ACCEPT {} {} {}",
             session_id, gateway_id, ports[0], ports[1], encrypted_session
         );
+<<<<<<< HEAD
         self.send_message_with_pool(publication, &accept_msg)?;
+=======
+        send_message_with_retries(publication, accept_msg.as_bytes())?;
+>>>>>>> chore/refactor-common-ob
 
         info!(
             "Gateway '{}' connected successfully. Session: 0x{:x}, ports: {}, {}",
@@ -264,7 +302,11 @@ impl GatewayManager {
     ) -> Result<(), ServerError> {
         if self.gateway_sessions.len() >= self.config.max_gateways as usize {
             let error_msg = format!("{session_id} {gateway_id} REJECT Core capacity exceeded");
+<<<<<<< HEAD
             self.send_message_with_pool(publication, &error_msg)?;
+=======
+            send_message(publication, error_msg.as_bytes())?;
+>>>>>>> chore/refactor-common-ob
             return Err(ServerError::CapacityExceededError(
                 "Too many gateways connected".to_string(),
             ));
@@ -288,6 +330,7 @@ impl GatewayManager {
         gateway_id: &str,
         gateway_address: &str,
     ) -> Result<(), ServerError> {
+<<<<<<< HEAD
         if let Some(count_entry) = self.address_connection_count.get(gateway_address) {
             if count_entry.load(Ordering::Relaxed) >= self.config.max_connections_per_address as u64
             {
@@ -299,6 +342,19 @@ impl GatewayManager {
                 ));
             }
         }
+=======
+        if let Some(count_entry) = self.address_connection_count.get(gateway_address)
+            && count_entry.load(Ordering::Relaxed) >= self.config.max_connections_per_address as u64
+        {
+            let error_msg =
+                format!("{session_id} {gateway_id} REJECT Too many connections from address");
+            send_message(publication, error_msg.as_bytes())?;
+            return Err(ServerError::CapacityExceededError(
+                "Too many connections from this address".to_string(),
+            ));
+        }
+
+>>>>>>> chore/refactor-common-ob
         Ok(())
     }
 
@@ -310,7 +366,11 @@ impl GatewayManager {
     ) -> Result<(), ServerError> {
         if self.is_gateway_connected(gateway_id) {
             let error_msg = format!("{session_id} {gateway_id} REJECT Gateway already connected");
+<<<<<<< HEAD
             self.send_message_with_pool(publication, &error_msg)?;
+=======
+            send_message(publication, error_msg.as_bytes())?;
+>>>>>>> chore/refactor-common-ob
             return Err(ServerError::GatewayMessageError(
                 "Gateway already connected".to_string(),
             ));
@@ -396,18 +456,28 @@ impl GatewayManager {
             self.port_allocator.free(gateway_session.port_control);
 
             // Update connection count
+<<<<<<< HEAD
             if let Some((_id, address)) = self.gateway_session_addresses.remove(&session_id) {
                 if let Some(count) = self.address_connection_count.get_mut(&address) {
                     let _ = count.fetch_sub(1, Ordering::Relaxed);
                     if count.load(Ordering::Relaxed) == 0 {
                         self.address_connection_count.remove(&address);
                     }
+=======
+            if let Some((_id, address)) = self.gateway_session_addresses.remove(&session_id)
+                && let Some(count) = self.address_connection_count.get_mut(&address)
+            {
+                let _ = count.fetch_sub(1, Ordering::Relaxed);
+                if count.load(Ordering::Relaxed) == 0 {
+                    self.address_connection_count.remove(&address);
+>>>>>>> chore/refactor-common-ob
                 }
             }
         }
 
         Ok(())
     }
+<<<<<<< HEAD
 
     fn send_message_with_pool(
         &self,
@@ -432,4 +502,6 @@ impl GatewayManager {
         self.buffer_pool.push(buffer);
         Ok(())
     }
+=======
+>>>>>>> chore/refactor-common-ob
 }

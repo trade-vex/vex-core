@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 # Workspace crates containing our data models and order book logic
 common = { workspace = true }
-orderbook = { workspace = true }
+vex-orderbook = { workspace = true }
 processors = { workspace = true }
 vex-config = { workspace = true }
 vex-networking = { workspace = true }

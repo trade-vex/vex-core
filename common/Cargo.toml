@@ -5,9 +5,7 @@ edition = "2024"
 
 [dependencies]
 borsh.workspace = true
-hashbrown.workspace = true
-num_enum = "0.7.2"
+thiserror.workspace = true
 serde = { version = "1.0.203", features = ["derive"] }
-tracing = { workspace = true }
-sbe_order = { path = "../target/generated/order" }
-thiserror = { workspace = true }
+sbe_order.workspace = true
+ahash = "0.8.12"
