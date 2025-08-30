@@ -42,11 +42,7 @@ use disruptor::{MultiConsumerBarrier, MultiProducer};
 use rusteron_client::{Aeron, AeronCError, AeronContext, Handler};
 use rusteron_media_driver::AeronIdleStrategy;
 use std::rc::Rc;
-<<<<<<< HEAD
-use std::sync::atomic::{AtomicU64, Ordering};
-=======
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
->>>>>>> chore/refactor-common-ob
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{error, info, instrument};
@@ -89,11 +85,8 @@ pub struct VexCoreServer {
     gateways: Arc<GatewayManager>,
     /// Last cleanup timestamp (atomic)
     last_cleanup_nanos: CachePadded<AtomicU64>,
-<<<<<<< HEAD
-=======
     /// shutdown flag
     shutdown: AtomicBool,
->>>>>>> chore/refactor-common-ob
 }
 
 impl VexCoreServer {
@@ -119,30 +112,13 @@ impl VexCoreServer {
             gateways: Arc::new(GatewayManager::new(config.clone(), aeron, producer)?),
             config,
             last_cleanup_nanos: CachePadded::new(AtomicU64::new(now_nanos)),
-<<<<<<< HEAD
-=======
             shutdown: AtomicBool::new(false),
->>>>>>> chore/refactor-common-ob
         })
     }
 
     /// Starts the VEX Core server
     #[instrument(skip(self))]
     pub fn start(&mut self) -> Result<(), ServerError> {
-<<<<<<< HEAD
-        info!("Starting VEX Core '{}'", self.config.core_id);
-
-        // Create publication for sending responses to gateways
-        let (subscription, handshake_handler) = self.setup_networking()?;
-
-        info!("VEX Core '{}' started successfully", self.config.core_id);
-
-        let mut handler = Handler::leak(handshake_handler);
-        // Main event loop
-        while !self.shutdown.load(Ordering::SeqCst) {
-            // Process incoming handshake messages
-            subscription.poll(Some(&Handler::leak(&mut handshake_handler)), 10)?;
-=======
         // Create publication for sending responses to gateways
         let (subscription, handshake_handler) = self.setup_networking()?;
 
@@ -153,7 +129,6 @@ impl VexCoreServer {
         while !self.shutdown.load(Ordering::SeqCst) {
             // Process incoming handshake messages
             subscription.poll(Some(&handler), 10)?;
->>>>>>> chore/refactor-common-ob
 
             // Poll all active gateway sessions (lock-free)
             if let Err(e) = self.gateways.poll() {
@@ -165,11 +140,8 @@ impl VexCoreServer {
 
             AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
         }
-<<<<<<< HEAD
-=======
         handler.release();
         Ok(())
->>>>>>> chore/refactor-common-ob
     }
 
     /// Performs periodic cleanup of expired gateways (lock-free)
@@ -195,14 +167,6 @@ impl VexCoreServer {
         &self.config
     }
 
-<<<<<<< HEAD
-    // /// Gets the number of connected gateways (lock-free)
-    // pub fn connected_gateway_count(&self) -> usize {
-    //     self.gateways.active_gateway_count()
-    // }
-
-=======
->>>>>>> chore/refactor-common-ob
     /// Checks if a gateway is connected (lock-free)
     pub fn is_gateway_connected(&self, gateway_id: &str) -> bool {
         self.gateways.is_gateway_connected(gateway_id)
@@ -217,10 +181,7 @@ impl VexCoreServer {
     pub fn shutdown(&mut self) -> Result<(), ServerError> {
         info!("Shutting down VEX Core '{}'", self.config.core_id);
         self.gateways.shutdown_all_gateways()?;
-<<<<<<< HEAD
-=======
         self.shutdown.store(true, Ordering::SeqCst);
->>>>>>> chore/refactor-common-ob
         info!("VEX Core '{}' shut down successfully", self.config.core_id);
         Ok(())
     }
@@ -291,8 +252,6 @@ impl VexCoreServer {
 
         Ok((subscription, handshake_handler))
     }
-<<<<<<< HEAD
-=======
 
     /// Number of connected gateways
     pub fn connected_gateway_count(&self) -> usize {
@@ -303,5 +262,4 @@ impl VexCoreServer {
     pub fn is_empty(&self) -> bool {
         self.gateways.is_empty()
     }
->>>>>>> chore/refactor-common-ob
 }
