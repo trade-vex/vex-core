@@ -15,11 +15,7 @@ use tracing::{error, info};
 pub const DUOLOGUE_STREAM_ID: i32 = 1002;
 
 pub struct Duologue {
-<<<<<<< HEAD
-    pub fragment_handler: FragmentHandler,
-=======
     pub fragment_handler: Handler<FragmentHandler>,
->>>>>>> chore/refactor-common-ob
     pub session_id: i32,
     pub gateway_id: String,
     pub subscription: AeronSubscription,
@@ -29,10 +25,7 @@ pub struct Duologue {
     pub is_closed: bool,
 }
 
-<<<<<<< HEAD
-=======
 #[allow(clippy::too_many_arguments)]
->>>>>>> chore/refactor-common-ob
 impl Duologue {
     pub fn new(
         aeron: &Aeron,
@@ -81,11 +74,7 @@ impl Duologue {
         };
 
         Ok(Self {
-<<<<<<< HEAD
-            fragment_handler,
-=======
             fragment_handler: Handler::leak(fragment_handler),
->>>>>>> chore/refactor-common-ob
             gateway_id: gateway_id.to_string(),
             port_data,
             port_control,
@@ -97,12 +86,7 @@ impl Duologue {
     }
 
     pub fn poll(&mut self) -> Result<i32, AeronCError> {
-<<<<<<< HEAD
-        self.subscription
-            .poll(Some(&Handler::leak(&mut self.fragment_handler)), 2048)
-=======
         self.subscription.poll(Some(&self.fragment_handler), 2048)
->>>>>>> chore/refactor-common-ob
     }
 
     pub fn is_expired(&self) -> bool {
@@ -120,10 +104,7 @@ impl Duologue {
     pub fn close(&mut self) -> Result<(), AeronCError> {
         self.is_closed = true;
         self.subscription.close::<AeronNotificationLogger>(None)?;
-<<<<<<< HEAD
-=======
         self.fragment_handler.release();
->>>>>>> chore/refactor-common-ob
         Ok(())
     }
 }
