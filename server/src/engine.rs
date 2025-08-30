@@ -1,8 +1,9 @@
 use crate::{
     create_event_handler, create_matching_handler, create_risk_handler, create_risk_r2_handler,
 };
-use common::cmd::{MatcherTradeEvent, OrderCommand};
+use common::cmd::{MatcherTradeEvent, OrderCommand, ProcessedOrderCommand, Status};
 use common::model::symbol_specification::CoreSymbolSpecification;
+use common::Side;
 use disruptor::{
     BusySpin, MultiConsumerBarrier, MultiProducer, ProcessorSettings, build_multi_producer,
 };
@@ -18,7 +19,7 @@ use vex_config::CoreNetworkingConfig;
 use vex_networking::server::VexCoreServer;
 
 pub type OrderProducer = MultiProducer<OrderCommand, MultiConsumerBarrier>;
-pub type ProcessedOrderProducer = MultiProducer<MatcherTradeEvent, MultiConsumerBarrier>;
+pub type ProcessedOrderProducer = MultiProducer<ProcessedOrderCommand, MultiConsumerBarrier>;
 
 /// This follows the exact same architecture as the  ExchangeCore:
 /// 1. Multiple parallel Risk Engines (R1) for risk hold/pre-processing
@@ -53,7 +54,7 @@ impl CoreEngine {
         events_handler: Arc<dyn EventsHandler>,
     ) -> (Self, OrderProducer) {
         let order_factory = || OrderCommand::default();
-        let matcher_event_factory = || MatcherTradeEvent::default();
+        let matcher_event_factory = || ProcessedOrderCommand::new(Status::Rejected, 0, 0, Side::Ask);
         let buffer_size = 1024; // Power of 2 for disruptor efficiency
 
         let journaling_arc = Arc::new(journaling_processor);
@@ -116,8 +117,8 @@ impl CoreEngine {
                 .pin_at_core(10)
                 .handle_events_with({
                     let journaling_clone = journaling_arc.clone();
-                    move |event: &MatcherTradeEvent, _sequence: i64, _end_of_batch: bool| {
-                        journaling_clone.journal_event(event);
+                    move |processed_cmd: &ProcessedOrderCommand, _sequence: i64, _end_of_batch: bool| {
+                        journaling_clone.journal_event(processed_cmd);
                     }
                 })
                 // Stage 2: Risk Engine R2 - 4 parallel handlers
