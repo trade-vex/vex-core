@@ -4,7 +4,7 @@ mod test {
 
     use crate::tree::{BTreeAskSide, BTreeBidSide};
     use crate::*;
-    use common::cmd::{OrderCommand, ProcessedOrderCommand};
+    use common::{OrderCommand, ProcessedOrderCommand};
     use common::{OrderCommandType, Side};
 
     /// Helper functions to inspect the internal state of the `OrderBook`.
@@ -61,13 +61,10 @@ mod test {
                 // If the level doesn't exist at all, that's also valid for an expected volume of 0.
             } else {
                 let (_, level) = level_opt.unwrap_or_else(|| {
-                    panic!(
-                        "Expected price level at {price} for side {side:?} not found"
-                    )
+                    panic!("Expected price level at {price} for side {side:?} not found")
                 });
                 assert_eq!(
-                    level.total_volume,
-                    expected_volume,
+                    level.total_volume, expected_volume,
                     "Volume mismatch at price {price} for side {side:?}"
                 );
                 assert_eq!(

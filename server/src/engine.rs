@@ -1,16 +1,17 @@
 use crate::{
     create_event_handler, create_matching_handler, create_risk_handler, create_risk_r2_handler,
 };
-use common::cmd::{OrderCommand, ProcessedOrderCommand, Status};
-use common::model::market_specification::CoreMarketSpecification;
+use common::CoreMarketSpecification;
 use common::Side;
+use common::{OrderCommand, ProcessedOrderCommand, Status};
 use disruptor::{
     BusySpin, MultiConsumerBarrier, MultiProducer, ProcessorSettings, build_multi_producer,
 };
 use hashbrown::HashMap;
 use parking_lot::Mutex;
 use processors::{
-    journaling::JournalingProcessor, matching_engine::MatchingEngineRouter, risk_engine::RiskEngine, events::EventsHandler
+    events::EventsHandler, journaling::JournalingProcessor, matching_engine::MatchingEngineRouter,
+    risk_engine::RiskEngine,
 };
 use std::sync::Arc;
 use std::thread;
@@ -54,7 +55,8 @@ impl CoreEngine {
         events_handler: Arc<dyn EventsHandler>,
     ) -> (Self, OrderProducer) {
         let order_factory = || OrderCommand::default();
-        let matcher_event_factory = || ProcessedOrderCommand::new(Status::Rejected, 0, 0, 0, Side::Ask);
+        let matcher_event_factory =
+            || ProcessedOrderCommand::new(Status::Rejected, 0, 0, 0, Side::Ask);
         let buffer_size = 1024; // Power of 2 for disruptor efficiency
 
         // Using Arc to share stateful processors with the main thread and the consumer threads.
@@ -140,7 +142,9 @@ impl CoreEngine {
                 .pin_at_core(10)
                 .handle_events_with({
                     let journaling_clone = journaling_arc.clone();
-                    move |processed_cmd: &ProcessedOrderCommand, _sequence: i64, _end_of_batch: bool| {
+                    move |processed_cmd: &ProcessedOrderCommand,
+                          _sequence: i64,
+                          _end_of_batch: bool| {
                         journaling_clone.journal_event(processed_cmd);
                     }
                 })

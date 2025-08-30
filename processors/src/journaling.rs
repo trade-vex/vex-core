@@ -1,5 +1,5 @@
-use common::cmd::OrderCommand;
-use common::cmd::ProcessedOrderCommand;
+use common::OrderCommand;
+use common::ProcessedOrderCommand;
 use tracing::info;
 
 pub struct JournalingProcessor;
@@ -17,9 +17,10 @@ impl JournalingProcessor {
     pub fn journal_event(&self, processed_cmd: &ProcessedOrderCommand) {
         info!(
             "[Journal] Writing processed command to disk: Order ID {}, Status {:?}",
-            processed_cmd.order_id(), processed_cmd.status()
+            processed_cmd.order_id(),
+            processed_cmd.status()
         );
-        
+
         // Also journal any trade events if they exist
         if let Some(event) = processed_cmd.events() {
             info!(

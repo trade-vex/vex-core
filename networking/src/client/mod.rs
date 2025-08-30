@@ -2,7 +2,7 @@ use crate::utils::{
     new_publication, new_publication_with_session, new_subscription_with_mdc,
     new_subscription_with_mdc_and_session,
 };
-use common::cmd::{OrderCommand, encode_order_command};
+use common::{OrderCommand, encode_order_command};
 use rand;
 use rusteron_client::{
     Aeron, AeronCError, AeronContext, AeronFragmentHandlerCallback, AeronHeader, AeronPublication,

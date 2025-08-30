@@ -1,8 +1,12 @@
-use common::cmd::OrderCommand;
+use common::OrderCommand;
+use disruptor::{BusySpin, ProcessorSettings, build_multi_producer};
 use std::io::Write;
-use disruptor::{build_multi_producer, BusySpin, ProcessorSettings};
+use std::{
+    env,
+    fs::OpenOptions,
+    sync::{Arc, Mutex},
+};
 use tracing::info;
-use std::{env, fs::OpenOptions, sync::{Arc, Mutex}};
 use vex_config::CoreNetworkingConfig;
 use vex_networking::server::VexCoreServer;
 
@@ -15,16 +19,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut server_config = CoreNetworkingConfig::test_defaults();
     server_config.local_address = server_host;
-    server_config.context_dir = env::var("VEX_CONTEXT_DIR").unwrap_or("/dev/shm/aeron-test-server".to_string());
+    server_config.context_dir =
+        env::var("VEX_CONTEXT_DIR").unwrap_or("/dev/shm/aeron-test-server".to_string());
     server_config.initial_port = listen_port;
     server_config.initial_control_port = listen_port + 1;
     server_config.max_gateways = 15;
     server_config.max_connections_per_address = 10;
     let results_path = "/results/received_ids.txt";
     let file = Arc::new(Mutex::new(
-        OpenOptions::new().create(true).write(true).truncate(true).open(results_path)?
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(results_path)?,
     ));
-
 
     // A dummy consumer that just logs the received command
     let producer = build_multi_producer(1024, OrderCommand::default, BusySpin)
@@ -38,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .handle_events_with({
             move |cmd: &OrderCommand, _, _| {
                 let mut f = file.lock().unwrap();
-                writeln!(f, "{}", cmd.order_id).expect("Failed to write to results file");    
+                writeln!(f, "{}", cmd.order_id).expect("Failed to write to results file");
                 info!("Server processing OrderCommand Core 2: {:?}", cmd);
             }
         })

@@ -36,7 +36,7 @@ use crate::server::gateway_handler::{
 };
 use crate::server::gateway_manager::GatewayManager;
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
-use common::cmd::OrderCommand;
+use common::OrderCommand;
 use crossbeam::utils::CachePadded;
 use disruptor::{MultiConsumerBarrier, MultiProducer};
 use rusteron_client::{Aeron, AeronCError, AeronContext, Handler};

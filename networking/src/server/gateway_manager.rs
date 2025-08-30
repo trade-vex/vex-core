@@ -1,6 +1,6 @@
 use crate::server::duologue::Duologue;
 use crate::utils::{PortAllocator, SessionAllocator, send_message, send_message_with_retries};
-use common::cmd::OrderCommand;
+use common::OrderCommand;
 use dashmap::DashMap;
 use disruptor::{MultiConsumerBarrier, MultiProducer};
 use rusteron_client::{Aeron, AeronPublication};

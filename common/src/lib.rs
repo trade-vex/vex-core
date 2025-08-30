@@ -1,12 +1,26 @@
-pub mod cmd;
-pub mod model;
+mod cmd;
+mod core_arithmetic;
+mod l2_market_data;
+mod market_specification;
+mod order;
+mod user_profile;
+
+pub use cmd::{
+    MatcherTradeEvent, OrderCommand, ProcessedOrderCommand, Status, decode_order_command,
+    encode_order_command,
+};
+pub use core_arithmetic::CoreArithmetic;
+pub use l2_market_data::L2MarketData;
+pub use market_specification::{CoreMarketSpecification, CoreMarketSpecificationBuilder};
+pub use order::Order;
+pub use user_profile::{BalanceError, BalanceKey, BalanceStore, UserBalance};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use sbe_order::order_command_type::OrderCommandType as SbeOrderCommandType;
 use sbe_order::side::Side as SbeSide;
 use sbe_order::time_in_force::TimeInForce as SbeTimeInForce;
-use serde::de::value::Error as SerdeError;
 use serde::de::Error;
+use serde::de::value::Error as SerdeError;
 use serde::{Deserialize, Serialize};
 
 #[derive(
@@ -31,7 +45,6 @@ pub enum MarketType {
     CurrencyExchangePair = 1,
     Option = 2,
 }
-
 
 impl MarketType {
     pub fn code(&self) -> u8 {
