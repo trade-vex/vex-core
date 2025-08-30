@@ -6,7 +6,7 @@
 //! 3. Validate and merge symbol configurations
 
 use common::MarketType;
-use common::model::market_specification::CoreMarketSpecification;
+use common::CoreMarketSpecification;
 use vex_config::{Environment, SymbolSpecificationConfig, VexConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
