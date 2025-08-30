@@ -5,11 +5,5 @@
 # Build
 **/target
 **/build
-<<<<<<< HEAD
-
-# test-data
-**/test-data
-=======
 **/bin
 **/test-results
->>>>>>> chore/refactor-common-ob
