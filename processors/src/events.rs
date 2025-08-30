@@ -21,8 +21,8 @@ impl EventsHandler for SimpleEventsHandler {
     fn handle_event(&self, event: MatcherTradeEvent) {
         let mut events = self.events.lock().unwrap();
         info!(
-            "[SimpleEventsHandler] Received final event: {:?}",
-            event.event_type
+            "[SimpleEventsHandler] Received final event: Price {}, Size {}, Matched Order ID {}",
+            event.price, event.size, event.matched_order_id
         );
         events.push(event);
     }
