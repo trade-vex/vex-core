@@ -14,7 +14,6 @@ pub enum RoutingError {
 
 use tracing::{info, warn};
 /// Owns all order books and routes commands to the correct one.
-/// This is the Rust equivalent of `MatchingEngineRouter.java`.
 pub struct MatchingEngineRouter {
     pub order_books: HashMap<u32, Box<dyn OrderBook<'static> + Send>>,
     pub shard_id: u32,
@@ -27,10 +26,6 @@ impl MatchingEngineRouter {
     /// # Arguments
     /// * `shard_id` - The ID of this shard (0, 1, 2, 3, etc.)
     /// * `num_shards` - Total number of shards (must be power of 2)
-    ///
-    /// # Reasoning
-    /// This matches the exchangeCore constructor: `MatchingEngineRouter(shardId, matchingEnginesNum, ...)`
-    /// The power-of-2 validation ensures efficient bitwise operations for symbol_id distribution.
     pub fn new(shard_id: u32, num_shards: u64) -> Self {
         // Validate num_shards is power of 2
         if num_shards.count_ones() != 1 {
@@ -62,14 +57,6 @@ impl MatchingEngineRouter {
 
     /// Check if this router handles the given symbol_id
     ///
-    /// # Reasoning
-    /// This implements the exact same logic as exchangeCore:
-    /// ```java
-    /// private boolean symbolForThisHandler(final long symbol_id) {
-    ///     return (shardMask == 0) || ((symbol_id & shardMask) == shardId);
-    /// }
-    /// ```
-    ///
     /// The bitwise AND operation efficiently distributes symbols across shards:
     /// - With 4 shards (shard_mask = 3 = 0b11), symbols are distributed as:
     ///   - Symbol 0, 4, 8, 12... → Shard 0 (0 & 3 = 0)
@@ -81,11 +68,6 @@ impl MatchingEngineRouter {
     }
 
     /// Main entry point for processing orders
-    ///
-    /// # Reasoning
-    /// This method mirrors the exchangeCore `processOrder(long seq, OrderCommand cmd)` method.
-    /// It implements the same command routing logic where each router only processes
-    /// commands for symbols it owns
     pub fn process_order(&mut self, cmd: &mut OrderCommand) {
         if self.symbol_for_this_handler(cmd.symbol_id as u64) {
             if let Some(order_book) = self.order_books.get_mut(&cmd.symbol_id) {
