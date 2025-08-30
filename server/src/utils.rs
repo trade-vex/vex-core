@@ -24,33 +24,42 @@ macro_rules! create_risk_handler {
 macro_rules! create_risk_r2_handler {
     ($shard_id:expr, $risk_engines:expr) => {{
         let risk_engines_clone = $risk_engines.clone();
-        move |event: &MatcherTradeEvent, _sequence: i64, _end_of_batch: bool| {
-            let num_shards = risk_engines_clone.len() as u64;
-            let shard_mask = num_shards - 1;
+        move |processed_cmd: &ProcessedOrderCommand, _sequence: i64, _end_of_batch: bool| {
+            // Process the main event if it exists
+            if let Some(event) = processed_cmd.events() {
+                let num_shards = risk_engines_clone.len() as u64;
+                let shard_mask = num_shards - 1;
 
-            // Route to risk engine shard for active order user
-            let active_order_user_id = event.active_order_user_id;
-            let active_order_shard = (active_order_user_id & shard_mask) as usize;
-            
-            // Only process if this event belongs to our shard
-            if active_order_shard == $shard_id {
-                if let Some(risk_engine_mutex) = risk_engines_clone.get($shard_id) {
-                    let mut risk_engine = risk_engine_mutex.lock();
-                    risk_engine.handle_event(event);
-                }
-            }
+                // Get market_id and side from the processed command
+                let market_id = processed_cmd.market_id();
+                let taker_side = processed_cmd.side();
 
-            // Route to risk engine shard for maker user (if different)
-            let maker_user_id = event.maker_user_id;
-            if maker_user_id != active_order_user_id {
+                // Route to risk engine shard for maker user
+                let maker_user_id = event.maker_user_id;
                 let maker_shard = (maker_user_id & shard_mask) as usize;
                 
                 // Only process if this event belongs to our shard
                 if maker_shard == $shard_id {
                     if let Some(risk_engine_mutex) = risk_engines_clone.get($shard_id) {
                         let mut risk_engine = risk_engine_mutex.lock();
-                        risk_engine.handle_event(event);
+                        risk_engine.handle_event(event, market_id, taker_side);
                     }
+                }
+
+                // Process next event in chain if it exists
+                let mut current_event = event.next_event.as_ref();
+                while let Some(next_event) = current_event {
+                    let next_maker_user_id = next_event.maker_user_id;
+                    let next_maker_shard = (next_maker_user_id & shard_mask) as usize;
+
+                    // Only process if this event belongs to our shard
+                    if next_maker_shard == $shard_id {
+                        if let Some(risk_engine_mutex) = risk_engines_clone.get($shard_id) {
+                            let mut risk_engine = risk_engine_mutex.lock();
+                            risk_engine.handle_event(next_event, market_id, taker_side);
+                        }
+                    }
+                    current_event = next_event.next_event.as_ref();
                 }
             }
         }
@@ -61,8 +70,18 @@ macro_rules! create_risk_r2_handler {
 macro_rules! create_event_handler {
     ($events_handler:expr) => {{
         let events_handler = $events_handler.clone();
-        move |event: &MatcherTradeEvent, _sequence: i64, _end_of_batch: bool| {
-            events_handler.handle_event(event.clone());
+        move |processed_cmd: &ProcessedOrderCommand, _sequence: i64, _end_of_batch: bool| {
+            // Handle the main event if it exists
+            if let Some(event) = processed_cmd.events() {
+                events_handler.handle_event(event.clone());
+                
+                // Handle all chained events
+                let mut current_event = event.next_event.as_ref();
+                while let Some(next_event) = current_event {
+                    events_handler.handle_event(next_event.clone());
+                    current_event = next_event.next_event.as_ref();
+                }
+            }
         }
     }};
 }
