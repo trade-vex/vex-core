@@ -8,9 +8,7 @@ pub struct Order {
     pub user_id: u64,
     pub price: u64,
     pub size: u64,
-    pub filled: u64,
     pub side: Side,
-    pub uid: u64,
     pub timestamp: u64,
 }
 
@@ -20,9 +18,6 @@ impl Order {
     }
     pub fn size(&self) -> u64 {
         self.size
-    }
-    pub fn filled(&self) -> u64 {
-        self.filled
     }
     pub fn user_id(&self) -> u64 {
         self.user_id

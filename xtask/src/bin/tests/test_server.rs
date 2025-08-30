@@ -15,7 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
     let server_host = env::var("VEX_SERVER_HOST").unwrap_or("127.0.0.1".to_string());
     let listen_port: u16 = env::var("VEX_SERVER_PORT")?.parse()?;
-    println!("Server starting on port {}", listen_port);
+    println!("Server starting on port {listen_port}");
 
     let mut server_config = CoreNetworkingConfig::test_defaults();
     server_config.local_address = server_host;
@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     // A dummy consumer that just logs the received command
-    let producer = build_multi_producer(1024, || OrderCommand::default(), BusySpin)
+    let producer = build_multi_producer(1024, OrderCommand::default, BusySpin)
         .pin_at_core(1)
         .handle_events_with({
             move |cmd: &OrderCommand, _, _| {
