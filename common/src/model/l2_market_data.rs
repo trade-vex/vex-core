@@ -14,6 +14,12 @@ pub struct L2MarketData<const LEVEL: usize> {
     pub reference_seq: u64,
 }
 
+impl<const LEVEL: usize> Default for L2MarketData<LEVEL> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const LEVEL: usize> L2MarketData<LEVEL> {
     /// Creates a new, empty `L2MarketData` instance with all values initialized to zero.
     pub fn new() -> Self {

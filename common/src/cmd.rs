@@ -1,4 +1,4 @@
-use crate::{MatcherEventType, OrderCommandType, Side, TimeInForce};
+use crate::{OrderCommandType, Side, TimeInForce};
 use sbe_order::message_header_codec::{self, MessageHeaderDecoder};
 use sbe_order::order_command_message_codec::{
     OrderCommandMessageDecoder, OrderCommandMessageEncoder,
@@ -50,9 +50,6 @@ pub struct OrderCommand {
 
     /// The time-in-force policy for a new order.
     pub time_in_force: TimeInForce,
-
-    /// Trade Events
-    pub matcher_event: Option<Box<MatcherTradeEvent>>,
 }
 
 impl Default for OrderCommand {
@@ -67,7 +64,6 @@ impl Default for OrderCommand {
             timestamp: 0,
             time_in_force: TimeInForce::Gtc,
             command: OrderCommandType::PlaceOrder,
-            matcher_event: None,
         }
     }
 }
@@ -90,63 +86,104 @@ impl OrderCommand {
             side,
             time_in_force,
             timestamp: 0,
-            matcher_event: None,
         }
     }
 
-    pub fn cancel(order_id: u64, user_id: u64) -> Self {
+    pub fn cancel(order_id: u64, side: Side, market_id: u32) -> Self {
         Self {
             command: OrderCommandType::CancelOrder,
             order_id,
-            market_id: 0,
-            user_id,
+            market_id,
+            user_id: 0,
             price: 0,
             size: 0,
-            side: Side::Ask,                 // Will be ignored
-            time_in_force: TimeInForce::Gtc, // Will be ignored
+            side,
+            time_in_force: TimeInForce::Gtc,
             timestamp: 0,
-            matcher_event: None,
+        }
+    }
+}
+
+pub struct ProcessedOrderCommand {
+    status: Status,
+    order_id: u64,
+    market_id: u32,
+    side: Side,
+    events: Option<Box<MatcherTradeEvent>>,
+}
+
+impl ProcessedOrderCommand {
+    pub fn new(status: Status, order_id: u64, market_id: u32, taker_side: Side) -> Self {
+        Self {
+            status,
+            order_id,
+            market_id,
+            side: taker_side,
+            events: None,
         }
     }
 
-    pub fn is_mutating(&self) -> bool {
-        matches!(
-            self.command,
-            OrderCommandType::PlaceOrder | OrderCommandType::CancelOrder
-        )
+    pub fn status(&self) -> Status {
+        self.status
     }
 
-    pub fn attach_matcher_event(&mut self, event: Box<MatcherTradeEvent>) {
-        if let Some(mut tail) = self.matcher_event.as_mut() {
+    pub fn order_id(&self) -> u64 {
+        self.order_id
+    }
+
+    pub fn market_id(&self) -> u32 {
+        self.market_id
+    }
+
+    pub fn side(&self) -> Side {
+        self.side
+    }
+
+    pub fn events(&self) -> Option<&MatcherTradeEvent> {
+        self.events.as_deref()
+    }
+
+    pub fn attatch_event(&mut self, event: Box<MatcherTradeEvent>) {
+        if let Some(mut tail) = self.events.as_mut() {
             while tail.next_event.is_some() {
                 tail = tail.next_event.as_mut().unwrap();
             }
             tail.next_event = Some(event);
         } else {
-            self.matcher_event = Some(event);
+            self.events = Some(event);
         }
+    }
+
+    pub fn set_status(&mut self, status: Status) {
+        self.status = status;
     }
 }
 
+/// Status Of The Order Command.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[repr(u8)]
+pub enum Status {
+    /// Rejected { due to Insufficient funds etc}
+    Rejected,
+    /// Order Placed, but not filled
+    Placed,
+    /// Cancelled {Direct Cancell order, or IOC, or FOK}
+    Cancelled,
+    /// Partially Filled Order {Partially filled in case of GTC, IOC}
+    PartiallyFilled,
+    /// Fully Filled Order {Filled in case of GTC, IOC, FOK}
+    Filled,
+}
+
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct MatcherTradeEvent {
-    pub event_type: MatcherEventType,
-    pub section: u32,
-    pub market_id: u32,
-    pub active_order_user_id: u64,
-    pub taker_action: Side,
     pub active_order_completed: bool,
     pub matched_order_id: u64,
     pub maker_user_id: u64,
     pub matched_order_completed: bool,
     pub price: u64,
     pub size: u64,
-    // pub bidder_hold_price: u64,
-
-    // Fee data
-    pub taker_fee: u64,
-    pub maker_fee: u64,
-
     pub next_event: Option<Box<MatcherTradeEvent>>,
 }
 
@@ -155,35 +192,13 @@ impl MatcherTradeEvent {
         let mut size = 0;
         let mut current = Some(self);
         while let Some(event) = current {
-            if event.event_type == MatcherEventType::Trade {
-                size += event.size;
-            }
+            size += event.size;
             current = event.next_event.as_deref();
         }
         size
     }
 }
 
-impl Default for MatcherTradeEvent {
-    fn default() -> Self {
-        Self {
-            event_type: MatcherEventType::Trade,
-            section: 0, // TODO: What is section?
-            market_id: 0,
-            active_order_user_id: 0,
-            taker_action: Side::Ask,
-            active_order_completed: false,
-            matched_order_id: 0,
-            maker_user_id: 0,
-            matched_order_completed: false,
-            price: 0,
-            size: 0,
-            taker_fee: 0,
-            maker_fee: 0,
-            next_event: None,
-        }
-    }
-}
 
 pub fn encode_order_command(order_command: OrderCommand, buf: &mut [u8]) -> SbeResult<()> {
     let write_buf = WriteBuf::new(buf);
@@ -217,6 +232,5 @@ pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
         side: decoder.side().try_into()?,
         time_in_force: decoder.time_in_force().try_into()?,
         timestamp: decoder.timestamp(),
-        matcher_event: None,
     })
 }

@@ -10,6 +10,12 @@ pub struct UserBalance {
     locked: u64,
 }
 
+impl Default for UserBalance {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UserBalance {
     pub fn new() -> Self {
         Self {
@@ -31,6 +37,12 @@ pub struct BalanceKey {
 
 pub struct BalanceStore {
     balances: AHashMap<BalanceKey, UserBalance>,
+}
+
+impl Default for BalanceStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BalanceStore {

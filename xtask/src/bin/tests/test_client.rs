@@ -41,7 +41,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server_port: u16 = env::var("VEX_SERVER_PORT")?.parse()?;
     // let sleep_duration = if args.rate > 0 { Duration::from_micros(1_000_000 / args.rate) } else { Duration::ZERO };
 
-    println!("Client starting. Attempting to connect to {server_host}:{server_port}");
+    println!(
+        "Client starting. Attempting to connect to {server_host}:{server_port}"
+    );
 
     let mut client_config = GatewayNetworkingConfig::test_defaults(); // Use your test defaults
     client_config.context_dir =
@@ -81,7 +83,7 @@ fn run_correctness_test(
     count: u64,
     client_id: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Client-{} sending {} messages...", client_id, count);
+    println!("Client-{client_id} sending {count} messages...");
     for i in 0..count {
         let order_command = OrderCommand {
             command: OrderCommandType::PlaceOrder,
@@ -89,7 +91,6 @@ fn run_correctness_test(
             size: 100,
             time_in_force: TimeInForce::Gtc,
             timestamp: 1,
-            matcher_event: None,
             side: Side::Ask,
             order_id: client_id * 1_000_000 + i,
             market_id: 3124,
@@ -118,7 +119,6 @@ fn run_latency_test(
             size: 100,
             time_in_force: TimeInForce::Gtc,
             timestamp: 1,
-            matcher_event: None,
             side: Side::Ask,
             order_id,
             market_id: 3124,
@@ -133,8 +133,10 @@ fn run_latency_test(
 
         // --- Conceptual: Wait for the acknowledgment ---
         let ack = rx.recv_timeout(Duration::from_secs(5))?;
-        if ack.order_id == order_id as i64 {
-            println!("Client-{client_id} received ack for order_id: {order_id}");
+        if ack.order_id == order_id {
+            println!(
+                "Client-{client_id} received ack for order_id: {order_id}"
+            );
             let rtt = start_time.elapsed().as_micros() as u64;
             histogram.record(rtt).unwrap();
         }

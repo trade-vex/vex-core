@@ -5,8 +5,8 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use sbe_order::order_command_type::OrderCommandType as SbeOrderCommandType;
 use sbe_order::side::Side as SbeSide;
 use sbe_order::time_in_force::TimeInForce as SbeTimeInForce;
-use serde::de::Error;
 use serde::de::value::Error as SerdeError;
+use serde::de::Error;
 use serde::{Deserialize, Serialize};
 
 #[derive(
@@ -24,17 +24,14 @@ use serde::{Deserialize, Serialize};
     BorshDeserialize,
 )]
 #[borsh(use_discriminant = true)]
+#[derive(Default)]
 pub enum MarketType {
     FuturesContract = 0,
+    #[default]
     CurrencyExchangePair = 1,
     Option = 2,
 }
 
-impl Default for MarketType {
-    fn default() -> Self {
-        MarketType::CurrencyExchangePair
-    }
-}
 
 impl MarketType {
     pub fn code(&self) -> u8 {
@@ -84,9 +81,9 @@ impl TryFrom<SbeOrderCommandType> for OrderCommandType {
     }
 }
 
-impl Into<SbeOrderCommandType> for OrderCommandType {
-    fn into(self) -> SbeOrderCommandType {
-        match self {
+impl From<OrderCommandType> for SbeOrderCommandType {
+    fn from(val: OrderCommandType) -> Self {
+        match val {
             OrderCommandType::PlaceOrder => SbeOrderCommandType::PlaceOrder,
             OrderCommandType::CancelOrder => SbeOrderCommandType::CancelOrder,
         }
@@ -123,9 +120,9 @@ impl TryFrom<SbeTimeInForce> for TimeInForce {
     }
 }
 
-impl Into<SbeTimeInForce> for TimeInForce {
-    fn into(self) -> SbeTimeInForce {
-        match self {
+impl From<TimeInForce> for SbeTimeInForce {
+    fn from(val: TimeInForce) -> Self {
+        match val {
             TimeInForce::Gtc => SbeTimeInForce::Gtc,
             TimeInForce::Ioc => SbeTimeInForce::Ioc,
             TimeInForce::Fok => SbeTimeInForce::Fok,
@@ -155,9 +152,9 @@ impl TryFrom<SbeSide> for Side {
     }
 }
 
-impl Into<SbeSide> for Side {
-    fn into(self) -> SbeSide {
-        match self {
+impl From<Side> for SbeSide {
+    fn from(val: Side) -> Self {
+        match val {
             Side::Ask => SbeSide::Ask,
             Side::Bid => SbeSide::Bid,
         }

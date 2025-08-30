@@ -1,5 +1,5 @@
 use common::cmd::{OrderCommand, decode_order_command};
-use common::{Side, TimeInForce, OrderCommandType};
+use common::{OrderCommandType, Side, TimeInForce};
 use disruptor::{BusySpin, ProcessorSettings, build_multi_producer};
 use rusteron_client::{AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port};
 use std::time::Duration;
@@ -77,7 +77,6 @@ fn test_client_server_communication() {
             user_id: 1,
             size: 100,
             timestamp: 1,
-            matcher_event: None,
             side: Side::Ask,
             order_id: 1,
             market_id: 3124,
