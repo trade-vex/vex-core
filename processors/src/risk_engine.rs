@@ -39,7 +39,7 @@ impl RiskEngine {
         (user_id & self.shard_mask) == self.shard_id as u64
     }
 
-    /// Pre-processes a command to validate it(DONE) and hold funds(TODOs)
+    /// Pre-processes a command to validate it and hold funds
     pub fn pre_process_command(&mut self, cmd: &OrderCommand) -> Result<()> {
         // Process only if the command is for a user managed by this shard
         if !self.user_id_for_this_handler(cmd.user_id) {
@@ -55,7 +55,7 @@ impl RiskEngine {
             .get_mut(&cmd.user_id)
             .ok_or(RiskEngineError::UserNotFound { user_id: cmd.user_id })?;
 
-        // check 2: Validate the command arguments.
+        // Validate the command arguments
         info!(
             "[RiskEngine] Validating arguments for order {}",
             cmd.order_id
@@ -123,9 +123,10 @@ impl RiskEngine {
         Ok(())
     }
 
-    /// Handles events coming from the matching engine to settle funds
-    pub fn handle_event(&mut self, event: &MatcherTradeEvent, market_id: u32, taker_side: Side, taker_id: u64) {
-        info!("[RiskEngine_{}] Processing trade event: price={}, size={}, maker={}, taker={}", 
+    /// Handles a single trade event from the matching engine to settle funds
+    /// This is called by the R2 handler for each individual event in the linked list
+    pub fn handle_event(&mut self, event: &MatcherTradeEvent, market_id: u32, taker_id: u64) {
+        info!("[RiskEngine_{}] Processing single trade event: price={}, size={}, maker={}, taker={}", 
               self.shard_id, event.price, event.size, event.maker_user_id, taker_id);
 
         // Get market specification for fee calculations
@@ -137,15 +138,18 @@ impl RiskEngine {
             }
         };
 
-        // Process maker settlement (consume locked funds)
+        // Process maker settlement (consume locked funds and apply maker fee)
         if self.user_id_for_this_handler(event.maker_user_id) {
             if let Some(maker_profile) = self.user_balances.get_mut(&event.maker_user_id) {
                 let trade_amount = event.price * event.size;
+                let maker_fee = spec.maker_fee * event.size;
+                let total_maker_amount = trade_amount + maker_fee;
                 
-                match maker_profile.consume_locked(event.maker_user_id, market_id, trade_amount) {
+                // Consume the locked funds for the maker (they pay the trade amount + maker fees)
+                match maker_profile.consume_locked(event.maker_user_id, market_id, total_maker_amount) {
                     Ok(()) => {
                         info!("[RiskEngine_{}] Successfully consumed locked funds for maker {}: amount={}", 
-                              self.shard_id, event.maker_user_id, trade_amount);
+                              self.shard_id, event.maker_user_id, total_maker_amount);
                     }
                     Err(e) => {
                         warn!("[RiskEngine_{}] Failed to consume locked funds for maker {}: {:?}", 
@@ -155,49 +159,25 @@ impl RiskEngine {
             }
         }
 
-        // Process taker settlement (unlock remaining funds and apply fees)
+        // Process taker settlement (consume locked funds for the trade)
         if self.user_id_for_this_handler(taker_id) {
             if let Some(taker_profile) = self.user_balances.get_mut(&taker_id) {
                 let total_trade_amount = event.price * event.size;
                 let taker_fee = spec.taker_fee * event.size;
                 let total_required = total_trade_amount + taker_fee;
                 
-                // Unlock the excess funds that were locked but not used
-                if let Err(e) = taker_profile.unlock_funds(taker_id, market_id, total_required) {
-                    warn!("[RiskEngine_{}] Failed to unlock excess funds for taker {}: {:?}", 
-                          self.shard_id, taker_id, e);
-                } else {
-                    info!("[RiskEngine_{}] Successfully unlocked excess funds for taker {}: amount={}", 
-                          self.shard_id, taker_id, total_required);
-                }
-            }
-        }
-        
-        // Process chained events if they exist
-        let mut current_event = event.next_event.as_ref();
-        while let Some(next_event) = current_event {
-            info!("[RiskEngine_{}] Processing chained event: price={}, size={}, maker={}", 
-                  self.shard_id, next_event.price, next_event.size, next_event.maker_user_id);
-            
-            // Process maker settlement for chained event
-            if self.user_id_for_this_handler(next_event.maker_user_id) {
-                if let Some(maker_profile) = self.user_balances.get_mut(&next_event.maker_user_id) {
-                    let trade_amount = next_event.price * next_event.size;
-                    
-                    match maker_profile.consume_locked(next_event.maker_user_id, market_id, trade_amount) {
-                        Ok(()) => {
-                            info!("[RiskEngine_{}] Successfully consumed locked funds for chained maker {}: amount={}", 
-                                  self.shard_id, next_event.maker_user_id, trade_amount);
-                        }
-                        Err(e) => {
-                            warn!("[RiskEngine_{}] Failed to consume locked funds for chained maker {}: {:?}", 
-                                  self.shard_id, next_event.maker_user_id, e);
-                        }
+                // Consume the locked funds for the taker (they pay the full amount + fees)
+                match taker_profile.consume_locked(taker_id, market_id, total_required) {
+                    Ok(()) => {
+                        info!("[RiskEngine_{}] Successfully consumed locked funds for taker {}: amount={}", 
+                              self.shard_id, taker_id, total_required);
+                    }
+                    Err(e) => {
+                        warn!("[RiskEngine_{}] Failed to consume locked funds for taker {}: {:?}", 
+                              self.shard_id, taker_id, e);
                     }
                 }
             }
-            
-            current_event = next_event.next_event.as_ref();
         }
     }
 }
