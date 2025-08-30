@@ -4,8 +4,8 @@
 //! It supports loading symbols from configuration files and provides validation and management.
 
 use crate::{ConfigError, Environment, Result};
+use common::CoreMarketSpecification;
 use common::MarketType;
-use common::model::market_specification::CoreMarketSpecification;
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
@@ -129,7 +129,6 @@ impl SymbolSpecificationConfig {
                     market_id, spec.taker_fee, spec.maker_fee
                 )));
             }
-
         }
 
         Ok(())

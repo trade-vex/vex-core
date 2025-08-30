@@ -1,6 +1,6 @@
 //! This module contains core arithmetic functions for financial calculations,
 //! mirroring the logic from the Java `CoreArithmeticUtils` class.
-use crate::model::market_specification::CoreMarketSpecification;
+use crate::market_specification::CoreMarketSpecification;
 
 pub struct CoreArithmetic;
 

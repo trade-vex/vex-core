@@ -3,10 +3,10 @@ pub mod utils;
 
 use std::sync::Arc;
 
-use common::model::market_specification::CoreMarketSpecification;
+use common::CoreMarketSpecification;
 use hashbrown::HashMap;
-use processors::journaling::JournalingProcessor;
 use processors::events::SimpleEventsHandler;
+use processors::journaling::JournalingProcessor;
 
 use crate::engine::{CoreEngine, OrderProducer};
 

@@ -36,9 +36,7 @@
 //!         processors (risk engines and event handlers) to consume.
 use crate::tree::BookSide;
 use common::{
-    Side, TimeInForce,
-    cmd::{MatcherTradeEvent, OrderCommand, ProcessedOrderCommand, Status},
-    model::order::Order,
+    MatcherTradeEvent, Order, OrderCommand, ProcessedOrderCommand, Side, Status, TimeInForce,
 };
 use std::collections::{HashMap, VecDeque};
 
@@ -104,20 +102,19 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     fn match_order(&mut self, cmd: &OrderCommand, events: &mut ProcessedOrderCommand) -> u64 {
         let mut remaining_size = cmd.size;
         type BookToMatch<'a> = (&'a mut dyn BookSide, Box<dyn Fn(u64, u64) -> bool>);
-        let (book_to_match, price_check): BookToMatch =
-            if cmd.side == Side::Bid {
-                // Buy orders match against asks (lowest price first)
-                (
-                    &mut self.asks,
-                    Box::new(|taker_price, maker_price| taker_price >= maker_price),
-                )
-            } else {
-                // Sell orders match against bids (highest price first)
-                (
-                    &mut self.bids,
-                    Box::new(|taker_price, maker_price| taker_price <= maker_price),
-                )
-            };
+        let (book_to_match, price_check): BookToMatch = if cmd.side == Side::Bid {
+            // Buy orders match against asks (lowest price first)
+            (
+                &mut self.asks,
+                Box::new(|taker_price, maker_price| taker_price >= maker_price),
+            )
+        } else {
+            // Sell orders match against bids (highest price first)
+            (
+                &mut self.bids,
+                Box::new(|taker_price, maker_price| taker_price <= maker_price),
+            )
+        };
 
         let mut filled_price_levels = Vec::new();
 
@@ -202,8 +199,13 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     ///    All the contraints are NOT checked in the ORDERBOOK, must be guaranteed by upstream systems
     ///    They are not included here to avoid redundant checks that are already made
     pub fn place_order(&mut self, cmd: &OrderCommand) -> ProcessedOrderCommand {
-        let mut processed =
-            ProcessedOrderCommand::new(Status::Rejected, cmd.order_id,cmd.user_id , cmd.market_id, cmd.side);
+        let mut processed = ProcessedOrderCommand::new(
+            Status::Rejected,
+            cmd.order_id,
+            cmd.user_id,
+            cmd.market_id,
+            cmd.side,
+        );
         match cmd.time_in_force {
             TimeInForce::Gtc => {
                 // Handle GTC (Good 'Til Canceled) orders
@@ -267,8 +269,13 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     /// Note: This function does not check for the validity of the cancel order command.
     /// All the contraints are NOT checked in the ORDERBOOK, must be guaranteed by upstream systems
     pub fn cancel_order(&mut self, cmd: &OrderCommand) -> ProcessedOrderCommand {
-        let mut processed =
-            ProcessedOrderCommand::new(Status::Rejected, cmd.order_id, cmd.user_id ,cmd.market_id, cmd.side);
+        let mut processed = ProcessedOrderCommand::new(
+            Status::Rejected,
+            cmd.order_id,
+            cmd.user_id,
+            cmd.market_id,
+            cmd.side,
+        );
         if let Some(price) = self.orders.remove(&cmd.order_id) {
             if let Some(best_price) = self.bids.best_price()
                 && price <= best_price

@@ -1,12 +1,12 @@
-use common::cmd::MatcherTradeEvent;
-use common::cmd::OrderCommand;
+use crate::error::{Result, RiskEngineError};
+use common::BalanceStore;
+use common::CoreMarketSpecification;
+use common::MatcherTradeEvent;
+use common::OrderCommand;
 use common::OrderCommandType;
 use common::Side;
-use common::model::market_specification::CoreMarketSpecification;
-use common::model::user_profile::BalanceStore;
 use hashbrown::HashMap;
 use tracing::{info, warn};
-use crate::error::{Result, RiskEngineError};
 
 /// Manages all user profiles and performs risk checks as well as settlements
 pub struct RiskEngine {
@@ -50,34 +50,34 @@ impl RiskEngine {
             "[RiskEngine_{}] Pre-processing command: {:?}",
             self.shard_id, cmd
         );
-        let user_profile = self
-            .user_balances
-            .get_mut(&cmd.user_id)
-            .ok_or(RiskEngineError::UserNotFound { user_id: cmd.user_id })?;
+        let user_profile =
+            self.user_balances
+                .get_mut(&cmd.user_id)
+                .ok_or(RiskEngineError::UserNotFound {
+                    user_id: cmd.user_id,
+                })?;
 
         // Validate the command arguments
         info!(
             "[RiskEngine] Validating arguments for order {}",
             cmd.order_id
         );
-        if matches!(
-            cmd.command,
-            OrderCommandType::PlaceOrder 
-        ) {
+        if matches!(cmd.command, OrderCommandType::PlaceOrder) {
             if cmd.size <= 0 || cmd.price <= 0 {
-                return Err(RiskEngineError::InvalidArguments { 
-                    price: cmd.price, 
-                    size: cmd.size 
+                return Err(RiskEngineError::InvalidArguments {
+                    price: cmd.price,
+                    size: cmd.size,
                 });
             }
             info!(
                 "[RiskEngine] Looking up market_id spec for market_id {}",
                 cmd.market_id
             );
-            let spec = self
-                .symbol_specs
-                .get(&cmd.market_id)
-                .ok_or(RiskEngineError::MarketSpecNotFound { market_id: cmd.market_id })?;
+            let spec = self.symbol_specs.get(&cmd.market_id).ok_or(
+                RiskEngineError::MarketSpecNotFound {
+                    market_id: cmd.market_id,
+                },
+            )?;
 
             info!(
                 "[RiskEngine] Found market_id spec: {:?} for market_id {}",
@@ -96,22 +96,23 @@ impl RiskEngine {
 
             let amount = required_funds;
 
-            if let Err(balance_error) = user_profile.lock_funds(cmd.user_id, cmd.market_id, amount) {
+            if let Err(balance_error) = user_profile.lock_funds(cmd.user_id, cmd.market_id, amount)
+            {
                 warn!(
                     "[RiskEngine] Insufficient funds for user {} to place order {}: {:?}",
                     cmd.user_id, cmd.order_id, balance_error
                 );
-                
+
                 // Get actual available balance for error reporting
                 let available_balance = user_profile
                     .get_balance(cmd.user_id, cmd.market_id)
                     .map(|balance| balance.available())
                     .unwrap_or(0);
-                
-                return Err(RiskEngineError::InsufficientFunds { 
-                    user_id: cmd.user_id, 
-                    required: required_funds, 
-                    available: available_balance
+
+                return Err(RiskEngineError::InsufficientFunds {
+                    user_id: cmd.user_id,
+                    required: required_funds,
+                    available: available_balance,
                 });
             }
         }
@@ -133,7 +134,10 @@ impl RiskEngine {
         let spec = match self.symbol_specs.get(&market_id) {
             Some(spec) => spec,
             None => {
-                warn!("[RiskEngine_{}] Market spec not found for market_id {}", self.shard_id, market_id);
+                warn!(
+                    "[RiskEngine_{}] Market spec not found for market_id {}",
+                    self.shard_id, market_id
+                );
                 return;
             }
         };
@@ -152,8 +156,10 @@ impl RiskEngine {
                               self.shard_id, event.maker_user_id, total_maker_amount);
                     }
                     Err(e) => {
-                        warn!("[RiskEngine_{}] Failed to consume locked funds for maker {}: {:?}", 
-                              self.shard_id, event.maker_user_id, e);
+                        warn!(
+                            "[RiskEngine_{}] Failed to consume locked funds for maker {}: {:?}",
+                            self.shard_id, event.maker_user_id, e
+                        );
                     }
                 }
             }
