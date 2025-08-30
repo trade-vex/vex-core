@@ -70,11 +70,6 @@ impl KafkaEventsHandler {
         let order_event = OrderEvent {
             order: order,
             market_id: processed_cmd.market_id(),
-            status: format!("{:?}", processed_cmd.status()),
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
         };
 
         let payload = serde_json::to_string(&order_event)
@@ -274,8 +269,6 @@ struct BalanceEvent {
 struct OrderEvent {
     order: Order,
     market_id: u32,
-    status: String,
-    timestamp: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
