@@ -6,16 +6,12 @@ use common::model::enums::Side;
 use common::model::symbol_specification::CoreSymbolSpecification;
 use common::model::user_profile::UserProfile;
 use hashbrown::HashMap;
-use dashmap::DashMap;
 use orderbook::OrderBookError;
 use tracing::{info, warn};
 
 /// Manages all user profiles and performs risk checks as well as settlements
 pub struct RiskEngine {
-    // Can we use dashmap here ?
-    // Reasoning -> r1 and r2 can go for concurrent contest for this data structure and
-    // therefore using a dashmap in this case might be better ?
-    pub user_profiles: DashMap<u64, UserProfile>,
+    pub user_profiles: HashMap<u64, UserProfile>,
     pub symbol_specs: HashMap<u32, CoreSymbolSpecification>,
     shard_id: u32,
     shard_mask: u64,
@@ -31,7 +27,7 @@ impl RiskEngine {
             panic!("Number of shards must be a power of 2");
         }
         Self {
-            user_profiles: DashMap::new(),
+            user_profiles: HashMap::new(),
             symbol_specs,
             shard_id,
             shard_mask: (num_shards - 1) as u64,
@@ -39,6 +35,7 @@ impl RiskEngine {
     }
 
     /// Checks if a user ID is handled by this risk engine instance.
+    #[inline]
     fn user_id_for_this_handler(&self, user_id: u64) -> bool {
         (user_id & self.shard_mask) == self.shard_id as u64
     }
@@ -54,7 +51,7 @@ impl RiskEngine {
             "[RiskEngine_{}] Pre-processing command: {:?}",
             self.shard_id, cmd
         );
-        let mut user_profile = self
+        let user_profile = self
             .user_profiles
             .get_mut(&cmd.user_id)
             .ok_or(OrderBookError::UnsupportedCommand)?;
@@ -129,7 +126,7 @@ impl RiskEngine {
             MatcherEventType::Trade => {
                 let spec = self.symbol_specs.get(&event.symbol_id).unwrap();
 
-                if let Some(mut maker_profile) = self.user_profiles.get_mut(&event.maker_user_id) {
+                if let Some(maker_profile) = self.user_profiles.get_mut(&event.maker_user_id) {
                     maker_profile.settle_trade(
                         spec,
                         event.price,
@@ -141,13 +138,13 @@ impl RiskEngine {
                         },
                     );
                 }
-                if let Some(mut taker_profile) = self.user_profiles.get_mut(&event.active_order_user_id)
+                if let Some(taker_profile) = self.user_profiles.get_mut(&event.active_order_user_id)
                 {
                     taker_profile.settle_trade(spec, event.price, event.size, event.taker_action);
                 }
             }
             MatcherEventType::Reduce | MatcherEventType::Cancel => {
-                if let Some(mut user_profile) = self.user_profiles.get_mut(&event.active_order_user_id)
+                if let Some(user_profile) = self.user_profiles.get_mut(&event.active_order_user_id)
                 {
                     let released_amount = if event.taker_action == Side::Bid {
                         event.price * event.size
