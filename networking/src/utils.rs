@@ -1,3 +1,7 @@
+<<<<<<< HEAD
+=======
+use crate::server::ServerError;
+>>>>>>> chore/refactor-common-ob
 use dashmap::DashSet;
 use rand::Rng;
 use rand::{seq::SliceRandom, thread_rng};
@@ -6,21 +10,18 @@ use rusteron_client::{
     AeronReservedValueSupplierLogger, AeronSubscription, AeronUnavailableImageCallback,
     AeronUnavailableImageLogger, Handler,
 };
+<<<<<<< HEAD
 use std::{ffi::CString, time::Duration};
 use tracing::info;
 
 use crate::server::ServerError;
-use dashmap::DashSet;
-use rand::Rng;
-use rand::thread_rng;
-use rusteron_client::{
-    Aeron, AeronAvailableImageCallback, AeronAvailableImageLogger, AeronCError, AeronPublication,
-    AeronReservedValueSupplierLogger, AeronSubscription, AeronUnavailableImageCallback,
-    AeronUnavailableImageLogger, Handler,
-};
+=======
 use std::thread;
 use std::{ffi::CString, time::Duration};
 use tracing::error;
+
+const MESSAGE_RETRY_COUNT: usize = 5;
+>>>>>>> chore/refactor-common-ob
 
 pub fn new_publication(
     aeron: &Aeron,
@@ -55,19 +56,25 @@ pub fn new_publication_with_mdc(
     port: u16,
     stream_id: i32,
 ) -> Result<AeronPublication, AeronCError> {
+<<<<<<< HEAD
     info!(
         "server: new_publication_with_mdc: address: {}, port: {}, stream_id: {}",
         address, port, stream_id
     );
+=======
+>>>>>>> chore/refactor-common-ob
     let control_endpoint = format!("{address}:{port}");
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic"
     ))
     .unwrap();
+<<<<<<< HEAD
     info!(
         "server: new_publication_with_mdc: uri: {}",
         uri.to_string_lossy()
     );
+=======
+>>>>>>> chore/refactor-common-ob
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -93,18 +100,24 @@ pub fn new_subscription_with_mdc(
     stream_id: i32,
 ) -> Result<AeronSubscription, AeronCError> {
     let control_endpoint = format!("{address}:{port}");
+<<<<<<< HEAD
     info!(
         "client: new_subsciption_with_mdc: control_endpoint: {}",
         control_endpoint
     );
+=======
+>>>>>>> chore/refactor-common-ob
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic"
     ))
     .unwrap();
+<<<<<<< HEAD
     info!(
         "client: new_subsciption_with_mdc: uri: {}",
         uri.to_string_lossy()
     );
+=======
+>>>>>>> chore/refactor-common-ob
     let available_logger = AeronAvailableImageLogger {};
     let available_handler = Handler::leak(available_logger);
     let unavailable_logger = AeronUnavailableImageLogger {};
@@ -191,11 +204,24 @@ pub fn new_subscription_with_handlers<
     )
 }
 
+<<<<<<< HEAD
+pub fn send_message(
+    publication: &AeronPublication,
+    buffer: &mut [u8],
+    message: &str,
+) -> Result<(), AeronCError> {
+    let message_bytes = message.as_bytes();
+    buffer[0..message_bytes.len()].copy_from_slice(message_bytes);
+=======
 pub fn send_message(publication: &AeronPublication, buffer: &[u8]) -> Result<(), AeronCError> {
+>>>>>>> chore/refactor-common-ob
     let result = publication.offer::<AeronReservedValueSupplierLogger>(buffer, None);
     if result < 0 {
         return Err(AeronCError::from_code(result as i32));
     }
+<<<<<<< HEAD
+
+=======
     Ok(())
 }
 
@@ -208,17 +234,18 @@ pub fn send_message_with_retries(
         if result >= 0 {
             return Ok(());
         }
-        error!(
-            "Failed to send message (attempt {} of {}): {}",
-            i + 1,
-            MESSAGE_RETRY_COUNT,
-            AeronCError::from_code(result as i32)
-        );
-        if i == MESSAGE_RETRY_COUNT - 1 {
+        if result < 0 {
+            error!(
+                "Failed to send message: {}",
+                AeronCError::from_code(result as i32)
+            );
+        }
+        if i == MESSAGE_RETRY_COUNT {
             return Err(AeronCError::from_code(result as i32));
         }
         thread::sleep(Duration::from_millis(100));
     }
+>>>>>>> chore/refactor-common-ob
     Ok(())
 }
 

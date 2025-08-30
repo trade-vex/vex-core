@@ -5,8 +5,8 @@
 //! 2. Create symbol specifications programmatically
 //! 3. Validate and merge symbol configurations
 
-use common::model::enums::SymbolType;
-use common::model::symbol_specification::CoreSymbolSpecification;
+use common::MarketType;
+use common::model::market_specification::CoreMarketSpecification;
 use vex_config::{Environment, SymbolSpecificationConfig, VexConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,11 +22,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "   Loaded {} symbols for development environment",
         dev_config.symbols.len()
     );
-    for symbol_id in dev_config.symbols.get_symbol_ids() {
-        if let Some(spec) = dev_config.symbols.get_symbol(symbol_id) {
+    for market_id in dev_config.symbols.get_market_ids() {
+        if let Some(spec) = dev_config.symbols.get_symbol(market_id) {
             println!(
                 "   Symbol {}: {:?} ({}/{})",
-                symbol_id, spec.symbol_type, spec.base_currency, spec.quote_currency
+                market_id, spec.market_type, spec.base_currency, spec.quote_currency
             );
         }
     }
@@ -51,17 +51,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut custom_symbols = SymbolSpecificationConfig::default();
 
     // Add a custom BTC/USD pair
-    let btc_usd_spec = CoreSymbolSpecification {
-        symbol_id: 1001,
-        symbol_type: SymbolType::CurrencyExchangePair,
+    let btc_usd_spec = CoreMarketSpecification {
+        market_id: 1001,
+        market_type: MarketType::CurrencyExchangePair,
         base_currency: 3762,   // BTC (satoshi)
         quote_currency: 840,   // USD
         base_scale_k: 100_000, // 1 lot = 0.001 BTC
         quote_scale_k: 100,    // 1 step = $0.01
         taker_fee: 25,         // 0.25 USD per lot
         maker_fee: 10,         // 0.10 USD per lot
-        margin_buy: 0,
-        margin_sell: 0,
     };
 
     custom_symbols.add_symbol(btc_usd_spec)?;

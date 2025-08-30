@@ -23,7 +23,6 @@ This command builds the necessary Docker images for the `vex-server` and `vex-cl
 
 **Usage:**
 ```sh
-docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml up media-driver --build
 cargo xtask build-docker
 ```
 
@@ -41,21 +40,19 @@ cargo xtask test-e2e [OPTIONS]
 *   `--scenario <SCENARIO>`: Sets the network conditions for the test.
     *   `basic-connectivity` (Default): No adverse network conditions are applied.
     *   `high-latency`: Simulates a high-latency network (100ms RTT).
-    *   `packet-loss`: Simulates a network with 10% packet loss.
+    *   `packet-loss`: Simulates a network with 5% packet loss.
 *   `--clients <COUNT>`: Specifies the number of clients to run concurrently. Defaults to `1`.
 
 **Examples:**
 
 *   Run a simple connectivity test with one client:
     ```sh
-    cargo xtask test-e2e --scenario basic-connectivity --clients 1
+    cargo xtask test-e2e
     ```
 *   Run a test with 5 clients under high latency conditions:
     ```sh
     cargo xtask test-e2e --scenario high-latency --clients 5
     ```
-*   Run a test with 5 clients under packet loss conditions:
-    cargo xtask test-e2e --scenario packet-loss --clients 5
 
 ### 3. Performance Benchmarking
 
@@ -72,9 +69,9 @@ cargo xtask benchmark [OPTIONS]
 
 **Example:**
 
-*   Run a benchmark with 5 clients:
+*   Run a benchmark with 10 clients:
     ```sh
-    cargo xtask benchmark --clients 5
+    cargo xtask benchmark --clients 10
     ```
 
 ## Test Artifacts and Logs

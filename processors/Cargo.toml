@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-common = { path = "../common" }
-# orderbook = { path = "../orderbook" }
+common = { workspace = true }
+vex-orderbook = { workspace = true }
 
 # High-level async runtime and message passing channels
 tokio = { version = "1", features = ["full"] }

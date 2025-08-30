@@ -61,10 +61,13 @@ mod test {
                 // If the level doesn't exist at all, that's also valid for an expected volume of 0.
             } else {
                 let (_, level) = level_opt.unwrap_or_else(|| {
-                    panic!("Expected price level at {price} for side {side:?} not found")
+                    panic!(
+                        "Expected price level at {price} for side {side:?} not found"
+                    )
                 });
                 assert_eq!(
-                    level.total_volume, expected_volume,
+                    level.total_volume,
+                    expected_volume,
                     "Volume mismatch at price {price} for side {side:?}"
                 );
                 assert_eq!(
@@ -192,10 +195,10 @@ mod test {
                     && let Some(level) = self.bids.get_level_mut(*price)
                 {
                     return level.orders.iter().find(|o| o.order_id == order_id);
-                } else if let Some(price) = self.orders.get(&order_id)
-                    && let Some(level) = self.asks.get_level_mut(*price)
-                {
-                    return level.orders.iter().find(|o| o.order_id == order_id);
+                } else if let Some(price) = self.orders.get(&order_id) {
+                    if let Some(level) = self.asks.get_level_mut(*price) {
+                        return level.orders.iter().find(|o| o.order_id == order_id);
+                    }
                 }
             }
             None
