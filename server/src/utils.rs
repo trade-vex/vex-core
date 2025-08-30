@@ -67,9 +67,11 @@ macro_rules! create_risk_r2_handler {
 
 #[macro_export]
 macro_rules! create_event_handler {
-    ($events_handler:expr, $risk_engines:expr) => {{
+    ($events_handler:expr, $risk_engines:expr, $matching_engine_routers:expr, $orderbook_depth:expr) => {{
         let events_handler = $events_handler;
         let risk_engines = $risk_engines;
+        let matching_engine_routers = $matching_engine_routers;
+        let orderbook_depth = $orderbook_depth;
         move |processed_cmd: &ProcessedOrderCommand, _sequence: i64, _end_of_batch: bool| {
             // Get the appropriate risk engine for the taker user
             let taker_id = processed_cmd.taker_id();
@@ -83,8 +85,22 @@ macro_rules! create_event_handler {
                 None
             };
             
+            // Get the appropriate orderbook for the market using correct sharding
+            let market_id = processed_cmd.market_id();
+            let num_matching_shards = matching_engine_routers.len() as u64;
+            let matching_shard_mask = num_matching_shards - 1;
+            let market_shard = (market_id as u64 & matching_shard_mask) as usize;
+            
+            // Create orderbook snapshot using the proper method with configurable depth
+            let orderbook_snapshot = if let Some(router_mutex) = matching_engine_routers.get(market_shard) {
+                let router = router_mutex.lock();
+                router.create_orderbook_snapshot(market_id, orderbook_depth)
+            } else {
+                None
+            };
+            
             // Handle the processed command (for Kafka events)
-            events_handler.handle_processed_command(processed_cmd, risk_engine);
+            events_handler.handle_processed_command(processed_cmd, risk_engine, orderbook_snapshot);
         }
     }};
 }

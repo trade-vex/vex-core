@@ -74,6 +74,11 @@ impl PriceLevel {
             processed.set_status(Status::Cancelled);
         }
     }
+
+    /// Get the total volume at this price level
+    pub fn get_total_volume(&self) -> u64 {
+        self.total_volume
+    }
 }
 
 /// The concrete implementation of the `OrderBook`.
@@ -355,5 +360,38 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     fn is_market_order(cmd: &OrderCommand) -> bool {
         (cmd.price == 0 && cmd.side == Side::Ask)
             || (cmd.price == u64::MAX && cmd.side == Side::Bid)
+    }
+
+    /// Get iterator over bid levels (highest price first)
+    pub fn get_bids(&self) -> Box<dyn Iterator<Item = (u64, &PriceLevel)> + '_> {
+        self.bids.iter()
+    }
+
+    /// Get iterator over ask levels (lowest price first)
+    pub fn get_asks(&self) -> Box<dyn Iterator<Item = (u64, &PriceLevel)> + '_> {
+        self.asks.iter()
+    }
+
+    /// Create a snapshot of the orderbook data
+    pub fn create_snapshot(&self) -> (Vec<(u64, u64)>, Vec<(u64, u64)>) {
+        self.create_snapshot_with_depth(50) // Default depth of 50
+    }
+
+    /// Create a snapshot of the orderbook data with specified depth
+    pub fn create_snapshot_with_depth(&self, depth: usize) -> (Vec<(u64, u64)>, Vec<(u64, u64)>) {
+        let mut bids = Vec::new();
+        let mut asks = Vec::new();
+        
+        // Collect top N bid levels (highest price first)
+        for (price, level) in self.get_bids().take(depth) {
+            bids.push((price, level.get_total_volume()));
+        }
+        
+        // Collect top N ask levels (lowest price first)
+        for (price, level) in self.get_asks().take(depth) {
+            asks.push((price, level.get_total_volume()));
+        }
+        
+        (bids, asks)
     }
 }
