@@ -83,39 +83,30 @@ impl MatchingEngineRouter {
     /// commands for symbols it owns
     pub fn process_order(&mut self, cmd: &mut OrderCommand) {
         if self.symbol_for_this_handler(cmd.symbol_id as u64) {
-            self.process_matching_command(cmd);
-        }
-    }
-
-    /// Process matching command
-    ///
-    /// # Reasoning
-    /// This method implements the core matching logic, similar to exchangeCore's `processMatchingCommand`.
-    /// It routes commands to the appropriate orderbook.
-    fn process_matching_command(&mut self, cmd: &mut OrderCommand) {
-        if let Some(order_book) = self.order_books.get_mut(&cmd.symbol_id) {
-            info!(
-                "[Router {}] Processing command for symbol_id {}",
-                self.shard_id, cmd.symbol_id
-            );
-
-            let result = match cmd.command {
-                OrderCommandType::PlaceLimitOrder => order_book.new_order(cmd),
-                OrderCommandType::PlaceMarketOrder => order_book.new_order(cmd),
-                OrderCommandType::CancelOrder => order_book.cancel_order(cmd),
-            };
-
-            if let Err(e) = result {
+            if let Some(order_book) = self.order_books.get_mut(&cmd.symbol_id) {
+                info!(
+                    "[Router {}] Processing command for symbol_id {}",
+                    self.shard_id, cmd.symbol_id
+                );
+    
+                let result = match cmd.command {
+                    OrderCommandType::PlaceLimitOrder => order_book.new_order(cmd),
+                    OrderCommandType::PlaceMarketOrder => order_book.new_order(cmd),
+                    OrderCommandType::CancelOrder => order_book.cancel_order(cmd),
+                };
+    
+                if let Err(e) = result {
+                    warn!(
+                        "[Router {}] Order book processing failed: {:?}",
+                        self.shard_id, e
+                    );
+                }
+            } else {
                 warn!(
-                    "[Router {}] Order book processing failed: {:?}",
-                    self.shard_id, e
+                    "[Router {}] No order book found for symbol_id {}",
+                    self.shard_id, cmd.symbol_id
                 );
             }
-        } else {
-            warn!(
-                "[Router {}] No order book found for symbol_id {}",
-                self.shard_id, cmd.symbol_id
-            );
         }
     }
 
