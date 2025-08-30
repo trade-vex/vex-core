@@ -7,16 +7,6 @@ edition = "2024"
 common = { workspace = true }
 vex-orderbook = { workspace = true }
 thiserror = { workspace = true }
-
-# High-level async runtime and message passing channels
-tokio = { version = "1", features = ["full"] }
-
-# Logging framework
-tracing = "0.1"
-tracing-subscriber = "0.3"
-
-# Trait for async functions in traits
-async-trait = "0.1"
-hashbrown.workspace = true
-
-dashmap = "6.1.0"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+hashbrown = { workspace = true }
