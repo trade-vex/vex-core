@@ -1,8 +1,8 @@
 use crate::{
     create_event_handler, create_matching_handler, create_risk_handler, create_risk_r2_handler,
 };
-use common::cmd::{MatcherTradeEvent, OrderCommand, ProcessedOrderCommand, Status};
-use common::model::symbol_specification::CoreSymbolSpecification;
+use common::cmd::{OrderCommand, ProcessedOrderCommand, Status};
+use common::model::market_specification::CoreMarketSpecification;
 use common::Side;
 use disruptor::{
     BusySpin, MultiConsumerBarrier, MultiProducer, ProcessorSettings, build_multi_producer,
@@ -49,7 +49,7 @@ impl CoreEngine {
     /// [Event Handlers] (market data, notifications, etc.)
     /// ```
     pub fn new(
-        symbol_specs: HashMap<u32, CoreSymbolSpecification>,
+        symbol_specs: HashMap<u32, CoreMarketSpecification>,
         journaling_processor: JournalingProcessor,
         events_handler: Arc<dyn EventsHandler>,
     ) -> (Self, OrderProducer) {
@@ -115,17 +115,14 @@ impl CoreEngine {
         }
 
         // Add all symbols to the appropriate matching engine shards
-        for (&symbol_id, spec) in &symbol_specs {
+        for &symbol_id in symbol_specs.keys() {
             let shard_mask = (num_matching_engines - 1) as u64;
             let owner_shard_id = (symbol_id as u64) & shard_mask;
             let router_index = owner_shard_id as usize;
 
             if let Some(router) = matching_engine_routers.get(router_index) {
                 let mut matching_engine = router.lock();
-                matching_engine.add_symbol(
-                    symbol_id,
-                    spec.clone(),
-                );
+                matching_engine.add_market(symbol_id);
 
                 info!(
                     "Added symbol_id {} to MatchingEngine shard {} during initialization",
