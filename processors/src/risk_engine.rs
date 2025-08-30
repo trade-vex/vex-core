@@ -1,7 +1,6 @@
 use common::cmd::MatcherTradeEvent;
 use common::cmd::OrderCommand;
 use common::OrderCommandType;
-use common::MatcherEventType;
 use common::Side;
 use common::model::market_specification::CoreMarketSpecification;
 use common::model::user_profile::BalanceStore;
@@ -96,10 +95,17 @@ impl RiskEngine {
                     "[RiskEngine] Insufficient funds for user {} to place order {}: {:?}",
                     cmd.user_id, cmd.order_id, balance_error
                 );
+                
+                // Get actual available balance for error reporting
+                let available_balance = user_profile
+                    .get_balance(cmd.user_id, cmd.market_id)
+                    .map(|balance| balance.available())
+                    .unwrap_or(0);
+                
                 return Err(RiskEngineError::InsufficientFunds { 
                     user_id: cmd.user_id, 
                     required: required_funds, 
-                    available: 0 // TODO: Get actual available balance
+                    available: available_balance
                 });
             }
         }
