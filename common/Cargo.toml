@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-borsh.workspace = true
-thiserror.workspace = true
-serde = { version = "1.0.203", features = ["derive"] }
-sbe_order.workspace = true
+borsh = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+sbe_order = { workspace = true }
 ahash = "0.8.12"

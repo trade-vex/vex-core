@@ -11,12 +11,10 @@ processors = { workspace = true }
 vex-config = { workspace = true }
 vex-networking = { workspace = true }
 parking_lot = {workspace = true}
-tokio = { version = "1", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
-async-trait = "0.1"
-hashbrown.workspace = true
-disruptor = "3.4.0"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+hashbrown = { workspace = true }
+disruptor = { workspace = true }
 ctrlc = "3.4"
 tikv-jemallocator = { workspace = true }
 
