@@ -1,6 +1,7 @@
-use crate::events::EventsHandler;
-use crate::{create_matching_handler, create_risk_handler, create_risk_r2_handler, create_event_handler};
-use common::cmd::{OrderCommand, MatcherTradeEvent};
+use crate::{
+    create_event_handler, create_matching_handler, create_risk_handler, create_risk_r2_handler,
+};
+use common::cmd::{MatcherTradeEvent, OrderCommand};
 use common::model::symbol_specification::CoreSymbolSpecification;
 use disruptor::{
     BusySpin, MultiConsumerBarrier, MultiProducer, ProcessorSettings, build_multi_producer,

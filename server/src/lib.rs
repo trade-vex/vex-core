@@ -1,5 +1,4 @@
 pub mod engine;
-pub mod events;
 pub mod utils;
 
 use std::sync::Arc;
@@ -9,10 +8,7 @@ use hashbrown::HashMap;
 use processors::journaling::JournalingProcessor;
 use processors::events::SimpleEventsHandler;
 
-use crate::{
-    engine::{CoreEngine, OrderProducer},
-    events::SimpleEventsHandler,
-};
+use crate::engine::{CoreEngine, OrderProducer};
 
 /// Sets up the entire Exchange Core application with all processors.
 ///
