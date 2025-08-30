@@ -124,7 +124,6 @@ impl CoreEngine {
                 matching_engine.add_symbol(
                     symbol_id,
                     spec.clone(),
-                    orderbook::OrderBookImplType::Naive,
                 );
 
                 info!(
