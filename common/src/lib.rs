@@ -145,7 +145,7 @@ impl From<TimeInForce> for SbeTimeInForce {
 
 /// Represents the side of the order book.
 #[derive(
-    Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, BorshSerialize, BorshDeserialize,
+    Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
 )]
 #[repr(u8)]
 pub enum Side {
