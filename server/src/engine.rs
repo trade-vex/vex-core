@@ -1,8 +1,9 @@
 use crate::{
     create_event_handler, create_matching_handler, create_risk_handler, create_risk_r2_handler,
 };
-use common::cmd::{MatcherTradeEvent, OrderCommand};
+use common::cmd::{MatcherTradeEvent, OrderCommand, ProcessedOrderCommand, Status};
 use common::model::symbol_specification::CoreSymbolSpecification;
+use common::Side;
 use disruptor::{
     BusySpin, MultiConsumerBarrier, MultiProducer, ProcessorSettings, build_multi_producer,
 };
@@ -18,7 +19,7 @@ use vex_config::CoreNetworkingConfig;
 use vex_networking::server::VexCoreServer;
 
 pub type OrderProducer = MultiProducer<OrderCommand, MultiConsumerBarrier>;
-pub type ProcessedOrderProducer = MultiProducer<MatcherTradeEvent, MultiConsumerBarrier>;
+pub type ProcessedOrderProducer = MultiProducer<ProcessedOrderCommand, MultiConsumerBarrier>;
 
 /// This follows the exact same architecture as the  ExchangeCore:
 /// 1. Multiple parallel Risk Engines (R1) for risk hold/pre-processing
@@ -53,7 +54,7 @@ impl CoreEngine {
         events_handler: Arc<dyn EventsHandler>,
     ) -> (Self, OrderProducer) {
         let order_factory = || OrderCommand::default();
-        let matcher_event_factory = || MatcherTradeEvent::default();
+        let matcher_event_factory = || ProcessedOrderCommand::new(Status::Rejected, 0, 0, Side::Ask);
         let buffer_size = 1024; // Power of 2 for disruptor efficiency
 
         // Using Arc to share stateful processors with the main thread and the consumer threads.
@@ -136,31 +137,30 @@ impl CoreEngine {
 
 
         // Build the second ring buffer first (the producer of this is required as an input in matching_engine_royter handler)
-        let matcher_event_producer = build_multi_producer(buffer_size, matcher_event_factory, BusySpin)
-            // Stage 1: Journaling for raw events
-            .pin_at_core(10)
-            .handle_events_with({
-                let journaling_clone = journaling_arc.clone();
-                move |event: &MatcherTradeEvent, _sequence: i64, _end_of_batch: bool| {
-                    journaling_clone.journal_event(event);
-                }
-            })
-            // Stage 2: Risk Engine R2 - 4 parallel handlers
-            .pin_at_core(11)
-            .handle_events_with(create_risk_r2_handler!(0, risk_engines_arc))
-            .pin_at_core(12)
-            .handle_events_with(create_risk_r2_handler!(1, risk_engines_arc))
-            .pin_at_core(13)
-            .handle_events_with(create_risk_r2_handler!(2, risk_engines_arc))
-            .pin_at_core(14)
-            .handle_events_with(create_risk_r2_handler!(3, risk_engines_arc))
-            .and_then() // Creates dependency: event handlers wait for risk engines
-            // Stage 3: Event Handlers
-            .pin_at_core(15)
-            .handle_events_with(create_event_handler!(events_handler_arc))
-            .build();
-
-
+        let matcher_event_producer =
+            build_multi_producer(buffer_size, matcher_event_factory, BusySpin)
+                // Stage 1: Journaling for raw events
+                .pin_at_core(10)
+                .handle_events_with({
+                    let journaling_clone = journaling_arc.clone();
+                    move |processed_cmd: &ProcessedOrderCommand, _sequence: i64, _end_of_batch: bool| {
+                        journaling_clone.journal_event(processed_cmd);
+                    }
+                })
+                // Stage 2: Risk Engine R2 - 4 parallel handlers
+                .pin_at_core(11)
+                .handle_events_with(create_risk_r2_handler!(0, risk_engines_arc))
+                .pin_at_core(12)
+                .handle_events_with(create_risk_r2_handler!(1, risk_engines_arc))
+                .pin_at_core(13)
+                .handle_events_with(create_risk_r2_handler!(2, risk_engines_arc))
+                .pin_at_core(14)
+                .handle_events_with(create_risk_r2_handler!(3, risk_engines_arc))
+                .and_then() // Creates dependency: event handlers wait for risk engines
+                // Stage 3: Event Handlers
+                .pin_at_core(15)
+                .handle_events_with(create_event_handler!(events_handler_arc))
+                .build();
 
         // Build the disruptor pipeline
         // This creates the same dependency graph and parallelism as exchangeCore
