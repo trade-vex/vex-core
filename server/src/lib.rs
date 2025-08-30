@@ -15,7 +15,7 @@ use crate::engine::{CoreEngine, OrderProducer};
 /// This creates the core engine and adds symbols from the provided configuration
 pub fn init_exchange(
     symbol_specs: HashMap<u32, CoreMarketSpecification>,
-) -> (CoreEngine, OrderProducer, Arc<SimpleEventsHandler>) {
+) -> (CoreEngine, OrderProducer) {
     // Initialize journaling processor for audit trail
     let journaling_processor = JournalingProcessor::new();
 
@@ -27,8 +27,8 @@ pub fn init_exchange(
     let (core_engine, producer) = CoreEngine::new(
         symbol_specs.clone(),
         journaling_processor,
-        events_handler.clone(),
+        events_handler,
     );
 
-    (core_engine, producer, events_handler)
+    (core_engine, producer)
 }
