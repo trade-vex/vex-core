@@ -1,8 +1,6 @@
-use common::cmd::{OrderCommand};
 use common::OrderCommandType;
+use common::cmd::{OrderCommand, ProcessedOrderCommand, Status};
 use hashbrown::HashMap;
-use vex_orderbook::tree::{BTreeAskSide, BTreeBidSide};
-use vex_orderbook::OrderBook;
 use tracing::{info, warn};
 use vex_orderbook::OrderBook;
 use vex_orderbook::tree::{BTreeAskSide, BTreeBidSide};
@@ -17,7 +15,7 @@ pub enum RoutingError {
 use tracing::{info, warn};
 /// Owns all order books and routes commands to the correct one.
 pub struct MatchingEngineRouter {
-    pub order_books: HashMap<u32, OrderBook<BTreeAskSide , BTreeBidSide>>,
+    pub order_books: HashMap<u32, Box<OrderBook<BTreeAskSide, BTreeBidSide>>>,
     pub shard_id: u32,
     pub shard_mask: u64,
 }
@@ -44,12 +42,11 @@ impl MatchingEngineRouter {
 
     /// Adds a new market_id to the matching engine, creating a new order book for it.
     /// Uses the provided symbol specification instead of hardcoded values
-    pub fn add_symbol(
-        &mut self,
-        market_id: u32,
-        spec: common::model::market_specification::CoreMarketSpecification,
-    ) {
-        self.order_books.insert(market_id, OrderBook::new(BTreeBidSide::new(), BTreeAskSide::new()));
+    pub fn add_market(&mut self, market_id: u32) {
+        self.order_books.insert(
+            market_id,
+            Box::new(OrderBook::new(BTreeBidSide::new(), BTreeAskSide::new())),
+        );
     }
 
     /// Check if this router handles the given market_id
@@ -65,18 +62,21 @@ impl MatchingEngineRouter {
     }
 
     /// Main entry point for processing orders
-    pub fn process_order(&mut self, cmd: &mut OrderCommand) {
+    pub fn process_order(&mut self, cmd: &mut OrderCommand) -> ProcessedOrderCommand {
+        let res =
+            ProcessedOrderCommand::new(Status::Rejected, cmd.order_id, cmd.market_id, cmd.side);
         if self.market_for_this_handler(cmd.market_id as u64) {
             if let Some(order_book) = self.order_books.get_mut(&cmd.market_id) {
                 info!(
                     "[Router {}] Processing command for market_id {}",
                     self.shard_id, cmd.market_id
                 );
-    
+
                 let result = match cmd.command {
                     OrderCommandType::PlaceOrder => order_book.place_order(cmd),
                     OrderCommandType::CancelOrder => order_book.cancel_order(cmd),
                 };
+                return result;
             } else {
                 warn!(
                     "[Router {}] No order book found for market_id {}",
@@ -84,6 +84,7 @@ impl MatchingEngineRouter {
                 );
             }
         }
+        res
     }
 }
 
