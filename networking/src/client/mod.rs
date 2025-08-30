@@ -1,28 +1,8 @@
-<<<<<<< HEAD
-use rand;
-use rusteron_client::{
-    Aeron, AeronCError, AeronContext, AeronFragmentAssembler, AeronFragmentHandlerCallback,
-    AeronHeader, AeronPublication, AeronReservedValueSupplierLogger, AeronSubscription, Handler,
-};
-use rusteron_media_driver::AeronIdleStrategy;
-use std::ffi::CString;
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
-use thiserror::Error;
-use tracing::{debug, error, info, warn};
-// use serde::{Deserialize, Serialize};
-
-=======
->>>>>>> chore/refactor-common-ob
 use crate::utils::{
     new_publication, new_publication_with_session, new_subscription_with_mdc,
     new_subscription_with_mdc_and_session,
 };
 use common::cmd::{OrderCommand, encode_order_command};
-<<<<<<< HEAD
-use vex_config::GatewayNetworkingConfig;
-
-=======
 use rand;
 use rusteron_client::{
     Aeron, AeronCError, AeronContext, AeronFragmentHandlerCallback, AeronHeader, AeronPublication,
@@ -42,7 +22,6 @@ mod cmd_handler;
 
 pub use cmd_handler::OrderCommandHandler;
 
->>>>>>> chore/refactor-common-ob
 // Constants for stream identification and timeouts
 const ALL_GATEWAYS_STREAM_ID: i32 = 1001;
 const GATEWAY_CORE_STREAM_ID: i32 = 1002;
@@ -76,10 +55,6 @@ pub enum GatewayState {
     Disconnected,
     Connecting,
     Connected,
-<<<<<<< HEAD
-    Authenticated,
-=======
->>>>>>> chore/refactor-common-ob
     Error(String),
 }
 
@@ -92,11 +67,6 @@ fn parse_core_response(
     let clean_message = message.trim_matches('\0').trim();
     let parts: Vec<&str> = clean_message.split_whitespace().collect();
 
-<<<<<<< HEAD
-    debug!("Parsing core response: {:?}", parts);
-
-=======
->>>>>>> chore/refactor-common-ob
     if parts.len() < 3 {
         warn!("Malformed core response: insufficient parts");
         return CoreResponse::Ignore;
@@ -113,13 +83,8 @@ fn parse_core_response(
 
     if session_id != expected_session {
         warn!(
-<<<<<<< HEAD
-            "Session ID mismatch. Expected: {}, Got: {}",
-            expected_session, session_id
-=======
             "Session ID mismatch for expected gateway: {}. Expected: {}, Got: {}, Ignoring Because this is for Gateway: {}",
             expected_session, expected_gateway_id, session_id, parts[1]
->>>>>>> chore/refactor-common-ob
         );
         return CoreResponse::Ignore;
     }
@@ -216,13 +181,8 @@ pub enum GatewayError {
     ProtocolError(String),
     #[error("Configuration error: {0}")]
     ConfigError(String),
-<<<<<<< HEAD
-    #[error("Gateway not authenticated")]
-    NotAuthenticated,
-=======
     #[error("Gateway not connected to Server")]
     NotConnected,
->>>>>>> chore/refactor-common-ob
     #[error("Invalid gateway state: expected {expected}, got {actual}")]
     InvalidState { expected: String, actual: String },
     #[error("Vex Core Not Started")]
@@ -237,22 +197,14 @@ pub struct VexGateway {
     config: GatewayNetworkingConfig,
     /// Current gateway state
     state: Arc<RwLock<GatewayState>>,
-<<<<<<< HEAD
-    /// Message buffer for sending
-    buffer: Vec<u8>,
-=======
->>>>>>> chore/refactor-common-ob
     /// Dedicated session ID for this gateway
     session_id: Option<i32>,
     /// One-time encryption key for session establishment
     encryption_key: Option<i32>,
     /// Publication for sending to core (stored after handshake)
     core_publication: Option<AeronPublication>,
-<<<<<<< HEAD
-=======
     /// Shutdown flag
     shutdown: Arc<AtomicBool>,
->>>>>>> chore/refactor-common-ob
 }
 
 impl VexGateway {
@@ -289,27 +241,14 @@ impl VexGateway {
             aeron,
             config,
             state: Arc::new(RwLock::new(GatewayState::Disconnected)),
-<<<<<<< HEAD
-            buffer: vec![0u8; 2048], // Default buffer size
-            session_id: None,
-            encryption_key: None,
-            core_publication: None,
-=======
             session_id: None,
             encryption_key: None,
             core_publication: None,
             shutdown: Arc::new(AtomicBool::new(false)),
->>>>>>> chore/refactor-common-ob
         })
     }
 
     /// Starts the gateway and establishes connection to VEX Core
-<<<<<<< HEAD
-    pub fn start<AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback>(
-        &mut self,
-        handler: AeronFragmentHandlerHandlerImpl,
-    ) -> Result<(), GatewayError> {
-=======
     pub fn start<AeronFragmentHandlerHandlerImpl>(
         &mut self,
         handler: AeronFragmentHandlerHandlerImpl,
@@ -317,7 +256,6 @@ impl VexGateway {
     where
         AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback + Send + 'static,
     {
->>>>>>> chore/refactor-common-ob
         info!("Starting VEX Gateway '{}'", self.config.gateway_id);
 
         // Update state to connecting
@@ -339,13 +277,8 @@ impl VexGateway {
             handler,
         )?;
 
-<<<<<<< HEAD
-        // Update state to authenticated
-        *self.state.write().unwrap() = GatewayState::Authenticated;
-=======
         // Update state to Connected
         *self.state.write().unwrap() = GatewayState::Connected;
->>>>>>> chore/refactor-common-ob
 
         info!(
             "VEX Gateway '{}' successfully connected and authenticated",
@@ -419,26 +352,16 @@ impl VexGateway {
     }
 
     /// Establishes dedicated communication channel with VEX Core
-<<<<<<< HEAD
-    fn establish_dedicated_channel<
-        AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback,
-    >(
-=======
     fn establish_dedicated_channel<AeronFragmentHandlerHandlerImpl>(
->>>>>>> chore/refactor-common-ob
         &mut self,
         port: u16,
         control_port: u16,
         session_id: i32,
         handler: AeronFragmentHandlerHandlerImpl,
-<<<<<<< HEAD
-    ) -> Result<(), GatewayError> {
-=======
     ) -> Result<(), GatewayError>
     where
         AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback + Send + 'static,
     {
->>>>>>> chore/refactor-common-ob
         info!(
             "Gateway '{}': Establishing dedicated channel with session ID: {}",
             self.config.gateway_id, session_id
@@ -473,35 +396,11 @@ impl VexGateway {
             self.config.gateway_id
         );
 
-<<<<<<< HEAD
-        // Update state to connected
-        *self.state.write().unwrap() = GatewayState::Connected;
-
-=======
->>>>>>> chore/refactor-common-ob
         // Start polling for messages in a separate thread
         self.start_message_polling(subscription, handler)
     }
 
     /// Starts polling for incoming messages in a separate thread
-<<<<<<< HEAD
-    fn start_message_polling<AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback>(
-        &self,
-        subscription: AeronSubscription,
-        handler: AeronFragmentHandlerHandlerImpl,
-    ) -> Result<(), GatewayError>
-    where
-        AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback + Send + 'static,
-    {
-        // Start polling thread
-        let gateway_id = self.config.gateway_id.clone();
-        let shutdown = self.shutdown.clone();
-        std::thread::spawn(move || {
-            let mut handler = Handler::leak(handler);
-
-            info!("Gateway '{}': Started message polling thread", gateway_id);
-            loop {
-=======
     fn start_message_polling<AeronFragmentHandlerHandlerImpl>(
         &self,
         subscription: AeronSubscription,
@@ -518,17 +417,13 @@ impl VexGateway {
 
             info!("Gateway '{}': Started message polling thread", gateway_id);
             while !shutdown.load(Ordering::SeqCst) {
->>>>>>> chore/refactor-common-ob
                 if let Err(e) = subscription.poll(Some(&handler), 10) {
                     error!("Gateway '{}': Error polling messages: {}", gateway_id, e);
                     break;
                 }
                 AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
             }
-<<<<<<< HEAD
-=======
             handler.release();
->>>>>>> chore/refactor-common-ob
         });
 
         Ok(())
@@ -547,12 +442,7 @@ impl VexGateway {
             expected_gateway_id: self.config.gateway_id.clone(),
         };
 
-<<<<<<< HEAD
-        let assembler = AeronFragmentAssembler::new(Some(&Handler::leak(fragment_handler)))?;
-        let handler = Handler::leak(assembler);
-=======
         let mut handler = Handler::leak(fragment_handler);
->>>>>>> chore/refactor-common-ob
 
         let start = Instant::now();
         while start.elapsed() < CONNECT_TIMEOUT {
@@ -561,16 +451,10 @@ impl VexGateway {
                 handler.release();
                 return Ok(response);
             }
-<<<<<<< HEAD
-            AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
-        }
-
-=======
             // Sleeping breifly here. Larfer sleep as latency is not critical during handshake
             std::thread::sleep(Duration::from_millis(10));
         }
         handler.release();
->>>>>>> chore/refactor-common-ob
         Err(GatewayError::Timeout(
             "Waiting for core handshake response".to_string(),
         ))
@@ -632,23 +516,9 @@ impl VexGateway {
             )));
         }
 
-<<<<<<< HEAD
-        // Ensure buffer is large enough
-        if self.buffer.len() < value.len() {
-            self.buffer.resize(value.len(), 0);
-        }
-
-        self.buffer[..value.len()].copy_from_slice(value);
-
-        // Retry sending with exponential backoff
-        for attempt in 0..MESSAGE_RETRY_COUNT {
-            let result = publication
-                .offer::<AeronReservedValueSupplierLogger>(&self.buffer[..value.len()], None);
-=======
         // Retry sending with exponential backoff
         for attempt in 0..MESSAGE_RETRY_COUNT {
             let result = publication.offer::<AeronReservedValueSupplierLogger>(value, None);
->>>>>>> chore/refactor-common-ob
 
             if result >= 0 {
                 return Ok(());
@@ -675,13 +545,8 @@ impl VexGateway {
     }
 
     /// Checks if gateway is connected and authenticated
-<<<<<<< HEAD
-    pub fn is_authenticated(&self) -> bool {
-        matches!(*self.state.read().unwrap(), GatewayState::Authenticated)
-=======
     pub fn is_connected(&self) -> bool {
         matches!(*self.state.read().unwrap(), GatewayState::Connected)
->>>>>>> chore/refactor-common-ob
     }
 
     /// Gracefully shuts down the gateway
@@ -691,13 +556,8 @@ impl VexGateway {
         // Update state
         *self.state.write().unwrap() = GatewayState::Disconnected;
 
-<<<<<<< HEAD
-        // TODO: Send goodbye message to core
-        // TODO: Clean up resources
-=======
         // Set shutdown flag
         self.shutdown.store(true, Ordering::SeqCst);
->>>>>>> chore/refactor-common-ob
 
         info!(
             "VEX Gateway '{}' shut down successfully",
@@ -709,13 +569,8 @@ impl VexGateway {
     /// Sends an OrderCommand to the core
     pub fn send_order_command(&mut self, order_command: OrderCommand) -> Result<(), GatewayError> {
         // Check if we're connected
-<<<<<<< HEAD
-        if !self.is_authenticated() {
-            return Err(GatewayError::NotAuthenticated);
-=======
         if !self.is_connected() {
             return Err(GatewayError::NotConnected);
->>>>>>> chore/refactor-common-ob
         }
 
         let publication = self
