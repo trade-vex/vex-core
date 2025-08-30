@@ -109,6 +109,8 @@ impl CoreEngine {
             }
         }
 
+        let matching_engine_routers_arc = Arc::new(matching_engine_routers.clone());
+
         // Build the second ring buffer first (the producer of this is required as an input in matching_engine_royter handler)
         let matcher_event_producer =
             build_multi_producer(buffer_size, matcher_event_factory, BusySpin)
@@ -134,7 +136,7 @@ impl CoreEngine {
                 .and_then() // Creates dependency: event handlers wait for risk engines
                 // Stage 3: Event Handlers
                 .pin_at_core(15)
-                .handle_events_with(create_event_handler!(events_handler_arc, risk_engines_arc.clone()))
+                .handle_events_with(create_event_handler!(events_handler_arc, risk_engines_arc.clone(), matching_engine_routers_arc.clone(), 50))
                 .build();
 
         // Build the disruptor pipeline

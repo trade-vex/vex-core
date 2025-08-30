@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use tracing::{error, info};
 
 pub trait EventsHandler: Send + Sync {
-    fn handle_processed_command(&self, processed_cmd: &ProcessedOrderCommand, risk_engine: Option<&RiskEngine>);
+    fn handle_processed_command(&self, processed_cmd: &ProcessedOrderCommand, risk_engine: Option<&RiskEngine>, orderbook_snapshot: Option<(Vec<(u64, u64)>, Vec<(u64, u64)>)>);
 }
 
 // Mock Kafka Events Handler - can be replaced with real Kafka implementation
@@ -135,12 +135,34 @@ impl KafkaEventsHandler {
         Ok(())
     }
 
-    fn publish_orderbook_event(&self, market_id: u32) -> Result<(), String> {
-        // Placeholder for orderbook event - you can implement concrete functionality later
+    fn publish_orderbook_event(&self, market_id: u32, orderbook_snapshot: Option<(Vec<(u64, u64)>, Vec<(u64, u64)>)>) -> Result<(), String> {
+        let mut bids = Vec::new();
+        let mut asks = Vec::new();
+
+        if let Some((bid_data, ask_data)) = orderbook_snapshot {
+            // Convert snapshot data to OrderbookLevel structs
+            for (price, size) in bid_data {
+                bids.push(OrderbookLevel {
+                    price,
+                    size,
+                });
+            }
+
+            for (price, size) in ask_data {
+                asks.push(OrderbookLevel {
+                    price,
+                    size,
+                });
+            }
+        }
+
+        let bid_count = bids.len();
+        let ask_count = asks.len();
+
         let orderbook_event = OrderbookEvent {
             market_id,
-            bids: vec![], // Placeholder - implement concrete orderbook data
-            asks: vec![], // Placeholder - implement concrete orderbook data
+            bids,
+            asks,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -154,7 +176,8 @@ impl KafkaEventsHandler {
         let mut events = self.published_events.lock().unwrap();
         events.push(format!("ORDERBOOK: {}", payload));
         
-        info!("[KafkaEventsHandler] Published orderbook event for market {}", market_id);
+        info!("[KafkaEventsHandler] Published orderbook event for market {} with {} bid levels and {} ask levels", 
+              market_id, bid_count, ask_count);
 
         Ok(())
     }
@@ -166,7 +189,7 @@ impl KafkaEventsHandler {
 }
 
 impl EventsHandler for KafkaEventsHandler {
-    fn handle_processed_command(&self, processed_cmd: &ProcessedOrderCommand, risk_engine: Option<&RiskEngine>) {
+    fn handle_processed_command(&self, processed_cmd: &ProcessedOrderCommand, risk_engine: Option<&RiskEngine>, orderbook_snapshot: Option<(Vec<(u64, u64)>, Vec<(u64, u64)>)>) {
         info!(
             "[KafkaEventsHandler] Processing command: Order {}, Status {:?}",
             processed_cmd.order_id(),
@@ -187,7 +210,7 @@ impl EventsHandler for KafkaEventsHandler {
                 if let Err(e) = self.publish_order_event(processed_cmd) {
                     error!("[KafkaEventsHandler] Failed to publish order event: {}", e);
                 }
-                if let Err(e) = self.publish_orderbook_event(market_id) {
+                if let Err(e) = self.publish_orderbook_event(market_id, orderbook_snapshot) {
                     error!("[KafkaEventsHandler] Failed to publish orderbook event: {}", e);
                 }
             }
@@ -201,7 +224,7 @@ impl EventsHandler for KafkaEventsHandler {
                 if let Err(e) = self.publish_cancel_order_event(processed_cmd) {
                     error!("[KafkaEventsHandler] Failed to publish cancel order event: {}", e);
                 }
-                if let Err(e) = self.publish_orderbook_event(market_id) {
+                if let Err(e) = self.publish_orderbook_event(market_id, orderbook_snapshot) {
                     error!("[KafkaEventsHandler] Failed to publish orderbook event: {}", e);
                 }
             }
@@ -246,7 +269,7 @@ impl EventsHandler for KafkaEventsHandler {
                 }
                 
                 // Publish orderbook event
-                if let Err(e) = self.publish_orderbook_event(market_id) {
+                if let Err(e) = self.publish_orderbook_event(market_id, orderbook_snapshot) {
                     error!("[KafkaEventsHandler] Failed to publish orderbook event: {}", e);
                 }
             }
@@ -294,8 +317,8 @@ struct CancelOrderEvent {
 #[derive(Serialize, Deserialize, Debug)]
 struct OrderbookEvent {
     market_id: u32,
-    bids: Vec<OrderbookLevel>, // Placeholder
-    asks: Vec<OrderbookLevel>, // Placeholder
+    bids: Vec<OrderbookLevel>,
+    asks: Vec<OrderbookLevel>,
     timestamp: u64,
 }
 
@@ -309,6 +332,8 @@ struct OrderbookLevel {
 mod tests {
     use super::*;
     use common::Side;
+    use vex_orderbook::OrderBook;
+    use vex_orderbook::tree::{BTreeAskSide, BTreeBidSide};
 
     #[test]
     fn test_kafka_events_handler_placed_order() {
@@ -326,7 +351,7 @@ mod tests {
         );
         
         // Handle the processed command
-        handler.handle_processed_command(&processed_cmd, None);
+        handler.handle_processed_command(&processed_cmd, None, None);
         
         // Check that events were published
         let events = handler.get_published_events();
@@ -355,7 +380,7 @@ mod tests {
         );
         
         // Handle the processed command
-        handler.handle_processed_command(&processed_cmd, None);
+        handler.handle_processed_command(&processed_cmd, None, None);
         
         // Check that events were published
         let events = handler.get_published_events();
@@ -384,7 +409,7 @@ mod tests {
         );
         
         // Handle the processed command
-        handler.handle_processed_command(&processed_cmd, None);
+        handler.handle_processed_command(&processed_cmd, None, None);
         
         // Check that no events were published for rejected orders
         let events = handler.get_published_events();
@@ -407,7 +432,7 @@ mod tests {
         );
         
         // Handle the processed command
-        handler.handle_processed_command(&processed_cmd, None);
+        handler.handle_processed_command(&processed_cmd, None, None);
         
         // Check that events were published
         let events = handler.get_published_events();
@@ -445,7 +470,7 @@ mod tests {
         );
         
         // Handle the processed command with risk engine
-        handler.handle_processed_command(&processed_cmd, Some(&risk_engine));
+        handler.handle_processed_command(&processed_cmd, Some(&risk_engine), None);
         
         // Check that events were published
         let events = handler.get_published_events();
@@ -459,5 +484,67 @@ mod tests {
         
         // Verify orderbook event was published
         assert!(events.iter().any(|e| e.starts_with("ORDERBOOK:")));
+    }
+
+    #[test]
+    fn test_orderbook_event_with_real_orderbook() {
+        let handler = KafkaEventsHandler::new();
+        
+        // Create a real orderbook with some orders
+        let mut orderbook = OrderBook::new(BTreeBidSide::new(), BTreeAskSide::new());
+        
+        // Add some orders to the orderbook
+        let bid_cmd = common::OrderCommand {
+            command: common::OrderCommandType::PlaceOrder,
+            order_id: 1,
+            timestamp: 100,
+            user_id: 1001,
+            market_id: 1,
+            price: 1000,
+            size: 100,
+            side: Side::Bid,
+            time_in_force: common::TimeInForce::Gtc,
+        };
+        orderbook.place_order(&bid_cmd);
+        
+        let ask_cmd = common::OrderCommand {
+            command: common::OrderCommandType::PlaceOrder,
+            order_id: 2,
+            timestamp: 101,
+            user_id: 1002,
+            market_id: 1,
+            price: 1100,
+            size: 50,
+            side: Side::Ask,
+            time_in_force: common::TimeInForce::Gtc,
+        };
+        orderbook.place_order(&ask_cmd);
+        
+        // Create a processed command
+        let processed_cmd = ProcessedOrderCommand::new(
+            Status::Placed,
+            12350,
+            1003,
+            1,
+            1050, // price
+            75,   // size
+            Side::Bid,
+        );
+        
+        // Handle the processed command with orderbook
+        let bid_data: Vec<(u64, u64)> = orderbook.get_bids().map(|(price, level)| (price, level.get_total_volume())).collect();
+        let ask_data: Vec<(u64, u64)> = orderbook.get_asks().map(|(price, level)| (price, level.get_total_volume())).collect();
+        handler.handle_processed_command(&processed_cmd, None, Some((bid_data, ask_data)));
+        
+        // Check that events were published
+        let events = handler.get_published_events();
+        assert_eq!(events.len(), 2); // Order event + Orderbook event
+        
+        // Verify orderbook event was published and contains real data
+        let orderbook_event = events.iter().find(|e| e.starts_with("ORDERBOOK:")).unwrap();
+        assert!(orderbook_event.contains("1000")); // Should contain bid price
+        assert!(orderbook_event.contains("1100")); // Should contain ask price
+        assert!(orderbook_event.contains("100"));  // Should contain bid size
+        assert!(orderbook_event.contains("50"));   // Should contain ask size
     }
 }

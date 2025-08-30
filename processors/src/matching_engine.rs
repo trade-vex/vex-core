@@ -88,6 +88,16 @@ impl MatchingEngineRouter {
         }
         res
     }
+
+    /// Get a reference to the orderbook for a specific market_id
+    pub fn get_orderbook(&self, market_id: u32) -> Option<&OrderBook<BTreeAskSide, BTreeBidSide>> {
+        self.order_books.get(&market_id).map(|boxed_book| boxed_book.as_ref())
+    }
+
+    /// Create a snapshot of the orderbook for a specific market_id with specified depth
+    pub fn create_orderbook_snapshot(&self, market_id: u32, depth: usize) -> Option<(Vec<(u64, u64)>, Vec<(u64, u64)>)> {
+        self.get_orderbook(market_id).map(|orderbook| orderbook.create_snapshot_with_depth(depth))
+    }
 }
 
 impl Default for MatchingEngineRouter {
