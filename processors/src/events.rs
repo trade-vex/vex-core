@@ -11,23 +11,6 @@ pub trait EventsHandler: Send + Sync {
     fn handle_processed_command(&self, processed_cmd: &ProcessedOrderCommand, risk_engine: Option<&RiskEngine>);
 }
 
-#[derive(Clone, Default)]
-pub struct SimpleEventsHandler {
-    pub events: Arc<Mutex<Vec<MatcherTradeEvent>>>,
-}
-
-impl SimpleEventsHandler {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl EventsHandler for SimpleEventsHandler {
-    fn handle_processed_command(&self, _processed_cmd: &ProcessedOrderCommand, _risk_engine: Option<&RiskEngine>) {
-        // Simple handler doesn't do anything with processed commands
-    }
-}
-
 // Mock Kafka Events Handler - can be replaced with real Kafka implementation
 pub struct KafkaEventsHandler {
     published_events: Arc<Mutex<Vec<String>>>,
