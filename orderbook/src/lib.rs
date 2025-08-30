@@ -1,9 +1,46 @@
-use borsh::{BorshDeserialize, BorshSerialize};
-use common::model::enums::Side;
-use common::model::l2_market_data::L2MarketData;
-use common::model::order::{Order, OrderTrait};
-use common::model::symbol_specification::CoreSymbolSpecification;
-use std::fmt;
+//! # Vex Order Book Implementation
+//!
+//! This module provides a fast and efficient implementation of a limit order book (LOB).
+//! It is designed for low-latency, considering existing Architecure of VEX-CORE.
+//!
+//! ## Core Design Principles
+//!
+//! 1.  **Data Structure Choice:**
+//!     -   **Price Levels (`BookSide`):** BookSide is a trait that defines the interface for accessing
+//!         price levels. This provides sorted iteration, which is essential for matching orders.
+//!         -   **Asks:** BookSide implementations for asks should provide access to price levels
+//!             sorted ascendingly (lowest price first).
+//!         -   **Bids:** BookSide implementations for bids should provide access to price levels
+//!             sorted descendingly (highest price first).
+//!     -   **Order Queue (`VecDeque`):** Within each `PriceLevel`, a `VecDeque` stores the orders.
+//!         This acts as a FIFO (First-In, First-Out) queue, ensuring time priority for orders
+//!         at the same price.
+//!     -   **Direct Order Access (`HashMap`):** A `HashMap<u64, u64>` provides O(1) average-case
+//!         lookup time for order-price pairs by their ID. This is crucial for fast cancellation.
+//!
+//! 2.  **Performance Characteristics:** [Depends on BookSide Implementation]
+//!     [For BTreeMap-based BookSide]
+//!     -   **Placing an order:**
+//!         -   Matching: O(M * N), where M is the number of price levels crossed and N is the average
+//!             number of orders at each level. In practice, this is very fast.
+//!         -   Resting a new limit order: O(log P), where P is the number of price levels on that side of the book.
+//!     -   **Canceling an order:** O(log P + Q), where P is the number of price levels and Q is the
+//!         number of orders at the specific price level of the canceled order. The `+ Q` is due
+//!         to the linear scan required to find the order in the `VecDeque`. For extreme performance,
+//!         this `VecDeque` could be replaced with an intrusive doubly-linked list (see suggestions below).
+//!
+//! 3.  **State Management:**
+//!     -   The order book is self-contained and mutates its state through the `place_order` and
+//!         `cancel_order` methods.
+//!     -   It generates `MatcherTradeEvent`s and attaches them to the `ProcessedOrderCommand` for downstream
+//!         processors (risk engines and event handlers) to consume.
+use crate::tree::BookSide;
+use common::{
+    Side, TimeInForce,
+    cmd::{MatcherTradeEvent, OrderCommand, ProcessedOrderCommand, Status},
+    model::order::Order,
+};
+use std::collections::{HashMap, VecDeque};
 
 pub mod tree;
 mod unit_tests;
@@ -308,87 +345,4 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
         (cmd.price == 0 && cmd.side == Side::Ask)
             || (cmd.price == u64::MAX && cmd.side == Side::Bid)
     }
-
-    #[inline]
-    fn add_order(&mut self, order: Order) {
-        self.total_volume += order.size;
-        self.orders.push_back(order);
-    }
-
-    #[inline]
-    fn remove_order(&mut self, order_id: u64, processed: &mut ProcessedOrderCommand) {
-        if let Ok(pos) = self
-            .orders
-            .binary_search_by_key(&order_id, |order| order.order_id)
-            && let Some(removed_order) = self.orders.remove(pos)
-        {
-            self.total_volume -= removed_order.size;
-            processed.set_status(Status::Cancelled);
-        }
-    }
-}
-
-impl std::error::Error for OrderBookError {}
-
-pub trait OrderBook<'a> {
-    fn new_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError>;
-    fn cancel_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError>;
-    fn reduce_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError>;
-    fn move_order(&mut self, cmd: &mut OrderCommand) -> Result<(), OrderBookError>;
-    fn get_orders_num(&self, side: Side) -> u32;
-    fn get_total_orders_volume(&self, side: Side) -> u64;
-    fn get_order_by_id(&self, order_id: u64) -> Option<&dyn OrderTrait>;
-    fn find_user_orders(&self, user_id: u64) -> Vec<Order>;
-    fn ask_orders_stream(
-        &'a self,
-        sorted: bool,
-    ) -> Box<dyn Iterator<Item = &'a dyn OrderTrait> + 'a>;
-    fn bid_orders_stream(
-        &'a self,
-        sorted: bool,
-    ) -> Box<dyn Iterator<Item = &'a dyn OrderTrait> + 'a>;
-    fn get_l2_market_data_snapshot(&self, size: usize) -> L2MarketData;
-    fn publish_l2_market_data_snapshot(&self, data: &mut L2MarketData);
-    fn fill_asks(&self, size: usize, data: &mut L2MarketData);
-    fn fill_bids(&self, size: usize, data: &mut L2MarketData);
-    fn get_total_ask_buckets(&self, limit: usize) -> usize;
-    fn get_total_bid_buckets(&self, limit: usize) -> usize;
-    fn get_implementation_type(&self) -> OrderBookImplType;
-    fn get_symbol_spec(&self) -> &CoreSymbolSpecification;
-    fn validate_internal_state(&self);
-}
-
-impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
-    /// Creates a new empty order book.
-    pub fn new(bids: Bid, asks: Ask) -> Self {
-        Self {
-            bids,
-            asks,
-            orders: HashMap::new(),
-        }
-    }
-
-    /// Matches Order
-    /// The core matching logic for an incoming taker order.
-    fn match_order(&mut self, cmd: &OrderCommand, events: &mut ProcessedOrderCommand) -> u64 {
-        let mut remaining_size = cmd.size;
-        type BookToMatch<'a> = (&'a mut dyn BookSide, Box<dyn Fn(u64, u64) -> bool>);
-        let (book_to_match, price_check): BookToMatch = if cmd.side == Side::Bid {
-            // Buy orders match against asks (lowest price first)
-            (
-                &mut self.asks,
-                Box::new(|taker_price, maker_price| taker_price >= maker_price),
-            )
-        } else {
-            // Sell orders match against bids (highest price first)
-            (
-                &mut self.bids,
-                Box::new(|taker_price, maker_price| taker_price <= maker_price),
-            )
-        };
-
-#[derive(BorshSerialize, BorshDeserialize)]
-pub struct MatcherResult {
-    pub volume: u64,
-    pub orders_to_remove: Vec<u64>,
 }

@@ -11,7 +11,11 @@ pub struct FragmentHandler {
     pub producer: MultiProducer<OrderCommand, MultiConsumerBarrier>,
 }
 
+<<<<<<< HEAD
+impl AeronFragmentHandlerCallback for &mut FragmentHandler {
+=======
 impl AeronFragmentHandlerCallback for FragmentHandler {
+>>>>>>> chore/refactor-common-ob
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) {
         // is executor thread
         let session_id = match header.get_values() {
@@ -45,7 +49,11 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
                 }
 
                 // Serialize and send back the processed command
+<<<<<<< HEAD
+                let mut response_buffer = vec![0u8; 2048];
+=======
                 let mut response_buffer = vec![0u8; 67];
+>>>>>>> chore/refactor-common-ob
                 match encode_order_command(order_command, &mut response_buffer) {
                     Ok(_) => {
                         // Send the processed command back
