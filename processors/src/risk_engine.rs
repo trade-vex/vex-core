@@ -83,13 +83,18 @@ impl RiskEngine {
                 "[RiskEngine] Found market_id spec: {:?} for market_id {}",
                 spec, cmd.market_id
             );
+            // Calculate required funds based on order side and market specification
             let required_funds = if cmd.side == Side::Bid {
-                cmd.price * cmd.size
+                // For BID orders: need to lock the total cost (price * size) plus taker fee
+                let base_amount = cmd.price * cmd.size;
+                let taker_fee = spec.taker_fee * cmd.size;
+                base_amount + taker_fee
             } else {
+                // For ASK orders: need to lock the size (quantity being sold)
                 cmd.size
             };
 
-            let amount = cmd.price * cmd.size;
+            let amount = required_funds;
 
             if let Err(balance_error) = user_profile.lock_funds(cmd.user_id, cmd.market_id, amount) {
                 warn!(
@@ -119,45 +124,79 @@ impl RiskEngine {
     }
 
     /// Handles events coming from the matching engine to settle funds
-    pub fn handle_event(&mut self, event: &MatcherTradeEvent, market_id: u32, taker_side: Side) {
-        // Process only if the event is for a user managed by this shard
-        if !self.user_id_for_this_handler(event.maker_user_id) {
-            return; // Not for this shard, skip
-        }
+    pub fn handle_event(&mut self, event: &MatcherTradeEvent, market_id: u32, taker_side: Side, taker_id: u64) {
+        info!("[RiskEngine_{}] Processing trade event: price={}, size={}, maker={}, taker={}", 
+              self.shard_id, event.price, event.size, event.maker_user_id, taker_id);
 
-        info!("[RiskEngine_{}] Handling event: {:?}", self.shard_id, event);
+        // Get market specification for fee calculations
+        let spec = match self.symbol_specs.get(&market_id) {
+            Some(spec) => spec,
+            None => {
+                warn!("[RiskEngine_{}] Market spec not found for market_id {}", self.shard_id, market_id);
+                return;
+            }
+        };
 
-        // Determine maker side (opposite of taker side)
-        let maker_side = if taker_side == Side::Bid { Side::Ask } else { Side::Bid };
-        
-        if let Some(spec) = self.symbol_specs.get(&market_id) {
+        // Process maker settlement (consume locked funds)
+        if self.user_id_for_this_handler(event.maker_user_id) {
             if let Some(maker_profile) = self.user_balances.get_mut(&event.maker_user_id) {
-                // For trade events, we need to settle the trade
-                // The maker's locked funds should be consumed
                 let trade_amount = event.price * event.size;
                 
-                if let Err(e) = maker_profile.consume_locked(event.maker_user_id, market_id, trade_amount) {
-                    warn!("[RiskEngine_{}] Failed to consume locked funds for maker {}: {:?}", 
-                          self.shard_id, event.maker_user_id, e);
+                match maker_profile.consume_locked(event.maker_user_id, market_id, trade_amount) {
+                    Ok(()) => {
+                        info!("[RiskEngine_{}] Successfully consumed locked funds for maker {}: amount={}", 
+                              self.shard_id, event.maker_user_id, trade_amount);
+                    }
+                    Err(e) => {
+                        warn!("[RiskEngine_{}] Failed to consume locked funds for maker {}: {:?}", 
+                              self.shard_id, event.maker_user_id, e);
+                    }
+                }
+            }
+        }
+
+        // Process taker settlement (unlock remaining funds and apply fees)
+        if self.user_id_for_this_handler(taker_id) {
+            if let Some(taker_profile) = self.user_balances.get_mut(&taker_id) {
+                let total_trade_amount = event.price * event.size;
+                let taker_fee = spec.taker_fee * event.size;
+                let total_required = total_trade_amount + taker_fee;
+                
+                // Unlock the excess funds that were locked but not used
+                if let Err(e) = taker_profile.unlock_funds(taker_id, market_id, total_required) {
+                    warn!("[RiskEngine_{}] Failed to unlock excess funds for taker {}: {:?}", 
+                          self.shard_id, taker_id, e);
+                } else {
+                    info!("[RiskEngine_{}] Successfully unlocked excess funds for taker {}: amount={}", 
+                          self.shard_id, taker_id, total_required);
                 }
             }
         }
         
-        // Process next event in chain if it exists
+        // Process chained events if they exist
         let mut current_event = event.next_event.as_ref();
         while let Some(next_event) = current_event {
+            info!("[RiskEngine_{}] Processing chained event: price={}, size={}, maker={}", 
+                  self.shard_id, next_event.price, next_event.size, next_event.maker_user_id);
+            
+            // Process maker settlement for chained event
             if self.user_id_for_this_handler(next_event.maker_user_id) {
-                if let Some(spec) = self.symbol_specs.get(&market_id) {
-                    if let Some(maker_profile) = self.user_balances.get_mut(&next_event.maker_user_id) {
-                        let trade_amount = next_event.price * next_event.size;
-                        
-                        if let Err(e) = maker_profile.consume_locked(next_event.maker_user_id, market_id, trade_amount) {
-                            warn!("[RiskEngine_{}] Failed to consume locked funds for maker {}: {:?}", 
+                if let Some(maker_profile) = self.user_balances.get_mut(&next_event.maker_user_id) {
+                    let trade_amount = next_event.price * next_event.size;
+                    
+                    match maker_profile.consume_locked(next_event.maker_user_id, market_id, trade_amount) {
+                        Ok(()) => {
+                            info!("[RiskEngine_{}] Successfully consumed locked funds for chained maker {}: amount={}", 
+                                  self.shard_id, next_event.maker_user_id, trade_amount);
+                        }
+                        Err(e) => {
+                            warn!("[RiskEngine_{}] Failed to consume locked funds for chained maker {}: {:?}", 
                                   self.shard_id, next_event.maker_user_id, e);
                         }
                     }
                 }
             }
+            
             current_event = next_event.next_event.as_ref();
         }
     }
