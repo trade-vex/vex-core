@@ -54,12 +54,12 @@ impl KafkaEventsHandler {
     }
 
     fn publish_order_event(&self, processed_cmd: &ProcessedOrderCommand) -> Result<(), String> {
-        // Create Order struct from ProcessedOrderCommand
+        // Create Order struct from ProcessedOrderCommand with actual price and size
         let order = Order {
             order_id: processed_cmd.order_id(),
             user_id: processed_cmd.taker_id(),
-            price: 0, // Price would need to be available from the original order command
-            size: 0,  // Size would need to be available from the original order command
+            price: processed_cmd.price(), // Use actual price from ProcessedOrderCommand
+            size: processed_cmd.size(),   // Use actual size from ProcessedOrderCommand
             side: processed_cmd.side(),
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -310,7 +310,6 @@ mod tests {
     use super::*;
     use common::Side;
 
-
     #[test]
     fn test_kafka_events_handler_placed_order() {
         let handler = KafkaEventsHandler::new();
@@ -321,6 +320,8 @@ mod tests {
             12345,
             1001,
             1,
+            1000, // price
+            100,  // size
             Side::Bid,
         );
         
@@ -348,6 +349,8 @@ mod tests {
             12346,
             1002,
             1,
+            950,  // price
+            50,   // size
             Side::Ask,
         );
         
@@ -375,6 +378,8 @@ mod tests {
             12347,
             1003,
             1,
+            1100, // price
+            75,   // size
             Side::Bid,
         );
         
@@ -396,6 +401,8 @@ mod tests {
             12348,
             1004,
             1,
+            1050, // price
+            200,  // size
             Side::Bid,
         );
         
@@ -432,6 +439,8 @@ mod tests {
             12349,
             1001,
             1,
+            900,  // price
+            25,   // size
             Side::Ask,
         );
         
