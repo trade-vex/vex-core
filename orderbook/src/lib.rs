@@ -203,7 +203,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     ///    They are not included here to avoid redundant checks that are already made
     pub fn place_order(&mut self, cmd: &OrderCommand) -> ProcessedOrderCommand {
         let mut processed =
-            ProcessedOrderCommand::new(Status::Rejected, cmd.order_id, cmd.market_id, cmd.side);
+            ProcessedOrderCommand::new(Status::Rejected, cmd.order_id,cmd.user_id , cmd.market_id, cmd.side);
         match cmd.time_in_force {
             TimeInForce::Gtc => {
                 // Handle GTC (Good 'Til Canceled) orders
@@ -268,7 +268,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     /// All the contraints are NOT checked in the ORDERBOOK, must be guaranteed by upstream systems
     pub fn cancel_order(&mut self, cmd: &OrderCommand) -> ProcessedOrderCommand {
         let mut processed =
-            ProcessedOrderCommand::new(Status::Rejected, cmd.order_id, cmd.market_id, cmd.side);
+            ProcessedOrderCommand::new(Status::Rejected, cmd.order_id, cmd.user_id ,cmd.market_id, cmd.side);
         if let Some(price) = self.orders.remove(&cmd.order_id) {
             if let Some(best_price) = self.bids.best_price()
                 && price <= best_price
