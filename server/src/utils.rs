@@ -68,16 +68,16 @@ macro_rules! create_risk_r2_handler {
 #[macro_export]
 macro_rules! create_event_handler {
     ($events_handler:expr, $risk_engines:expr) => {{
-        let events_handler = $events_handler.clone();
-        let risk_engines_clone = $risk_engines.clone();
+        let events_handler = $events_handler;
+        let risk_engines = $risk_engines;
         move |processed_cmd: &ProcessedOrderCommand, _sequence: i64, _end_of_batch: bool| {
             // Get the appropriate risk engine for the taker user
             let taker_id = processed_cmd.taker_id();
-            let num_shards = risk_engines_clone.len() as u64;
+            let num_shards = risk_engines.len() as u64;
             let shard_mask = num_shards - 1;
             let taker_shard = (taker_id & shard_mask) as usize;
             
-            let risk_engine = if let Some(risk_engine_mutex) = risk_engines_clone.get(taker_shard) {
+            let risk_engine = if let Some(risk_engine_mutex) = risk_engines.get(taker_shard) {
                 Some(&*risk_engine_mutex.lock())
             } else {
                 None

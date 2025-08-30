@@ -134,7 +134,7 @@ impl CoreEngine {
                 .and_then() // Creates dependency: event handlers wait for risk engines
                 // Stage 3: Event Handlers
                 .pin_at_core(15)
-                .handle_events_with(create_event_handler!(events_handler_arc, risk_engines_arc))
+                .handle_events_with(create_event_handler!(events_handler_arc, risk_engines_arc.clone()))
                 .build();
 
         // Build the disruptor pipeline

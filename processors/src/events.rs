@@ -234,11 +234,16 @@ impl EventsHandler for KafkaEventsHandler {
                             error!("[KafkaEventsHandler] Failed to publish taker balance event: {}", e);
                         }
 
-                        // Publish balance for all makers involved
+                        // Publish balance for main event maker
+                        if let Err(e) = self.publish_balance_event(event.maker_user_id, market_id, risk_engine) {
+                            error!("[KafkaEventsHandler] Failed to publish main maker balance event: {}", e);
+                        }
+
+                        // Publish balance for all chained event makers
                         let mut current_event = event.next_event.as_ref();
                         while let Some(next_event) = current_event {
                             if let Err(e) = self.publish_balance_event(next_event.maker_user_id, market_id, risk_engine) {
-                                error!("[KafkaEventsHandler] Failed to publish maker balance event: {}", e);
+                                error!("[KafkaEventsHandler] Failed to publish chained maker balance event: {}", e);
                             }
                             current_event = next_event.next_event.as_ref();
                         }
@@ -407,6 +412,48 @@ mod tests {
         // Check that events were published
         let events = handler.get_published_events();
         assert_eq!(events.len(), 1); // Orderbook event (no trade event since no events in processed command)
+        
+        // Verify orderbook event was published
+        assert!(events.iter().any(|e| e.starts_with("ORDERBOOK:")));
+    }
+
+    #[test]
+    fn test_kafka_events_handler_with_risk_engine() {
+        use hashbrown::HashMap;
+        use common::{BalanceStore, UserBalance};
+        
+        // Create a risk engine with some user balances
+        let mut risk_engine = RiskEngine::new(HashMap::new(), 0, 1);
+        
+        // Add a user with some balance
+        let mut user_profile = BalanceStore::new();
+        let balance = UserBalance::new();
+        user_profile.set_balance(1001, 1, balance);
+        risk_engine.user_balances.insert(1001, user_profile);
+        
+        let handler = KafkaEventsHandler::new();
+        
+        // Create a processed command with Cancelled status
+        let processed_cmd = ProcessedOrderCommand::new(
+            Status::Cancelled,
+            12349,
+            1001,
+            1,
+            Side::Ask,
+        );
+        
+        // Handle the processed command with risk engine
+        handler.handle_processed_command(&processed_cmd, Some(&risk_engine));
+        
+        // Check that events were published
+        let events = handler.get_published_events();
+        assert_eq!(events.len(), 3); // Balance event + Cancel order event + Orderbook event
+        
+        // Verify balance event was published
+        assert!(events.iter().any(|e| e.starts_with("BALANCE:")));
+        
+        // Verify cancel order event was published
+        assert!(events.iter().any(|e| e.starts_with("CANCEL_ORDER:")));
         
         // Verify orderbook event was published
         assert!(events.iter().any(|e| e.starts_with("ORDERBOOK:")));
