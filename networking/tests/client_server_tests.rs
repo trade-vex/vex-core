@@ -1,5 +1,6 @@
-use common::cmd::{OrderCommand, OrderCommandType, decode_order_command};
-use common::model::enums::{OrderType, Side};
+use common::cmd::{OrderCommand, decode_order_command};
+use common::OrderCommandType;
+use common::{TimeInForce, Side};
 use disruptor::{BusySpin, ProcessorSettings, build_multi_producer};
 use rusteron_client::{AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port};
 use std::time::Duration;
