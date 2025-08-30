@@ -5,8 +5,9 @@ use std::sync::Arc;
 
 use common::CoreMarketSpecification;
 use hashbrown::HashMap;
-use processors::events::SimpleEventsHandler;
+use processors::events::{SimpleEventsHandler, KafkaEventsHandler};
 use processors::journaling::JournalingProcessor;
+
 
 use crate::engine::{CoreEngine, OrderProducer};
 
@@ -26,6 +27,29 @@ pub fn init_exchange(
     // Symbols are automatically added to matching engines during initialization
     let (core_engine, producer) =
         CoreEngine::new(symbol_specs, journaling_processor, events_handler);
+
+    (core_engine, producer)
+}
+
+/// Sets up the Exchange Core with Kafka events handler for streaming events to Kafka.
+///
+/// This creates the core engine with Kafka event streaming capabilities
+pub fn init_exchange_with_kafka(
+    symbol_specs: HashMap<u32, CoreMarketSpecification>,
+) -> (CoreEngine, OrderProducer) {
+    // Initialize journaling processor for audit trail
+    let journaling_processor = JournalingProcessor::new();
+
+    // Create Kafka events handler for streaming events
+    let events_handler = Arc::new(KafkaEventsHandler::new());
+
+    // Create the Exchange Core with sharded risk engines and matching engines
+    // Symbols are automatically added to matching engines during initialization
+    let (core_engine, producer) = CoreEngine::new(
+        symbol_specs.clone(),
+        journaling_processor,
+        events_handler,
+    );
 
     (core_engine, producer)
 }
