@@ -1,4 +1,3 @@
-use crate::events::EventsHandler;
 use crate::{
     create_event_handler, create_matching_handler, create_risk_handler, create_risk_r2_handler,
 };
@@ -10,7 +9,7 @@ use disruptor::{
 use hashbrown::HashMap;
 use parking_lot::Mutex;
 use processors::{
-    journaling::JournalingProcessor, matching_engine::MatchingEngineRouter, risk_engine::RiskEngine,
+    journaling::JournalingProcessor, matching_engine::MatchingEngineRouter, risk_engine::RiskEngine, events::EventsHandler
 };
 use std::sync::Arc;
 use std::thread;
