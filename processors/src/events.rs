@@ -2,13 +2,14 @@ use common::MatcherTradeEvent;
 use common::ProcessedOrderCommand;
 use common::Status;
 use common::Order;
+use common::L2MarketData;
 use crate::risk_engine::RiskEngine;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tracing::{error, info};
 
 pub trait EventsHandler: Send + Sync {
-    fn handle_processed_command(&self, processed_cmd: &ProcessedOrderCommand, risk_engine: Option<&RiskEngine>, orderbook_snapshot: Option<(Vec<(u64, u64)>, Vec<(u64, u64)>)>);
+    fn handle_processed_command(&self, processed_cmd: &ProcessedOrderCommand, risk_engine: Option<&RiskEngine>, orderbook_snapshot: Option<L2MarketData<50>>);
 }
 
 // Mock Kafka Events Handler - can be replaced with real Kafka implementation
@@ -135,51 +136,56 @@ impl KafkaEventsHandler {
         Ok(())
     }
 
-    fn publish_orderbook_event(&self, market_id: u32, orderbook_snapshot: Option<(Vec<(u64, u64)>, Vec<(u64, u64)>)>) -> Result<(), String> {
-        let mut bids = Vec::new();
-        let mut asks = Vec::new();
-
-        if let Some((bid_data, ask_data)) = orderbook_snapshot {
-            // Convert snapshot data to OrderbookLevel structs
-            for (price, size) in bid_data {
-                bids.push(OrderbookLevel {
-                    price,
-                    size,
-                });
+    fn publish_orderbook_event(&self, market_id: u32, orderbook_snapshot: Option<L2MarketData<50>>) -> Result<(), String> {
+        if let Some(snapshot) = orderbook_snapshot {
+            // Convert L2MarketData to serializable format
+            let mut bids = Vec::new();
+            let mut asks = Vec::new();
+            
+            // Convert bid data (only non-zero prices)
+            for i in 0..snapshot.depth() {
+                if snapshot.bid_prices[i] > 0 {
+                    bids.push(OrderbookLevel {
+                        price: snapshot.bid_prices[i],
+                        size: snapshot.bid_volumes[i],
+                    });
+                }
             }
-
-            for (price, size) in ask_data {
-                asks.push(OrderbookLevel {
-                    price,
-                    size,
-                });
+            
+            // Convert ask data (only non-zero prices)
+            for i in 0..snapshot.depth() {
+                if snapshot.ask_prices[i] > 0 {
+                    asks.push(OrderbookLevel {
+                        price: snapshot.ask_prices[i],
+                        size: snapshot.ask_volumes[i],
+                    });
+                }
             }
+            
+            let orderbook_event = OrderbookEvent {
+                market_id,
+                bids,
+                asks,
+                timestamp: snapshot.timestamp,
+            };
+
+            let bid_count = orderbook_event.bids.len();
+            let ask_count = orderbook_event.asks.len();
+
+            let payload = serde_json::to_string(&orderbook_event)
+                .map_err(|e| format!("Failed to serialize orderbook event: {}", e))?;
+
+            // Mock Kafka publish
+            let mut events = self.published_events.lock().unwrap();
+            events.push(format!("ORDERBOOK: {}", payload));
+            
+            info!("[KafkaEventsHandler] Published orderbook event for market {} with {} bid levels and {} ask levels", 
+                  market_id, bid_count, ask_count);
+
+            Ok(())
+        } else {
+            Ok(())
         }
-
-        let bid_count = bids.len();
-        let ask_count = asks.len();
-
-        let orderbook_event = OrderbookEvent {
-            market_id,
-            bids,
-            asks,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
-        };
-
-        let payload = serde_json::to_string(&orderbook_event)
-            .map_err(|e| format!("Failed to serialize orderbook event: {}", e))?;
-
-        // Mock Kafka publish
-        let mut events = self.published_events.lock().unwrap();
-        events.push(format!("ORDERBOOK: {}", payload));
-        
-        info!("[KafkaEventsHandler] Published orderbook event for market {} with {} bid levels and {} ask levels", 
-              market_id, bid_count, ask_count);
-
-        Ok(())
     }
 
     // Method to get published events for testing
@@ -189,7 +195,7 @@ impl KafkaEventsHandler {
 }
 
 impl EventsHandler for KafkaEventsHandler {
-    fn handle_processed_command(&self, processed_cmd: &ProcessedOrderCommand, risk_engine: Option<&RiskEngine>, orderbook_snapshot: Option<(Vec<(u64, u64)>, Vec<(u64, u64)>)>) {
+    fn handle_processed_command(&self, processed_cmd: &ProcessedOrderCommand, risk_engine: Option<&RiskEngine>, orderbook_snapshot: Option<L2MarketData<50>>) {
         info!(
             "[KafkaEventsHandler] Processing command: Order {}, Status {:?}",
             processed_cmd.order_id(),
@@ -355,13 +361,10 @@ mod tests {
         
         // Check that events were published
         let events = handler.get_published_events();
-        assert_eq!(events.len(), 2); // Order event + Orderbook event
+        assert_eq!(events.len(), 1); // Only Order event (no orderbook event since no snapshot provided)
         
         // Verify order event was published
         assert!(events.iter().any(|e| e.starts_with("ORDER:")));
-        
-        // Verify orderbook event was published
-        assert!(events.iter().any(|e| e.starts_with("ORDERBOOK:")));
     }
 
     #[test]
@@ -384,13 +387,10 @@ mod tests {
         
         // Check that events were published
         let events = handler.get_published_events();
-        assert_eq!(events.len(), 2); // Cancel order event + Orderbook event (no balance event since no risk engine provided)
+        assert_eq!(events.len(), 1); // Only Cancel order event (no orderbook event since no snapshot provided)
         
         // Verify cancel order event was published
         assert!(events.iter().any(|e| e.starts_with("CANCEL_ORDER:")));
-        
-        // Verify orderbook event was published
-        assert!(events.iter().any(|e| e.starts_with("ORDERBOOK:")));
     }
 
     #[test]
@@ -436,10 +436,10 @@ mod tests {
         
         // Check that events were published
         let events = handler.get_published_events();
-        assert_eq!(events.len(), 1); // Orderbook event (no trade event since no events in processed command)
+        assert_eq!(events.len(), 0); // No events since no trade events and no orderbook snapshot
         
-        // Verify orderbook event was published
-        assert!(events.iter().any(|e| e.starts_with("ORDERBOOK:")));
+        // Verify no events were published
+        assert!(events.is_empty());
     }
 
     #[test]
@@ -474,16 +474,13 @@ mod tests {
         
         // Check that events were published
         let events = handler.get_published_events();
-        assert_eq!(events.len(), 3); // Balance event + Cancel order event + Orderbook event
+        assert_eq!(events.len(), 2); // Balance event + Cancel order event (no orderbook event since no snapshot provided)
         
         // Verify balance event was published
         assert!(events.iter().any(|e| e.starts_with("BALANCE:")));
         
         // Verify cancel order event was published
         assert!(events.iter().any(|e| e.starts_with("CANCEL_ORDER:")));
-        
-        // Verify orderbook event was published
-        assert!(events.iter().any(|e| e.starts_with("ORDERBOOK:")));
     }
 
     #[test]
@@ -532,9 +529,8 @@ mod tests {
         );
         
         // Handle the processed command with orderbook
-        let bid_data: Vec<(u64, u64)> = orderbook.get_bids().map(|(price, level)| (price, level.get_total_volume())).collect();
-        let ask_data: Vec<(u64, u64)> = orderbook.get_asks().map(|(price, level)| (price, level.get_total_volume())).collect();
-        handler.handle_processed_command(&processed_cmd, None, Some((bid_data, ask_data)));
+        let snapshot = orderbook.create_snapshot_with_depth(50);
+        handler.handle_processed_command(&processed_cmd, None, Some(snapshot));
         
         // Check that events were published
         let events = handler.get_published_events();
