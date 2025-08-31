@@ -112,11 +112,12 @@ pub struct ProcessedOrderCommand {
     price: u64,
     size: u64,
     side: Side,
+    timestamp: u64,
     events: Option<Box<MatcherTradeEvent>>,
 }
 
 impl ProcessedOrderCommand {
-    pub fn new(status: Status, order_id: u64, taker_id: u64 ,market_id: u32, price: u64 , size: u64, taker_side: Side) -> Self {
+    pub fn new(status: Status, order_id: u64, taker_id: u64 ,market_id: u32, price: u64 , size: u64, timestamp: u64 , taker_side: Side) -> Self {
         Self {
             status,
             order_id,
@@ -125,6 +126,7 @@ impl ProcessedOrderCommand {
             price,
             size,
             side: taker_side,
+            timestamp,
             events: None,
         }
     }
@@ -151,6 +153,10 @@ impl ProcessedOrderCommand {
 
     pub fn size(&self) -> u64 {
         self.size
+    }
+
+    pub fn timestamp(&self) -> u64 {
+        self.timestamp
     }
 
     pub fn side(&self) -> Side {

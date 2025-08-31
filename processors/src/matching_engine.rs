@@ -66,6 +66,7 @@ impl MatchingEngineRouter {
             cmd.market_id,
             cmd.price,
             cmd.size,
+            cmd.timestamp,
             cmd.side,
         );
         if self.market_for_this_handler(cmd.market_id as u64) {
