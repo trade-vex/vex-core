@@ -36,7 +36,7 @@
 //!         processors (risk engines and event handlers) to consume.
 use crate::tree::BookSide;
 use common::{
-    MatcherTradeEvent, Order, OrderCommand, ProcessedOrderCommand, Side, Status, TimeInForce,
+    MatcherTradeEvent, Order, OrderCommand, ProcessedOrderCommand, Side, Status, TimeInForce, L2MarketData,
 };
 use std::collections::{HashMap, VecDeque};
 
@@ -78,6 +78,11 @@ impl PriceLevel {
     /// Get the total volume at this price level
     pub fn get_total_volume(&self) -> u64 {
         self.total_volume
+    }
+
+    /// Get the number of orders at this price level
+    pub fn get_order_count(&self) -> u64 {
+        self.orders.len() as u64
     }
 }
 
@@ -372,26 +377,38 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
         self.asks.iter()
     }
 
-    /// Create a snapshot of the orderbook data
-    pub fn create_snapshot(&self) -> (Vec<(u64, u64)>, Vec<(u64, u64)>) {
-        self.create_snapshot_with_depth(50) // Default depth of 50
-    }
-
     /// Create a snapshot of the orderbook data with specified depth
-    pub fn create_snapshot_with_depth(&self, depth: usize) -> (Vec<(u64, u64)>, Vec<(u64, u64)>) {
-        let mut bids = Vec::new();
-        let mut asks = Vec::new();
+    pub fn create_snapshot_with_depth(&self, depth: usize) -> L2MarketData<50> {
+        let mut l2_data = L2MarketData::<50>::new();
         
-        // Collect top N bid levels (highest price first)
+        // Fill bid levels (highest price first)
+        let mut bid_index = 0;
         for (price, level) in self.get_bids().take(depth) {
-            bids.push((price, level.get_total_volume()));
+            if bid_index < 50 {
+                l2_data.bid_prices[bid_index] = price;
+                l2_data.bid_volumes[bid_index] = level.get_total_volume();
+                l2_data.bid_orders[bid_index] = level.get_order_count();
+                bid_index += 1;
+            }
         }
         
-        // Collect top N ask levels (lowest price first)
+        // Fill ask levels (lowest price first)
+        let mut ask_index = 0;
         for (price, level) in self.get_asks().take(depth) {
-            asks.push((price, level.get_total_volume()));
+            if ask_index < 50 {
+                l2_data.ask_prices[ask_index] = price;
+                l2_data.ask_volumes[ask_index] = level.get_total_volume();
+                l2_data.ask_orders[ask_index] = level.get_order_count();
+                ask_index += 1;
+            }
         }
         
-        (bids, asks)
+        // Set timestamp
+        l2_data.timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        
+        l2_data
     }
 }

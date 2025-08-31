@@ -4,6 +4,7 @@ use hashbrown::HashMap;
 use tracing::{info, warn};
 use vex_orderbook::OrderBook;
 use vex_orderbook::tree::{BTreeAskSide, BTreeBidSide};
+use common::L2MarketData;
 
 /// Owns all order books and routes commands to the correct one.
 pub struct MatchingEngineRouter {
@@ -95,7 +96,7 @@ impl MatchingEngineRouter {
     }
 
     /// Create a snapshot of the orderbook for a specific market_id with specified depth
-    pub fn create_orderbook_snapshot(&self, market_id: u32, depth: usize) -> Option<(Vec<(u64, u64)>, Vec<(u64, u64)>)> {
+    pub fn create_orderbook_snapshot(&self, market_id: u32, depth: usize) -> Option<L2MarketData<50>> {
         self.get_orderbook(market_id).map(|orderbook| orderbook.create_snapshot_with_depth(depth))
     }
 }
