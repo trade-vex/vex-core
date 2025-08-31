@@ -21,7 +21,7 @@ pub fn init_exchange(
     let journaling_processor = JournalingProcessor::new();
 
     // Create events handler for trade events
-    let events_handler = Arc::new(KafkaEventsHandler::new());
+    let events_handler = Arc::new(KafkaEventsHandler::new("localhost:9093"));
 
     // Create the Exchange Core with sharded risk engines and matching engines
     // Symbols are automatically added to matching engines during initialization

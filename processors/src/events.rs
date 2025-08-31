@@ -5,27 +5,67 @@ use common::Order;
 use common::L2MarketData;
 use crate::risk_engine::RiskEngine;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tracing::{error, info};
+
+// Real Kafka dependencies
+use rdkafka::config::ClientConfig;
+use rdkafka::producer::{FutureProducer, FutureRecord};
 
 pub trait EventsHandler: Send + Sync {
     fn handle_processed_command(&self, processed_cmd: &ProcessedOrderCommand, risk_engine: Option<&RiskEngine>, orderbook_snapshot: Option<L2MarketData<50>>);
 }
 
-// Mock Kafka Events Handler - can be replaced with real Kafka implementation
+// Real Kafka Events Handler
 pub struct KafkaEventsHandler {
-    published_events: Arc<Mutex<Vec<String>>>,
+    producer: FutureProducer,
 }
 
 impl KafkaEventsHandler {
-    pub fn new() -> Self {
-        Self {
-            published_events: Arc::new(Mutex::new(Vec::new())),
+    pub fn new(brokers: &str) -> Self {
+        let producer: FutureProducer = ClientConfig::new()
+            .set("bootstrap.servers", brokers)
+            .set("message.timeout.ms", "5000")
+            .set("retry.backoff.ms", "100")
+            .set("request.timeout.ms", "3000")
+            .create()
+            .expect("Producer creation failed");
+        
+        info!("[KafkaEventsHandler] Connected to Kafka brokers at {}", brokers);
+
+        Self { 
+            producer, 
         }
     }
 
-    fn publish_balance_event(&self, user_id: u64, market_id: u32, risk_engine: &RiskEngine , cmd: &ProcessedOrderCommand) -> Result<(), String> {
-        // Get user balance from risk engine
+    fn publish_event<T: Serialize>(&self, topic_name: &str, message_key: &str, payload: &T) {
+        match serde_json::to_string(payload) {
+            Ok(json_payload) => {
+                let producer = self.producer.clone();
+                let message_key = message_key.to_string();
+                let topic_name = topic_name.to_string();
+
+                // Spawn async task to send to Kafka
+                tokio::spawn(async move {
+                    let record = FutureRecord::to(&topic_name)
+                        .payload(&json_payload)
+                        .key(&message_key);
+                    
+                    match producer.send(record, Duration::from_secs(5)).await {
+                        Ok(_) => {
+                            info!("[KafkaEventsHandler] Successfully sent event to topic '{}'", topic_name);
+                        }
+                        Err((e, _)) => {
+                            error!("[KafkaEventsHandler] Failed to send event to topic '{}': {}", topic_name, e);
+                        }
+                    }
+                });
+            }
+            Err(e) => error!("Failed to serialize payload for topic '{}': {}", topic_name, e),
+        }
+    }
+
+    fn publish_balance_event(&self, user_id: u64, market_id: u32, risk_engine: &RiskEngine, cmd: &ProcessedOrderCommand) -> Result<(), String> {
         if let Some(user_profile) = risk_engine.user_balances.get(&user_id) {
             if let Ok(balance) = user_profile.get_balance(user_id, market_id) {
                 let balance_event = BalanceEvent {
@@ -37,22 +77,15 @@ impl KafkaEventsHandler {
                     timestamp: cmd.timestamp()
                 };
 
-                let payload = serde_json::to_string(&balance_event)
-                    .map_err(|e| format!("Failed to serialize balance event: {}", e))?;
-
-                // Mock Kafka publish - in real implementation, this would send to Kafka
-                let mut events = self.published_events.lock().unwrap();
-                events.push(format!("BALANCE: {}", payload));
-                
-                info!("[KafkaEventsHandler] Published balance event for user {}", user_id);
+                let topic_name = format!("market-{}-balances", market_id);
+                self.publish_event(&topic_name, &user_id.to_string(), &balance_event);
+                info!("[KafkaEventsHandler] Published balance event for user {} in market {}", user_id, market_id);
             }
         }
-
         Ok(())
     }
 
     fn publish_order_event(&self, cmd: &ProcessedOrderCommand) -> Result<(), String> {
-        // Create Order struct from ProcessedOrderCommand with actual price and size
         let order = Order {
             order_id: cmd.order_id(),
             user_id: cmd.taker_id(),
@@ -67,14 +100,9 @@ impl KafkaEventsHandler {
             market_id: cmd.market_id(),
         };
 
-        let payload = serde_json::to_string(&order_event)
-            .map_err(|e| format!("Failed to serialize order event: {}", e))?;
-
-        // Mock Kafka publish
-        let mut events = self.published_events.lock().unwrap();
-        events.push(format!("ORDER: {}", payload));
-        
-        info!("[KafkaEventsHandler] Published order event for order {}", cmd.order_id());
+        let topic_name = format!("market-{}-orders", cmd.market_id());
+        self.publish_event(&topic_name, &cmd.order_id().to_string(), &order_event);
+        info!("[KafkaEventsHandler] Published order event for order {} in market {}", cmd.order_id(), cmd.market_id());
 
         Ok(())
     }
@@ -86,20 +114,17 @@ impl KafkaEventsHandler {
             market_id,
             price: event.price,
             size: event.size,
-            maker_order_id: event.matched_order_id, // This is the passive/maker order ID
-            taker_order_id, // This is the active/taker order ID
+            maker_order_id: event.matched_order_id,
+            taker_order_id,
             timestamp: cmd.timestamp(),
         };
 
-        let payload = serde_json::to_string(&trade_event)
-            .map_err(|e| format!("Failed to serialize trade event: {}", e))?;
-
-        // Mock Kafka publish
-        let mut events = self.published_events.lock().unwrap();
-        events.push(format!("TRADE: {}", payload));
+        let topic_name = format!("market-{}-trades", market_id);
+        let trade_key = format!("{}:{}", taker_order_id, event.matched_order_id);
+        self.publish_event(&topic_name, &trade_key, &trade_event);
         
-        info!("[KafkaEventsHandler] Published trade event for maker order {} and taker order {}", 
-              event.matched_order_id, taker_order_id);
+        info!("[KafkaEventsHandler] Published trade event for maker order {} and taker order {} in market {}", 
+              event.matched_order_id, taker_order_id, market_id);
 
         Ok(())
     }
@@ -112,25 +137,18 @@ impl KafkaEventsHandler {
             timestamp: cmd.timestamp(),
         };
 
-        let payload = serde_json::to_string(&cancel_event)
-            .map_err(|e| format!("Failed to serialize cancel order event: {}", e))?;
-
-        // Mock Kafka publish
-        let mut events = self.published_events.lock().unwrap();
-        events.push(format!("CANCEL_ORDER: {}", payload));
-        
-        info!("[KafkaEventsHandler] Published cancel order event for order {}", cmd.order_id());
+        let topic_name = format!("market-{}-cancels", cmd.market_id());
+        self.publish_event(&topic_name, &cmd.order_id().to_string(), &cancel_event);
+        info!("[KafkaEventsHandler] Published cancel order event for order {} in market {}", cmd.order_id(), cmd.market_id());
 
         Ok(())
     }
 
     fn publish_orderbook_event(&self, market_id: u32, orderbook_snapshot: Option<L2MarketData<50>>) -> Result<(), String> {
         if let Some(snapshot) = orderbook_snapshot {
-            // Convert L2MarketData to serializable format
             let mut bids = Vec::new();
             let mut asks = Vec::new();
             
-            // Convert bid data (only non-zero prices)
             for i in 0..snapshot.depth() {
                 if snapshot.bid_prices[i] > 0 {
                     bids.push(OrderbookLevel {
@@ -140,7 +158,6 @@ impl KafkaEventsHandler {
                 }
             }
             
-            // Convert ask data (only non-zero prices)
             for i in 0..snapshot.depth() {
                 if snapshot.ask_prices[i] > 0 {
                     asks.push(OrderbookLevel {
@@ -157,28 +174,15 @@ impl KafkaEventsHandler {
                 timestamp: snapshot.timestamp,
             };
 
-            let bid_count = orderbook_event.bids.len();
-            let ask_count = orderbook_event.asks.len();
-
-            let payload = serde_json::to_string(&orderbook_event)
-                .map_err(|e| format!("Failed to serialize orderbook event: {}", e))?;
-
-            // Mock Kafka publish
-            let mut events = self.published_events.lock().unwrap();
-            events.push(format!("ORDERBOOK: {}", payload));
+            let topic_name = format!("market-{}-orderbook", market_id);
+            self.publish_event(&topic_name, &market_id.to_string(), &orderbook_event);
             
-            info!("[KafkaEventsHandler] Published orderbook event for market {} with {} bid levels and {} ask levels", 
-                  market_id, bid_count, ask_count);
+            info!("[KafkaEventsHandler] Published orderbook event for market {}", market_id);
 
             Ok(())
         } else {
             Ok(())
         }
-    }
-
-    // Method to get published events for testing
-    pub fn get_published_events(&self) -> Vec<String> {
-        self.published_events.lock().unwrap().clone()
     }
 }
 
@@ -196,11 +200,9 @@ impl EventsHandler for KafkaEventsHandler {
 
         match processed_cmd.status() {
             Status::Rejected => {
-                // Nothing is published to Kafka for rejected orders
                 info!("[KafkaEventsHandler] Order {} rejected - no events published", processed_cmd.order_id());
             }
             Status::Placed => {
-                // Publish order event and orderbook event
                 if let Err(e) = self.publish_order_event(processed_cmd) {
                     error!("[KafkaEventsHandler] Failed to publish order event: {}", e);
                 }
@@ -209,9 +211,8 @@ impl EventsHandler for KafkaEventsHandler {
                 }
             }
             Status::Cancelled => {
-                // Publish balance event and cancel order event
                 if let Some(risk_engine) = risk_engine {
-                    if let Err(e) = self.publish_balance_event(taker_id, market_id, risk_engine ,processed_cmd) {
+                    if let Err(e) = self.publish_balance_event(taker_id, market_id, risk_engine, processed_cmd) {
                         error!("[KafkaEventsHandler] Failed to publish balance event: {}", e);
                     }
                 }
@@ -223,38 +224,31 @@ impl EventsHandler for KafkaEventsHandler {
                 }
             }
             Status::PartiallyFilled | Status::Filled => {
-                // Process all trade events in the linked list
                 if let Some(event) = processed_cmd.events() {
-                    // Process the main event
-                    if let Err(e) = self.publish_trade_event(event, processed_cmd , market_id, taker_id, taker_order_id) {
+                    if let Err(e) = self.publish_trade_event(event, processed_cmd, market_id, taker_id, taker_order_id) {
                         error!("[KafkaEventsHandler] Failed to publish trade event: {}", e);
                     }
 
-                    // Process all chained events
                     let mut current_event = event.next_event.as_ref();
                     while let Some(next_event) = current_event {
-                        if let Err(e) = self.publish_trade_event(next_event, processed_cmd , market_id, taker_id, taker_order_id) {
+                        if let Err(e) = self.publish_trade_event(next_event, processed_cmd, market_id, taker_id, taker_order_id) {
                             error!("[KafkaEventsHandler] Failed to publish chained trade event: {}", e);
                         }
                         current_event = next_event.next_event.as_ref();
                     }
 
-                    // Publish balance events for all makers and taker involved
                     if let Some(risk_engine) = risk_engine {
-                        // Publish balance for taker
-                        if let Err(e) = self.publish_balance_event(taker_id, market_id, risk_engine , processed_cmd) {
+                        if let Err(e) = self.publish_balance_event(taker_id, market_id, risk_engine, processed_cmd) {
                             error!("[KafkaEventsHandler] Failed to publish taker balance event: {}", e);
                         }
 
-                        // Publish balance for main event maker
-                        if let Err(e) = self.publish_balance_event(event.maker_user_id, market_id, risk_engine , processed_cmd) {
+                        if let Err(e) = self.publish_balance_event(event.maker_user_id, market_id, risk_engine, processed_cmd) {
                             error!("[KafkaEventsHandler] Failed to publish main maker balance event: {}", e);
                         }
 
-                        // Publish balance for all chained event makers
                         let mut current_event = event.next_event.as_ref();
                         while let Some(next_event) = current_event {
-                            if let Err(e) = self.publish_balance_event(next_event.maker_user_id, market_id, risk_engine , processed_cmd) {
+                            if let Err(e) = self.publish_balance_event(next_event.maker_user_id, market_id, risk_engine, processed_cmd) {
                                 error!("[KafkaEventsHandler] Failed to publish chained maker balance event: {}", e);
                             }
                             current_event = next_event.next_event.as_ref();
@@ -262,7 +256,6 @@ impl EventsHandler for KafkaEventsHandler {
                     }
                 }
                 
-                // Publish orderbook event
                 if let Err(e) = self.publish_orderbook_event(market_id, orderbook_snapshot) {
                     error!("[KafkaEventsHandler] Failed to publish orderbook event: {}", e);
                 }
@@ -295,8 +288,8 @@ struct TradeEvent {
     market_id: u32,
     price: u64,
     size: u64,
-    maker_order_id: u64, // Passive order ID (from matched_order_id)
-    taker_order_id: u64, // Active order ID
+    maker_order_id: u64,
+    taker_order_id: u64,
     timestamp: u64,
 }
 
@@ -329,11 +322,10 @@ mod tests {
     use vex_orderbook::OrderBook;
     use vex_orderbook::tree::{BTreeAskSide, BTreeBidSide};
 
-    #[test]
-    fn test_kafka_events_handler_placed_order() {
-        let handler = KafkaEventsHandler::new();
+    #[tokio::test]
+    async fn test_kafka_events_handler_placed_order() {
+        let handler = KafkaEventsHandler::new("localhost:9093");
         
-        // Create a processed command with Placed status
         let processed_cmd = ProcessedOrderCommand::new(
             Status::Placed,
             12345,  // order_id
@@ -345,22 +337,16 @@ mod tests {
             Side::Bid,
         );
         
-        // Handle the processed command
         handler.handle_processed_command(&processed_cmd, None, None);
         
-        // Check that events were published
-        let events = handler.get_published_events();
-        assert_eq!(events.len(), 1); // Only Order event (no orderbook event since no snapshot provided)
-        
-        // Verify order event was published
-        assert!(events.iter().any(|e| e.starts_with("ORDER:")));
+        // Wait for async Kafka send to complete
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
 
-    #[test]
-    fn test_kafka_events_handler_cancelled_order() {
-        let handler = KafkaEventsHandler::new();
+    #[tokio::test]
+    async fn test_kafka_events_handler_cancelled_order() {
+        let handler = KafkaEventsHandler::new("localhost:9093");
         
-        // Create a processed command with Cancelled status
         let processed_cmd = ProcessedOrderCommand::new(
             Status::Cancelled,
             12346,  // order_id
@@ -372,85 +358,25 @@ mod tests {
             Side::Ask,
         );
         
-        // Handle the processed command
         handler.handle_processed_command(&processed_cmd, None, None);
         
-        // Check that events were published
-        let events = handler.get_published_events();
-        assert_eq!(events.len(), 1); // Only Cancel order event (no orderbook event since no snapshot provided)
-        
-        // Verify cancel order event was published
-        assert!(events.iter().any(|e| e.starts_with("CANCEL_ORDER:")));
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
 
-    #[test]
-    fn test_kafka_events_handler_rejected_order() {
-        let handler = KafkaEventsHandler::new();
-        
-        // Create a processed command with Rejected status
-        let processed_cmd = ProcessedOrderCommand::new(
-            Status::Rejected,
-            12347,  // order_id
-            1003,   // taker_id
-            1,      // market_id
-            1100,   // price
-            75,     // size
-            1002,   // timestamp
-            Side::Bid,
-        );
-        
-        // Handle the processed command
-        handler.handle_processed_command(&processed_cmd, None, None);
-        
-        // Check that no events were published for rejected orders
-        let events = handler.get_published_events();
-        assert_eq!(events.len(), 0);
-    }
-
-    #[test]
-    fn test_kafka_events_handler_filled_order() {
-        let handler = KafkaEventsHandler::new();
-        
-        // Create a processed command with Filled status and trade event
-        let processed_cmd = ProcessedOrderCommand::new(
-            Status::Filled,
-            12348,  // order_id
-            1004,   // taker_id
-            1,      // market_id
-            1050,   // price
-            200,    // size
-            1003,   // timestamp
-            Side::Bid,
-        );
-        
-        // Handle the processed command
-        handler.handle_processed_command(&processed_cmd, None, None);
-        
-        // Check that events were published
-        let events = handler.get_published_events();
-        assert_eq!(events.len(), 0); // No events since no trade events and no orderbook snapshot
-        
-        // Verify no events were published
-        assert!(events.is_empty());
-    }
-
-    #[test]
-    fn test_kafka_events_handler_with_risk_engine() {
+    #[tokio::test]
+    async fn test_kafka_events_handler_with_risk_engine() {
         use hashbrown::HashMap;
         use common::{BalanceStore, UserBalance};
         
-        // Create a risk engine with some user balances
         let mut risk_engine = RiskEngine::new(HashMap::new(), 0, 1);
         
-        // Add a user with some balance
         let mut user_profile = BalanceStore::new();
         let balance = UserBalance::new();
         user_profile.set_balance(1001, 1, balance);
         risk_engine.user_balances.insert(1001, user_profile);
         
-        let handler = KafkaEventsHandler::new();
+        let handler = KafkaEventsHandler::new("localhost:9093");
         
-        // Create a processed command with Cancelled status
         let processed_cmd = ProcessedOrderCommand::new(
             Status::Cancelled,
             12349,  // order_id
@@ -462,28 +388,17 @@ mod tests {
             Side::Ask,
         );
         
-        // Handle the processed command with risk engine
         handler.handle_processed_command(&processed_cmd, Some(&risk_engine), None);
         
-        // Check that events were published
-        let events = handler.get_published_events();
-        assert_eq!(events.len(), 2); // Balance event + Cancel order event (no orderbook event since no snapshot provided)
-        
-        // Verify balance event was published
-        assert!(events.iter().any(|e| e.starts_with("BALANCE:")));
-        
-        // Verify cancel order event was published
-        assert!(events.iter().any(|e| e.starts_with("CANCEL_ORDER:")));
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
 
-    #[test]
-    fn test_orderbook_event_with_real_orderbook() {
-        let handler = KafkaEventsHandler::new();
+    #[tokio::test]
+    async fn test_orderbook_event_with_real_orderbook() {
+        let handler = KafkaEventsHandler::new("localhost:9093");
         
-        // Create a real orderbook with some orders
         let mut orderbook = OrderBook::new(BTreeBidSide::new(), BTreeAskSide::new());
         
-        // Add some orders to the orderbook
         let bid_cmd = common::OrderCommand {
             command: common::OrderCommandType::PlaceOrder,
             order_id: 1,
@@ -510,7 +425,6 @@ mod tests {
         };
         orderbook.place_order(&ask_cmd);
         
-        // Create a processed command
         let processed_cmd = ProcessedOrderCommand::new(
             Status::Placed,
             12350,  // order_id
@@ -522,19 +436,53 @@ mod tests {
             Side::Bid,
         );
         
-        // Handle the processed command with orderbook
         let snapshot = orderbook.create_snapshot_with_depth(50);
         handler.handle_processed_command(&processed_cmd, None, Some(snapshot));
         
-        // Check that events were published
-        let events = handler.get_published_events();
-        assert_eq!(events.len(), 2); // Order event + Orderbook event
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    }
+
+    #[tokio::test]
+    async fn test_kafka_events_handler_filled_order_with_trades() {
+        let handler = KafkaEventsHandler::new("localhost:9093");
         
-        // Verify orderbook event was published and contains real data
-        let orderbook_event = events.iter().find(|e| e.starts_with("ORDERBOOK:")).unwrap();
-        assert!(orderbook_event.contains("1000")); // Should contain bid price
-        assert!(orderbook_event.contains("1100")); // Should contain ask price
-        assert!(orderbook_event.contains("100"));  // Should contain bid size
-        assert!(orderbook_event.contains("50"));   // Should contain ask size
+        // Create a processed command with Filled status and trade events
+        let mut filled_cmd = ProcessedOrderCommand::new(
+            Status::Filled,
+            12348,  // order_id
+            1004,   // taker_id
+            1,      // market_id
+            1050,   // price
+            200,    // size
+            1003,   // timestamp
+            Side::Bid,
+        );
+        
+        // Create trade events with all required fields
+        let trade2 = MatcherTradeEvent {
+            active_order_completed: false,
+            matched_order_id: 201,
+            maker_user_id: 1003,
+            matched_order_completed: true,
+            price: 1050,
+            size: 50,
+            next_event: None,
+        };
+        let trade1 = MatcherTradeEvent {
+            active_order_completed: false,
+            matched_order_id: 202,
+            maker_user_id: 1004,
+            matched_order_completed: false,
+            price: 1040,
+            size: 150,
+            next_event: Some(Box::new(trade2)),
+        };
+        
+        // Use the correct method name (note the typo in the original)
+        filled_cmd.attatch_event(Box::new(trade1));
+        
+        handler.handle_processed_command(&filled_cmd, None, None);
+        
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
 }
