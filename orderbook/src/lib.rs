@@ -216,6 +216,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             cmd.market_id,
             cmd.price,
             cmd.size,
+            cmd.timestamp,
             cmd.side,
         );
         match cmd.time_in_force {
@@ -288,6 +289,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             cmd.market_id,
             cmd.price,
             cmd.size,
+            cmd.timestamp,
             cmd.side,
         );
         if let Some(price) = self.orders.remove(&cmd.order_id) {

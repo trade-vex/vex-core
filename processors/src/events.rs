@@ -24,7 +24,7 @@ impl KafkaEventsHandler {
         }
     }
 
-    fn publish_balance_event(&self, user_id: u64, market_id: u32, risk_engine: &RiskEngine) -> Result<(), String> {
+    fn publish_balance_event(&self, user_id: u64, market_id: u32, risk_engine: &RiskEngine , cmd: &ProcessedOrderCommand) -> Result<(), String> {
         // Get user balance from risk engine
         if let Some(user_profile) = risk_engine.user_balances.get(&user_id) {
             if let Ok(balance) = user_profile.get_balance(user_id, market_id) {
@@ -34,10 +34,7 @@ impl KafkaEventsHandler {
                     available: balance.available(),
                     locked: balance.locked(),
                     total: balance.total(),
-                    timestamp: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as u64,
+                    timestamp: cmd.timestamp()
                 };
 
                 let payload = serde_json::to_string(&balance_event)
@@ -54,23 +51,20 @@ impl KafkaEventsHandler {
         Ok(())
     }
 
-    fn publish_order_event(&self, processed_cmd: &ProcessedOrderCommand) -> Result<(), String> {
+    fn publish_order_event(&self, cmd: &ProcessedOrderCommand) -> Result<(), String> {
         // Create Order struct from ProcessedOrderCommand with actual price and size
         let order = Order {
-            order_id: processed_cmd.order_id(),
-            user_id: processed_cmd.taker_id(),
-            price: processed_cmd.price(), // Use actual price from ProcessedOrderCommand
-            size: processed_cmd.size(),   // Use actual size from ProcessedOrderCommand
-            side: processed_cmd.side(),
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
+            order_id: cmd.order_id(),
+            user_id: cmd.taker_id(),
+            price: cmd.price(),
+            size: cmd.size(),
+            side: cmd.side(),
+            timestamp: cmd.timestamp(),
         };
 
         let order_event = OrderEvent {
             order: order,
-            market_id: processed_cmd.market_id(),
+            market_id: cmd.market_id(),
         };
 
         let payload = serde_json::to_string(&order_event)
@@ -80,12 +74,12 @@ impl KafkaEventsHandler {
         let mut events = self.published_events.lock().unwrap();
         events.push(format!("ORDER: {}", payload));
         
-        info!("[KafkaEventsHandler] Published order event for order {}", processed_cmd.order_id());
+        info!("[KafkaEventsHandler] Published order event for order {}", cmd.order_id());
 
         Ok(())
     }
 
-    fn publish_trade_event(&self, event: &MatcherTradeEvent, market_id: u32, taker_id: u64, taker_order_id: u64) -> Result<(), String> {
+    fn publish_trade_event(&self, event: &MatcherTradeEvent, cmd: &ProcessedOrderCommand, market_id: u32, taker_id: u64, taker_order_id: u64) -> Result<(), String> {
         let trade_event = TradeEvent {
             maker_user_id: event.maker_user_id,
             taker_user_id: taker_id,
@@ -94,10 +88,7 @@ impl KafkaEventsHandler {
             size: event.size,
             maker_order_id: event.matched_order_id, // This is the passive/maker order ID
             taker_order_id, // This is the active/taker order ID
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
+            timestamp: cmd.timestamp(),
         };
 
         let payload = serde_json::to_string(&trade_event)
@@ -113,15 +104,12 @@ impl KafkaEventsHandler {
         Ok(())
     }
 
-    fn publish_cancel_order_event(&self, processed_cmd: &ProcessedOrderCommand) -> Result<(), String> {
+    fn publish_cancel_order_event(&self, cmd: &ProcessedOrderCommand) -> Result<(), String> {
         let cancel_event = CancelOrderEvent {
-            order_id: processed_cmd.order_id(),
-            market_id: processed_cmd.market_id(),
-            user_id: processed_cmd.taker_id(),
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
+            order_id: cmd.order_id(),
+            market_id: cmd.market_id(),
+            user_id: cmd.taker_id(),
+            timestamp: cmd.timestamp(),
         };
 
         let payload = serde_json::to_string(&cancel_event)
@@ -131,7 +119,7 @@ impl KafkaEventsHandler {
         let mut events = self.published_events.lock().unwrap();
         events.push(format!("CANCEL_ORDER: {}", payload));
         
-        info!("[KafkaEventsHandler] Published cancel order event for order {}", processed_cmd.order_id());
+        info!("[KafkaEventsHandler] Published cancel order event for order {}", cmd.order_id());
 
         Ok(())
     }
@@ -223,7 +211,7 @@ impl EventsHandler for KafkaEventsHandler {
             Status::Cancelled => {
                 // Publish balance event and cancel order event
                 if let Some(risk_engine) = risk_engine {
-                    if let Err(e) = self.publish_balance_event(taker_id, market_id, risk_engine) {
+                    if let Err(e) = self.publish_balance_event(taker_id, market_id, risk_engine ,processed_cmd) {
                         error!("[KafkaEventsHandler] Failed to publish balance event: {}", e);
                     }
                 }
@@ -238,14 +226,14 @@ impl EventsHandler for KafkaEventsHandler {
                 // Process all trade events in the linked list
                 if let Some(event) = processed_cmd.events() {
                     // Process the main event
-                    if let Err(e) = self.publish_trade_event(event, market_id, taker_id, taker_order_id) {
+                    if let Err(e) = self.publish_trade_event(event, processed_cmd , market_id, taker_id, taker_order_id) {
                         error!("[KafkaEventsHandler] Failed to publish trade event: {}", e);
                     }
 
                     // Process all chained events
                     let mut current_event = event.next_event.as_ref();
                     while let Some(next_event) = current_event {
-                        if let Err(e) = self.publish_trade_event(next_event, market_id, taker_id, taker_order_id) {
+                        if let Err(e) = self.publish_trade_event(next_event, processed_cmd , market_id, taker_id, taker_order_id) {
                             error!("[KafkaEventsHandler] Failed to publish chained trade event: {}", e);
                         }
                         current_event = next_event.next_event.as_ref();
@@ -254,19 +242,19 @@ impl EventsHandler for KafkaEventsHandler {
                     // Publish balance events for all makers and taker involved
                     if let Some(risk_engine) = risk_engine {
                         // Publish balance for taker
-                        if let Err(e) = self.publish_balance_event(taker_id, market_id, risk_engine) {
+                        if let Err(e) = self.publish_balance_event(taker_id, market_id, risk_engine , processed_cmd) {
                             error!("[KafkaEventsHandler] Failed to publish taker balance event: {}", e);
                         }
 
                         // Publish balance for main event maker
-                        if let Err(e) = self.publish_balance_event(event.maker_user_id, market_id, risk_engine) {
+                        if let Err(e) = self.publish_balance_event(event.maker_user_id, market_id, risk_engine , processed_cmd) {
                             error!("[KafkaEventsHandler] Failed to publish main maker balance event: {}", e);
                         }
 
                         // Publish balance for all chained event makers
                         let mut current_event = event.next_event.as_ref();
                         while let Some(next_event) = current_event {
-                            if let Err(e) = self.publish_balance_event(next_event.maker_user_id, market_id, risk_engine) {
+                            if let Err(e) = self.publish_balance_event(next_event.maker_user_id, market_id, risk_engine , processed_cmd) {
                                 error!("[KafkaEventsHandler] Failed to publish chained maker balance event: {}", e);
                             }
                             current_event = next_event.next_event.as_ref();
@@ -348,11 +336,12 @@ mod tests {
         // Create a processed command with Placed status
         let processed_cmd = ProcessedOrderCommand::new(
             Status::Placed,
-            12345,
-            1001,
-            1,
-            1000, // price
-            100,  // size
+            12345,  // order_id
+            1001,   // taker_id
+            1,      // market_id
+            1000,   // price
+            100,    // size
+            1000,   // timestamp
             Side::Bid,
         );
         
@@ -374,11 +363,12 @@ mod tests {
         // Create a processed command with Cancelled status
         let processed_cmd = ProcessedOrderCommand::new(
             Status::Cancelled,
-            12346,
-            1002,
-            1,
-            950,  // price
-            50,   // size
+            12346,  // order_id
+            1002,   // taker_id
+            1,      // market_id
+            950,    // price
+            50,     // size
+            1001,   // timestamp
             Side::Ask,
         );
         
@@ -400,11 +390,12 @@ mod tests {
         // Create a processed command with Rejected status
         let processed_cmd = ProcessedOrderCommand::new(
             Status::Rejected,
-            12347,
-            1003,
-            1,
-            1100, // price
-            75,   // size
+            12347,  // order_id
+            1003,   // taker_id
+            1,      // market_id
+            1100,   // price
+            75,     // size
+            1002,   // timestamp
             Side::Bid,
         );
         
@@ -423,11 +414,12 @@ mod tests {
         // Create a processed command with Filled status and trade event
         let processed_cmd = ProcessedOrderCommand::new(
             Status::Filled,
-            12348,
-            1004,
-            1,
-            1050, // price
-            200,  // size
+            12348,  // order_id
+            1004,   // taker_id
+            1,      // market_id
+            1050,   // price
+            200,    // size
+            1003,   // timestamp
             Side::Bid,
         );
         
@@ -461,11 +453,12 @@ mod tests {
         // Create a processed command with Cancelled status
         let processed_cmd = ProcessedOrderCommand::new(
             Status::Cancelled,
-            12349,
-            1001,
-            1,
-            900,  // price
-            25,   // size
+            12349,  // order_id
+            1001,   // taker_id
+            1,      // market_id
+            900,    // price
+            25,     // size
+            1004,   // timestamp
             Side::Ask,
         );
         
@@ -520,11 +513,12 @@ mod tests {
         // Create a processed command
         let processed_cmd = ProcessedOrderCommand::new(
             Status::Placed,
-            12350,
-            1003,
-            1,
-            1050, // price
-            75,   // size
+            12350,  // order_id
+            1003,   // taker_id
+            1,      // market_id
+            1050,   // price
+            75,     // size
+            1005,   // timestamp
             Side::Bid,
         );
         

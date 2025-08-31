@@ -56,7 +56,7 @@ impl CoreEngine {
     ) -> (Self, OrderProducer) {
         let order_factory = || OrderCommand::default();
         let matcher_event_factory =
-            || ProcessedOrderCommand::new(Status::Rejected, 0, 0, 0,0,0, Side::Ask);
+            || ProcessedOrderCommand::new(Status::Rejected, 0, 0, 0,0,0, 0,Side::Ask);
         let buffer_size = 1024; // Power of 2 for disruptor efficiency
 
         let journaling_arc = Arc::new(journaling_processor);
