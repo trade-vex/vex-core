@@ -187,3 +187,33 @@ impl PositionDirection {
         }
     }
 }
+
+/// Type of balance modification:
+///
+/// * `Adjustment` — Changes account balance (deposits, withdrawals, corrections).
+/// * `Suspend` — Removes inactive client profile to improve performance.
+///   Balances should first be set to zero; no open margin positions allowed.
+///   Profiles may resume with positions/balances if pending orders or commands
+///   were unprocessed, so resume must handle merging.
+///
+/// Used in the BALANCE_ADJUSTMENT command (which is a TODO OrderCommand for now) by the core engine to decide how to
+/// modify or remove a client’s account state.
+
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    TryFromPrimitive,
+    Serialize,
+    Deserialize,
+    BorshSerialize,
+    BorshDeserialize,
+)]
+#[borsh(use_discriminant = true)]
+#[repr(u8)]
+pub enum BalanceAdjustmentType {
+    Adjustment = 0,
+    Suspend = 1,
+}
