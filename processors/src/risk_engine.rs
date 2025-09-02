@@ -7,7 +7,7 @@ use orderbook::OrderBookError;
 /// Manages all user profiles and performs risk checks as well as settlements
 /// This is the Rust equivalent of `RiskEngine.java`.
 pub struct RiskEngine {
-    user_profiles: HashMap<i64, UserProfile>,
+    pub user_profiles: HashMap<i64, UserProfile>,
 }
 
 impl RiskEngine {
