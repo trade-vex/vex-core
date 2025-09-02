@@ -1,4 +1,4 @@
-use crate::{OrderCommandType, Side, TimeInForce};
+use crate::{OrderCommandType, Side, TimeInForce, user_profile};
 use sbe_order::message_header_codec::{self, MessageHeaderDecoder};
 use sbe_order::order_command_message_codec::{
     OrderCommandMessageDecoder, OrderCommandMessageEncoder,
@@ -108,7 +108,7 @@ pub struct ProcessedOrderCommand {
     status: Status,
     order_id: u64,
     market_id: u32,
-    taker_id: u64,
+    user_id: u64,
     price: u64,
     size: u64,
     side: Side,
@@ -117,12 +117,18 @@ pub struct ProcessedOrderCommand {
 }
 
 impl ProcessedOrderCommand {
-    pub fn new(status: Status, order_id: u64, taker_id: u64 ,market_id: u32, price: u64 , size: u64, timestamp: u64 , taker_side: Side) -> Self {
+    pub fn new(
+        status: Status,
+        order_id: u64,
+        user_id: u64,
+        market_id: u32, price: u64 , size: u64, timestamp: u64 ,
+        taker_side: Side,
+    ) -> Self {
         Self {
             status,
             order_id,
             market_id,
-            taker_id,
+            user_id,
             price,
             size,
             side: taker_side,
@@ -139,8 +145,8 @@ impl ProcessedOrderCommand {
         self.order_id
     }
 
-    pub fn taker_id(&self) -> u64 {
-        self.taker_id
+    pub fn user_id(&self) -> u64 {
+        self.user_id
     }
 
     pub fn market_id(&self) -> u32 {
@@ -199,8 +205,7 @@ pub enum Status {
     Filled,
 }
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct MatcherTradeEvent {
     pub active_order_completed: bool,
     pub matched_order_id: u64,
@@ -222,7 +227,6 @@ impl MatcherTradeEvent {
         size
     }
 }
-
 
 pub fn encode_order_command(order_command: OrderCommand, buf: &mut [u8]) -> SbeResult<()> {
     let write_buf = WriteBuf::new(buf);

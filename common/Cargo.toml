@@ -8,4 +8,5 @@ borsh = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 sbe_order = { workspace = true }
+parking_lot = { workspace = true }
 ahash = "0.8.12"
