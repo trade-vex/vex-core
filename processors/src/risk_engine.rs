@@ -138,7 +138,8 @@ impl RiskEngine {
             None => {
                 warn!(
                     "[RiskEngine_{}] Market spec not found for market_id {}",
-                    self.shard_id, cmd.market_id()
+                    self.shard_id,
+                    cmd.market_id()
                 );
                 return;
             }

@@ -36,7 +36,8 @@
 //!         processors (risk engines and event handlers) to consume.
 use crate::tree::BookSide;
 use common::{
-    MatcherTradeEvent, Order, OrderCommand, ProcessedOrderCommand, Side, Status, TimeInForce, L2MarketData,
+    L2MarketData, MatcherTradeEvent, Order, OrderCommand, ProcessedOrderCommand, Side, Status,
+    TimeInForce,
 };
 use std::collections::{HashMap, VecDeque};
 
@@ -382,7 +383,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     /// Create a snapshot of the orderbook data with specified depth
     pub fn create_snapshot_with_depth(&self, depth: usize) -> L2MarketData<50> {
         let mut l2_data = L2MarketData::<50>::new();
-        
+
         // Fill bid levels (highest price first)
         let mut bid_index = 0;
         for (price, level) in self.get_bids().take(depth) {
@@ -393,7 +394,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 bid_index += 1;
             }
         }
-        
+
         // Fill ask levels (lowest price first)
         let mut ask_index = 0;
         for (price, level) in self.get_asks().take(depth) {
@@ -404,13 +405,13 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 ask_index += 1;
             }
         }
-        
+
         // Set timestamp
         l2_data.timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        
+
         l2_data
     }
 }

@@ -121,7 +121,10 @@ impl ProcessedOrderCommand {
         status: Status,
         order_id: u64,
         user_id: u64,
-        market_id: u32, price: u64 , size: u64, timestamp: u64 ,
+        market_id: u32,
+        price: u64,
+        size: u64,
+        timestamp: u64,
         taker_side: Side,
     ) -> Self {
         Self {

@@ -5,8 +5,8 @@
 //! 2. Create symbol specifications programmatically
 //! 3. Validate and merge symbol configurations
 
-use common::MarketType;
 use common::CoreMarketSpecification;
+use common::MarketType;
 use vex_config::{Environment, SymbolSpecificationConfig, VexConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
