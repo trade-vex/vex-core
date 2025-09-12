@@ -3,32 +3,17 @@ name = "vex-core"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
-# Workspace crates containing our data models and order book logic
-common = { path = "./common" }
-orderbook = { path = "./orderbook" }
-processors = { path = "./processors" }
-
-# High-level async runtime and message passing channels
-tokio = { version = "1", features = ["full"] }
-
-# Logging framework
-tracing = "0.1"
-tracing-subscriber = "0.3"
-
-# Trait for async functions in traits
-async-trait = "0.1"
-hashbrown.workspace = true
-
 [workspace]
 resolver = "2"
 members = [
-    "common",
-    "orderbook",
-    "processors",
+    "common", 
+    "networking",
+    "orderbook", 
+    "processors", 
+    "server",
 ]
 
 [workspace.dependencies]
 borsh = { version = "1.5.7", default-features = false, features = ["hashbrown", "derive", "de_strict_order"] }
 hashbrown = "0.15.4"
-
+rusteron-client = "0.1.132"

@@ -12,6 +12,7 @@ pub enum RoutingError {
     ProcessingFailed(OrderBookError),
 }
 
+use tracing::{info, warn};
 /// Owns all order books and routes commands to the correct one.
 /// This is the Rust equivalent of `MatchingEngineRouter.java`.
 pub struct MatchingEngineRouter {
@@ -37,27 +38,27 @@ impl MatchingEngineRouter {
 
     /// Routes a command to the appropriate order book for processing.
     /// This is the core matching stage(Excali-6b) of the pipeline.
-    pub fn route_command(&mut self, cmd: &mut OrderCommand) -> Result<(), RoutingError> {
-        let order_book = self
-            .order_books
-            .get_mut(&cmd.symbol)
-            .ok_or(RoutingError::OrderBookNotFound)?;
+    pub fn route_command(&mut self, cmd: &mut OrderCommand) {
+        if let Some(order_book) = self.order_books.get_mut(&cmd.symbol) {
+            info!(
+                "[Router] Routing command for symbol {} to its order book.",
+                cmd.symbol
+            );
+            // Events are created inside these methods(excali-7)
+            let result = match cmd.command {
+                common::cmd::OrderCommandType::PlaceOrder => order_book.new_order(cmd),
+                common::cmd::OrderCommandType::CancelOrder => order_book.cancel_order(cmd),
+                common::cmd::OrderCommandType::MoveOrder => order_book.move_order(cmd),
+                common::cmd::OrderCommandType::ReduceOrder => order_book.reduce_order(cmd),
+            };
+            info!("[Router] Order book processed command: {:?}", cmd);
 
-        println!(
-            "[Router] Routing command for symbol {} to its order book.",
-            cmd.symbol
-        );
-
-        // Events are created inside these methods(excali-7)
-        let result = match cmd.command {
-            common::cmd::OrderCommandType::PlaceOrder => order_book.new_order(cmd),
-            common::cmd::OrderCommandType::CancelOrder => order_book.cancel_order(cmd),
-            common::cmd::OrderCommandType::MoveOrder => order_book.move_order(cmd),
-            common::cmd::OrderCommandType::ReduceOrder => order_book.reduce_order(cmd),
-        };
-        println!("[Router] Order book processed command: {:?}", cmd);
-
-        result.map_err(RoutingError::ProcessingFailed)
+            if let Err(e) = result {
+                warn!("[Router] Order book processing failed: {:?}", e);
+            }
+        } else {
+            warn!("[Router] No order book found for symbol {}", cmd.symbol);
+        }
     }
 }
 
