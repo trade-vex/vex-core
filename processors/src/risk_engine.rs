@@ -61,12 +61,6 @@ impl RiskEngine {
             cmd.order_id
         );
         if matches!(cmd.command, OrderCommandType::PlaceOrder) {
-            if cmd.size <= 0 || cmd.price <= 0 {
-                return Err(RiskEngineError::InvalidArguments {
-                    price: cmd.price,
-                    size: cmd.size,
-                });
-            }
             info!(
                 "[RiskEngine] Looking up market_id spec for market_id {}",
                 cmd.market_id
@@ -217,9 +211,8 @@ impl RiskEngine {
 
         // Acquire a lock on the store and perform the operation
         let mut store = self.balances.lock();
-        store
-            .lock_funds(user_id, asset_to_lock, amount_to_lock)
-            .map_err(|err| RiskEngineError::BalanceError(err))
+        store.lock_funds(user_id, asset_to_lock, amount_to_lock)?;
+        Ok(())
     }
 
     /// Releases previously reserved funds from a canceled or filled order.
