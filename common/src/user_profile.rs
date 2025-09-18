@@ -1,30 +1,5 @@
 use ahash::AHashMap;
-use parking_lot::Mutex;
 use thiserror::Error;
-
-pub type MarketId = u32;
-
-/// A utility struct to handle market ID logic.
-#[derive(Debug, Clone, Copy)]
-pub struct Market(MarketId);
-
-impl Market {
-    pub fn new(id: MarketId) -> Self {
-        Self(id)
-    }
-
-    /// The asset being bought or sold (e.g., BTC in BTC/USDT).
-    /// Stored in the lower 16 bits of the MarketId.
-    pub fn base_asset(&self) -> u16 {
-        (self.0 & 0xFFFF) as u16
-    }
-
-    /// The asset used to price the base asset (e.g., USDT in BTC/USDT).
-    /// Stored in the upper 16 bits of the MarketId.
-    pub fn quote_asset(&self) -> u16 {
-        (self.0 >> 16) as u16
-    }
-}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UserBalance {
@@ -33,11 +8,8 @@ pub struct UserBalance {
 }
 
 impl UserBalance {
-    pub fn new() -> Self {
-        Self {
-            available: 0,
-            locked: 0,
-        }
+    pub fn new(available: u64, locked: u64) -> Self {
+        Self { available, locked }
     }
     pub fn total(&self) -> u64 {
         self.available.saturating_add(self.locked)
@@ -92,6 +64,18 @@ impl BalanceStore {
     pub fn get_balance(&self, user_id: u64, asset_id: u16) -> UserBalance {
         let key = BalanceKey { user_id, asset_id };
         *self.balances.get(&key).unwrap_or(&UserBalance::default())
+    }
+
+    pub fn try_get_balance(
+        &self,
+        user_id: u64,
+        asset_id: u16,
+    ) -> Result<UserBalance, BalanceError> {
+        let key = BalanceKey { user_id, asset_id };
+        self.balances
+            .get(&key)
+            .copied()
+            .ok_or(BalanceError::UserAssetNotFound(user_id, asset_id))
     }
 
     pub fn get_balance_mut(&mut self, user_id: u64, asset_id: u16) -> &mut UserBalance {
@@ -153,4 +137,6 @@ pub enum BalanceError {
     InsufficientLockedFunds { locked: u64, needed: u64 },
     #[error("operation would cause numeric overflow")]
     Overflow,
+    #[error("user_id {0}, asset_id {1}")]
+    UserAssetNotFound(u64, u16),
 }

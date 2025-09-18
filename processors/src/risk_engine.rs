@@ -1,9 +1,7 @@
 use crate::error::{Result, RiskEngineError};
 use common::BalanceError;
-use common::BalanceKey;
 use common::BalanceStore;
 use common::CoreMarketSpecification;
-use common::MatcherTradeEvent;
 use common::OrderCommand;
 use common::OrderCommandType;
 use common::ProcessedOrderCommand;
@@ -83,19 +81,9 @@ impl RiskEngine {
                 "[RiskEngine] Found market_id spec: {:?} for market_id {}",
                 spec, cmd.market_id
             );
-            // Calculate required funds based on order side and market specification
-            let required_funds = if cmd.side == Side::Bid {
-                // For BID orders: need to lock the total cost (price * size) plus taker fee
-                let base_amount = cmd.price * cmd.size;
-                let taker_fee = spec.taker_fee * cmd.size;
-                base_amount + taker_fee
-            } else {
-                // For ASK orders: need to lock the size (quantity being sold)
-                cmd.size
-            };
 
-            let amount = required_funds;
-
+            // TODO: Handle Market Order
+            // Note: The Fee's are always in receiving asset, hense are cut on post processing
             if let Err(balance_error) = self.reserve_funds_for_order(
                 cmd.user_id,
                 cmd.market_id,
@@ -258,6 +246,22 @@ impl RiskEngine {
             .unlock_funds(user_id, asset_to_unlock, amount_to_unlock)
             .map_err(|err| RiskEngineError::BalanceError(err))
     }
+
+    pub fn get_balance(&self, user_id: u64, asset_id: u16) -> UserBalance {
+        let store = self.balances.lock();
+        store.get_balance(user_id, asset_id)
+    }
+
+    pub fn try_get_balance(&self, user_id: u64, asset_id: u16) -> Result<UserBalance> {
+        let store = self.balances.lock();
+        Ok(store.try_get_balance(user_id, asset_id)?)
+    }
+
+    #[cfg(test)]
+    pub fn set_balance(&mut self, user_id: u64, asset_id: u16, balance: UserBalance) {
+        let mut store = self.balances.lock();
+        *store.get_balance_mut(user_id, asset_id) = balance;
+    }
 }
 
 impl Default for RiskEngine {
@@ -267,11 +271,11 @@ impl Default for RiskEngine {
 }
 
 #[inline]
-fn base_asset(market_id: u32) -> u16 {
+pub fn base_asset(market_id: u32) -> u16 {
     (market_id & 0xFFFF) as u16
 }
 
 #[inline]
-fn quote_asset(market_id: u32) -> u16 {
+pub fn quote_asset(market_id: u32) -> u16 {
     (market_id >> 16) as u16
 }

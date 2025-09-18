@@ -1,4 +1,4 @@
-use crate::risk_engine::RiskEngine;
+use crate::risk_engine::{RiskEngine, base_asset, quote_asset};
 use common::L2MarketData;
 use common::MatcherTradeEvent;
 use common::Order;
@@ -87,23 +87,35 @@ impl KafkaEventsHandler {
         risk_engine: &RiskEngine,
         cmd: &ProcessedOrderCommand,
     ) -> Result<(), String> {
-        if let Some(user_profile) = risk_engine.user_balances.get(&user_id) {
-            if let Ok(balance) = user_profile.get_balance(user_id, market_id) {
-                let balance_event = BalanceEvent {
-                    user_id,
-                    market_id,
-                    available: balance.available(),
-                    locked: balance.locked(),
-                    total: balance.total(),
-                    timestamp: cmd.timestamp(),
-                };
+        let base_asset_id = base_asset(market_id);
+        let quote_asset_id = quote_asset(market_id);
 
-                let topic_name = format!("market-{}-balances", market_id);
-                self.publish_event(&topic_name, &user_id.to_string(), &balance_event);
-                info!(
-                    "[KafkaEventsHandler] Published balance event for user {} in market {}",
-                    user_id, market_id
-                );
+        for asset_id in [base_asset_id, quote_asset_id] {
+            match risk_engine.try_get_balance(user_id, asset_id) {
+                Ok(balance) => {
+                    let balance_event = BalanceEvent {
+                        user_id,
+                        asset_id: asset_id,
+                        available: balance.available(),
+                        locked: balance.locked(),
+                        total: balance.total(),
+                        timestamp: cmd.timestamp(),
+                    };
+
+                    let topic_name = format!("market-{}-balances", market_id);
+                    self.publish_event(&topic_name, &user_id.to_string(), &balance_event);
+                    info!(
+                        "[KafkaEventsHandler] Published balance event for user {} in market {}",
+                        user_id, market_id
+                    );
+                }
+                Err(err) => {
+                    // todo: this should ideally be unreachable
+                    error!(
+                        "[KafkaEventsHandler] No balance found for user {} and asset {}: {}",
+                        user_id, asset_id, err
+                    );
+                }
             }
         }
         Ok(())
@@ -112,7 +124,7 @@ impl KafkaEventsHandler {
     fn publish_order_event(&self, cmd: &ProcessedOrderCommand) -> Result<(), String> {
         let order = Order {
             order_id: cmd.order_id(),
-            user_id: cmd.taker_id(),
+            user_id: cmd.user_id(),
             price: cmd.price(),
             size: cmd.size(),
             side: cmd.side(),
@@ -170,7 +182,7 @@ impl KafkaEventsHandler {
         let cancel_event = CancelOrderEvent {
             order_id: cmd.order_id(),
             market_id: cmd.market_id(),
-            user_id: cmd.taker_id(),
+            user_id: cmd.user_id(),
             timestamp: cmd.timestamp(),
         };
 
@@ -248,7 +260,7 @@ impl EventsHandler for KafkaEventsHandler {
         );
 
         let market_id = processed_cmd.market_id();
-        let taker_id = processed_cmd.taker_id();
+        let taker_id = processed_cmd.user_id();
         let taker_order_id = processed_cmd.order_id();
 
         match processed_cmd.status() {
@@ -380,7 +392,7 @@ impl EventsHandler for KafkaEventsHandler {
 #[derive(Serialize, Deserialize, Debug)]
 struct BalanceEvent {
     user_id: u64,
-    market_id: u32,
+    asset_id: u16,
     available: u64,
     locked: u64,
     total: u64,
@@ -477,26 +489,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_kafka_events_handler_with_risk_engine() {
-        use common::{BalanceStore, UserBalance};
+        use common::UserBalance;
         use hashbrown::HashMap;
 
         let mut risk_engine = RiskEngine::new(HashMap::new(), 0, 1);
 
-        let mut user_profile = BalanceStore::new();
-        let balance = UserBalance::new();
-        user_profile.set_balance(1001, 1, balance);
-        risk_engine.user_balances.insert(1001, user_profile);
+        let market_id: u32 = 0b1000000100000010;
+        let base_asset_id = base_asset(market_id);
+        let quote_asset_id = quote_asset(market_id);
+        let balance = UserBalance::new(10000000000, 100);
+        risk_engine.set_balance(1001, base_asset_id, balance);
+        risk_engine.set_balance(1001, quote_asset_id, balance);
 
         let handler = KafkaEventsHandler::new("localhost:9093");
 
         let processed_cmd = ProcessedOrderCommand::new(
             Status::Cancelled,
-            12349, // order_id
-            1001,  // taker_id
-            1,     // market_id
-            900,   // price
-            25,    // size
-            1004,  // timestamp
+            12349,  // order_id
+            1001,   // taker_id
+            0b0001, // market_id
+            900,    // price
+            25,     // size
+            1004,   // timestamp
             Side::Ask,
         );
 

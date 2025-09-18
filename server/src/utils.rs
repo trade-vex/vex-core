@@ -25,42 +25,42 @@ macro_rules! create_risk_r2_handler {
         let risk_engines_clone = $risk_engines.clone();
         move |processed_cmd: &ProcessedOrderCommand, _sequence: i64, _end_of_batch: bool| {
             // Process the main event if it exists
-            if let Some(event) = processed_cmd.events() {
-                let num_shards = risk_engines_clone.len() as u64;
-                let shard_mask = num_shards - 1;
+            // if let Some(event) = processed_cmd.events() {
+            //     let num_shards = risk_engines_clone.len() as u64;
+            //     let shard_mask = num_shards - 1;
 
-                let market_id = processed_cmd.market_id();
-                let taker_id = processed_cmd.taker_id();
+            //     let market_id = processed_cmd.market_id();
+            //     let taker_id = processed_cmd.taker_id();
 
-                // Route to risk engine shard for both maker and taker users
-                let maker_user_id = event.maker_user_id;
-                let maker_shard = (maker_user_id & shard_mask) as usize;
-                let taker_shard = (taker_id & shard_mask) as usize;
+            //     // Route to risk engine shard for both maker and taker users
+            //     let maker_user_id = event.maker_user_id;
+            //     let maker_shard = (maker_user_id & shard_mask) as usize;
+            //     let taker_shard = (taker_id & shard_mask) as usize;
 
-                // Process if either maker OR taker belongs to our shard
-                if maker_shard == $shard_id || taker_shard == $shard_id {
-                    if let Some(risk_engine_mutex) = risk_engines_clone.get($shard_id) {
-                        let mut risk_engine = risk_engine_mutex.lock();
-                        risk_engine.handle_event(event, market_id, taker_id);
-                    }
-                }
+            //     // Process if either maker OR taker belongs to our shard
+            //     if maker_shard == $shard_id || taker_shard == $shard_id {
+            //         if let Some(risk_engine_mutex) = risk_engines_clone.get($shard_id) {
+            //             let mut risk_engine = risk_engine_mutex.lock();
+            //             risk_engine.handle_event(event, market_id, taker_id);
+            //         }
+            //     }
 
-                // Process chained events if they exist
-                let mut current_event = event.next_event.as_ref();
-                while let Some(next_event) = current_event {
-                    let next_maker_user_id = next_event.maker_user_id;
-                    let next_maker_shard = (next_maker_user_id & shard_mask) as usize;
+            //     // Process chained events if they exist
+            //     let mut current_event = event.next_event.as_ref();
+            //     while let Some(next_event) = current_event {
+            //         let next_maker_user_id = next_event.maker_user_id;
+            //         let next_maker_shard = (next_maker_user_id & shard_mask) as usize;
 
-                    // Process chained events if maker OR taker belongs to our shard
-                    if next_maker_shard == $shard_id || taker_shard == $shard_id {
-                        if let Some(risk_engine_mutex) = risk_engines_clone.get($shard_id) {
-                            let mut risk_engine = risk_engine_mutex.lock();
-                            risk_engine.handle_event(next_event, market_id, taker_id);
-                        }
-                    }
-                    current_event = next_event.next_event.as_ref();
-                }
-            }
+            //         // Process chained events if maker OR taker belongs to our shard
+            //         if next_maker_shard == $shard_id || taker_shard == $shard_id {
+            //             if let Some(risk_engine_mutex) = risk_engines_clone.get($shard_id) {
+            //                 let mut risk_engine = risk_engine_mutex.lock();
+            //                 risk_engine.handle_event(next_event, market_id, taker_id);
+            //             }
+            //         }
+            //         current_event = next_event.next_event.as_ref();
+            //     }
+            // }
         }
     }};
 }
@@ -74,13 +74,14 @@ macro_rules! create_event_handler {
         let orderbook_depth = $orderbook_depth;
         move |processed_cmd: &ProcessedOrderCommand, _sequence: i64, _end_of_batch: bool| {
             // Get the appropriate risk engine for the taker user
-            let taker_id = processed_cmd.taker_id();
+            let taker_id = processed_cmd.user_id();
             let num_shards = risk_engines.len() as u64;
             let shard_mask = num_shards - 1;
             let taker_shard = (taker_id & shard_mask) as usize;
 
             let risk_engine = if let Some(risk_engine_mutex) = risk_engines.get(taker_shard) {
-                Some(&*risk_engine_mutex.lock())
+                let risk_engine = risk_engine_mutex.lock();
+                Some(risk_engine)
             } else {
                 None
             };
@@ -101,7 +102,7 @@ macro_rules! create_event_handler {
                 };
 
             // Handle the processed command (for Kafka events)
-            events_handler.handle_processed_command(processed_cmd, risk_engine, orderbook_snapshot);
+            events_handler.handle_processed_command(processed_cmd, risk_engine.as_deref(), orderbook_snapshot);
         }
     }};
 }
