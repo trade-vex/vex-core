@@ -66,8 +66,8 @@ impl ConfigLoader {
             )));
         }
 
-        let mut builder = Config::builder();
-
+        // Start with VexConfig defaults, so partial configs can be loaded.
+        let mut builder = Config::builder().add_source(Config::try_from(&VexConfig::default())?);
         // Add the specific file
         let format = self.detect_file_format(path)?;
         builder = builder.add_source(File::from(path).format(format));
@@ -167,33 +167,31 @@ impl ConfigLoader {
     /// Apply environment variables to a config (simplified implementation)
     fn apply_env_vars_to_config(
         &self,
-        mut config: VexConfig,
+        config: VexConfig,
         prefix: &str,
         env: &Environment,
     ) -> Result<VexConfig> {
         // Create environment variable sources with both general and environment-specific prefixes
-        let general_source = config::Environment::with_prefix(prefix) // Lower precedence
+        let general_source = config::Environment::with_prefix(prefix)
             .try_parsing(true)
             .separator("__");
 
         let env_specific_prefix = format!("{}_{}", prefix, env.env_key());
-        let env_specific_source = config::Environment::with_prefix(&env_specific_prefix) // Higher precedence
+        let env_specific_source = config::Environment::with_prefix(&env_specific_prefix)
             .try_parsing(true)
             .separator("__");
 
-        // Build a config with just environment variables
-        let env_config = Config::builder()
-            .add_source(general_source) // General first
+        // Build a new config by layering env vars over the existing config object.
+        // The `config` crate handles merging values correctly.
+        let final_config = Config::builder()
+            .add_source(Config::try_from(&config)?) // Start with the existing config
+            .add_source(general_source)
             .add_source(env_specific_source)
             .build()?;
 
-        // If we have any environment variables, deserialize them and merge with our config
-        // Deserialize env vars into VexConfig (will only set fields that are specified)
-        if let Ok(env_overrides) = env_config.try_deserialize::<VexConfig>() {
-            config.merge_with(&env_overrides)?;
-        }
-
-        Ok(config)
+        // Deserialize the merged configuration.
+        let final_config = final_config.try_deserialize()?;
+        Ok(final_config)
     }
 
     /// Detect file format from extension
