@@ -1,4 +1,4 @@
-use server::init_exchange;
+use vex_server::init_exchange;
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
 use tracing::{error, info, warn};
