@@ -5,7 +5,7 @@ use crate::utils::{
     new_publication_with_mdc_and_session, new_subsciption_with_handlers_and_session,
 };
 use common::OrderCommand;
-use disruptor::{MultiConsumerBarrier, MultiProducer};
+use disruptor::{MultiProducer, SingleConsumerBarrier};
 use rusteron_client::{
     Aeron, AeronAvailableImageCallback, AeronCError, AeronImage, AeronNotificationLogger,
     AeronSubscription, AeronUnavailableImageCallback, Handler,
@@ -35,7 +35,7 @@ impl Duologue {
         port_data: u16,
         port_control: u16,
         session_id: i32,
-        producer: MultiProducer<OrderCommand, MultiConsumerBarrier>,
+        producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
     ) -> Result<Self, AeronCError> {
         let expire_time = (SystemTime::now() + Duration::from_secs(1_000_000))
             .duration_since(SystemTime::UNIX_EPOCH)

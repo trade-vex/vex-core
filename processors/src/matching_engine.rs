@@ -1,6 +1,6 @@
 use common::L2MarketData;
 use common::OrderCommandType;
-use common::{OrderCommand, ProcessedOrderCommand, Status};
+use common::OrderCommand;
 use hashbrown::HashMap;
 use tracing::{info, warn};
 use vex_orderbook::OrderBook;
@@ -58,16 +58,14 @@ impl MatchingEngineRouter {
     }
 
     /// Main entry point for processing orders
-    pub fn process_order(&mut self, cmd: &mut OrderCommand) -> ProcessedOrderCommand {
-        let res = ProcessedOrderCommand::new(
-            Status::Rejected,
+    pub fn process_order(&mut self, cmd: &mut OrderCommand) -> OrderCommand {
+        let res = OrderCommand::new(
+            cmd.time_in_force,
             cmd.order_id,
             cmd.user_id,
-            cmd.market_id,
             cmd.price,
             cmd.size,
-            cmd.timestamp,
-            cmd.side,
+            cmd.side
         );
         if self.market_for_this_handler(cmd.market_id as u64) {
             if let Some(order_book) = self.order_books.get_mut(&cmd.market_id) {

@@ -2,7 +2,7 @@ use crate::risk_engine::{RiskEngine, base_asset, quote_asset};
 use common::L2MarketData;
 use common::MatcherTradeEvent;
 use common::Order;
-use common::ProcessedOrderCommand;
+use common::OrderCommand;
 use common::Status;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -15,7 +15,7 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 pub trait EventsHandler: Send + Sync {
     fn handle_processed_command(
         &self,
-        processed_cmd: &ProcessedOrderCommand,
+        cmd: &mut OrderCommand,
         risk_engine: Option<&RiskEngine>,
         orderbook_snapshot: Option<L2MarketData<50>>,
     );
@@ -85,7 +85,7 @@ impl KafkaEventsHandler {
         user_id: u64,
         market_id: u32,
         risk_engine: &RiskEngine,
-        cmd: &ProcessedOrderCommand,
+        cmd: &OrderCommand,
     ) -> Result<(), String> {
         let base_asset_id = base_asset(market_id);
         let quote_asset_id = quote_asset(market_id);
@@ -121,7 +121,7 @@ impl KafkaEventsHandler {
         Ok(())
     }
 
-    fn publish_order_event(&self, cmd: &ProcessedOrderCommand) -> Result<(), String> {
+    fn publish_order_event(&self, cmd: &OrderCommand) -> Result<(), String> {
         let order = Order {
             order_id: cmd.order_id(),
             user_id: cmd.user_id(),
@@ -150,7 +150,7 @@ impl KafkaEventsHandler {
     fn publish_trade_event(
         &self,
         event: &MatcherTradeEvent,
-        cmd: &ProcessedOrderCommand,
+        cmd: &OrderCommand,
         market_id: u32,
         taker_id: u64,
         taker_order_id: u64,
@@ -178,7 +178,7 @@ impl KafkaEventsHandler {
         Ok(())
     }
 
-    fn publish_cancel_order_event(&self, cmd: &ProcessedOrderCommand) -> Result<(), String> {
+    fn publish_cancel_order_event(&self, cmd: &OrderCommand) -> Result<(), String> {
         let cancel_event = CancelOrderEvent {
             order_id: cmd.order_id(),
             market_id: cmd.market_id(),
@@ -249,29 +249,29 @@ impl KafkaEventsHandler {
 impl EventsHandler for KafkaEventsHandler {
     fn handle_processed_command(
         &self,
-        processed_cmd: &ProcessedOrderCommand,
+        cmd: &mut OrderCommand,
         risk_engine: Option<&RiskEngine>,
         orderbook_snapshot: Option<L2MarketData<50>>,
     ) {
         info!(
             "[KafkaEventsHandler] Processing command: Order {}, Status {:?}",
-            processed_cmd.order_id(),
-            processed_cmd.status()
+            cmd.order_id(),
+            cmd.status()
         );
 
-        let market_id = processed_cmd.market_id();
-        let taker_id = processed_cmd.user_id();
-        let taker_order_id = processed_cmd.order_id();
+        let market_id = cmd.market_id();
+        let taker_id = cmd.user_id();
+        let taker_order_id = cmd.order_id();
 
-        match processed_cmd.status() {
+        match cmd.status() {
             Status::Rejected => {
                 info!(
                     "[KafkaEventsHandler] Order {} rejected - no events published",
-                    processed_cmd.order_id()
+                    cmd.order_id()
                 );
             }
             Status::Placed => {
-                if let Err(e) = self.publish_order_event(processed_cmd) {
+                if let Err(e) = self.publish_order_event(cmd) {
                     error!("[KafkaEventsHandler] Failed to publish order event: {}", e);
                 }
                 if let Err(e) = self.publish_orderbook_event(market_id, orderbook_snapshot) {
@@ -284,7 +284,7 @@ impl EventsHandler for KafkaEventsHandler {
             Status::Cancelled => {
                 if let Some(risk_engine) = risk_engine {
                     if let Err(e) =
-                        self.publish_balance_event(taker_id, market_id, risk_engine, processed_cmd)
+                        self.publish_balance_event(taker_id, market_id, risk_engine, cmd)
                     {
                         error!(
                             "[KafkaEventsHandler] Failed to publish balance event: {}",
@@ -292,7 +292,7 @@ impl EventsHandler for KafkaEventsHandler {
                         );
                     }
                 }
-                if let Err(e) = self.publish_cancel_order_event(processed_cmd) {
+                if let Err(e) = self.publish_cancel_order_event(cmd) {
                     error!(
                         "[KafkaEventsHandler] Failed to publish cancel order event: {}",
                         e
@@ -306,10 +306,10 @@ impl EventsHandler for KafkaEventsHandler {
                 }
             }
             Status::PartiallyFilled | Status::Filled => {
-                if let Some(event) = processed_cmd.events() {
+                if let Some(event) = cmd.events() {
                     if let Err(e) = self.publish_trade_event(
                         event,
-                        processed_cmd,
+                        cmd,
                         market_id,
                         taker_id,
                         taker_order_id,
@@ -321,7 +321,7 @@ impl EventsHandler for KafkaEventsHandler {
                     while let Some(next_event) = current_event {
                         if let Err(e) = self.publish_trade_event(
                             next_event,
-                            processed_cmd,
+                            cmd,
                             market_id,
                             taker_id,
                             taker_order_id,
@@ -339,7 +339,7 @@ impl EventsHandler for KafkaEventsHandler {
                             taker_id,
                             market_id,
                             risk_engine,
-                            processed_cmd,
+                            cmd,
                         ) {
                             error!(
                                 "[KafkaEventsHandler] Failed to publish taker balance event: {}",
@@ -351,7 +351,7 @@ impl EventsHandler for KafkaEventsHandler {
                             event.maker_user_id,
                             market_id,
                             risk_engine,
-                            processed_cmd,
+                            cmd,
                         ) {
                             error!(
                                 "[KafkaEventsHandler] Failed to publish main maker balance event: {}",
@@ -365,7 +365,7 @@ impl EventsHandler for KafkaEventsHandler {
                                 next_event.maker_user_id,
                                 market_id,
                                 risk_engine,
-                                processed_cmd,
+                                cmd,
                             ) {
                                 error!(
                                     "[KafkaEventsHandler] Failed to publish chained maker balance event: {}",
@@ -376,7 +376,9 @@ impl EventsHandler for KafkaEventsHandler {
                         }
                     }
                 }
-
+            }
+            Status::Processing => {
+                error!("[KafkaEventsHandler] Order was not processed correctly");
                 if let Err(e) = self.publish_orderbook_event(market_id, orderbook_snapshot) {
                     error!(
                         "[KafkaEventsHandler] Failed to publish orderbook event: {}",
@@ -450,18 +452,18 @@ mod tests {
     async fn test_kafka_events_handler_placed_order() {
         let handler = KafkaEventsHandler::new("localhost:9093");
 
-        let processed_cmd = ProcessedOrderCommand::new(
-            Status::Placed,
+        let mut cmd = OrderCommand::new(
+            common::TimeInForce::Gtc,
             12345, // order_id
-            1001,  // taker_id
-            1,     // market_id
+            1001,  // user_id
             1000,  // price
             100,   // size
-            1000,  // timestamp
             Side::Bid,
         );
+        cmd.set_status(Status::Placed);
+        cmd.timestamp = 1000;
 
-        handler.handle_processed_command(&processed_cmd, None, None);
+        handler.handle_processed_command(&mut cmd, None, None);
 
         // Wait for async Kafka send to complete
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -471,18 +473,18 @@ mod tests {
     async fn test_kafka_events_handler_cancelled_order() {
         let handler = KafkaEventsHandler::new("localhost:9093");
 
-        let processed_cmd = ProcessedOrderCommand::new(
-            Status::Cancelled,
+        let mut cmd = OrderCommand::new(
+            common::TimeInForce::Gtc,
             12346, // order_id
-            1002,  // taker_id
-            1,     // market_id
+            1002,  // user_id
             950,   // price
             50,    // size
-            1001,  // timestamp
             Side::Ask,
         );
+        cmd.set_status(Status::Cancelled);
+        cmd.timestamp = 1001;
 
-        handler.handle_processed_command(&processed_cmd, None, None);
+        handler.handle_processed_command(&mut cmd, None, None);
 
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
@@ -503,18 +505,18 @@ mod tests {
 
         let handler = KafkaEventsHandler::new("localhost:9093");
 
-        let processed_cmd = ProcessedOrderCommand::new(
-            Status::Cancelled,
+        let mut cmd = OrderCommand::new(
+            common::TimeInForce::Gtc,
             12349,  // order_id
-            1001,   // taker_id
-            0b0001, // market_id
+            1001,   // user_id
             900,    // price
             25,     // size
-            1004,   // timestamp
             Side::Ask,
         );
+        cmd.set_status(Status::Cancelled);
+        cmd.timestamp = 1004;
 
-        handler.handle_processed_command(&processed_cmd, Some(&risk_engine), None);
+        handler.handle_processed_command(&mut cmd, Some(&risk_engine), None);
 
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
@@ -535,6 +537,8 @@ mod tests {
             size: 100,
             side: Side::Bid,
             time_in_force: common::TimeInForce::Gtc,
+            status: common::Status::Processing,
+            events: None,
         };
         orderbook.place_order(&bid_cmd);
 
@@ -548,22 +552,24 @@ mod tests {
             size: 50,
             side: Side::Ask,
             time_in_force: common::TimeInForce::Gtc,
+            status: common::Status::Processing,
+            events: None,
         };
         orderbook.place_order(&ask_cmd);
 
-        let processed_cmd = ProcessedOrderCommand::new(
-            Status::Placed,
+        let mut cmd = OrderCommand::new(
+            common::TimeInForce::Gtc,
             12350, // order_id
-            1003,  // taker_id
-            1,     // market_id
+            1003,  // user_id
             1050,  // price
             75,    // size
-            1005,  // timestamp
             Side::Bid,
         );
+        cmd.set_status(Status::Placed);
+        cmd.timestamp = 1005;
 
         let snapshot = orderbook.create_snapshot_with_depth(50);
-        handler.handle_processed_command(&processed_cmd, None, Some(snapshot));
+        handler.handle_processed_command(&mut cmd, None, Some(snapshot));
 
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
@@ -573,16 +579,16 @@ mod tests {
         let handler = KafkaEventsHandler::new("localhost:9093");
 
         // Create a processed command with Filled status and trade events
-        let mut filled_cmd = ProcessedOrderCommand::new(
-            Status::Filled,
+        let mut filled_cmd = OrderCommand::new(
+            common::TimeInForce::Gtc,
             12348, // order_id
-            1004,  // taker_id
-            1,     // market_id
+            1004,  // user_id
             1050,  // price
             200,   // size
-            1003,  // timestamp
             Side::Bid,
         );
+        filled_cmd.set_status(Status::Filled);
+        filled_cmd.timestamp = 1003;
 
         // Create trade events with all required fields
         let trade2 = MatcherTradeEvent {
@@ -607,7 +613,7 @@ mod tests {
         // Use the correct method name (note the typo in the original)
         filled_cmd.attatch_event(Box::new(trade1));
 
-        handler.handle_processed_command(&filled_cmd, None, None);
+        handler.handle_processed_command(&mut filled_cmd, None, None);
 
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }

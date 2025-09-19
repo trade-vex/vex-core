@@ -4,7 +4,6 @@ use common::BalanceStore;
 use common::CoreMarketSpecification;
 use common::OrderCommand;
 use common::OrderCommandType;
-use common::ProcessedOrderCommand;
 use common::Side;
 use common::UserBalance;
 use hashbrown::HashMap;
@@ -104,7 +103,7 @@ impl RiskEngine {
 
     /// Handles a single trade event from the matching engine to settle funds
     /// This is called by the R2 handler for each individual event in the linked list
-    pub fn handle_event(&mut self, cmd: &ProcessedOrderCommand) {
+    pub fn handle_event(&mut self, cmd: &OrderCommand) {
         info!(
             "[RiskEngine_{}] Processing command: status={:?}, order_id={}, user_id={}, market_id={}",
             self.shard_id,
@@ -115,7 +114,7 @@ impl RiskEngine {
         );
 
         // Get market specification for fee calculations
-        let spec = match self.symbol_specs.get(&cmd.market_id()) {
+        let _spec = match self.symbol_specs.get(&cmd.market_id()) {
             Some(spec) => spec,
             None => {
                 warn!(

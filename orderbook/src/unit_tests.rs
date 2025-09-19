@@ -4,7 +4,7 @@ mod test {
 
     use crate::tree::{BTreeAskSide, BTreeBidSide};
     use crate::*;
-    use common::{OrderCommand, ProcessedOrderCommand};
+    use common::{OrderCommand, Status, MatcherTradeEvent};
     use common::{OrderCommandType, Side};
 
     /// Helper functions to inspect the internal state of the `OrderBook`.
@@ -224,12 +224,14 @@ mod test {
             size,
             side,
             time_in_force,
+            status: Status::Rejected,
+            events: None,
         }
     }
 
     // Helper to verify trade events
     fn verify_trade_events(
-        processed: &ProcessedOrderCommand,
+        processed: &OrderCommand,
         expected_trades: &[(u64, u64, u64, bool, bool)],
     ) {
         let mut event_opt = processed.events();
@@ -1801,6 +1803,8 @@ mod test {
             size: 0,   // Irrelevant for cancel
             side: Side::Bid,
             time_in_force: TimeInForce::Gtc, // Irrelevant for cancel
+            status: Status::Rejected,
+            events: None,
         };
         let processed = book.cancel_order(&cancel_cmd);
         assert_eq!(processed.status(), Status::Cancelled);
@@ -1962,6 +1966,8 @@ mod test {
                 size: self.size,
                 side: self.side,
                 time_in_force: self.time_in_force,
+                status: Status::Rejected,
+                events: None,
             }
         }
 
@@ -1976,6 +1982,8 @@ mod test {
                 size: self.size,                   // Ignored for cancel
                 side: self.side,                   // Ignored for cancel
                 time_in_force: self.time_in_force, // Ignored for cancel
+                status: Status::Rejected,
+                events: None,
             }
         }
 
@@ -2655,6 +2663,8 @@ mod test {
                 size,
                 side,
                 time_in_force: tif,
+                status: Status::Rejected,
+                events: None,
             }
         }
 
@@ -2678,13 +2688,15 @@ mod test {
                 size: 0, // Not relevant for cancel
                 side: order_to_cancel.side,
                 time_in_force: TimeInForce::Gtc, // Not relevant
+                status: Status::Rejected,
+                events: None,
             }
         }
     }
 
     /// Helper to collect all trade events from a `ProcessedOrderCommand`'s linked list
     /// into a Vec for easier assertions.
-    fn collect_trade_events(processed: ProcessedOrderCommand) -> Vec<MatcherTradeEvent> {
+    fn collect_trade_events(processed: OrderCommand) -> Vec<MatcherTradeEvent> {
         let mut events = Vec::new();
         let mut current_event = processed.events();
         while let Some(event_box) = current_event {
