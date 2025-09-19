@@ -83,6 +83,8 @@ fn test_client_server_communication() {
             market_id: 3124,
             price: 150,
             time_in_force: TimeInForce::Gtc,
+            status: common::Status::Processing,
+            events: None,
         };
         for i in 0..10 {
             order_command.order_id = i;
@@ -99,18 +101,19 @@ fn test_client_server_communication() {
         info!("server_config: {:?}", server_config);
         let producer = build_multi_producer(
             1024,
-            || OrderCommand::new_order(TimeInForce::Gtc, 1, 23, 32, 100, Side::Ask),
+            || OrderCommand::new(TimeInForce::Gtc, 1, 23, 32, 100, Side::Ask),
             BusySpin,
         )
         .pin_at_core(1)
         .handle_events_with({
-            move |cmd: &OrderCommand, _, _| {
+            move |cmd: &mut OrderCommand, _, _| {
                 info!("Server received OrderCommand Core 1: {:?}", cmd);
             }
         })
+        .and_then()
         .pin_at_core(2)
         .handle_events_with({
-            move |cmd: &OrderCommand, _, _| {
+            move |cmd: &mut OrderCommand, _, _| {
                 info!("Server processing OrderCommand Core 2: {:?}", cmd);
             }
         })

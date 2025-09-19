@@ -50,6 +50,12 @@ pub struct OrderCommand {
 
     /// The time-in-force policy for a new order.
     pub time_in_force: TimeInForce,
+
+    /// Status of the order
+    pub status: Status,
+
+    /// Passive order linked list
+    pub events: Option<Box<MatcherTradeEvent>>,
 }
 
 impl Default for OrderCommand {
@@ -63,12 +69,14 @@ impl Default for OrderCommand {
             side: Side::Ask,
             timestamp: 0,
             time_in_force: TimeInForce::Gtc,
+            status: Status::Rejected,
             command: OrderCommandType::PlaceOrder,
+            events: None,
         }
     }
 }
 impl OrderCommand {
-    pub fn new_order(
+    pub fn new(
         time_in_force: TimeInForce,
         order_id: u64,
         user_id: u64,
@@ -86,6 +94,8 @@ impl OrderCommand {
             side,
             time_in_force,
             timestamp: 0,
+            status: Status::Rejected,
+            events: None,
         }
     }
 
@@ -100,43 +110,7 @@ impl OrderCommand {
             side,
             time_in_force: TimeInForce::Gtc,
             timestamp: 0,
-        }
-    }
-}
-
-pub struct ProcessedOrderCommand {
-    status: Status,
-    order_id: u64,
-    market_id: u32,
-    taker_id: u64,
-    price: u64,
-    size: u64,
-    side: Side,
-    timestamp: u64,
-    events: Option<Box<MatcherTradeEvent>>,
-}
-
-impl ProcessedOrderCommand {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        status: Status,
-        order_id: u64,
-        taker_id: u64,
-        market_id: u32,
-        price: u64,
-        size: u64,
-        timestamp: u64,
-        taker_side: Side,
-    ) -> Self {
-        Self {
-            status,
-            order_id,
-            market_id,
-            taker_id,
-            price,
-            size,
-            side: taker_side,
-            timestamp,
+            status: Status::Rejected,
             events: None,
         }
     }
@@ -207,6 +181,8 @@ pub enum Status {
     PartiallyFilled,
     /// Fully Filled Order {Filled in case of GTC, IOC, FOK}
     Filled,
+    /// Processing state
+    Processing,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -264,5 +240,7 @@ pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
         side: decoder.side().try_into()?,
         time_in_force: decoder.time_in_force().try_into()?,
         timestamp: decoder.timestamp(),
+        status: Status::Rejected, // Default status since decoder doesn't have status method
+        events: None,
     })
 }

@@ -38,7 +38,7 @@ use crate::server::gateway_manager::GatewayManager;
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
 use common::OrderCommand;
 use crossbeam::utils::CachePadded;
-use disruptor::{MultiConsumerBarrier, MultiProducer};
+use disruptor::{MultiProducer, SingleConsumerBarrier};
 use rusteron_client::{Aeron, AeronCError, AeronContext, Handler};
 use rusteron_media_driver::AeronIdleStrategy;
 use std::rc::Rc;
@@ -93,7 +93,7 @@ impl VexCoreServer {
     /// Creates a new VEX Core instance
     pub fn new(
         config: CoreNetworkingConfig,
-        producer: MultiProducer<OrderCommand, MultiConsumerBarrier>,
+        producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
     ) -> Result<Self, ServerError> {
         // Validate configuration
         Self::validate_config(&config)?;

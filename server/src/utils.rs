@@ -6,7 +6,7 @@
 macro_rules! create_risk_handler {
     ($shard_id:expr, $risk_engines:expr) => {{
         let risk_engines_clone = $risk_engines.clone();
-        move |cmd: &OrderCommand, _sequence: i64, _end_of_batch: bool| {
+        move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
             let mut engine = risk_engines_clone[$shard_id].lock();
 
             if let Err(e) = engine.pre_process_command(cmd) {
@@ -23,7 +23,7 @@ macro_rules! create_risk_handler {
 macro_rules! create_risk_r2_handler {
     ($shard_id:expr, $risk_engines:expr) => {{
         let risk_engines_clone = $risk_engines.clone();
-        move |processed_cmd: &ProcessedOrderCommand, _sequence: i64, _end_of_batch: bool| {
+        move |processed_cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
             // Process the main event if it exists
             if let Some(event) = processed_cmd.events() {
                 let num_shards = risk_engines_clone.len() as u64;
@@ -72,9 +72,9 @@ macro_rules! create_event_handler {
         let risk_engines = $risk_engines;
         let matching_engine_routers = $matching_engine_routers;
         let orderbook_depth = $orderbook_depth;
-        move |processed_cmd: &ProcessedOrderCommand, _sequence: i64, _end_of_batch: bool| {
+        move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
             // Get the appropriate risk engine for the taker user
-            let taker_id = processed_cmd.taker_id();
+            let taker_id = cmd.user_id();
             let num_shards = risk_engines.len() as u64;
             let shard_mask = num_shards - 1;
             let taker_shard = (taker_id & shard_mask) as usize;
@@ -86,7 +86,7 @@ macro_rules! create_event_handler {
             };
 
             // Get the appropriate orderbook for the market using correct sharding
-            let market_id = processed_cmd.market_id();
+            let market_id = cmd.market_id();
             let num_matching_shards = matching_engine_routers.len() as u64;
             let matching_shard_mask = num_matching_shards - 1;
             let market_shard = (market_id as u64 & matching_shard_mask) as usize;
@@ -101,7 +101,11 @@ macro_rules! create_event_handler {
                 };
 
             // Handle the processed command (for Kafka events)
-            events_handler.handle_processed_command(processed_cmd, risk_engine, orderbook_snapshot);
+            events_handler.handle_processed_command(
+                cmd,
+                risk_engine.as_deref(),
+                orderbook_snapshot,
+            );
         }
     }};
 }
@@ -110,12 +114,10 @@ macro_rules! create_event_handler {
 /// This eliminates code duplication while maintaining separate handlers for each shard
 #[macro_export]
 macro_rules! create_matching_handler {
-    ($shard_id:expr, $routers:expr, $matcher_event_producer:expr) => {{
-        use disruptor::Producer;
+    ($shard_id:expr, $routers:expr) => {{
         let router = $routers[$shard_id].clone();
-        let mut matcher_event_producer = $matcher_event_producer.clone();
 
-        move |cmd: &OrderCommand, _sequence: i64, _end_of_batch: bool| {
+        move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
             // Only lock during order processing
             let processed_order_cmd = {
                 let mut router_guard = router.lock();
@@ -124,11 +126,6 @@ macro_rules! create_matching_handler {
                 let processed_order_cmd = router_guard.process_order(&mut order_cmd);
                 processed_order_cmd
             };  // Lock is released here - router is free for next order
-
-            // Publish raw events directly
-            let _ = matcher_event_producer.publish(|published_event| {
-                *published_event = processed_order_cmd;
-            });
         }
     }};
 }

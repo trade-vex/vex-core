@@ -1,5 +1,5 @@
 use common::{OrderCommand, decode_order_command, encode_order_command};
-use disruptor::{MultiConsumerBarrier, MultiProducer, Producer};
+use disruptor::{MultiProducer, Producer, SingleConsumerBarrier};
 use rusteron_client::{
     AeronFragmentHandlerCallback, AeronHeader, AeronPublication, AeronReservedValueSupplierLogger,
 };
@@ -8,7 +8,7 @@ use tracing::{debug, error};
 pub struct FragmentHandler {
     pub publication: AeronPublication,
     pub gateway_id: String,
-    pub producer: MultiProducer<OrderCommand, MultiConsumerBarrier>,
+    pub producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
 }
 
 impl AeronFragmentHandlerCallback for FragmentHandler {

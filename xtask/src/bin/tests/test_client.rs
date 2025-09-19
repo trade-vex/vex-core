@@ -93,6 +93,8 @@ fn run_correctness_test(
             order_id: client_id * 1_000_000 + i,
             market_id: 3124,
             price: 150,
+            status: common::Status::Processing,
+            events: None
         };
         client.send_order_command(&order_command)?;
     }
@@ -121,6 +123,8 @@ fn run_latency_test(
             order_id,
             market_id: 3124,
             price: 150,
+            status: common::Status::Processing,
+            events: None
         };
 
         let start_time = Instant::now();

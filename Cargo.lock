@@ -556,9 +556,8 @@ dependencies = [
 
 [[package]]
 name = "disruptor"
-version = "3.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83c66f86e9605a3ee58a7f7bee2ba7253a09f487ec775d59a1d9c72403ccce4f"
+version = "3.6.0"
+source = "git+https://github.com/esciiee/disruptor-rs.git?rev=39e2f1d#39e2f1d01dfcf93797553e411dac285ae7b9f129"
 dependencies = [
  "core_affinity",
  "crossbeam-utils",

@@ -126,14 +126,14 @@ impl RiskEngine {
 
     /// Handles a single trade event from the matching engine to settle funds
     /// This is called by the R2 handler for each individual event in the linked list
-    pub fn handle_event(&mut self, event: &MatcherTradeEvent, market_id: u32, taker_id: u64) {
+    pub fn handle_event(&mut self, cmd: &OrderCommand) {
         info!(
             "[RiskEngine_{}] Processing single trade event: price={}, size={}, maker={}, taker={}",
             self.shard_id, event.price, event.size, event.maker_user_id, taker_id
         );
 
         // Get market specification for fee calculations
-        let spec = match self.symbol_specs.get(&market_id) {
+        let _spec = match self.symbol_specs.get(&cmd.market_id()) {
             Some(spec) => spec,
             None => {
                 warn!(

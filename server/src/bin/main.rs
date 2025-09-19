@@ -1,9 +1,9 @@
-use server::init_exchange;
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
 use tracing::{error, info, warn};
 use tracing_subscriber::fmt;
 use vex_config::{Environment, VexConfig};
+use vex_server::init_exchange;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
