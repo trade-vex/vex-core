@@ -2204,25 +2204,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "server"
-version = "0.1.0"
-dependencies = [
- "common",
- "ctrlc",
- "disruptor",
- "hashbrown 0.15.5",
- "parking_lot",
- "processors",
- "rusteron-client",
- "tikv-jemallocator",
- "tracing",
- "tracing-subscriber 0.1.6",
- "vex-config",
- "vex-networking",
- "vex-orderbook",
-]
-
-[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2889,6 +2870,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "vex-server"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "ctrlc",
+ "disruptor",
+ "hashbrown 0.15.5",
+ "parking_lot",
+ "processors",
+ "rusteron-client",
+ "tikv-jemallocator",
+ "tracing",
+ "tracing-subscriber 0.1.6",
+ "vex-config",
+ "vex-networking",
+ "vex-orderbook",
+]
+
+[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3299,6 +3299,7 @@ dependencies = [
  "common",
  "disruptor",
  "duct",
+ "hashbrown 0.15.5",
  "hdrhistogram",
  "rusteron-client",
  "serde",
@@ -3308,6 +3309,7 @@ dependencies = [
  "tracing-subscriber 0.1.6",
  "vex-config",
  "vex-networking",
+ "vex-server",
 ]
 
 [[package]]
