@@ -2,10 +2,9 @@ use crate::{
     create_event_handler, create_matching_handler, create_risk_handler, create_risk_r2_handler,
 };
 use common::CoreMarketSpecification;
-use common::{OrderCommand};
+use common::OrderCommand;
 use disruptor::{
-    BusySpin, MultiProducer, ProcessorSettings, build_multi_producer,
-    SingleConsumerBarrier,
+    BusySpin, MultiProducer, ProcessorSettings, SingleConsumerBarrier, build_multi_producer,
 };
 use hashbrown::HashMap;
 use parking_lot::Mutex;
@@ -128,25 +127,13 @@ impl CoreEngine {
             // Stage 3: Matching Engine - 4 parallel handlers
             // Each handler processes ALL events but filters internally based on symbol_id ID
             .pin_at_core(6)
-            .handle_events_with(create_matching_handler!(
-                0,
-                matching_engine_routers
-            ))
+            .handle_events_with(create_matching_handler!(0, matching_engine_routers))
             .pin_at_core(7)
-            .handle_events_with(create_matching_handler!(
-                1,
-                matching_engine_routers
-            ))
+            .handle_events_with(create_matching_handler!(1, matching_engine_routers))
             .pin_at_core(8)
-            .handle_events_with(create_matching_handler!(
-                2,
-                matching_engine_routers
-            ))
+            .handle_events_with(create_matching_handler!(2, matching_engine_routers))
             .pin_at_core(9)
-            .handle_events_with(create_matching_handler!(
-                3,
-                matching_engine_routers
-            ))
+            .handle_events_with(create_matching_handler!(3, matching_engine_routers))
             .and_then()
             .pin_at_core(10)
             .handle_events_with(create_risk_r2_handler!(0, risk_engines_arc))

@@ -307,13 +307,9 @@ impl EventsHandler for KafkaEventsHandler {
             }
             Status::PartiallyFilled | Status::Filled => {
                 if let Some(event) = cmd.events() {
-                    if let Err(e) = self.publish_trade_event(
-                        event,
-                        cmd,
-                        market_id,
-                        taker_id,
-                        taker_order_id,
-                    ) {
+                    if let Err(e) =
+                        self.publish_trade_event(event, cmd, market_id, taker_id, taker_order_id)
+                    {
                         error!("[KafkaEventsHandler] Failed to publish trade event: {}", e);
                     }
 
@@ -335,12 +331,9 @@ impl EventsHandler for KafkaEventsHandler {
                     }
 
                     if let Some(risk_engine) = risk_engine {
-                        if let Err(e) = self.publish_balance_event(
-                            taker_id,
-                            market_id,
-                            risk_engine,
-                            cmd,
-                        ) {
+                        if let Err(e) =
+                            self.publish_balance_event(taker_id, market_id, risk_engine, cmd)
+                        {
                             error!(
                                 "[KafkaEventsHandler] Failed to publish taker balance event: {}",
                                 e
@@ -507,10 +500,10 @@ mod tests {
 
         let mut cmd = OrderCommand::new(
             common::TimeInForce::Gtc,
-            12349,  // order_id
-            1001,   // user_id
-            900,    // price
-            25,     // size
+            12349, // order_id
+            1001,  // user_id
+            900,   // price
+            25,    // size
             Side::Ask,
         );
         cmd.set_status(Status::Cancelled);

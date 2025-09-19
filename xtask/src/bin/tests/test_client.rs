@@ -94,7 +94,7 @@ fn run_correctness_test(
             market_id: 3124,
             price: 150,
             status: common::Status::Processing,
-            events: None
+            events: None,
         };
         client.send_order_command(&order_command)?;
     }
@@ -124,7 +124,7 @@ fn run_latency_test(
             market_id: 3124,
             price: 150,
             status: common::Status::Processing,
-            events: None
+            events: None,
         };
 
         let start_time = Instant::now();

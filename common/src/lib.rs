@@ -6,8 +6,7 @@ mod order;
 mod user_profile;
 
 pub use cmd::{
-    MatcherTradeEvent, OrderCommand, Status, decode_order_command,
-    encode_order_command,
+    MatcherTradeEvent, OrderCommand, Status, decode_order_command, encode_order_command,
 };
 pub use core_arithmetic::CoreArithmetic;
 pub use l2_market_data::L2MarketData;
