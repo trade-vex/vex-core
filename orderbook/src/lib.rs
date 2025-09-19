@@ -35,10 +35,7 @@
 //!     -   It generates `MatcherTradeEvent`s and attaches them to the `ProcessedOrderCommand` for downstream
 //!         processors (risk engines and event handlers) to consume.
 use crate::tree::BookSide;
-use common::{
-    L2MarketData, MatcherTradeEvent, Order, OrderCommand, Side, Status,
-    TimeInForce,
-};
+use common::{L2MarketData, MatcherTradeEvent, Order, OrderCommand, Side, Status, TimeInForce};
 use std::collections::{HashMap, VecDeque};
 
 pub mod tree;
@@ -216,7 +213,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             cmd.user_id,
             cmd.price,
             cmd.size,
-            cmd.side
+            cmd.side,
         );
         match cmd.time_in_force {
             TimeInForce::Gtc => {
@@ -287,7 +284,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             cmd.user_id,
             cmd.price,
             cmd.size,
-            cmd.side
+            cmd.side,
         );
         if let Some(price) = self.orders.remove(&cmd.order_id) {
             if let Some(best_price) = self.bids.best_price()

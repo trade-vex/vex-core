@@ -1,6 +1,6 @@
 use common::L2MarketData;
-use common::OrderCommandType;
 use common::OrderCommand;
+use common::OrderCommandType;
 use hashbrown::HashMap;
 use tracing::{info, warn};
 use vex_orderbook::OrderBook;
@@ -65,7 +65,7 @@ impl MatchingEngineRouter {
             cmd.user_id,
             cmd.price,
             cmd.size,
-            cmd.side
+            cmd.side,
         );
         if self.market_for_this_handler(cmd.market_id as u64) {
             if let Some(order_book) = self.order_books.get_mut(&cmd.market_id) {
