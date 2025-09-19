@@ -136,18 +136,19 @@ impl ConfigLoader {
             return Ok(default_config);
         }
 
-        // Add environment-specific variables
+        // Add environment variables
         if let Some(prefix) = &self.env_prefix {
-            let env_prefix = format!("{}_{}", prefix, env.env_prefix());
+            // Add general prefix first (lower precedence)
             builder = builder.add_source(
-                config::Environment::with_prefix(&env_prefix)
+                config::Environment::with_prefix(prefix)
                     .try_parsing(true)
                     .separator("__"),
             );
 
-            // Also add general VEX prefix
+            // Add environment-specific prefix (higher precedence)
+            let env_specific_prefix = format!("{}_{}", prefix, env.env_key());
             builder = builder.add_source(
-                config::Environment::with_prefix(prefix)
+                config::Environment::with_prefix(&env_specific_prefix)
                     .try_parsing(true)
                     .separator("__"),
             );
@@ -171,18 +172,18 @@ impl ConfigLoader {
         env: &Environment,
     ) -> Result<VexConfig> {
         // Create environment variable sources with both general and environment-specific prefixes
-        let general_source = config::Environment::with_prefix(prefix)
+        let general_source = config::Environment::with_prefix(prefix) // Lower precedence
             .try_parsing(true)
             .separator("__");
 
-        let env_specific_prefix = format!("{}_{}", prefix, env.env_prefix());
-        let env_specific_source = config::Environment::with_prefix(&env_specific_prefix)
+        let env_specific_prefix = format!("{}_{}", prefix, env.env_key());
+        let env_specific_source = config::Environment::with_prefix(&env_specific_prefix) // Higher precedence
             .try_parsing(true)
             .separator("__");
 
         // Build a config with just environment variables
         let env_config = Config::builder()
-            .add_source(general_source)
+            .add_source(general_source) // General first
             .add_source(env_specific_source)
             .build()?;
 
