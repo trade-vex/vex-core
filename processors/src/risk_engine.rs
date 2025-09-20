@@ -43,10 +43,10 @@ impl RiskEngine {
     }
 
     /// Pre-processes a command to validate it and hold funds
-    pub fn pre_process_command(&mut self, cmd: &OrderCommand) -> Result<()> {
+    pub fn pre_process_command(&mut self, cmd: &mut OrderCommand) {
         // Process only if the command is for a user managed by this shard
         if !self.user_id_for_this_handler(cmd.user_id) {
-            return Ok(()); // Not for this shard, skip
+            return; // Not for this shard, skip
         }
 
         info!(
@@ -64,33 +64,28 @@ impl RiskEngine {
                 "[RiskEngine] Looking up market_id spec for market_id {}",
                 cmd.market_id
             );
-            let spec = self.symbol_specs.get(&cmd.market_id).ok_or(
-                RiskEngineError::MarketSpecNotFound {
-                    market_id: cmd.market_id,
-                },
-            )?;
+
+            if self.symbol_specs.get(&cmd.market_id).is_none() {
+                warn!(
+                    "[RiskEngine] Market spec not found for market_id {}",
+                    cmd.market_id
+                );
+                cmd.status = common::Status::Rejected;
+                return;
+            }
 
             info!(
-                "[RiskEngine] Found market_id spec: {:?} for market_id {}",
-                spec, cmd.market_id
+                "[RiskEngine] Found market_id spec for market_id {}",
+                cmd.market_id
             );
 
             // TODO: Handle Market Order
             // Note: The Fee's are always in receiving asset, hense are cut on post processing
-            if let Err(balance_error) = self.reserve_funds_for_order(
-                cmd.user_id,
-                cmd.market_id,
-                cmd.side,
-                cmd.price,
-                cmd.size,
-            ) {
-                // Log detailed balance error
+            if let Err(err) = self.reserve_funds_for_order(cmd) {
                 warn!(
-                    "[RiskEngine] Insufficient funds for user {} to place order {}: {:?}",
-                    cmd.user_id, cmd.order_id, balance_error
+                    "[RiskEngine] Insufficient funds for user {}: {:?}",
+                    cmd.user_id, err
                 );
-
-                return Err(balance_error);
             }
         }
 
@@ -98,7 +93,6 @@ impl RiskEngine {
             "[RiskEngine] Pre-processing and approving command for user {}",
             cmd.user_id
         );
-        Ok(())
     }
 
     /// Handles a single trade event from the matching engine to settle funds
@@ -190,28 +184,41 @@ impl RiskEngine {
     /// * `side` - `Bid` (buy) or `Ask` (sell).
     /// * `price` - The price of the order.
     /// * `size` - The amount of the base asset to be traded.
-    pub fn reserve_funds_for_order(
-        &self,
-        user_id: u64,
-        market_id: u32,
-        side: Side,
-        price: u64,
-        size: u64,
-    ) -> Result<()> {
-        let (asset_to_lock, amount_to_lock) = match side {
+    pub fn reserve_funds_for_order(&self, cmd: &mut OrderCommand) -> Result<()> {
+        let (asset_to_lock, amount_to_lock) = match cmd.side {
             // For a Bid (buy), we lock the quote currency. Amount = price * size.
             Side::Bid => {
-                let amount = price.checked_mul(size).ok_or(BalanceError::Overflow)?;
-                (quote_asset(market_id), amount)
+                let amount = self.bid_amount(cmd)?;
+                (base_asset(cmd.market_id), amount)
             }
             // For an Ask (sell), we lock the base currency. Amount = size.
-            Side::Ask => (base_asset(market_id), size),
+            Side::Ask => (quote_asset(cmd.market_id), cmd.size),
         };
 
         // Acquire a lock on the store and perform the operation
         let mut store = self.balances.lock();
-        store.lock_funds(user_id, asset_to_lock, amount_to_lock)?;
+        store.lock_funds(cmd.user_id, asset_to_lock, amount_to_lock)?;
         Ok(())
+    }
+
+    #[inline]
+    fn bid_amount(&self, cmd: &mut OrderCommand) -> Result<u64> {
+        if cmd.price == u64::MAX {
+            // this is a market order, will be converted to IOC Limit order
+            let slippage = self.symbol_specs.get(&cmd.market_id).unwrap().slippage;
+            cmd.price = (slippage as u64 / 100) * cmd.price;
+            let amt = cmd
+                .price
+                .checked_mul(cmd.size)
+                .ok_or(BalanceError::Overflow)?;
+            Ok(amt)
+        } else {
+            let amt = cmd
+                .price
+                .checked_mul(cmd.size)
+                .ok_or(BalanceError::Overflow)?;
+            Ok(amt)
+        }
     }
 
     /// Releases previously reserved funds from a canceled or filled order.
