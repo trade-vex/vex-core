@@ -6,20 +6,20 @@ mod order;
 mod user_profile;
 
 pub use cmd::{
-    MatcherTradeEvent, OrderCommand, Status, decode_order_command, encode_order_command,
+    decode_order_command, encode_order_command, MatcherTradeEvent, OrderCommand, Status,
 };
 pub use core_arithmetic::CoreArithmetic;
 pub use l2_market_data::L2MarketData;
 pub use market_specification::{CoreMarketSpecification, CoreMarketSpecificationBuilder};
-pub use order::Order;
+pub use order::{Order, PriceCache};
 pub use user_profile::{BalanceError, BalanceKey, BalanceStore, UserBalance};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use sbe_order::order_command_type::OrderCommandType as SbeOrderCommandType;
 use sbe_order::side::Side as SbeSide;
 use sbe_order::time_in_force::TimeInForce as SbeTimeInForce;
-use serde::de::Error;
 use serde::de::value::Error as SerdeError;
+use serde::de::Error;
 use serde::{Deserialize, Serialize};
 
 #[derive(

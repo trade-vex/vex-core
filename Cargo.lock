@@ -378,6 +378,7 @@ version = "0.1.0"
 dependencies = [
  "ahash",
  "borsh",
+ "hashbrown 0.15.5",
  "parking_lot",
  "sbe_order",
  "serde",
