@@ -17,6 +17,9 @@ pub struct CoreMarketSpecification {
     // Fees per lot in quote currency units
     pub taker_fee: u64, // taker fee (should be >= maker fee)
     pub maker_fee: u64, // maker fee
+
+    // slippage, in terms of 100x of a percent (e.g. 150 = 1.5%)
+    pub slippage: u32,
 }
 
 impl CoreMarketSpecification {
@@ -38,6 +41,7 @@ pub struct CoreMarketSpecificationBuilder {
     maker_fee: Option<u64>,
     margin_buy: Option<u64>,
     margin_sell: Option<u64>,
+    slippage: Option<u32>,
 }
 
 impl CoreMarketSpecificationBuilder {
@@ -91,6 +95,11 @@ impl CoreMarketSpecificationBuilder {
         self
     }
 
+    pub fn slippage(mut self, slippage: u32) -> Self {
+        self.slippage = Some(slippage);
+        self
+    }
+
     pub fn build(self) -> Result<CoreMarketSpecification, &'static str> {
         Ok(CoreMarketSpecification {
             market_id: self.market_id.ok_or("market_id is required")?,
@@ -101,6 +110,7 @@ impl CoreMarketSpecificationBuilder {
             quote_scale_k: self.quote_scale_k.ok_or("quote_scale_k is required")?,
             taker_fee: self.taker_fee.unwrap_or(0),
             maker_fee: self.maker_fee.unwrap_or(0),
+            slippage: self.slippage.unwrap_or(150), // 1.5% by default
         })
     }
 }
