@@ -42,6 +42,7 @@ impl SymbolSpecificationConfig {
                 quote_scale_k: 10,     // 1 step = 10 satoshi
                 taker_fee: 0,
                 maker_fee: 0,
+                slippage: 150, // 1.5%
             },
         );
 
@@ -57,6 +58,7 @@ impl SymbolSpecificationConfig {
                 quote_scale_k: 1,
                 taker_fee: 0,
                 maker_fee: 0,
+                slippage: 150, // 1.5%
             },
         );
 
@@ -79,6 +81,7 @@ impl SymbolSpecificationConfig {
                 quote_scale_k: 10_000,   // 1 step = 10K litoshi
                 taker_fee: 1900,         // taker fee 1900 litoshi per 1 lot
                 maker_fee: 700,          // maker fee 700 litoshi per 1 lot
+                slippage: 150,           // 1.5%
             },
         );
 
