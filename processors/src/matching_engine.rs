@@ -1,10 +1,14 @@
+use std::sync::Arc;
+
 use common::L2MarketData;
 use common::OrderCommand;
 use common::OrderCommandType;
+use common::PriceCache;
+use common::Status;
 use hashbrown::HashMap;
 use tracing::{info, warn};
-use vex_orderbook::OrderBook;
 use vex_orderbook::tree::{BTreeAskSide, BTreeBidSide};
+use vex_orderbook::OrderBook;
 
 /// Owns all order books and routes commands to the correct one.
 pub struct MatchingEngineRouter {
@@ -40,7 +44,11 @@ impl MatchingEngineRouter {
     pub fn add_market(&mut self, market_id: u32) {
         self.order_books.insert(
             market_id,
-            Box::new(OrderBook::new(BTreeBidSide::new(), BTreeAskSide::new())),
+            Box::new(OrderBook::new(
+                BTreeBidSide::new(),
+                BTreeAskSide::new(),
+                market_id,
+            )),
         );
     }
 
@@ -58,15 +66,7 @@ impl MatchingEngineRouter {
     }
 
     /// Main entry point for processing orders
-    pub fn process_order(&mut self, cmd: &mut OrderCommand) -> OrderCommand {
-        let res = OrderCommand::new(
-            cmd.time_in_force,
-            cmd.order_id,
-            cmd.user_id,
-            cmd.price,
-            cmd.size,
-            cmd.side,
-        );
+    pub fn process_order(&mut self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) {
         if self.market_for_this_handler(cmd.market_id as u64) {
             if let Some(order_book) = self.order_books.get_mut(&cmd.market_id) {
                 info!(
@@ -74,19 +74,18 @@ impl MatchingEngineRouter {
                     self.shard_id, cmd.market_id
                 );
 
-                let result = match cmd.command {
-                    OrderCommandType::PlaceOrder => order_book.place_order(cmd),
-                    OrderCommandType::CancelOrder => order_book.cancel_order(cmd),
-                };
-                return result;
+                match cmd.command {
+                    OrderCommandType::PlaceOrder => order_book.place_order(cmd, price_cache),
+                    OrderCommandType::CancelOrder => order_book.cancel_order(cmd, price_cache),
+                }
             } else {
                 warn!(
                     "[Router {}] No order book found for market_id {}",
                     self.shard_id, cmd.market_id
                 );
+                cmd.set_status(Status::Rejected);
             }
         }
-        res
     }
 
     /// Get a reference to the orderbook for a specific market_id

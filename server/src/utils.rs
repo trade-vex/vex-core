@@ -114,16 +114,16 @@ macro_rules! create_event_handler {
 /// This eliminates code duplication while maintaining separate handlers for each shard
 #[macro_export]
 macro_rules! create_matching_handler {
-    ($shard_id:expr, $routers:expr) => {{
+    ($shard_id:expr, $routers:expr, $price_cache:expr) => {{
         let router = $routers[$shard_id].clone();
-
+        let price_cache = $price_cache.clone();
         move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
             // Only lock during order processing
             let processed_order_cmd = {
                 let mut router_guard = router.lock();
                 // remove this lock eventually by some minor optimsations in orderbook and matching engine router
                 let mut order_cmd = cmd.clone();
-                let processed_order_cmd = router_guard.process_order(&mut order_cmd);
+                let processed_order_cmd = router_guard.process_order(&mut order_cmd, price_cache.clone());
                 processed_order_cmd
             };  // Lock is released here - router is free for next order
         }

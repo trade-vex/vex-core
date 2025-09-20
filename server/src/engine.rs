@@ -3,8 +3,9 @@ use crate::{
 };
 use common::CoreMarketSpecification;
 use common::OrderCommand;
+use common::PriceCache;
 use disruptor::{
-    BusySpin, MultiProducer, ProcessorSettings, SingleConsumerBarrier, build_multi_producer,
+    build_multi_producer, BusySpin, MultiProducer, ProcessorSettings, SingleConsumerBarrier,
 };
 use hashbrown::HashMap;
 use parking_lot::Mutex;
@@ -52,6 +53,9 @@ impl CoreEngine {
         journaling_processor: JournalingProcessor,
         events_handler: Arc<dyn EventsHandler>,
     ) -> (Self, OrderProducer) {
+        // Setup PriceCache
+        let price_cache = Arc::new(PriceCache::new(symbol_specs.keys()));
+
         let order_factory = || OrderCommand::default();
         let buffer_size = 1024; // Power of 2 for disruptor efficiency
 
@@ -127,13 +131,29 @@ impl CoreEngine {
             // Stage 3: Matching Engine - 4 parallel handlers
             // Each handler processes ALL events but filters internally based on symbol_id ID
             .pin_at_core(6)
-            .handle_events_with(create_matching_handler!(0, matching_engine_routers))
+            .handle_events_with(create_matching_handler!(
+                0,
+                matching_engine_routers,
+                price_cache
+            ))
             .pin_at_core(7)
-            .handle_events_with(create_matching_handler!(1, matching_engine_routers))
+            .handle_events_with(create_matching_handler!(
+                1,
+                matching_engine_routers,
+                price_cache
+            ))
             .pin_at_core(8)
-            .handle_events_with(create_matching_handler!(2, matching_engine_routers))
+            .handle_events_with(create_matching_handler!(
+                2,
+                matching_engine_routers,
+                price_cache
+            ))
             .pin_at_core(9)
-            .handle_events_with(create_matching_handler!(3, matching_engine_routers))
+            .handle_events_with(create_matching_handler!(
+                3,
+                matching_engine_routers,
+                price_cache
+            ))
             .and_then()
             .pin_at_core(10)
             .handle_events_with(create_risk_r2_handler!(0, risk_engines_arc))
