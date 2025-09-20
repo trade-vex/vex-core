@@ -40,10 +40,10 @@ impl RiskEngine {
     }
 
     /// Pre-processes a command to validate it and hold funds
-    pub fn pre_process_command(&mut self, cmd: &OrderCommand) -> Result<()> {
+    pub fn pre_process_command(&mut self, cmd: &mut OrderCommand) {
         // Process only if the command is for a user managed by this shard
         if !self.user_id_for_this_handler(cmd.user_id) {
-            return Ok(()); // Not for this shard, skip
+            return; // Not for this shard, skip
         }
 
         info!(
@@ -73,15 +73,19 @@ impl RiskEngine {
                 "[RiskEngine] Looking up market_id spec for market_id {}",
                 cmd.market_id
             );
-            let spec = self.symbol_specs.get(&cmd.market_id).ok_or(
-                RiskEngineError::MarketSpecNotFound {
-                    market_id: cmd.market_id,
-                },
-            )?;
+
+            if self.symbol_specs.get(&cmd.market_id).is_none() {
+                warn!(
+                    "[RiskEngine] Market spec not found for market_id {}",
+                    cmd.market_id
+                );
+                cmd.status = common::Status::Rejected;
+                return;
+            }
 
             info!(
-                "[RiskEngine] Found market_id spec: {:?} for market_id {}",
-                spec, cmd.market_id
+                "[RiskEngine] Found market_id spec for market_id {}",
+                cmd.market_id
             );
             // Calculate required funds based on order side and market specification
             let required_funds = if cmd.side == Side::Bid {
@@ -94,26 +98,13 @@ impl RiskEngine {
                 cmd.size
             };
 
-            let amount = required_funds;
-
-            if let Err(balance_error) = user_profile.lock_funds(cmd.user_id, cmd.market_id, amount)
-            {
+            // TODO: Handle Market Order
+            // Note: The Fee's are always in receiving asset, hense are cut on post processing
+            if let Err(err) = self.reserve_funds_for_order(cmd) {
                 warn!(
-                    "[RiskEngine] Insufficient funds for user {} to place order {}: {:?}",
-                    cmd.user_id, cmd.order_id, balance_error
+                    "[RiskEngine] Insufficient funds for user {}: {:?}",
+                    cmd.user_id, err
                 );
-
-                // Get actual available balance for error reporting
-                let available_balance = user_profile
-                    .get_balance(cmd.user_id, cmd.market_id)
-                    .map(|balance| balance.available())
-                    .unwrap_or(0);
-
-                return Err(RiskEngineError::InsufficientFunds {
-                    user_id: cmd.user_id,
-                    required: required_funds,
-                    available: available_balance,
-                });
             }
         }
 
@@ -121,7 +112,6 @@ impl RiskEngine {
             "[RiskEngine] Pre-processing and approving command for user {}",
             cmd.user_id
         );
-        Ok(())
     }
 
     /// Handles a single trade event from the matching engine to settle funds
@@ -177,22 +167,110 @@ impl RiskEngine {
             let taker_fee = spec.taker_fee * event.size;
             let total_required = total_trade_amount + taker_fee;
 
-            // Consume the locked funds for the taker (they pay the full amount + fees)
-            match taker_profile.consume_locked(taker_id, market_id, total_required) {
-                Ok(()) => {
-                    info!(
-                        "[RiskEngine_{}] Successfully consumed locked funds for taker {}: amount={}",
-                        self.shard_id, taker_id, total_required
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        "[RiskEngine_{}] Failed to consume locked funds for taker {}: {:?}",
-                        self.shard_id, taker_id, e
-                    );
-                }
+        //         // Consume the locked funds for the taker (they pay the full amount + fees)
+        //         match taker_profile.consume_locked(taker_id, market_id, total_required) {
+        //             Ok(()) => {
+        //                 info!(
+        //                     "[RiskEngine_{}] Successfully consumed locked funds for taker {}: amount={}",
+        //                     self.shard_id, taker_id, total_required
+        //                 );
+        //             }
+        //             Err(e) => {
+        //                 warn!(
+        //                     "[RiskEngine_{}] Failed to consume locked funds for taker {}: {:?}",
+        //                     self.shard_id, taker_id, e
+        //                 );
+        //             }
+        //         }
+        //     }
+        // }
+    }
+
+    /// Reserves funds for a new order.
+    /// This is called by the pre-orderbook risk engine.
+    ///
+    /// # Arguments
+    /// * `user_id` - The ID of the user placing the order.
+    /// * `market_id` - The market ID, containing quote and base asset IDs.
+    /// * `side` - `Bid` (buy) or `Ask` (sell).
+    /// * `price` - The price of the order.
+    /// * `size` - The amount of the base asset to be traded.
+    pub fn reserve_funds_for_order(&self, cmd: &mut OrderCommand) -> Result<()> {
+        let (asset_to_lock, amount_to_lock) = match cmd.side {
+            // For a Bid (buy), we lock the quote currency. Amount = price * size.
+            Side::Bid => {
+                let amount = self.bid_amount(cmd)?;
+                (base_asset(cmd.market_id), amount)
             }
+            // For an Ask (sell), we lock the base currency. Amount = size.
+            Side::Ask => (quote_asset(cmd.market_id), cmd.size),
+        };
+
+        // Acquire a lock on the store and perform the operation
+        let mut store = self.balances.lock();
+        store.lock_funds(cmd.user_id, asset_to_lock, amount_to_lock)?;
+        Ok(())
+    }
+
+    #[inline]
+    fn bid_amount(&self, cmd: &mut OrderCommand) -> Result<u64> {
+        if cmd.price == u64::MAX {
+            // this is a market order, will be converted to IOC Limit order
+            let slippage = self.symbol_specs.get(&cmd.market_id).unwrap().slippage;
+            cmd.price = (slippage as u64 / 100) * cmd.price;
+            let amt = cmd
+                .price
+                .checked_mul(cmd.size)
+                .ok_or(BalanceError::Overflow)?;
+            Ok(amt)
+        } else {
+            let amt = cmd
+                .price
+                .checked_mul(cmd.size)
+                .ok_or(BalanceError::Overflow)?;
+            Ok(amt)
         }
+    }
+
+    /// Releases previously reserved funds from a canceled or filled order.
+    /// This is called by the post-orderbook risk engine or order cancellation logic.
+    pub fn release_funds_for_order(
+        &self,
+        user_id: u64,
+        market_id: u32,
+        side: Side,
+        price: u64,
+        size: u64,
+    ) -> Result<()> {
+        let (asset_to_unlock, amount_to_unlock) = match side {
+            Side::Bid => {
+                let amount = price.checked_mul(size).ok_or(BalanceError::Overflow)?;
+                (quote_asset(market_id), amount)
+            }
+            Side::Ask => (base_asset(market_id), size),
+        };
+
+        // Acquire a lock on the store and perform the operation
+        let mut store = self.balances.lock();
+        store
+            .unlock_funds(user_id, asset_to_unlock, amount_to_unlock)
+            .map_err(|err| RiskEngineError::BalanceError(err))
+    }
+
+    pub fn get_balance(&self, user_id: u64, asset_id: u16) -> UserBalance {
+        let store = self.balances.lock();
+        store.get_balance(user_id, asset_id)
+    }
+
+    pub fn try_get_balance(&self, user_id: u64, asset_id: u16) -> Result<UserBalance> {
+        let store = self.balances.lock();
+        Ok(store.try_get_balance(user_id, asset_id)?)
+    }
+
+    #[cfg(test)]
+    pub fn set_balance(&mut self, user_id: u64, asset_id: u16, balance: UserBalance) {
+        let mut store = self.balances.lock();
+        *store.get_balance_mut(user_id, asset_id) = balance;
     }
 }
 
