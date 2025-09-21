@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use hashbrown::{
-    hash_map::{Iter, Keys},
+    hash_map::{Keys},
     HashMap,
 };
 use serde::{Deserialize, Serialize};
