@@ -161,19 +161,29 @@ impl BalanceStore {
         }
     }
 
-    // Consume locked funds (remove from locked, e.g., after trade execution)
-    pub fn consume_locked(
+    // Add Funds
+    pub fn add_funds(
         &mut self,
-        user_id: UserId,
-        asset_id: MarketId,
+        user_id: u64,
+        asset_id: u16,
         amount: u64,
     ) -> Result<(), BalanceError> {
-        let key = BalanceKey { user_id, asset_id };
-        let balance = match self.balances.get_mut(&key) {
-            Some(balance) => balance,
-            None => return Err(BalanceError::UserNotFound { user_id, asset_id }),
-        };
+        let balance = self.get_balance_mut(user_id, asset_id);
+        balance.available = balance
+            .available
+            .checked_add(amount)
+            .ok_or(BalanceError::Overflow)?;
+        Ok(())
+    }
 
+    // Subtract from locked funds
+    pub fn subtract_locked_funds(
+        &mut self,
+        user_id: u64,
+        asset_id: u16,
+        amount: u64,
+    ) -> Result<(), BalanceError> {
+        let balance = self.get_balance_mut(user_id, asset_id);
         if balance.locked >= amount {
             balance.locked -= amount;
             Ok(())
