@@ -60,6 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         quote_scale_k: 100,    // 1 step = $0.01
         taker_fee: 25,         // 0.25 USD per lot
         maker_fee: 10,         // 0.10 USD per lot
+        slippage: 150,         // 1.5% slippage
     };
 
     custom_symbols.add_symbol(btc_usd_spec)?;
