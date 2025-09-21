@@ -2757,6 +2757,7 @@ name = "vex-orderbook"
 version = "0.1.0"
 dependencies = [
  "common",
+ "hashbrown 0.15.5",
 ]
 
 [[package]]
