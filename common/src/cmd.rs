@@ -42,7 +42,7 @@ pub struct OrderCommand {
     ///   instructs the matching engine to trade at any available price.
     pub price: u64,
 
-    /// The quantity of the asset to be bought or sold for a new order.
+    /// The quantity of the quote asset that is remaining to be filled/cancelled
     pub size: u64,
 
     /// The side of the order book for a new order.
@@ -149,6 +149,10 @@ impl OrderCommand {
 
     pub fn events(&self) -> Option<&MatcherTradeEvent> {
         self.events.as_deref()
+    }
+
+    pub fn set_size(&mut self, size: u64) {
+        self.size = size;
     }
 
     pub fn attatch_event(&mut self, event: Box<MatcherTradeEvent>) {

@@ -74,6 +74,7 @@ impl PriceLevel {
             && let Some(removed_order) = self.orders.remove(pos)
         {
             self.total_volume -= removed_order.size;
+            cmd.set_size(removed_order.size);
             cmd.set_status(Status::Cancelled);
         }
     }
@@ -147,6 +148,10 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                     break;
                 }
 
+                if maker_order.user_id == cmd.user_id {
+                    continue;
+                }
+
                 let trade_size = remaining_size.min(maker_order.size);
 
                 // Update sizes
@@ -201,7 +206,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     ///     user_id: 0, /// Gateway set user_id
     ///     market_id: 0, /// Market ID, No explicit check is made for market id, must be guaranteed by the ORDERBOOK Router
     ///     price: 0, /// for limit order price is as is by user, for MARKET ORDER: buy: u64::MAX, sell: 0
-    ///     size: 0, /// as set by user
+    ///     size: 0, /// as set by user, changes to remaining size
     ///     side: Side::Bid, /// as set by user
     ///     time_in_force: TimeInForce::Gtc, /// for limit order GTC, for marker IOC/FOK
     /// }
@@ -219,7 +224,6 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             TimeInForce::Gtc => {
                 // Handle GTC (Good 'Til Canceled) orders
                 let remaining = self.match_order(cmd);
-
                 if remaining == cmd.size {
                     self.add_to_book(cmd, remaining);
                     cmd.set_status(Status::Placed);
@@ -230,13 +234,15 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 } else {
                     cmd.set_status(Status::Filled);
                 }
+                cmd.set_size(remaining);
             }
             TimeInForce::Fok => {
                 if !self.can_fill_completely(cmd) {
                     cmd.set_status(Status::Cancelled);
                 } else {
-                    self.match_order(cmd);
+                    let remaining = self.match_order(cmd);
                     cmd.set_status(Status::Filled);
+                    cmd.set_size(remaining);
                 }
             }
             TimeInForce::Ioc => {
@@ -250,6 +256,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 } else {
                     cmd.set_status(Status::Cancelled);
                 }
+                cmd.set_size(remaining);
             }
         }
         self.update_price_cache(price_cache);
@@ -279,14 +286,12 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     /// All the contraints are NOT checked in the ORDERBOOK, must be guaranteed by upstream systems
     pub fn cancel_order(&mut self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) {
         if let Some(price) = self.orders.remove(&cmd.order_id) {
-            if price <= self.bids.best_price() {
-                if let Some(level) = self.bids.get_level_mut(price) {
-                    level.remove_order(cmd.order_id, cmd);
-                    self.bids.remove_level_if_empty(cmd.price);
-                }
+            if let Some(level) = self.bids.get_level_mut(price) {
+                level.remove_order(cmd.order_id, cmd);
+                self.bids.remove_level_if_empty(price);
             } else if let Some(level) = self.asks.get_level_mut(price) {
                 level.remove_order(cmd.order_id, cmd);
-                self.asks.remove_level_if_empty(cmd.price);
+                self.asks.remove_level_if_empty(price);
             }
         }
         self.update_price_cache(price_cache);
