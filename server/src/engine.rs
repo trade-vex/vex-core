@@ -4,6 +4,8 @@ use crate::{
 use common::CoreMarketSpecification;
 use common::OrderCommand;
 use common::PriceCache;
+use common::Status;
+use common::TimeInForce;
 use disruptor::{
     build_multi_producer, BusySpin, MultiProducer, ProcessorSettings, SingleConsumerBarrier,
 };
@@ -15,7 +17,7 @@ use processors::{
 };
 use std::sync::Arc;
 use std::thread;
-use tracing::{info, warn};
+use tracing::info;
 use vex_config::CoreNetworkingConfig;
 use vex_networking::server::VexCoreServer;
 
@@ -79,8 +81,7 @@ impl CoreEngine {
             risk_engines.push(risk_engine);
         }
 
-        let risk_engines_arc: Arc<Vec<Mutex<RiskEngine>>> =
-            Arc::new(risk_engines.into_iter().map(Mutex::new).collect());
+        let risk_engines_arc: Arc<Vec<RiskEngine>> = Arc::new(risk_engines.into_iter().collect());
 
         // Create 4 sharded matching engine routers for parallel order processing
         // Each router handles a subset of symbols: symbol_id & shard_mask

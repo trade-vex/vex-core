@@ -125,7 +125,39 @@ impl BalanceStore {
         }
     }
 
-    // Additional helper methods can be added here...
+    // Add Funds
+    pub fn add_funds(
+        &mut self,
+        user_id: u64,
+        asset_id: u16,
+        amount: u64,
+    ) -> Result<(), BalanceError> {
+        let balance = self.get_balance_mut(user_id, asset_id);
+        balance.available = balance
+            .available
+            .checked_add(amount)
+            .ok_or(BalanceError::Overflow)?;
+        Ok(())
+    }
+
+    // Subtract from locked funds
+    pub fn subtract_locked_funds(
+        &mut self,
+        user_id: u64,
+        asset_id: u16,
+        amount: u64,
+    ) -> Result<(), BalanceError> {
+        let balance = self.get_balance_mut(user_id, asset_id);
+        if balance.locked >= amount {
+            balance.locked -= amount;
+            Ok(())
+        } else {
+            Err(BalanceError::InsufficientLockedFunds {
+                locked: balance.locked,
+                needed: amount,
+            })
+        }
+    }
 }
 
 /// Represents an error related to balance operations.
