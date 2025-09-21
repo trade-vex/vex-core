@@ -39,8 +39,6 @@ pub struct CoreMarketSpecificationBuilder {
     quote_scale_k: Option<u64>,
     taker_fee: Option<u64>,
     maker_fee: Option<u64>,
-    margin_buy: Option<u64>,
-    margin_sell: Option<u64>,
     slippage: Option<u32>,
 }
 
@@ -85,16 +83,6 @@ impl CoreMarketSpecificationBuilder {
         self
     }
 
-    pub fn margin_buy(mut self, margin_buy: u64) -> Self {
-        self.margin_buy = Some(margin_buy);
-        self
-    }
-
-    pub fn margin_sell(mut self, margin_sell: u64) -> Self {
-        self.margin_sell = Some(margin_sell);
-        self
-    }
-
     pub fn slippage(mut self, slippage: u32) -> Self {
         self.slippage = Some(slippage);
         self
@@ -106,8 +94,8 @@ impl CoreMarketSpecificationBuilder {
             market_type: self.market_type.ok_or("market_type is required")?,
             base_currency: self.base_currency.ok_or("base_currency is required")?,
             quote_currency: self.quote_currency.ok_or("quote_currency is required")?,
-            base_scale_k: self.base_scale_k.ok_or("base_scale_k is required")?,
-            quote_scale_k: self.quote_scale_k.ok_or("quote_scale_k is required")?,
+            base_scale_k: self.base_scale_k.unwrap_or(1),
+            quote_scale_k: self.quote_scale_k.unwrap_or(1),
             taker_fee: self.taker_fee.unwrap_or(0),
             maker_fee: self.maker_fee.unwrap_or(0),
             slippage: self.slippage.unwrap_or(150), // 1.5% by default
