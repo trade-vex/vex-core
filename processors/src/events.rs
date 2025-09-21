@@ -1,4 +1,4 @@
-use crate::risk_engine::RiskEngine;
+use crate::risk_engine::{base_asset, quote_asset, RiskEngine};
 use common::L2MarketData;
 use common::MatcherTradeEvent;
 use common::Order;
@@ -424,10 +424,12 @@ struct OrderbookLevel {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
-    use common::Side;
-    use vex_orderbook::OrderBook;
+    use common::{CoreMarketSpecification, MarketType, PriceCache, Side};
     use vex_orderbook::tree::{BTreeAskSide, BTreeBidSide};
+    use vex_orderbook::OrderBook;
 
     #[tokio::test]
     async fn test_kafka_events_handler_placed_order() {
@@ -504,9 +506,22 @@ mod tests {
     async fn test_orderbook_event_with_real_orderbook() {
         let handler = KafkaEventsHandler::new("localhost:9093");
 
-        let mut orderbook = OrderBook::new(BTreeBidSide::new(), BTreeAskSide::new());
-
-        let bid_cmd = common::OrderCommand {
+        let mut orderbook = OrderBook::new(BTreeBidSide::new(), BTreeAskSide::new(), 10);
+        let mut symbol_spec = hashbrown::HashMap::new();
+        symbol_spec.insert(
+            10u32,
+            CoreMarketSpecification::builder()
+                .market_id(10)
+                .market_type(MarketType::CurrencyExchangePair)
+                .base_currency(0)
+                .base_scale_k(1)
+                .quote_currency(10)
+                .quote_scale_k(1)
+                .build()
+                .unwrap(),
+        );
+        let price_cache = Arc::new(PriceCache::new(symbol_spec.keys()));
+        let mut bid_cmd = common::OrderCommand {
             command: common::OrderCommandType::PlaceOrder,
             order_id: 1,
             timestamp: 100,
@@ -519,9 +534,9 @@ mod tests {
             status: common::Status::Processing,
             events: None,
         };
-        orderbook.place_order(&bid_cmd);
+        orderbook.place_order(&mut bid_cmd, price_cache.clone());
 
-        let ask_cmd = common::OrderCommand {
+        let mut ask_cmd = common::OrderCommand {
             command: common::OrderCommandType::PlaceOrder,
             order_id: 2,
             timestamp: 101,
@@ -534,7 +549,7 @@ mod tests {
             status: common::Status::Processing,
             events: None,
         };
-        orderbook.place_order(&ask_cmd);
+        orderbook.place_order(&mut ask_cmd, price_cache);
 
         let mut cmd = OrderCommand::new(
             common::TimeInForce::Gtc,
