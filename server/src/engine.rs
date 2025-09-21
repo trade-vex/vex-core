@@ -15,7 +15,7 @@ use processors::{
 };
 use std::sync::Arc;
 use std::thread;
-use tracing::{info, warn};
+use tracing::{info};
 use vex_config::CoreNetworkingConfig;
 use vex_networking::server::VexCoreServer;
 
