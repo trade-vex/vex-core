@@ -5,6 +5,8 @@ use common::MatcherTradeEvent;
 use common::OrderCommand;
 use common::OrderCommandType;
 use common::Side;
+use common::Status;
+use common::UserBalance;
 use hashbrown::HashMap;
 use tracing::{info, warn};
 
@@ -105,6 +107,7 @@ impl RiskEngine {
                     "[RiskEngine] Insufficient funds for user {}: {:?}",
                     cmd.user_id, err
                 );
+                cmd.set_status(Status::Rejected);
             }
         }
 
@@ -188,21 +191,14 @@ impl RiskEngine {
 
     /// Reserves funds for a new order.
     /// This is called by the pre-orderbook risk engine.
-    ///
-    /// # Arguments
-    /// * `user_id` - The ID of the user placing the order.
-    /// * `market_id` - The market ID, containing quote and base asset IDs.
-    /// * `side` - `Bid` (buy) or `Ask` (sell).
-    /// * `price` - The price of the order.
-    /// * `size` - The amount of the base asset to be traded.
     pub fn reserve_funds_for_order(&self, cmd: &mut OrderCommand) -> Result<()> {
         let (asset_to_lock, amount_to_lock) = match cmd.side {
-            // For a Bid (buy), we lock the quote currency. Amount = price * size.
+            // For a Bid (buy), we lock the base currency. Amount = price * size.
             Side::Bid => {
                 let amount = self.bid_amount(cmd)?;
                 (base_asset(cmd.market_id), amount)
             }
-            // For an Ask (sell), we lock the base currency. Amount = size.
+            // For an Ask (sell), we lock the quote currency. Amount = size.
             Side::Ask => (quote_asset(cmd.market_id), cmd.size),
         };
 
