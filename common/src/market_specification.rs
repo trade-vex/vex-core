@@ -9,8 +9,8 @@ pub struct CoreMarketSpecification {
     pub market_type: MarketType,
 
     // Currency pair specification
-    pub base_currency: u32,  // base currency
-    pub quote_currency: u32, // quote/counter currency (OR futures contract currency)
+    pub base_currency: u16,  // base currency
+    pub quote_currency: u16, // quote/counter currency (OR futures contract currency)
     pub base_scale_k: u64,   // base currency amount multiplier (lot size in base currency units)
     pub quote_scale_k: u64,  // quote currency amount multiplier (step size in quote currency units)
 
@@ -33,8 +33,8 @@ impl CoreMarketSpecification {
 pub struct CoreMarketSpecificationBuilder {
     market_id: Option<u32>,
     market_type: Option<MarketType>,
-    base_currency: Option<u32>,
-    quote_currency: Option<u32>,
+    base_currency: Option<u16>,
+    quote_currency: Option<u16>,
     base_scale_k: Option<u64>,
     quote_scale_k: Option<u64>,
     taker_fee: Option<u64>,
@@ -53,12 +53,12 @@ impl CoreMarketSpecificationBuilder {
         self
     }
 
-    pub fn base_currency(mut self, base_currency: u32) -> Self {
+    pub fn base_currency(mut self, base_currency: u16) -> Self {
         self.base_currency = Some(base_currency);
         self
     }
 
-    pub fn quote_currency(mut self, quote_currency: u32) -> Self {
+    pub fn quote_currency(mut self, quote_currency: u16) -> Self {
         self.quote_currency = Some(quote_currency);
         self
     }

@@ -1,10 +1,7 @@
 use ahash::AHashMap;
 use thiserror::Error;
 
-type UserId = u64;
-type MarketId = u32;
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UserBalance {
     available: u64,
     locked: u64,
