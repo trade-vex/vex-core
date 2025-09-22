@@ -390,9 +390,9 @@ mod tests {
         let mut cmd = OrderCommand::new(TimeInForce::Gtc, 1, 1, 100, 10, Side::Bid);
         cmd.market_id = 1;
 
-        // shard 0 should not process user 1's command
+        // shard 0 should not process user 1's command, will be skipped
         engine_shard0.pre_process_command(&mut cmd, price_cache.clone());
-        assert_eq!(cmd.status, Status::Rejected);
+        assert_eq!(cmd.status, Status::Processing);
 
         // shard 1 should process user 1's command
         // it will be rejected because no market spec
@@ -445,13 +445,13 @@ mod tests {
         specs.insert(market_id, spec);
 
         let price_cache = Arc::new(PriceCache::new(specs.keys()));
-        engine.reserve_funds_for_order(&cmd, price_cache).unwrap();
+        engine.reserve_funds_for_order(&mut cmd, price_cache).unwrap();
 
         let balance = engine.get_balance(user_id, base_asset);
         assert_eq!(balance.available(), 0);
         assert_eq!(balance.locked(), required_base);
         // Cancel the order and check if funds are released
-        engine.handle_cancellation(&cmd);
+        engine.handle_cancellation(&mut cmd);
 
         let balance = engine.get_balance(user_id, base_asset);
         assert_eq!(balance.available(), required_base);
@@ -477,13 +477,13 @@ mod tests {
         specs.insert(market_id, spec);
 
         let price_cache = Arc::new(PriceCache::new(specs.keys()));
-        engine.reserve_funds_for_order(&cmd, price_cache).unwrap();
+        engine.reserve_funds_for_order(&mut cmd, price_cache).unwrap();
 
         let balance = engine.get_balance(user_id, quote_asset);
         assert_eq!(balance.available(), 0);
         assert_eq!(balance.locked(), size);
         // Cancel the order and check if funds are released
-        engine.handle_cancellation(&cmd);
+        engine.handle_cancellation(&mut cmd);
 
         let balance = engine.get_balance(user_id, quote_asset);
         assert_eq!(balance.available(), size);
@@ -509,7 +509,7 @@ mod tests {
         let mut specs = HashMap::new();
         specs.insert(market_id, spec);
         let price_cache = Arc::new(PriceCache::new(specs.keys()));
-        let res = engine.reserve_funds_for_order(&cmd, price_cache);
+        let res = engine.reserve_funds_for_order(&mut cmd, price_cache);
         assert!(res.is_err());
         match res.unwrap_err() {
             RiskEngineError::BalanceError(BalanceError::InsufficientAvailableFunds { .. }) => (),
@@ -551,18 +551,18 @@ mod tests {
             OrderCommand::new(TimeInForce::Gtc, 1, taker_id, price, size, Side::Bid);
         taker_cmd.market_id = market_id;
         engine
-            .reserve_funds_for_order(&taker_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut taker_cmd, price_cache.clone())
             .unwrap();
 
         let mut maker_cmd =
             OrderCommand::new(TimeInForce::Gtc, 2, maker_id, price, size, Side::Ask);
         maker_cmd.market_id = market_id;
         engine
-            .reserve_funds_for_order(&maker_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut maker_cmd, price_cache.clone())
             .unwrap();
 
         // --- A trade occurs ---
-        let trade_event = MatcherTradeEvent {
+        let mut trade_event = MatcherTradeEvent {
             price,
             size,
             maker_user_id: maker_id,
@@ -574,10 +574,10 @@ mod tests {
         };
 
         // Settle for Taker (Buyer, Bid side)
-        engine.handle_trade_event(taker_id, market_id, Side::Bid, &trade_event);
+        engine.handle_trade_event(taker_id, market_id, Side::Bid, &mut trade_event, Some(price));
 
         // Settle for Maker (Seller, Ask side)
-        engine.handle_trade_event(maker_id, market_id, Side::Ask, &trade_event);
+        engine.handle_trade_event(maker_id, market_id, Side::Ask, &mut trade_event, None);
 
         // --- Final Balances ---
         // Taker (buyer): Spends `price * size` of base. Receives `size` of quote, minus taker fee (20bp).
@@ -624,7 +624,7 @@ mod tests {
         market_buy_cmd.market_id = market_id;
 
         // Price cache has u64::MAX for best ask initially
-        let res = engine.reserve_funds_for_order(&market_buy_cmd, price_cache.clone());
+        let res = engine.reserve_funds_for_order(&mut market_buy_cmd, price_cache.clone());
         assert!(res.is_err());
         match res.unwrap_err() {
             RiskEngineError::InvalidArguments { .. } => (),
@@ -641,7 +641,7 @@ mod tests {
         engine.set_balance(user_id, base_asset_id, UserBalance::new(required_base, 0));
 
         engine
-            .reserve_funds_for_order(&market_buy_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut market_buy_cmd, price_cache.clone())
             .unwrap();
 
         let balance = engine.get_balance(user_id, base_asset_id);
@@ -654,7 +654,7 @@ mod tests {
             base_asset_id,
             UserBalance::new(required_base - 1, 0),
         );
-        let res = engine.reserve_funds_for_order(&market_buy_cmd, price_cache.clone());
+        let res = engine.reserve_funds_for_order(&mut market_buy_cmd, price_cache.clone());
         assert!(res.is_err());
         match res.unwrap_err() {
             RiskEngineError::BalanceError(BalanceError::InsufficientAvailableFunds { .. }) => (),
@@ -669,7 +669,7 @@ mod tests {
         market_sell_cmd.market_id = market_id;
 
         engine
-            .reserve_funds_for_order(&market_sell_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut market_sell_cmd, price_cache.clone())
             .unwrap();
         let balance = engine.get_balance(user_id, quote_asset_id);
         assert_eq!(balance.available(), 0);
@@ -713,7 +713,7 @@ mod tests {
             OrderCommand::new(TimeInForce::Gtc, 1, user_id, btc_price, btc_size, Side::Bid);
         btc_buy_cmd.market_id = market_id_btc_usd;
         engine
-            .reserve_funds_for_order(&btc_buy_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut btc_buy_cmd, price_cache.clone())
             .unwrap();
 
         // --- Check balances after BTC order reservation ---
@@ -736,7 +736,7 @@ mod tests {
             OrderCommand::new(TimeInForce::Gtc, 2, user_id, eth_price, eth_size, Side::Ask);
         eth_sell_cmd.market_id = market_id_eth_usd;
         engine
-            .reserve_funds_for_order(&eth_sell_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut eth_sell_cmd, price_cache.clone())
             .unwrap();
 
         // --- Check balances after both reservations ---
@@ -756,7 +756,7 @@ mod tests {
         assert_eq!(engine.get_balance(user_id, eth_asset_id).locked(), 2_000);
 
         // --- Action 3: The BTC buy order is filled (as taker) ---
-        let btc_trade_event = MatcherTradeEvent {
+        let mut btc_trade_event = MatcherTradeEvent {
             price: btc_price,
             size: btc_size,
             maker_user_id: 200, // some other user
@@ -766,7 +766,7 @@ mod tests {
             next_event: None,
             maker_balance: [UserBalance::default(); 2],
         };
-        engine.handle_trade_event(user_id, market_id_btc_usd, Side::Bid, &btc_trade_event);
+        engine.handle_trade_event(user_id, market_id_btc_usd, Side::Bid, &mut btc_trade_event, None);
 
         // --- Check balances after BTC trade settlement ---
         // User (taker) spent 50,000,000 USD, received 1,000 BTC (minus 0.2% taker fee)
@@ -786,7 +786,7 @@ mod tests {
         assert_eq!(engine.get_balance(user_id, eth_asset_id).locked(), 2_000); // ETH lock is untouched
 
         // --- Action 4: The ETH sell order is cancelled ---
-        engine.handle_cancellation(&eth_sell_cmd);
+        engine.handle_cancellation(&mut eth_sell_cmd);
 
         // --- Final Balances ---
         assert_eq!(
