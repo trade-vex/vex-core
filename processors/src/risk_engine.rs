@@ -423,7 +423,7 @@ mod tests {
 
     #[test]
     fn test_balance_management() {
-        let mut engine = RiskEngine::default();
+        let engine = RiskEngine::default();
         let user_id = 1;
         let asset_id = 1;
         let initial_balance = UserBalance::new(1000, 0);
@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_reserve_and_cancel_bid() {
-        let mut engine = RiskEngine::default();
+        let engine = RiskEngine::default();
         let user_id = 1;
         let market_id = ((2 as u32) << 16) | (1 as u32); // base=1, quote=2
         let base_asset = base_asset(market_id);
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn test_reserve_and_cancel_ask() {
-        let mut engine = RiskEngine::default();
+        let engine = RiskEngine::default();
         let user_id = 1;
         let market_id = ((2 as u32) << 16) | (1 as u32); // base=1, quote=2
         let quote_asset = quote_asset(market_id);
@@ -513,7 +513,7 @@ mod tests {
 
     #[test]
     fn test_insufficient_funds() {
-        let mut engine = RiskEngine::default();
+        let engine = RiskEngine::default();
         let user_id = 1;
         let market_id = ((2 as u32) << 16) | (1 as u32);
         let base_asset = base_asset(market_id);
@@ -634,7 +634,7 @@ mod tests {
             get_spec(market_id), // slippage is 5bp
         );
         let price_cache = Arc::new(PriceCache::new(specs.keys()));
-        let mut engine = RiskEngine::new(specs, 0, 1);
+        let engine = RiskEngine::new(specs, 0, 1);
 
         let user_id = 1;
         let size = 10;

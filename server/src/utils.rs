@@ -79,7 +79,7 @@ macro_rules! create_event_handler {
         // let risk_engines = $risk_engines;
         // let matching_engine_routers = $matching_engine_routers;
         // let orderbook_depth = $orderbook_depth;
-        move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
+        move |_: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
             // Get the appropriate risk engine for the taker user
         //     let taker_id = cmd.user_id();
         //     let num_shards = risk_engines.len() as u64;
