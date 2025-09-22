@@ -85,6 +85,7 @@ fn test_client_server_communication() {
             time_in_force: TimeInForce::Gtc,
             status: common::Status::Processing,
             events: None,
+            balance: [common::UserBalance::default(); 2],
         };
         for i in 0..10 {
             order_command.order_id = i;

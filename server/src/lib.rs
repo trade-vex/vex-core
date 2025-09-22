@@ -773,9 +773,6 @@ mod test {
         let taker_base_spent = (100 * 49_000) + (50 * 50_000);
         let taker_final_base = risk_engines[taker_shard].get_balance(taker_id, base_asset_id);
 
-        // NOTE: This assertion will likely fail with the current settlement logic,
-        // as the price improvement (difference between locked amount and actual cost)
-        // is not being refunded to the user's available balance. This highlights a bug.
         assert_eq!(
             taker_final_base.total(),
             taker_initial_base - taker_base_spent,

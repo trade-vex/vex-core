@@ -68,7 +68,7 @@ impl CoreEngine {
                 journaling_clone.journal_command(cmd);
             }
         };
-        let events_handler_arc = events_handler.clone();
+        let _events_handler_arc = events_handler.clone();
 
         // Create 4 sharded risk engines for parallel risk processing
         // Power of 2 sharding enables efficient bitwise operations: user_id & shard_mask
@@ -163,8 +163,6 @@ impl CoreEngine {
         // Optional test handler for unit tests
         #[cfg(test)]
         {
-            use crate::test;
-
             let producer = producer
                 .and_then()
                 .pin_at_core(15)
