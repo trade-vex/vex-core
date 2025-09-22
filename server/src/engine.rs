@@ -121,13 +121,13 @@ impl CoreEngine {
             // Stage 2: Risk Engine R1 - 4 parallel handlers (equivalent to riskEngines.forEach)
             // Each handler processes ALL events but filters internally based on user ID
             .pin_at_core(2)
-            .handle_events_with(create_risk_handler!(0, risk_engines_arc))
+            .handle_events_with(create_risk_handler!(0, risk_engines_arc, price_cache))
             .pin_at_core(3)
-            .handle_events_with(create_risk_handler!(1, risk_engines_arc))
+            .handle_events_with(create_risk_handler!(1, risk_engines_arc, price_cache))
             .pin_at_core(4)
-            .handle_events_with(create_risk_handler!(2, risk_engines_arc))
+            .handle_events_with(create_risk_handler!(2, risk_engines_arc, price_cache))
             .pin_at_core(5)
-            .handle_events_with(create_risk_handler!(3, risk_engines_arc))
+            .handle_events_with(create_risk_handler!(3, risk_engines_arc, price_cache))
             .and_then() // Creates dependency: matching engines wait for risk engines
             // Stage 3: Matching Engine - 4 parallel handlers
             // Each handler processes ALL events but filters internally based on symbol_id ID

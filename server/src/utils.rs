@@ -4,11 +4,12 @@
 /// This eliminates code duplication while maintaining separate handlers for each shard
 #[macro_export]
 macro_rules! create_risk_handler {
-    ($shard_id:expr, $risk_engines:expr) => {{
+    ($shard_id:expr, $risk_engines:expr, $price_cache:expr) => {{
         let risk_engines = $risk_engines.clone();
+        let price_cache = $price_cache.clone();
         move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
             let risk_engine = &risk_engines[$shard_id];
-            risk_engine.pre_process_command(cmd);
+            risk_engine.pre_process_command(cmd, price_cache.clone());
         }
     }};
 }
