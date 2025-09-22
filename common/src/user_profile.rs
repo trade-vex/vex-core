@@ -1,7 +1,7 @@
 use ahash::AHashMap;
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UserBalance {
     pub available: u64,
     pub locked: u64,
