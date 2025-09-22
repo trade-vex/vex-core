@@ -35,7 +35,7 @@ impl SymbolSpecificationConfig {
             9269,
             CoreMarketSpecification {
                 market_id: 9269,
-                market_type: MarketType::CurrencyExchangePair,
+                market_type: MarketType::Spot,
                 base_currency: 3928,   // ETH (szabo)
                 quote_currency: 3762,  // XBT (satoshi)
                 base_scale_k: 100_000, // 1 lot = 100K szabo (0.1 ETH)
@@ -74,7 +74,7 @@ impl SymbolSpecificationConfig {
             9340,
             CoreMarketSpecification {
                 market_id: 9340,
-                market_type: MarketType::CurrencyExchangePair,
+                market_type: MarketType::Spot,
                 base_currency: 3762,     // XBT (satoshi)
                 quote_currency: 1005,    // LTC (litoshi)
                 base_scale_k: 1_000_000, // 1 lot = 1M satoshi (0.01 BTC)

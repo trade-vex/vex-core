@@ -1,4 +1,4 @@
-use crate::{OrderCommandType, Side, TimeInForce};
+use crate::{OrderCommandType, Side, TimeInForce, UserBalance};
 use sbe_order::message_header_codec::{self, MessageHeaderDecoder};
 use sbe_order::order_command_message_codec::{
     OrderCommandMessageDecoder, OrderCommandMessageEncoder,
@@ -56,6 +56,10 @@ pub struct OrderCommand {
 
     /// Passive order linked list
     pub events: Option<Box<MatcherTradeEvent>>,
+
+    /// Final balance of the user/maker after this trade
+    pub balance: [UserBalance; 2], // [0] = base currency, [1] = quote currency
+
 }
 
 impl Default for OrderCommand {
@@ -69,9 +73,10 @@ impl Default for OrderCommand {
             side: Side::Ask,
             timestamp: 0,
             time_in_force: TimeInForce::Gtc,
-            status: Status::Rejected,
+            status: Status::Processing,
             command: OrderCommandType::PlaceOrder,
             events: None,
+            balance: [UserBalance::default(); 2],
         }
     }
 }
@@ -94,8 +99,9 @@ impl OrderCommand {
             side,
             time_in_force,
             timestamp: 0,
-            status: Status::Rejected,
+            status: Status::Processing,
             events: None,
+            balance: [UserBalance::default(); 2],
         }
     }
 
@@ -110,7 +116,8 @@ impl OrderCommand {
             side,
             time_in_force: TimeInForce::Gtc,
             timestamp: 0,
-            status: Status::Rejected,
+            status: Status::Processing,
+            balance: [UserBalance::default(); 2],
             events: None,
         }
     }
@@ -149,6 +156,10 @@ impl OrderCommand {
 
     pub fn events(&self) -> Option<&MatcherTradeEvent> {
         self.events.as_deref()
+    }
+
+    pub fn events_mut(&mut self) -> Option<&mut MatcherTradeEvent> {
+        self.events.as_mut().map(|e| e.as_mut())
     }
 
     pub fn set_size(&mut self, size: u64) {
@@ -198,6 +209,7 @@ pub struct MatcherTradeEvent {
     pub price: u64,
     pub size: u64,
     pub next_event: Option<Box<MatcherTradeEvent>>,
+    pub maker_balance: [UserBalance; 2], // [0] = base currency, [1] = quote currency
 }
 
 impl MatcherTradeEvent {
@@ -246,5 +258,6 @@ pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
         timestamp: decoder.timestamp(),
         status: Status::Rejected, // Default status since decoder doesn't have status method
         events: None,
+        balance: [UserBalance::default(); 2],
     })
 }
