@@ -1092,7 +1092,7 @@ mod test {
         // In this implementation, self-trades are not allowed
         assert_eq!(ask_cmd.status(), Status::Placed);
         if let Err(err) = book.verify_state() {
-            println!("{}", err);
+            println!("{err}");
         }
         assert!(book.verify_state().is_ok());
     }
@@ -3272,5 +3272,69 @@ mod test {
             u64::MAX,
             "Best ask should be MAX for empty book"
         );
+    }
+
+    #[test]
+    fn test_create_snapshot_with_depth() {
+        let (mut book, price_cache) = create_test_orderbook();
+
+        // Place some bids
+        let bids = [(1, 100, 10), (2, 99, 20), (3, 98, 30)];
+        for (id, price, size) in bids {
+            let mut cmd = create_order_command(
+                OrderCommandType::PlaceOrder,
+                id,
+                100 + id,
+                1000 + id,
+                1,
+                price,
+                size,
+                Side::Bid,
+                TimeInForce::Gtc,
+            );
+            book.place_order(&mut cmd, price_cache.clone());
+        }
+
+        // Place some asks
+        let asks = [(4, 101, 15), (5, 102, 25), (6, 103, 35)];
+        for (id, price, size) in asks {
+            let mut cmd = create_order_command(
+                OrderCommandType::PlaceOrder,
+                id,
+                100 + id,
+                1000 + id,
+                1,
+                price,
+                size,
+                Side::Ask,
+                TimeInForce::Gtc,
+            );
+            book.place_order(&mut cmd, price_cache.clone());
+        }
+
+        // Create a snapshot with depth 2
+        let snapshot = book.create_snapshot_with_depth(2);
+
+        // Verify bids in snapshot (top 2)
+        assert_eq!(snapshot.bid_prices[0], 100);
+        assert_eq!(snapshot.bid_volumes[0], 10);
+        assert_eq!(snapshot.bid_orders[0], 1);
+
+        assert_eq!(snapshot.bid_prices[1], 99);
+        assert_eq!(snapshot.bid_volumes[1], 20);
+        assert_eq!(snapshot.bid_orders[1], 1);
+
+        // Verify asks in snapshot (top 2)
+        assert_eq!(snapshot.ask_prices[0], 101);
+        assert_eq!(snapshot.ask_volumes[0], 15);
+        assert_eq!(snapshot.ask_orders[0], 1);
+
+        assert_eq!(snapshot.ask_prices[1], 102);
+        assert_eq!(snapshot.ask_volumes[1], 25);
+        assert_eq!(snapshot.ask_orders[1], 1);
+
+        // Verify that the rest of the snapshot is empty
+        assert_eq!(snapshot.bid_prices[2], 0);
+        assert_eq!(snapshot.ask_prices[2], 0);
     }
 }
