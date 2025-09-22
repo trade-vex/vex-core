@@ -45,21 +45,13 @@ pub struct CoreMarketSpecificationBuilder {
 impl CoreMarketSpecificationBuilder {
     pub fn market_id(mut self, market_id: u32) -> Self {
         self.market_id = Some(market_id);
+        self.base_currency = Some(base_asset(market_id));
+        self.quote_currency = Some(quote_asset(market_id));
         self
     }
 
     pub fn market_type(mut self, market_type: MarketType) -> Self {
         self.market_type = Some(market_type);
-        self
-    }
-
-    pub fn base_currency(mut self, base_currency: u16) -> Self {
-        self.base_currency = Some(base_currency);
-        self
-    }
-
-    pub fn quote_currency(mut self, quote_currency: u16) -> Self {
-        self.quote_currency = Some(quote_currency);
         self
     }
 
@@ -101,4 +93,20 @@ impl CoreMarketSpecificationBuilder {
             slippage: self.slippage.unwrap_or(150), // 1.5% by default
         })
     }
+}
+
+
+/// Market ID Specification helper functions
+/// 
+/// Base And Quote asset extraction from market_id
+/// The Base asset is stored in the lower 16 bits of the market_id
+/// The Quote asset is stored in the upper 16 bits of the market_id
+#[inline]
+pub fn base_asset(market_id: u32) -> u16 {
+    (market_id & 0xFFFF) as u16
+}
+
+#[inline]
+pub fn quote_asset(market_id: u32) -> u16 {
+    (market_id >> 16) as u16
 }

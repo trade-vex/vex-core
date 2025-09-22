@@ -131,13 +131,13 @@ impl BalanceStore {
         user_id: u64,
         asset_id: u16,
         amount: u64,
-    ) -> Result<(), BalanceError> {
+    ) -> Result<UserBalance, BalanceError> {
         let balance = self.get_balance_mut(user_id, asset_id);
         balance.available = balance
             .available
             .checked_add(amount)
             .ok_or(BalanceError::Overflow)?;
-        Ok(())
+        Ok(*balance)
     }
 
     // Subtract from locked funds
@@ -146,11 +146,11 @@ impl BalanceStore {
         user_id: u64,
         asset_id: u16,
         amount: u64,
-    ) -> Result<(), BalanceError> {
+    ) -> Result<UserBalance, BalanceError> {
         let balance = self.get_balance_mut(user_id, asset_id);
         if balance.locked >= amount {
             balance.locked -= amount;
-            Ok(())
+            Ok(*balance)
         } else {
             Err(BalanceError::InsufficientLockedFunds {
                 locked: balance.locked,

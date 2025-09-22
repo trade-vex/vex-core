@@ -53,7 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Add a custom BTC/USD pair
     let btc_usd_spec = CoreMarketSpecification {
         market_id: 1001,
-        market_type: MarketType::CurrencyExchangePair,
+        market_type: MarketType::Spot,
         base_currency: 3762,   // BTC (satoshi)
         quote_currency: 840,   // USD
         base_scale_k: 100_000, // 1 lot = 0.001 BTC

@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use common::OrderCommand;
+use common::{OrderCommand, UserBalance};
 use common::{OrderCommandType, Side, TimeInForce};
 use hdrhistogram::Histogram;
 use std::sync::mpsc::{self, Receiver};
@@ -95,6 +95,7 @@ fn run_correctness_test(
             price: 150,
             status: common::Status::Processing,
             events: None,
+            balance: [UserBalance::default(); 2],
         };
         client.send_order_command(&order_command)?;
     }
@@ -124,6 +125,7 @@ fn run_latency_test(
             market_id: 3124,
             price: 150,
             status: common::Status::Processing,
+            balance: [UserBalance::default(); 2],
             events: None,
         };
 

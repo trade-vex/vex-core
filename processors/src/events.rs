@@ -1,9 +1,10 @@
-use crate::risk_engine::{base_asset, quote_asset, RiskEngine};
+use crate::risk_engine::{RiskEngine};
 use common::L2MarketData;
 use common::MatcherTradeEvent;
 use common::Order;
 use common::OrderCommand;
 use common::Status;
+use common::{base_asset, quote_asset};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{error, info};
@@ -439,9 +440,9 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use common::{CoreMarketSpecification, MarketType, PriceCache, Side};
-    use vex_orderbook::tree::{BTreeAskSide, BTreeBidSide};
+    use common::{CoreMarketSpecification, MarketType, PriceCache, Side, UserBalance};
     use vex_orderbook::OrderBook;
+    use vex_orderbook::tree::{BTreeAskSide, BTreeBidSide};
 
     #[tokio::test]
     async fn test_kafka_events_handler_placed_order() {
@@ -525,11 +526,9 @@ mod tests {
         symbol_spec.insert(
             10u32,
             CoreMarketSpecification::builder()
-                .market_id(10)
-                .market_type(MarketType::CurrencyExchangePair)
-                .base_currency(0)
+                .market_id((1u32 << 16) | (2u32)) // Example market_id encoding
+                .market_type(MarketType::Spot)
                 .base_scale_k(1)
-                .quote_currency(10)
                 .quote_scale_k(1)
                 .build()
                 .unwrap(),
@@ -546,6 +545,7 @@ mod tests {
             side: Side::Bid,
             time_in_force: common::TimeInForce::Gtc,
             status: common::Status::Processing,
+            balance: [UserBalance::default(); 2],
             events: None,
         };
         orderbook.place_order(&mut bid_cmd, price_cache.clone());
@@ -560,6 +560,7 @@ mod tests {
             size: 50,
             side: Side::Ask,
             time_in_force: common::TimeInForce::Gtc,
+            balance: [UserBalance::default(); 2],
             status: common::Status::Processing,
             events: None,
         };
@@ -607,6 +608,7 @@ mod tests {
             price: 1050,
             size: 50,
             next_event: None,
+            maker_balance: [UserBalance::default(); 2],
         };
         let trade1 = MatcherTradeEvent {
             active_order_completed: false,
@@ -616,6 +618,7 @@ mod tests {
             price: 1040,
             size: 150,
             next_event: Some(Box::new(trade2)),
+            maker_balance: [UserBalance::default(); 2],
         };
 
         // Use the correct method name (note the typo in the original)

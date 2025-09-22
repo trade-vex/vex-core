@@ -230,6 +230,7 @@ mod test {
             time_in_force,
             status: Status::Rejected,
             events: None,
+            balance: [UserBalance::default(); 2],
         }
     }
 
@@ -297,10 +298,8 @@ mod test {
             10u32,
             CoreMarketSpecification::builder()
                 .market_id(10)
-                .market_type(MarketType::CurrencyExchangePair)
-                .base_currency(0)
+                .market_type(MarketType::Spot)
                 .base_scale_k(1)
-                .quote_currency(10)
                 .quote_scale_k(1)
                 .build()
                 .unwrap(),
@@ -1828,6 +1827,7 @@ mod test {
             time_in_force: TimeInForce::Gtc, // Irrelevant for cancel
             status: Status::Rejected,
             events: None,
+            balance: [UserBalance::default(); 2]
         };
         book.cancel_order(&mut cancel_cmd, price_cache.clone());
         assert_eq!(cancel_cmd.status(), Status::Cancelled);
@@ -1991,6 +1991,7 @@ mod test {
                 time_in_force: self.time_in_force,
                 status: Status::Rejected,
                 events: None,
+                balance: [UserBalance::default(); 2]
             }
         }
 
@@ -2007,6 +2008,7 @@ mod test {
                 time_in_force: self.time_in_force, // Ignored for cancel
                 status: Status::Rejected,
                 events: None,
+                balance: [UserBalance::default(); 2]
             }
         }
 
@@ -2714,6 +2716,7 @@ mod test {
                 time_in_force: tif,
                 status: Status::Rejected,
                 events: None,
+                balance: [UserBalance::default(); 2],
             }
         }
 
@@ -2739,6 +2742,7 @@ mod test {
                 time_in_force: TimeInForce::Gtc, // Not relevant
                 status: Status::Rejected,
                 events: None,
+                balance: [UserBalance::default(); 2],
             }
         }
     }

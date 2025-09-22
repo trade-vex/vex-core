@@ -36,7 +36,7 @@
 //!         processors (risk engines and event handlers) to consume.
 use crate::tree::BookSide;
 use common::{
-    L2MarketData, MatcherTradeEvent, Order, OrderCommand, PriceCache, Side, Status, TimeInForce,
+    L2MarketData, MatcherTradeEvent, Order, OrderCommand, PriceCache, Side, Status, TimeInForce, UserBalance,
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -170,6 +170,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                     price,
                     size: trade_size,
                     next_event: None,
+                    maker_balance: [UserBalance::default(); 2], // filled by risk engine
                 };
                 cmd.attatch_event(Box::new(event));
 

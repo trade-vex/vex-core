@@ -10,7 +10,7 @@ pub use cmd::{
 };
 pub use core_arithmetic::CoreArithmetic;
 pub use l2_market_data::L2MarketData;
-pub use market_specification::{CoreMarketSpecification, CoreMarketSpecificationBuilder};
+pub use market_specification::{CoreMarketSpecification, CoreMarketSpecificationBuilder, base_asset, quote_asset};
 pub use order::{Order, PriceCache};
 pub use user_profile::{BalanceError, BalanceKey, BalanceStore, UserBalance};
 
@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 pub enum MarketType {
     FuturesContract = 0,
     #[default]
-    CurrencyExchangePair = 1,
+    Spot = 1,
     Option = 2,
 }
 
@@ -161,6 +161,15 @@ impl From<TimeInForce> for SbeTimeInForce {
 pub enum Side {
     Ask,
     Bid,
+}
+
+impl Side {
+    pub fn op_side(&self) -> Self {
+        match self {
+            Side::Ask => Side::Bid,
+            Side::Bid => Side::Ask,
+        }
+    }
 }
 
 impl TryFrom<SbeSide> for Side {

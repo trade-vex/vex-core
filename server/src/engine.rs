@@ -1,16 +1,14 @@
-use crate::{
-    create_event_handler, create_matching_handler, create_risk_handler, create_risk_r2_handler,
-};
+use crate::{create_event_handler, create_risk_handler, create_risk_r2_handler};
 use common::CoreMarketSpecification;
 use common::OrderCommand;
 use common::PriceCache;
 use common::Status;
 use common::TimeInForce;
+use common::{base_asset, quote_asset};
 use disruptor::{
-    build_multi_producer, BusySpin, MultiProducer, ProcessorSettings, SingleConsumerBarrier,
+    BusySpin, MultiProducer, ProcessorSettings, SingleConsumerBarrier, build_multi_producer,
 };
 use hashbrown::HashMap;
-use parking_lot::Mutex;
 use processors::{
     events::EventsHandler, journaling::JournalingProcessor, matching_engine::MatchingEngineRouter,
     risk_engine::RiskEngine,
@@ -54,7 +52,8 @@ impl CoreEngine {
         symbol_specs: HashMap<u32, CoreMarketSpecification>,
         journaling_processor: JournalingProcessor,
         events_handler: Arc<dyn EventsHandler>,
-    ) -> (Self, OrderProducer) {
+        #[cfg(test)] test_handler: impl 'static + Send + FnMut(&mut OrderCommand, i64, bool),
+    ) -> (Self, OrderProducer, Option<Arc<Vec<RiskEngine>>>) {
         // Setup PriceCache
         let price_cache = Arc::new(PriceCache::new(symbol_specs.keys()));
 
@@ -90,7 +89,7 @@ impl CoreEngine {
 
         for shard_id in 0..num_matching_engines {
             let router = MatchingEngineRouter::new(shard_id, num_matching_engines as u64);
-            matching_engine_routers.push(Arc::new(Mutex::new(router)));
+            matching_engine_routers.push(router);
         }
 
         // Add all symbols to the appropriate matching engine shards
@@ -99,9 +98,8 @@ impl CoreEngine {
             let owner_shard_id = (symbol_id as u64) & shard_mask;
             let router_index = owner_shard_id as usize;
 
-            if let Some(router) = matching_engine_routers.get(router_index) {
-                let mut matching_engine = router.lock();
-                matching_engine.add_market(symbol_id);
+            if let Some(router) = matching_engine_routers.get_mut(router_index) {
+                router.add_market(symbol_id);
 
                 info!(
                     "Added symbol_id {} to MatchingEngine shard {} during initialization",
@@ -110,7 +108,16 @@ impl CoreEngine {
             }
         }
 
-        let matching_engine_routers_arc = Arc::new(matching_engine_routers.clone());
+        // Phase 3: take routers out of the Vec and move into closures
+        let mut iter = matching_engine_routers.into_iter();
+
+        let mut router_handlers_iter = (0..num_matching_engines).map(|_| {
+            let mut router = iter.next().unwrap();
+            let price_cache = price_cache.clone();
+            move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
+                router.process_order(cmd, price_cache.clone());
+            }
+        });
 
         // Build the disruptor pipeline
         // This creates the same dependency graph and parallelism as exchangeCore
@@ -132,29 +139,13 @@ impl CoreEngine {
             // Stage 3: Matching Engine - 4 parallel handlers
             // Each handler processes ALL events but filters internally based on symbol_id ID
             .pin_at_core(6)
-            .handle_events_with(create_matching_handler!(
-                0,
-                matching_engine_routers,
-                price_cache
-            ))
+            .handle_events_with(router_handlers_iter.next().unwrap())
             .pin_at_core(7)
-            .handle_events_with(create_matching_handler!(
-                1,
-                matching_engine_routers,
-                price_cache
-            ))
+            .handle_events_with(router_handlers_iter.next().unwrap())
             .pin_at_core(8)
-            .handle_events_with(create_matching_handler!(
-                2,
-                matching_engine_routers,
-                price_cache
-            ))
+            .handle_events_with(router_handlers_iter.next().unwrap())
             .pin_at_core(9)
-            .handle_events_with(create_matching_handler!(
-                3,
-                matching_engine_routers,
-                price_cache
-            ))
+            .handle_events_with(router_handlers_iter.next().unwrap())
             .and_then()
             .pin_at_core(10)
             .handle_events_with(create_risk_r2_handler!(0, risk_engines_arc))
@@ -167,16 +158,26 @@ impl CoreEngine {
             .and_then() // Creates dependency: event handlers wait for risk engines
             // Stage 3: Event Handlers
             .pin_at_core(14)
-            .handle_events_with(create_event_handler!(
-                events_handler_arc,
-                risk_engines_arc.clone(),
-                matching_engine_routers_arc.clone(),
-                50
-            ))
-            .build();
+            .handle_events_with(create_event_handler!(events_handler_arc, 50));
+
+        // Optional test handler for unit tests
+        #[cfg(test)]
+        {
+            use crate::test;
+
+            let producer = producer
+                .and_then()
+                .pin_at_core(15)
+                .handle_events_with(test_handler)
+                .build();
+
+            return (Self {}, producer, Some(risk_engines_arc));
+        }
+
+        let producer = producer.build();
 
         let engine = Self {};
-        (engine, producer)
+        (engine, producer, None)
     }
 
     /// Run Starts the Networking. 2 Processes Starts
