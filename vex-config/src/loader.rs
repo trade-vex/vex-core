@@ -67,7 +67,10 @@ impl ConfigLoader {
         }
 
         // Start with VexConfig defaults, so partial configs can be loaded.
-        let mut builder = Config::builder().add_source(Config::try_from(&VexConfig::default())?);
+        let default_config_toml = toml::to_string(&VexConfig::default())
+            .map_err(|e| ConfigError::SerializationError(e.to_string()))?;
+        let mut builder = Config::builder()
+            .add_source(config::File::from_str(&default_config_toml, config::FileFormat::Toml));    
         // Add the specific file
         let format = self.detect_file_format(path)?;
         builder = builder.add_source(File::from(path).format(format));
@@ -92,9 +95,11 @@ impl ConfigLoader {
     pub fn load_with_environment(self, environment: Option<Environment>) -> Result<VexConfig> {
         let env = environment.unwrap_or_else(Environment::detect);
 
+        // Start from env‑specific defaults so partial files/env vars can override safely
+        let env_config_toml = toml::to_string(&VexConfig::new(env.clone()))
+            .map_err(|e| ConfigError::SerializationError(e.to_string()))?;
         let mut builder = Config::builder()
-            // Start from env‑specific defaults so partial files/env vars can override safely
-            .add_source(Config::try_from(&VexConfig::new(env.clone()))?);
+            .add_source(config::File::from_str(&env_config_toml, config::FileFormat::Toml));    
 
         // Get search paths
         let search_paths = if self.search_paths.is_empty() {
