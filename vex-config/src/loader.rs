@@ -92,7 +92,9 @@ impl ConfigLoader {
     pub fn load_with_environment(self, environment: Option<Environment>) -> Result<VexConfig> {
         let env = environment.unwrap_or_else(Environment::detect);
 
-        let mut builder = Config::builder();
+        let mut builder = Config::builder()
+            // Start from env‑specific defaults so partial files/env vars can override safely
+            .add_source(Config::try_from(&VexConfig::new(env.clone()))?);
 
         // Get search paths
         let search_paths = if self.search_paths.is_empty() {
@@ -103,7 +105,7 @@ impl ConfigLoader {
 
         // Add configuration files in order of precedence
         let mut files_found = false;
-        for path in &search_paths {
+        for path in search_paths.iter().rev() {
             let config_path = Path::new(path);
             if config_path.exists() {
                 files_found = true;
@@ -120,21 +122,8 @@ impl ConfigLoader {
             )));
         }
 
-        // If no files found but missing files are allowed, return default config
-        if !files_found && self.allow_missing {
-            let mut default_config = VexConfig::new(env.clone());
-
-            // Still apply environment variable overrides if configured
-            if let Some(prefix) = &self.env_prefix {
-                // Apply environment variables to the default config
-                // This is a simplified approach - in a real implementation,
-                // you might want to use a more sophisticated merging strategy
-                default_config = self.apply_env_vars_to_config(default_config, prefix, &env)?;
-            }
-
-            default_config.validate()?;
-            return Ok(default_config);
-        }
+        // If no files found but missing files are allowed, continue with defaults
+        // (builder already seeded with environment-specific defaults)
 
         // Add environment variables
         if let Some(prefix) = &self.env_prefix {
@@ -164,35 +153,6 @@ impl ConfigLoader {
         Ok(vex_config)
     }
 
-    /// Apply environment variables to a config (simplified implementation)
-    fn apply_env_vars_to_config(
-        &self,
-        config: VexConfig,
-        prefix: &str,
-        env: &Environment,
-    ) -> Result<VexConfig> {
-        // Create environment variable sources with both general and environment-specific prefixes
-        let general_source = config::Environment::with_prefix(prefix)
-            .try_parsing(true)
-            .separator("__");
-
-        let env_specific_prefix = format!("{}_{}", prefix, env.env_key());
-        let env_specific_source = config::Environment::with_prefix(&env_specific_prefix)
-            .try_parsing(true)
-            .separator("__");
-
-        // Build a new config by layering env vars over the existing config object.
-        // The `config` crate handles merging values correctly.
-        let final_config = Config::builder()
-            .add_source(Config::try_from(&config)?) // Start with the existing config
-            .add_source(general_source)
-            .add_source(env_specific_source)
-            .build()?;
-
-        // Deserialize the merged configuration.
-        let final_config = final_config.try_deserialize()?;
-        Ok(final_config)
-    }
 
     /// Detect file format from extension
     fn detect_file_format(&self, path: &Path) -> Result<FileFormat> {

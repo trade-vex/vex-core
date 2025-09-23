@@ -97,6 +97,7 @@ pub struct LoggingConfig {
     /// Whether to include span information
     pub include_spans: bool,
     /// Custom fields to include in structured logs
+    #[serde(default)]
     pub custom_fields: HashMap<String, String>,
     /// Whether to enable async logging
     pub async_logging: bool,
