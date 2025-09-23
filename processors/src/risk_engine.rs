@@ -163,7 +163,7 @@ impl RiskEngine {
         // If the taker gets a better price than their limit, refund the difference.
         if !is_maker {
             if let Some(limit_price) = taker_price {
-                // Price improvement only applies to BID orders where base currency was locked.
+                // Price improvement only applies to BID orders where QUOTE currency was locked.
                 if user_side == Side::Bid {
                     let execution_price = event.price;
 
@@ -171,37 +171,40 @@ impl RiskEngine {
                         let price_diff = limit_price - execution_price;
                         let refund_amount = price_diff * event.size;
                         // Move the saved amount from 'locked' back to 'available'.
-                        store.unlock_funds(user_id, base_asset(market_id), refund_amount)?;
+                        store.unlock_funds(user_id, quote_asset(market_id), refund_amount)?;
                     }
                 }
             }
         }
 
         let (asset_to_subtract, amount_to_subtract, asset_to_add, amount_to_add) = match user_side {
-            // User is buying quote asset with base asset.
+            // User is BUYING base asset with quote asset.
+            // Spends quote, receives base. Fee is on base asset received.
             Side::Bid => {
-                let amount = event.price * event.size;
-                // Fee is on the quote asset received. Assuming fee is in basis points (e.g., 10bp = 0.1%)
-                let fee_amount = (event.size * fee) / 10000;
-                let amount_to_add = event.size - fee_amount;
+                let quote_spent = event.price * event.size;
+                // Fee is on the base asset received. Assuming fee is in basis points (e.g., 20bp = 0.2%)
+                let fee_in_base = (event.size * fee) / 10000;
+                let base_received_net = event.size - fee_in_base;
                 (
-                    base_asset(market_id),
-                    amount,
                     quote_asset(market_id),
-                    amount_to_add,
+                    quote_spent,
+                    base_asset(market_id),
+                    base_received_net,
                 )
             }
-            // User is selling quote asset for base asset.
+            // User is SELLING base asset for quote asset.
+            // Spends base, receives quote. Fee is on quote asset received.
             Side::Ask => {
-                let amount_to_add_gross = event.price * event.size;
-                // Fee is on the base asset received. Assuming fee is in basis points.
-                let fee_amount = (amount_to_add_gross * fee) / 10000;
-                let amount_to_add_net = amount_to_add_gross - fee_amount;
+                let base_spent = event.size;
+                let quote_received_gross = event.price * event.size;
+                // Fee is on the quote asset received. Assuming fee is in basis points.
+                let fee_in_quote = (quote_received_gross * fee) / 10000;
+                let quote_received_net = quote_received_gross - fee_in_quote;
                 (
-                    quote_asset(market_id),
-                    event.size,
                     base_asset(market_id),
-                    amount_to_add_net,
+                    base_spent,
+                    quote_asset(market_id),
+                    quote_received_net,
                 )
             }
         };
@@ -212,9 +215,11 @@ impl RiskEngine {
 
         if is_maker {
             if asset_to_subtract == base_asset(market_id) {
+                // Maker was on ASK side, selling base for quote.
                 event.maker_balance[0] = balance_sub;
                 event.maker_balance[1] = balance_add;
             } else {
+                // Maker was on BID side, buying base with quote.
                 event.maker_balance[0] = balance_add;
                 event.maker_balance[1] = balance_sub;
             }
@@ -247,13 +252,13 @@ impl RiskEngine {
         price_cache: Arc<PriceCache>,
     ) -> Result<()> {
         let (asset_to_lock, amount_to_lock) = match cmd.side {
-            // For a Bid (buy), we lock the base currency. Amount = price * size.
+            // For a Bid (buy), we lock the quote currency. Amount = price * size.
             Side::Bid => {
                 let amount = self.bid_amount(cmd, price_cache)?;
-                (base_asset(cmd.market_id), amount)
+                (quote_asset(cmd.market_id), amount)
             }
-            // For an Ask (sell), we lock the quote currency. Amount = size.
-            Side::Ask => (quote_asset(cmd.market_id), cmd.size),
+            // For an Ask (sell), we lock the base currency. Amount = size.
+            Side::Ask => (base_asset(cmd.market_id), cmd.size),
         };
 
         // Acquire a lock on the store and perform the operation
@@ -317,9 +322,9 @@ impl RiskEngine {
         let (asset_to_unlock, amount_to_unlock) = match side {
             Side::Bid => {
                 let amount = price.checked_mul(size).ok_or(BalanceError::Overflow)?;
-                (base_asset(market_id), amount)
+                (quote_asset(market_id), amount)
             }
-            Side::Ask => (quote_asset(market_id), size),
+            Side::Ask => (base_asset(market_id), size),
         };
 
         // Acquire a lock on the store and perform the operation
@@ -387,8 +392,7 @@ mod tests {
         assert!(!engine_shard1.user_id_for_this_handler(0));
         let symbol_spec = HashMap::new();
         let price_cache = Arc::new(PriceCache::new(symbol_spec.keys()));
-        let mut cmd = OrderCommand::new(TimeInForce::Gtc, 1, 1, 100, 10, Side::Bid);
-        cmd.market_id = 1;
+        let mut cmd = OrderCommand::new(TimeInForce::Gtc, 1, 1, 100, 10, Side::Bid, 1);
 
         // shard 0 should not process user 1's command, will be skipped
         engine_shard0.pre_process_command(&mut cmd, price_cache.clone());
@@ -437,8 +441,7 @@ mod tests {
 
         engine.set_balance(user_id, base_asset, UserBalance::new(required_base, 0));
 
-        let mut cmd = OrderCommand::new(TimeInForce::Gtc, 1, user_id, price, size, Side::Bid);
-        cmd.market_id = market_id;
+        let mut cmd = OrderCommand::new(TimeInForce::Gtc, 1, user_id, price, size, Side::Bid, market_id);
 
         let spec = get_spec(market_id);
         let mut specs = HashMap::new();
@@ -469,8 +472,7 @@ mod tests {
 
         engine.set_balance(user_id, quote_asset, UserBalance::new(size, 0));
 
-        let mut cmd = OrderCommand::new(TimeInForce::Gtc, 1, user_id, price, size, Side::Ask);
-        cmd.market_id = market_id;
+        let mut cmd = OrderCommand::new(TimeInForce::Gtc, 1, user_id, price, size, Side::Ask, market_id);
 
         let spec = get_spec(market_id);
         let mut specs = HashMap::new();
@@ -502,8 +504,7 @@ mod tests {
 
         engine.set_balance(user_id, base_asset, UserBalance::new(required_base - 1, 0));
 
-        let mut cmd = OrderCommand::new(TimeInForce::Gtc, 1, user_id, price, size, Side::Bid);
-        cmd.market_id = market_id;
+        let mut cmd = OrderCommand::new(TimeInForce::Gtc, 1, user_id, price, size, Side::Bid, market_id);
 
         let spec = get_spec(market_id);
         let mut specs = HashMap::new();
@@ -548,15 +549,13 @@ mod tests {
 
         // --- Reserve funds ---
         let mut taker_cmd =
-            OrderCommand::new(TimeInForce::Gtc, 1, taker_id, price, size, Side::Bid);
-        taker_cmd.market_id = market_id;
+            OrderCommand::new(TimeInForce::Gtc, 1, taker_id, price, size, Side::Bid, market_id);
         engine
             .reserve_funds_for_order(&mut taker_cmd, price_cache.clone())
             .unwrap();
 
         let mut maker_cmd =
-            OrderCommand::new(TimeInForce::Gtc, 2, maker_id, price, size, Side::Ask);
-        maker_cmd.market_id = market_id;
+            OrderCommand::new(TimeInForce::Gtc, 2, maker_id, price, size, Side::Ask, market_id);
         engine
             .reserve_funds_for_order(&mut maker_cmd, price_cache.clone())
             .unwrap();
@@ -620,8 +619,7 @@ mod tests {
 
         // --- Test 1: Market Buy with no liquidity ---
         let mut market_buy_cmd =
-            OrderCommand::new(TimeInForce::Gtc, 1, user_id, u64::MAX, size, Side::Bid);
-        market_buy_cmd.market_id = market_id;
+            OrderCommand::new(TimeInForce::Gtc, 1, user_id, u64::MAX, size, Side::Bid, market_id);
 
         // Price cache has u64::MAX for best ask initially
         let res = engine.reserve_funds_for_order(&mut market_buy_cmd, price_cache.clone());
@@ -665,8 +663,7 @@ mod tests {
         // Market sell doesn't depend on price cache, just locks `size` of quote asset.
         engine.set_balance(user_id, quote_asset_id, UserBalance::new(size, 0));
         let mut market_sell_cmd =
-            OrderCommand::new(TimeInForce::Gtc, 2, user_id, 0, size, Side::Ask);
-        market_sell_cmd.market_id = market_id;
+            OrderCommand::new(TimeInForce::Gtc, 2, user_id, 0, size, Side::Ask, market_id);
 
         engine
             .reserve_funds_for_order(&mut market_sell_cmd, price_cache.clone())
@@ -710,8 +707,7 @@ mod tests {
         let btc_price = 50_000;
         let btc_size = 1_000;
         let mut btc_buy_cmd =
-            OrderCommand::new(TimeInForce::Gtc, 1, user_id, btc_price, btc_size, Side::Bid);
-        btc_buy_cmd.market_id = market_id_btc_usd;
+            OrderCommand::new(TimeInForce::Gtc, 1, user_id, btc_price, btc_size, Side::Bid, market_id_btc_usd);
         engine
             .reserve_funds_for_order(&mut btc_buy_cmd, price_cache.clone())
             .unwrap();
@@ -733,8 +729,7 @@ mod tests {
         let eth_price = 3_000;
         let eth_size = 2_000;
         let mut eth_sell_cmd =
-            OrderCommand::new(TimeInForce::Gtc, 2, user_id, eth_price, eth_size, Side::Ask);
-        eth_sell_cmd.market_id = market_id_eth_usd;
+            OrderCommand::new(TimeInForce::Gtc, 2, user_id, eth_price, eth_size, Side::Ask, market_id_eth_usd);
         engine
             .reserve_funds_for_order(&mut eth_sell_cmd, price_cache.clone())
             .unwrap();
