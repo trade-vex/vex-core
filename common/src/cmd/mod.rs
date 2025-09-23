@@ -40,7 +40,24 @@ pub struct OrderCommand {
     pub timestamp: i64,
     pub matcher_event: Option<Box<MatcherTradeEvent>>,
 }
-
+impl Default for OrderCommand {
+    fn default() -> Self {
+        Self {
+            command: OrderCommandType::PlaceOrder,
+            order_id: 0,
+            symbol: 0,
+            uid: 0,
+            price: 0,
+            reserve_bid_price: 0,
+            size: 0,
+            action: OrderAction::Ask,   // Default action
+            order_type: OrderType::Gtc, // Default order type
+            user_cookie: 0,
+            timestamp: 0,
+            matcher_event: None,
+        }
+    }
+}
 impl OrderCommand {
     pub fn new_order(
         order_type: OrderType,

@@ -1,3 +1,4 @@
+// This is a simple Rust program that does nothing.
 fn main() {
-    println!("Hello, vex-core!");
+    println!("Hello, world!");
 }
