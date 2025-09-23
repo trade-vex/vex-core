@@ -228,7 +228,7 @@ mod test {
             size,
             side,
             time_in_force,
-            status: Status::Rejected,
+            status: Status::Processing,
             events: None,
             balance: [UserBalance::default(); 2],
         }
@@ -894,7 +894,7 @@ mod test {
         );
         book.cancel_order(&mut cancel_cmd, price_cache.clone());
 
-        assert_eq!(cancel_cmd.status(), Status::Rejected); // Should remain rejected since order doesn't exist
+        assert_eq!(cancel_cmd.status(), Status::Rejected); // Should be rejected since order doesn't exist
         assert!(book.verify_state().is_ok());
     }
 
@@ -1825,7 +1825,7 @@ mod test {
             size: 0,   // Irrelevant for cancel
             side: Side::Bid,
             time_in_force: TimeInForce::Gtc, // Irrelevant for cancel
-            status: Status::Rejected,
+            status: Status::Processing,
             events: None,
             balance: [UserBalance::default(); 2]
         };
@@ -1989,7 +1989,7 @@ mod test {
                 size: self.size,
                 side: self.side,
                 time_in_force: self.time_in_force,
-                status: Status::Rejected,
+                status: Status::Processing,
                 events: None,
                 balance: [UserBalance::default(); 2]
             }
@@ -2006,7 +2006,7 @@ mod test {
                 size: self.size,                   // Ignored for cancel
                 side: self.side,                   // Ignored for cancel
                 time_in_force: self.time_in_force, // Ignored for cancel
-                status: Status::Rejected,
+                status: Status::Processing,
                 events: None,
                 balance: [UserBalance::default(); 2]
             }
@@ -2714,7 +2714,7 @@ mod test {
                 size,
                 side,
                 time_in_force: tif,
-                status: Status::Rejected,
+                status: Status::Processing,
                 events: None,
                 balance: [UserBalance::default(); 2],
             }
@@ -2740,7 +2740,7 @@ mod test {
                 size: 0, // Not relevant for cancel
                 side: order_to_cancel.side,
                 time_in_force: TimeInForce::Gtc, // Not relevant
-                status: Status::Rejected,
+                status: Status::Processing,
                 events: None,
                 balance: [UserBalance::default(); 2],
             }
