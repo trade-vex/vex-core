@@ -454,31 +454,41 @@ mod tests {
     fn test_reserve_and_cancel_bid() {
         let engine = RiskEngine::default();
         let user_id = 1;
-        let market_id = ((2 as u32) << 16) | (1 as u32); // base=1, quote=2
-        let base_asset = base_asset(market_id);
+        let market_id = ((2 as u32) << 16) | (1 as u32); // base=1 (e.g. BTC), quote=2 (e.g. USD)
+        let quote_asset = quote_asset(market_id);
         let price = 100;
         let size = 10;
-        let required_base = price * size;
+        let required_quote = price * size;
 
-        engine.set_balance(user_id, base_asset, UserBalance::new(required_base, 0));
+        engine.set_balance(user_id, quote_asset, UserBalance::new(required_quote, 0));
 
-        let mut cmd = OrderCommand::new(TimeInForce::Gtc, 1, user_id, price, size, Side::Bid, market_id);
+        let mut cmd = OrderCommand::new(
+            TimeInForce::Gtc,
+            1,
+            user_id,
+            price,
+            size,
+            Side::Bid,
+            market_id,
+        );
 
         let spec = get_spec(market_id);
         let mut specs = HashMap::new();
         specs.insert(market_id, spec);
 
         let price_cache = Arc::new(PriceCache::new(specs.keys()));
-        engine.reserve_funds_for_order(&mut cmd, price_cache).unwrap();
+        engine
+            .reserve_funds_for_order(&mut cmd, price_cache)
+            .unwrap();
 
-        let balance = engine.get_balance(user_id, base_asset);
+        let balance = engine.get_balance(user_id, quote_asset);
         assert_eq!(balance.available(), 0);
-        assert_eq!(balance.locked(), required_base);
+        assert_eq!(balance.locked(), required_quote);
         // Cancel the order and check if funds are released
         engine.handle_cancellation(&mut cmd);
 
-        let balance = engine.get_balance(user_id, base_asset);
-        assert_eq!(balance.available(), required_base);
+        let balance = engine.get_balance(user_id, quote_asset);
+        assert_eq!(balance.available(), required_quote);
         assert_eq!(balance.locked(), 0);
     }
 
@@ -486,29 +496,39 @@ mod tests {
     fn test_reserve_and_cancel_ask() {
         let engine = RiskEngine::default();
         let user_id = 1;
-        let market_id = ((2 as u32) << 16) | (1 as u32); // base=1, quote=2
-        let quote_asset = quote_asset(market_id);
+        let market_id = ((2 as u32) << 16) | (1 as u32); // base=1 (e.g. BTC), quote=2 (e.g. USD)
+        let base_asset = base_asset(market_id);
         let price = 100;
         let size = 10;
 
-        engine.set_balance(user_id, quote_asset, UserBalance::new(size, 0));
+        engine.set_balance(user_id, base_asset, UserBalance::new(size, 0));
 
-        let mut cmd = OrderCommand::new(TimeInForce::Gtc, 1, user_id, price, size, Side::Ask, market_id);
+        let mut cmd = OrderCommand::new(
+            TimeInForce::Gtc,
+            1,
+            user_id,
+            price,
+            size,
+            Side::Ask,
+            market_id,
+        );
 
         let spec = get_spec(market_id);
         let mut specs = HashMap::new();
         specs.insert(market_id, spec);
 
         let price_cache = Arc::new(PriceCache::new(specs.keys()));
-        engine.reserve_funds_for_order(&mut cmd, price_cache).unwrap();
+        engine
+            .reserve_funds_for_order(&mut cmd, price_cache)
+            .unwrap();
 
-        let balance = engine.get_balance(user_id, quote_asset);
+        let balance = engine.get_balance(user_id, base_asset);
         assert_eq!(balance.available(), 0);
         assert_eq!(balance.locked(), size);
         // Cancel the order and check if funds are released
         engine.handle_cancellation(&mut cmd);
 
-        let balance = engine.get_balance(user_id, quote_asset);
+        let balance = engine.get_balance(user_id, base_asset);
         assert_eq!(balance.available(), size);
         assert_eq!(balance.locked(), 0);
     }
@@ -518,14 +538,26 @@ mod tests {
         let engine = RiskEngine::default();
         let user_id = 1;
         let market_id = ((2 as u32) << 16) | (1 as u32);
-        let base_asset = base_asset(market_id);
+        let quote_asset = quote_asset(market_id);
         let price = 100;
         let size = 10;
-        let required_base = price * size;
+        let required_quote = price * size;
 
-        engine.set_balance(user_id, base_asset, UserBalance::new(required_base - 1, 0));
+        engine.set_balance(
+            user_id,
+            quote_asset,
+            UserBalance::new(required_quote - 1, 0),
+        );
 
-        let mut cmd = OrderCommand::new(TimeInForce::Gtc, 1, user_id, price, size, Side::Bid, market_id);
+        let mut cmd = OrderCommand::new(
+            TimeInForce::Gtc,
+            1,
+            user_id,
+            price,
+            size,
+            Side::Bid,
+            market_id,
+        );
 
         let spec = get_spec(market_id);
         let mut specs = HashMap::new();
@@ -541,10 +573,10 @@ mod tests {
 
     #[test]
     fn test_trade_settlement() {
-        // Assets: 1=USD (base), 2=BTC (quote)
-        let base_asset_id = 1u16;
-        let quote_asset_id = 2u16;
-        let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
+        // Market: BTC/USD -> base=BTC(2), quote=USD(1)
+        let btc_asset_id = 2u16;
+        let usd_asset_id = 1u16;
+        let market_id = ((usd_asset_id as u32) << 16) | (btc_asset_id as u32);
 
         let mut specs = HashMap::new();
         specs.insert(market_id, get_spec(market_id));
@@ -552,39 +584,57 @@ mod tests {
 
         let engine = RiskEngine::new(specs, 0, 1);
 
-        let maker_id = 101;
-        let taker_id = 102;
+        let maker_id = 101; // Sells BTC for USD (ASK)
+        let taker_id = 102; // Buys BTC with USD (BID)
 
         let price = 50_000;
-        let size = 20_000; // e.g. 0.0002 BTC if 8 decimals
+        let size = 20_000; // amount of BTC
 
         // --- Initial Balances ---
-        let taker_initial_base = price * size;
-        let maker_initial_quote = size;
+        // Taker (buyer) needs USD (quote) to buy BTC (base).
+        let taker_initial_quote = price * size;
+        // Maker (seller) needs BTC (base) to sell for USD (quote).
+        let maker_initial_base = size;
+
         let mut balances = engine.balances.lock();
-        *balances.get_balance_mut(taker_id, base_asset_id) =
-            UserBalance::new(taker_initial_base, 0);
-        *balances.get_balance_mut(maker_id, quote_asset_id) =
-            UserBalance::new(maker_initial_quote, 0);
+        *balances.get_balance_mut(taker_id, usd_asset_id) =
+            UserBalance::new(taker_initial_quote, 0);
+        *balances.get_balance_mut(maker_id, btc_asset_id) = UserBalance::new(maker_initial_base, 0);
         drop(balances);
 
         // --- Reserve funds ---
-        let mut taker_cmd =
-            OrderCommand::new(TimeInForce::Gtc, 1, taker_id, price, size, Side::Bid, market_id);
+        // Taker places BID order to buy BTC
+        let mut taker_cmd = OrderCommand::new(
+            TimeInForce::Gtc,
+            1,
+            taker_id,
+            price,
+            size,
+            Side::Bid,
+            market_id,
+        );
         engine
             .reserve_funds_for_order(&mut taker_cmd, price_cache.clone())
             .unwrap();
 
-        let mut maker_cmd =
-            OrderCommand::new(TimeInForce::Gtc, 2, maker_id, price, size, Side::Ask, market_id);
+        // Maker places ASK order to sell BTC
+        let mut maker_cmd = OrderCommand::new(
+            TimeInForce::Gtc,
+            2,
+            maker_id,
+            price,
+            size,
+            Side::Ask,
+            market_id,
+        );
         engine
             .reserve_funds_for_order(&mut maker_cmd, price_cache.clone())
             .unwrap();
 
         // --- A trade occurs ---
         let mut trade_event = MatcherTradeEvent {
-            price,
-            size,
+            price, // price in quote asset (USD) per base asset (BTC)
+            size,  // size in base asset (BTC)
             maker_user_id: maker_id,
             active_order_completed: false,
             matched_order_id: 2,
@@ -593,39 +643,46 @@ mod tests {
             maker_balance: [UserBalance::default(); 2],
         };
 
-        // Settle for Taker (Buyer, Bid side)
-        engine.handle_trade_event(taker_id, market_id, Side::Bid, &mut trade_event, Some(price));
+        // Settle for Taker (Buyer, Bid side) - buys base (BTC) with quote (USD)
+        engine.handle_trade_event(
+            taker_id,
+            market_id,
+            Side::Bid,
+            &mut trade_event,
+            Some(price),
+        );
 
-        // Settle for Maker (Seller, Ask side)
+        // Settle for Maker (Seller, Ask side) - sells base (BTC) for quote (USD)
         engine.handle_trade_event(maker_id, market_id, Side::Ask, &mut trade_event, None);
 
         // --- Final Balances ---
-        // Taker (buyer): Spends `price * size` of base. Receives `size` of quote, minus taker fee (20bp).
-        let taker_fee = (size * 20) / 10000;
-        let net_quote_received = size - taker_fee;
-        assert_eq!(engine.get_balance(taker_id, base_asset_id).total(), 0);
+        // Taker (buyer): Spends `price * size` of USD (quote). Receives `size` of BTC (base), minus taker fee (20bp on base).
+        let taker_fee_in_base = (size * 20) / 10000;
+        let net_base_received = size - taker_fee_in_base;
+        assert_eq!(engine.get_balance(taker_id, usd_asset_id).total(), 0);
         assert_eq!(
-            engine.get_balance(taker_id, quote_asset_id).total(),
-            net_quote_received
-        );
-
-        // Maker (seller): Spends `size` of quote. Receives `price * size` of base, minus maker fee (10bp).
-        let gross_base_received = price * size;
-        let maker_fee = (gross_base_received * 10) / 10000;
-        let net_base_received = gross_base_received - maker_fee;
-        assert_eq!(
-            engine.get_balance(maker_id, base_asset_id).total(),
+            engine.get_balance(taker_id, btc_asset_id).total(),
             net_base_received
         );
-        assert_eq!(engine.get_balance(maker_id, quote_asset_id).total(), 0);
+
+        // Maker (seller): Spends `size` of BTC (base). Receives `price * size` of USD (quote), minus maker fee (10bp on quote).
+        let gross_quote_received = price * size;
+        let maker_fee_in_quote = (gross_quote_received * 10) / 10000;
+        let net_quote_received = gross_quote_received - maker_fee_in_quote;
+        assert_eq!(
+            engine.get_balance(maker_id, usd_asset_id).total(),
+            net_quote_received
+        );
+        assert_eq!(engine.get_balance(maker_id, btc_asset_id).total(), 0);
     }
 
     #[test]
     fn test_market_order_reservation() {
         // --- Setup ---
-        let base_asset_id = 1u16;
-        let quote_asset_id = 2u16;
-        let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
+        // Market: BTC/USD -> base=BTC(2), quote=USD(1)
+        let btc_asset_id = 2u16;
+        let usd_asset_id = 1u16;
+        let market_id = ((usd_asset_id as u32) << 16) | (btc_asset_id as u32);
 
         let mut specs = HashMap::new();
         specs.insert(
@@ -636,13 +693,19 @@ mod tests {
         let engine = RiskEngine::new(specs, 0, 1);
 
         let user_id = 1;
-        let size = 10;
+        let size = 10; // size in base asset (BTC)
 
         // --- Test 1: Market Buy with no liquidity ---
-        let mut market_buy_cmd =
-            OrderCommand::new(TimeInForce::Gtc, 1, user_id, u64::MAX, size, Side::Bid, market_id);
+        let mut market_buy_cmd = OrderCommand::new(
+            TimeInForce::Gtc,
+            1,
+            user_id,
+            u64::MAX,
+            size,
+            Side::Bid,
+            market_id,
+        );
 
-        // Price cache has u64::MAX for best ask initially
         let res = engine.reserve_funds_for_order(&mut market_buy_cmd, price_cache.clone());
         assert!(res.is_err());
         match res.unwrap_err() {
@@ -656,40 +719,40 @@ mod tests {
 
         // Slippage is 5bp. Conservative price = 50000 + (50000 * 5 / 10000) = 50000 + 25 = 50025
         let conservative_price = 50025;
-        let required_base = conservative_price * size;
-        engine.set_balance(user_id, base_asset_id, UserBalance::new(required_base, 0));
+        let required_quote = conservative_price * size;
+        engine.set_balance(user_id, usd_asset_id, UserBalance::new(required_quote, 0));
 
         engine
             .reserve_funds_for_order(&mut market_buy_cmd, price_cache.clone())
             .unwrap();
 
-        let balance = engine.get_balance(user_id, base_asset_id);
+        let balance = engine.get_balance(user_id, usd_asset_id);
         assert_eq!(balance.available(), 0);
-        assert_eq!(balance.locked(), required_base);
+        assert_eq!(balance.locked(), required_quote);
 
         // --- Test 3: Market Buy with insufficient funds ---
         engine.set_balance(
             user_id,
-            base_asset_id,
-            UserBalance::new(required_base - 1, 0),
+            usd_asset_id,
+            UserBalance::new(required_quote - 1, 0),
         );
         let res = engine.reserve_funds_for_order(&mut market_buy_cmd, price_cache.clone());
         assert!(res.is_err());
         match res.unwrap_err() {
             RiskEngineError::BalanceError(BalanceError::InsufficientAvailableFunds { .. }) => (),
-            e => panic!("Expected InsufficientFunds, got {:?}", e),
+            e => panic!("Expected InsufficientAvailableFunds, got {:?}", e),
         }
 
         // --- Test 4: Market Sell ---
-        // Market sell doesn't depend on price cache, just locks `size` of quote asset.
-        engine.set_balance(user_id, quote_asset_id, UserBalance::new(size, 0));
+        // Market sell doesn't depend on price cache, just locks `size` of base asset (BTC).
+        engine.set_balance(user_id, btc_asset_id, UserBalance::new(size, 0));
         let mut market_sell_cmd =
             OrderCommand::new(TimeInForce::Gtc, 2, user_id, 0, size, Side::Ask, market_id);
 
         engine
             .reserve_funds_for_order(&mut market_sell_cmd, price_cache.clone())
             .unwrap();
-        let balance = engine.get_balance(user_id, quote_asset_id);
+        let balance = engine.get_balance(user_id, btc_asset_id);
         assert_eq!(balance.available(), 0);
         assert_eq!(balance.locked(), size);
     }
@@ -698,14 +761,14 @@ mod tests {
     fn test_parallel_markets_and_settlement() {
         // This test simulates a user trading on two different markets concurrently.
         // It verifies that funds are locked, settled, and cancelled correctly across markets.
-        // Market 1: BTC/USD (base=USD(1), quote=BTC(2))
-        // Market 2: ETH/USD (base=USD(1), quote=ETH(3))
+        // Market 1: BTC/USD -> base=BTC(2), quote=USD(1)
+        // Market 2: ETH/USD -> base=ETH(3), quote=USD(1)
         let usd_asset_id = 1u16;
         let btc_asset_id = 2u16;
         let eth_asset_id = 3u16;
 
-        let market_id_btc_usd = ((btc_asset_id as u32) << 16) | (usd_asset_id as u32);
-        let market_id_eth_usd = ((eth_asset_id as u32) << 16) | (usd_asset_id as u32);
+        let market_id_btc_usd = ((usd_asset_id as u32) << 16) | (btc_asset_id as u32);
+        let market_id_eth_usd = ((usd_asset_id as u32) << 16) | (eth_asset_id as u32);
 
         let mut specs = HashMap::new();
         specs.insert(market_id_btc_usd, get_spec(market_id_btc_usd));
@@ -724,11 +787,18 @@ mod tests {
         drop(balances);
 
         // --- Action 1: User places a BID order on BTC/USD market ---
-        // Buy 1,000 BTC for 50,000 USD each. Total cost: 50,000,000 USD
+        // Buy 1,000 BTC (base) for 50,000 USD (quote) each. Total cost: 50,000,000 USD
         let btc_price = 50_000;
         let btc_size = 1_000;
-        let mut btc_buy_cmd =
-            OrderCommand::new(TimeInForce::Gtc, 1, user_id, btc_price, btc_size, Side::Bid, market_id_btc_usd);
+        let mut btc_buy_cmd = OrderCommand::new(
+            TimeInForce::Gtc,
+            1,
+            user_id,
+            btc_price,
+            btc_size,
+            Side::Bid,
+            market_id_btc_usd,
+        );
         engine
             .reserve_funds_for_order(&mut btc_buy_cmd, price_cache.clone())
             .unwrap();
@@ -746,11 +816,18 @@ mod tests {
         assert_eq!(engine.get_balance(user_id, eth_asset_id).total(), 50_000); // unchanged
 
         // --- Action 2: User places an ASK order on ETH/USD market ---
-        // Sell 2,000 ETH for 3,000 USD each.
+        // Sell 2,000 ETH (base) for 3,000 USD (quote) each.
         let eth_price = 3_000;
         let eth_size = 2_000;
-        let mut eth_sell_cmd =
-            OrderCommand::new(TimeInForce::Gtc, 2, user_id, eth_price, eth_size, Side::Ask, market_id_eth_usd);
+        let mut eth_sell_cmd = OrderCommand::new(
+            TimeInForce::Gtc,
+            2,
+            user_id,
+            eth_price,
+            eth_size,
+            Side::Ask,
+            market_id_eth_usd,
+        );
         engine
             .reserve_funds_for_order(&mut eth_sell_cmd, price_cache.clone())
             .unwrap();
@@ -782,7 +859,13 @@ mod tests {
             next_event: None,
             maker_balance: [UserBalance::default(); 2],
         };
-        engine.handle_trade_event(user_id, market_id_btc_usd, Side::Bid, &mut btc_trade_event, None);
+        engine.handle_trade_event(
+            user_id,
+            market_id_btc_usd,
+            Side::Bid,
+            &mut btc_trade_event,
+            Some(btc_price),
+        );
 
         // --- Check balances after BTC trade settlement ---
         // User (taker) spent 50,000,000 USD, received 1,000 BTC (minus 0.2% taker fee)
