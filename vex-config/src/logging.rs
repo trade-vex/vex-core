@@ -177,7 +177,6 @@ impl LoggingConfig {
         let mut module_levels = HashMap::new();
         module_levels.insert("vex_core".to_string(), LogLevel::Info);
         module_levels.insert("networking".to_string(), LogLevel::Warn);
-        module_levels.insert("security".to_string(), LogLevel::Debug);
 
         Self {
             level: LogLevel::Info,
