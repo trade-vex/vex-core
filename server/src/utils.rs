@@ -22,6 +22,9 @@ macro_rules! create_risk_r2_handler {
         let risk_engines = $risk_engines.clone();
         let shard_mask = $risk_engines.len() as u64 - 1;
         move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
+            if (cmd.status == Status::Rejected) {
+                return;
+            }
             let risk_engine = &risk_engines[$shard_id];
             let taker_id = cmd.user_id();
             let market_id = cmd.market_id();
