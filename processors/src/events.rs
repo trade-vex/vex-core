@@ -444,6 +444,8 @@ mod tests {
     use vex_orderbook::OrderBook;
     use vex_orderbook::tree::{BTreeAskSide, BTreeBidSide};
 
+    const MARKET_ID: u32 = 10_000_0010; // Example market_id encoding
+
     #[tokio::test]
     async fn test_kafka_events_handler_placed_order() {
         let handler = KafkaEventsHandler::new("localhost:9093");
@@ -455,6 +457,7 @@ mod tests {
             1000,  // price
             100,   // size
             Side::Bid,
+            MARKET_ID
         );
         cmd.set_status(Status::Placed);
         cmd.timestamp = 1000;
@@ -476,6 +479,7 @@ mod tests {
             950,   // price
             50,    // size
             Side::Ask,
+            MARKET_ID
         );
         cmd.set_status(Status::Cancelled);
         cmd.timestamp = 1001;
@@ -490,7 +494,7 @@ mod tests {
         use common::UserBalance;
         use hashbrown::HashMap;
 
-        let mut risk_engine = RiskEngine::new(HashMap::new(), 0, 1);
+        let risk_engine = RiskEngine::new(HashMap::new(), 0, 1);
 
         let market_id: u32 = 0b1000000100000010;
         let base_asset_id = base_asset(market_id);
@@ -508,6 +512,7 @@ mod tests {
             900,   // price
             25,    // size
             Side::Ask,
+            market_id
         );
         cmd.set_status(Status::Cancelled);
         cmd.timestamp = 1004;
@@ -573,6 +578,7 @@ mod tests {
             1050,  // price
             75,    // size
             Side::Bid,
+            MARKET_ID
         );
         cmd.set_status(Status::Placed);
         cmd.timestamp = 1005;
@@ -595,6 +601,7 @@ mod tests {
             1050,  // price
             200,   // size
             Side::Bid,
+            MARKET_ID
         );
         filled_cmd.set_status(Status::Filled);
         filled_cmd.timestamp = 1003;
