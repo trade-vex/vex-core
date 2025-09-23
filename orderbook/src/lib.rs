@@ -301,7 +301,12 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             } else if let Some(level) = self.asks.get_level_mut(price) {
                 level.remove_order(cmd.order_id, cmd);
                 self.asks.remove_level_if_empty(price);
+            } else {
+                // this must ideally be unreachable, to avoid any undefined behaviour, we reject the order
+                cmd.set_status(Status::Rejected);
             }
+        } else {
+            cmd.set_status(Status::Rejected);
         }
         self.update_price_cache(price_cache);
     }
