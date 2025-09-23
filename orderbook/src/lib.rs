@@ -78,6 +78,8 @@ impl PriceLevel {
             cmd.set_size(removed_order.size);
             cmd.set_status(Status::Cancelled);
             cmd.set_user_id(removed_order.user_id); // user_id must ideally be set when the command is created
+        } else {
+            cmd.set_status(Status::Rejected);
         }
     }
 
