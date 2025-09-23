@@ -42,7 +42,7 @@ pub struct OrderCommand {
     ///   instructs the matching engine to trade at any available price.
     pub price: u64,
 
-    /// The quantity of the quote asset that is remaining to be filled/cancelled
+    /// The quantity of the base asset that is remaining to be filled/cancelled
     pub size: u64,
 
     /// The side of the order book for a new order.
@@ -88,11 +88,12 @@ impl OrderCommand {
         price: u64,
         size: u64,
         side: Side,
+        market_id: u32
     ) -> Self {
         Self {
             command: OrderCommandType::PlaceOrder,
             order_id,
-            market_id: 0,
+            market_id,
             user_id,
             price,
             size,
@@ -164,6 +165,14 @@ impl OrderCommand {
 
     pub fn set_size(&mut self, size: u64) {
         self.size = size;
+    }
+
+    pub fn set_price(&mut self, price: u64) {
+        self.price = price;
+    }
+
+    pub fn set_user_id(&mut self, user_id: u64) {
+        self.user_id = user_id;
     }
 
     pub fn attatch_event(&mut self, event: Box<MatcherTradeEvent>) {

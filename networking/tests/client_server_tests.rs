@@ -102,7 +102,7 @@ fn test_client_server_communication() {
         info!("server_config: {:?}", server_config);
         let producer = build_multi_producer(
             1024,
-            || OrderCommand::new(TimeInForce::Gtc, 1, 23, 32, 100, Side::Ask),
+            || OrderCommand::new(TimeInForce::Gtc, 1, 23, 32, 100, Side::Ask, 10),
             BusySpin,
         )
         .pin_at_core(1)
