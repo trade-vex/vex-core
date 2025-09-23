@@ -1,14 +1,14 @@
 use rusteron_client::{
-    Aeron, AeronCError, AeronContext, 
-    AeronPublication, AeronReservedValueSupplierLogger
+    Aeron, AeronCError, AeronContext, AeronPublication, AeronReservedValueSupplierLogger,
 };
 use std::{
     collections::HashMap,
     ffi::{CStr, CString},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
-    }, time::Duration,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 use thiserror::Error;
 
@@ -54,8 +54,11 @@ impl AeronPublisher {
 
     pub fn add_publication(&mut self, channel: &str, stream_id: i32) -> Result<(), PublisherError> {
         let channel_cstr = CString::new(channel)?;
-        let publication = self.aeron.add_publication(&channel_cstr, stream_id, Duration::from_secs(1))?;
-        self.publications.insert(Self::get_key(channel, stream_id), publication);
+        let publication =
+            self.aeron
+                .add_publication(&channel_cstr, stream_id, Duration::from_secs(1))?;
+        self.publications
+            .insert(Self::get_key(channel, stream_id), publication);
         Ok(())
     }
 

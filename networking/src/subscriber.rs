@@ -1,11 +1,12 @@
 use rusteron_client::{
-    Aeron, AeronAvailableImageLogger, AeronCError, AeronContext, AeronFragmentAssembler, AeronSubscription, AeronUnavailableImageLogger, Handler
+    Aeron, AeronAvailableImageLogger, AeronCError, AeronContext, AeronFragmentAssembler,
+    AeronSubscription, AeronUnavailableImageLogger, Handler,
 };
 use std::{
     ffi::{CStr, CString},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
@@ -37,7 +38,7 @@ impl AeronSubscriber {
         let ctx = AeronContext::new()?;
         // ctx.set_on_close_client(handler)
         // ctx.set_dir(context_dir)?;
-        ctx.set_driver_timeout_ms(1_000)?;  
+        ctx.set_driver_timeout_ms(1_000)?;
         let aeron = Arc::new(Aeron::new(&ctx)?);
         aeron.start()?;
 
@@ -49,7 +50,11 @@ impl AeronSubscriber {
         })
     }
 
-    pub fn add_subscription(&mut self, channel: &str, stream_id: i32) -> Result<(), SubscriberError> {
+    pub fn add_subscription(
+        &mut self,
+        channel: &str,
+        stream_id: i32,
+    ) -> Result<(), SubscriberError> {
         let channel_cstr = CString::new(channel)?;
 
         let available_cb = AeronAvailableImageLogger {};
@@ -57,7 +62,7 @@ impl AeronSubscriber {
 
         let unavailable_cb = AeronUnavailableImageLogger {};
         let unavailable_cb_handler = Handler::leak(unavailable_cb);
-        
+
         let subscription = self.aeron.add_subscription(
             &channel_cstr,
             stream_id,
@@ -75,7 +80,7 @@ impl AeronSubscriber {
         let subscriptions = self.subscriptions.clone();
         let data_handler = Arc::new(self.data_handler.clone());
         // let idle_strategy = Arc::new(self.idle_strategy.clone());
-        
+
         let handler = Handler::leak((*data_handler).clone());
         std::thread::spawn(move || {
             while running.load(Ordering::Relaxed) {
