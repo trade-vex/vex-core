@@ -96,6 +96,7 @@ fn run_correctness_test(
             status: common::Status::Processing,
             events: None,
             balance: [UserBalance::default(); 2],
+            l2_data: None,
         };
         client.send_order_command(&order_command)?;
     }
