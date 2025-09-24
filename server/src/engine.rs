@@ -68,7 +68,7 @@ impl CoreEngine {
                 journaling_clone.journal_command(cmd);
             }
         };
-        let _events_handler_arc = events_handler.clone();
+        let events_handler_arc = events_handler.clone();
 
         // Create 4 sharded risk engines for parallel risk processing
         // Power of 2 sharding enables efficient bitwise operations: user_id & shard_mask
@@ -158,7 +158,7 @@ impl CoreEngine {
             .and_then() // Creates dependency: event handlers wait for risk engines
             // Stage 3: Event Handlers
             .pin_at_core(14)
-            .handle_events_with(create_event_handler!(events_handler_arc, 50));
+            .handle_events_with(create_event_handler!(events_handler_arc));
 
         // Optional test handler for unit tests
         #[cfg(test)]
