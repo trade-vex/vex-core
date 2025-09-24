@@ -1,8 +1,9 @@
-use crate::risk_engine::RiskEngine;
 use common::L2MarketData;
 use common::MatcherTradeEvent;
 use common::Order;
 use common::OrderCommand;
+use common::Status;
+use common::UserBalance;
 use common::{base_asset, quote_asset};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -75,36 +76,30 @@ impl KafkaEventsHandler {
         }
     }
 
-    fn publish_balance_event(
-        &self,
-        user_id: u64,
-        market_id: u32,
-        risk_engine: &RiskEngine,
-        cmd: &OrderCommand,
-    ) -> Result<(), String> {
-        if let Some(user_profile) = risk_engine.user_balances.get(&user_id)
-            && let Ok(balance) = user_profile.get_balance(user_id, market_id)
-        {
+    fn publish_balance_event(&self, user_id: u64, cmd: &OrderCommand, balance: &[UserBalance; 2]) {
+        let base_asset_id = base_asset(cmd.market_id);
+        let quote_asset_id = quote_asset(cmd.market_id);
+
+        for (balance, asset_id) in balance.iter().zip([base_asset_id, quote_asset_id]) {
             let balance_event = BalanceEvent {
                 user_id,
-                market_id,
+                asset_id: asset_id,
                 available: balance.available(),
                 locked: balance.locked(),
                 total: balance.total(),
                 timestamp: cmd.timestamp(),
             };
 
-            let topic_name = format!("market-{}-balances", market_id);
+            let topic_name = format!("market-{}-balances", cmd.market_id);
             self.publish_event(&topic_name, &user_id.to_string(), &balance_event);
             info!(
                 "[KafkaEventsHandler] Published balance event for user {} in market {}",
-                user_id, market_id
+                user_id, cmd.market_id
             );
         }
-        Ok(())
     }
 
-    fn publish_order_event(&self, cmd: &OrderCommand) -> Result<(), String> {
+    fn publish_order_event(&self, cmd: &OrderCommand) {
         let order = Order {
             order_id: cmd.order_id(),
             user_id: cmd.taker_id(),
@@ -126,8 +121,6 @@ impl KafkaEventsHandler {
             cmd.order_id(),
             cmd.market_id()
         );
-
-        Ok(())
     }
 
     fn publish_trade_event(
@@ -137,7 +130,7 @@ impl KafkaEventsHandler {
         market_id: u32,
         taker_id: u64,
         taker_order_id: u64,
-    ) -> Result<(), String> {
+    ) {
         let trade_event = TradeEvent {
             maker_user_id: event.maker_user_id,
             taker_user_id: taker_id,
@@ -157,11 +150,9 @@ impl KafkaEventsHandler {
             "[KafkaEventsHandler] Published trade event for maker order {} and taker order {} in market {}",
             event.matched_order_id, taker_order_id, market_id
         );
-
-        Ok(())
     }
 
-    fn publish_cancel_order_event(&self, cmd: &OrderCommand) -> Result<(), String> {
+    fn publish_cancel_order_event(&self, cmd: &OrderCommand) {
         let cancel_event = CancelOrderEvent {
             order_id: cmd.order_id(),
             market_id: cmd.market_id(),
@@ -176,15 +167,9 @@ impl KafkaEventsHandler {
             cmd.order_id(),
             cmd.market_id()
         );
-
-        Ok(())
     }
 
-    fn publish_orderbook_event(
-        &self,
-        market_id: u32,
-        orderbook_snapshot: Option<L2MarketData>,
-    ) -> Result<(), String> {
+    fn publish_orderbook_event(&self, market_id: u32, orderbook_snapshot: &Option<L2MarketData>) {
         if let Some(snapshot) = orderbook_snapshot {
             let mut bids = Vec::new();
             let mut asks = Vec::new();
@@ -221,143 +206,58 @@ impl KafkaEventsHandler {
                 "[KafkaEventsHandler] Published orderbook event for market {}",
                 market_id
             );
-
-            Ok(())
-        } else {
-            Ok(())
         }
     }
 }
 
 impl EventsHandler for KafkaEventsHandler {
     fn handle_processed_command(&self, cmd: &mut OrderCommand) {
-    //     info!(
-    //         "[KafkaEventsHandler] Processing command: Order {}, Status {:?}",
-    //         cmd.order_id(),
-    //         cmd.status()
-    //     );
+        info!(
+            "[KafkaEventsHandler] Processing command: Order {}, Status {:?}",
+            cmd.order_id(),
+            cmd.status()
+        );
 
-    //     let market_id = cmd.market_id();
-    //     let taker_id = cmd.user_id();
-    //     let taker_order_id = cmd.order_id();
+        let market_id = cmd.market_id();
+        let taker_id = cmd.user_id();
+        let taker_order_id = cmd.order_id();
 
-    //     match cmd.status() {
-    //         Status::Rejected => {
-    //             info!(
-    //                 "[KafkaEventsHandler] Order {} rejected - no events published",
-    //                 cmd.order_id()
-    //             );
-    //         }
-    //         Status::Placed => {
-    //             if let Err(e) = self.publish_order_event(cmd) {
-    //                 error!("[KafkaEventsHandler] Failed to publish order event: {}", e);
-    //             }
-    //             if let Err(e) = self.publish_orderbook_event(market_id, orderbook_snapshot) {
-    //                 error!(
-    //                     "[KafkaEventsHandler] Failed to publish orderbook event: {}",
-    //                     e
-    //                 );
-    //             }
-    //         }
-    //         Status::Cancelled => {
-    //             if let Some(risk_engine) = risk_engine {
-    //                 if let Err(e) =
-    //                     self.publish_balance_event(taker_id, market_id, risk_engine, cmd)
-    //                 {
-    //                     error!(
-    //                         "[KafkaEventsHandler] Failed to publish balance event: {}",
-    //                         e
-    //                     );
-    //                 }
-    //             }
-    //             if let Err(e) = self.publish_cancel_order_event(cmd) {
-    //                 error!(
-    //                     "[KafkaEventsHandler] Failed to publish cancel order event: {}",
-    //                     e
-    //                 );
-    //             }
-    //             if let Err(e) = self.publish_orderbook_event(market_id, orderbook_snapshot) {
-    //                 error!(
-    //                     "[KafkaEventsHandler] Failed to publish orderbook event: {}",
-    //                     e
-    //                 );
-    //             }
-    //         }
-    //         Status::PartiallyFilled | Status::Filled => {
-    //             if let Some(event) = cmd.events() {
-    //                 if let Err(e) =
-    //                     self.publish_trade_event(event, cmd, market_id, taker_id, taker_order_id)
-    //                 {
-    //                     error!("[KafkaEventsHandler] Failed to publish trade event: {}", e);
-    //                 }
+        match cmd.status() {
+            Status::Rejected => {
+                info!(
+                    "[KafkaEventsHandler] Order {} rejected - no events published",
+                    cmd.order_id()
+                );
+            }
+            Status::Placed => {
+                self.publish_order_event(cmd);
+                self.publish_orderbook_event(market_id, &cmd.l2_data);
+            }
+            Status::Cancelled => {
+                self.publish_balance_event(taker_id, &cmd, &cmd.balance);
+                self.publish_cancel_order_event(cmd);
+                self.publish_orderbook_event(market_id, &cmd.l2_data);
+            }
+            Status::PartiallyFilled | Status::Filled => {
+                let mut curr_event = cmd.events();
+                while let Some(event) = curr_event {
+                    // Trade Event
+                    self.publish_trade_event(event, cmd, market_id, taker_id, taker_order_id);
 
-    //                 let mut current_event = event.next_event.as_ref();
-    //                 while let Some(next_event) = current_event {
-    //                     if let Err(e) = self.publish_trade_event(
-    //                         next_event,
-    //                         cmd,
-    //                         market_id,
-    //                         taker_id,
-    //                         taker_order_id,
-    //                     ) {
-    //                         error!(
-    //                             "[KafkaEventsHandler] Failed to publish chained trade event: {}",
-    //                             e
-    //                         );
-    //                     }
-    //                     current_event = next_event.next_event.as_ref();
-    //                 }
+                    // Balance Event for the maker
+                    self.publish_balance_event(event.maker_user_id, &cmd, &event.maker_balance);
 
-    //                 if let Some(risk_engine) = risk_engine {
-    //                     if let Err(e) =
-    //                         self.publish_balance_event(taker_id, market_id, risk_engine, cmd)
-    //                     {
-    //                         error!(
-    //                             "[KafkaEventsHandler] Failed to publish taker balance event: {}",
-    //                             e
-    //                         );
-    //                     }
-
-    //                     if let Err(e) = self.publish_balance_event(
-    //                         event.maker_user_id,
-    //                         market_id,
-    //                         risk_engine,
-    //                         cmd,
-    //                     ) {
-    //                         error!(
-    //                             "[KafkaEventsHandler] Failed to publish main maker balance event: {}",
-    //                             e
-    //                         );
-    //                     }
-
-    //                     let mut current_event = event.next_event.as_ref();
-    //                     while let Some(next_event) = current_event {
-    //                         if let Err(e) = self.publish_balance_event(
-    //                             next_event.maker_user_id,
-    //                             market_id,
-    //                             risk_engine,
-    //                             cmd,
-    //                         ) {
-    //                             error!(
-    //                                 "[KafkaEventsHandler] Failed to publish chained maker balance event: {}",
-    //                                 e
-    //                             );
-    //                         }
-    //                         current_event = next_event.next_event.as_ref();
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //         Status::Processing => {
-    //             error!("[KafkaEventsHandler] Order was not processed correctly");
-    //             if let Err(e) = self.publish_orderbook_event(market_id, orderbook_snapshot) {
-    //                 error!(
-    //                     "[KafkaEventsHandler] Failed to publish orderbook event: {}",
-    //                     e
-    //                 );
-    //             }
-    //         }
-    //     }
+                    curr_event = event.next_event.as_deref();
+                }
+                // Publish balance event for the taker
+                self.publish_balance_event(taker_id, &cmd, &cmd.balance);
+            }
+            Status::Processing => {
+                // this should ideally be unreachable
+                error!("[KafkaEventsHandler] Order was not processed correctly");
+                self.publish_orderbook_event(market_id, &cmd.l2_data);
+            }
+        }
     }
 }
 
@@ -414,14 +314,14 @@ struct OrderbookLevel {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    // use std::sync::Arc;
 
-    use super::*;
-    use common::{CoreMarketSpecification, MarketType, PriceCache, Side, UserBalance};
-    use vex_orderbook::OrderBook;
-    use vex_orderbook::tree::{BTreeAskSide, BTreeBidSide};
+    // use super::*;
+    // use common::{CoreMarketSpecification, MarketType, PriceCache, Side, UserBalance};
+    // use vex_orderbook::OrderBook;
+    // use vex_orderbook::tree::{BTreeAskSide, BTreeBidSide};
 
-    const MARKET_ID: u32 = 10_000_0010; // Example market_id encoding
+    // const MARKET_ID: u32 = 10_000_0010; // Example market_id encoding
 
     // #[tokio::test]
     // async fn test_kafka_events_handler_placed_order() {
