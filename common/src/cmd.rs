@@ -1,4 +1,4 @@
-use crate::{OrderCommandType, Side, TimeInForce, UserBalance};
+use crate::{L2MarketData, L2SIZE, OrderCommandType, Side, TimeInForce, UserBalance};
 use sbe_order::message_header_codec::{self, MessageHeaderDecoder};
 use sbe_order::order_command_message_codec::{
     OrderCommandMessageDecoder, OrderCommandMessageEncoder,
@@ -60,6 +60,8 @@ pub struct OrderCommand {
     /// Final balance of the user/maker after this trade
     pub balance: [UserBalance; 2], // [0] = base currency, [1] = quote currency
 
+    /// L2 Market Data Snapshot after the order is processed, it is not recorded when the status is Rejected
+    pub l2_data: Option<L2MarketData>,
 }
 
 impl Default for OrderCommand {
@@ -77,6 +79,7 @@ impl Default for OrderCommand {
             command: OrderCommandType::PlaceOrder,
             events: None,
             balance: [UserBalance::default(); 2],
+            l2_data: None,
         }
     }
 }
@@ -88,7 +91,7 @@ impl OrderCommand {
         price: u64,
         size: u64,
         side: Side,
-        market_id: u32
+        market_id: u32,
     ) -> Self {
         Self {
             command: OrderCommandType::PlaceOrder,
@@ -103,6 +106,7 @@ impl OrderCommand {
             status: Status::Processing,
             events: None,
             balance: [UserBalance::default(); 2],
+            l2_data: None,
         }
     }
 
@@ -120,6 +124,7 @@ impl OrderCommand {
             status: Status::Processing,
             balance: [UserBalance::default(); 2],
             events: None,
+            l2_data: None,
         }
     }
 
@@ -268,5 +273,6 @@ pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
         status: Status::Rejected, // Default status since decoder doesn't have status method
         events: None,
         balance: [UserBalance::default(); 2],
+        l2_data: None,
     })
 }

@@ -127,6 +127,7 @@ fn run_latency_test(
             status: common::Status::Processing,
             balance: [UserBalance::default(); 2],
             events: None,
+            l2_data: None,
         };
 
         let start_time = Instant::now();
