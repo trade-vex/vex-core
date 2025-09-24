@@ -86,6 +86,7 @@ fn test_client_server_communication() {
             status: common::Status::Processing,
             events: None,
             balance: [common::UserBalance::default(); 2],
+            l2_data: None,
         };
         for i in 0..10 {
             order_command.order_id = i;

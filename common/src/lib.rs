@@ -22,6 +22,8 @@ use serde::de::value::Error as SerdeError;
 use serde::de::Error;
 use serde::{Deserialize, Serialize};
 
+pub const L2SIZE: usize = 10;
+
 #[derive(
     Debug,
     Clone,
