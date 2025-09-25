@@ -64,7 +64,14 @@ async fn main() {
     });
 
     // 3. Directly publish a command to the disruptor
-    let cmd = OrderCommand { order_id: 1, uid: 100, symbol: 0, size: 10, price: 9629, ..Default::default() };
+    let cmd = OrderCommand {
+        order_id: 1,
+        uid: 100,
+        symbol: 0,
+        size: 10,
+        price: 9629,
+        ..Default::default()
+    };
 
     producer.publish(|e| {
         *e = cmd.clone();
