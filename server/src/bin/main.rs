@@ -64,13 +64,7 @@ async fn main() {
     });
 
     // 3. Directly publish a command to the disruptor
-    let mut cmd = OrderCommand::default();
-    // Set fields as needed for your test
-    cmd.order_id = 1;
-    cmd.uid = 100;
-    cmd.symbol = 0;
-    cmd.size = 10;
-    cmd.price = 9629;
+    let cmd = OrderCommand { order_id: 1, uid: 100, symbol: 0, size: 10, price: 9629, ..Default::default() };
 
     producer.publish(|e| {
         *e = cmd.clone();
