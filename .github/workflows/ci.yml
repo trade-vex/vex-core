@@ -82,7 +82,7 @@ jobs:
         run: cargo install cargo-tarpaulin
       - name: Generate code coverage
         run: |
-          cargo tarpaulin --verbose --workspace --out Stdout
+          cargo tarpaulin --verbose --workspace --exclude-files "target/**/*" --exclude-files "~/.cargo/**/*" --out Stdout
 
   audit:
     name: Security audit
