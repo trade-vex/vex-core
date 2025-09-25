@@ -1,18 +1,18 @@
 use std::{net::SocketAddr, time::Duration};
 
 use rusteron_client::{
-    Aeron, AeronFragmentHandlerCallback, AeronAvailableImageLogger, AeronCError, AeronContext, AeronImage, AeronPublication, AeronReservedValueSupplierLogger, AeronSubscription, AeronUnavailableImageLogger, Handler,
-    AeronHeader,
+    Aeron, AeronAvailableImageLogger, AeronCError, AeronContext, AeronFragmentHandlerCallback,
+    AeronHeader, AeronImage, AeronPublication, AeronReservedValueSupplierLogger, AeronSubscription,
+    AeronUnavailableImageLogger, Handler,
 };
-use thiserror::Error;
 use std::thread;
+use thiserror::Error;
 pub struct FragmentHandler;
 
 impl AeronFragmentHandlerCallback for FragmentHandler {
-  fn handle_aeron_fragment_handler(&mut self, message: &[u8], _: AeronHeader) { 
-    println!("Fragment received: {:?}", message);
-   }
-
+    fn handle_aeron_fragment_handler(&mut self, message: &[u8], _: AeronHeader) {
+        println!("Fragment received: {:?}", message);
+    }
 }
 pub struct VexClient {
     aeron: Aeron,
@@ -39,28 +39,41 @@ pub enum ClientError {
 }
 
 impl VexClient {
-    pub fn new(context_dir: &str, channel: &str, stream_id: i32, local_addr: SocketAddr, remote_addr: SocketAddr) -> Result<Self, ClientError> {
+    pub fn new(
+        context_dir: &str,
+        channel: &str,
+        stream_id: i32,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+    ) -> Result<Self, ClientError> {
         let ctx = AeronContext::new()?;
         let context_dir = std::ffi::CString::new(context_dir)?;
-        ctx.set_dir(& context_dir)?;
+        ctx.set_dir(&context_dir)?;
         ctx.set_driver_timeout_ms(1_000)?;
 
         let aeron = Aeron::new(&ctx)?;
         aeron.start()?;
         let channel = std::ffi::CString::new(channel)?;
-        let publication = aeron.add_publication(&channel, stream_id, std::time::Duration::from_secs(1))?;
+        let publication =
+            aeron.add_publication(&channel, stream_id, std::time::Duration::from_secs(1))?;
         let available_logger = AeronAvailableImageLogger {};
         let available_handler = Handler::leak(available_logger);
         let unavailable_logger = AeronUnavailableImageLogger {};
         let unavailable_handler = Handler::leak(unavailable_logger);
-        let subscription = aeron.add_subscription(&channel, stream_id, Some(&available_handler), Some(&unavailable_handler), Duration::from_secs(1))?;
+        let subscription = aeron.add_subscription(
+            &channel,
+            stream_id,
+            Some(&available_handler),
+            Some(&unavailable_handler),
+            Duration::from_secs(1),
+        )?;
 
         Ok(Self {
             aeron,
             publisher: publication,
             subscriber: subscription,
-            local_addr, 
-            remote_addr
+            local_addr,
+            remote_addr,
         })
     }
 
@@ -76,13 +89,12 @@ impl VexClient {
         let result = self.publisher.offer(message, Some(&handler));
         if result < 0 {
             // You may want to match on specific negative values for more detailed errors
-                return Err(AeronCError::from_code(result as i32).into());
+            return Err(AeronCError::from_code(result as i32).into());
         }
         Ok(())
     }
 
     pub fn run(&mut self) -> Result<(), ClientError> {
-        
         let str = format!("Hello, {}", self.local_addr.port());
         let message = str.as_bytes();
 
@@ -109,7 +121,6 @@ impl VexClient {
         }
         // Here you can implement the main loop for processing messages
         Ok(())
-
     }
 
     // Additional methods for publishing and subscribing can be added here

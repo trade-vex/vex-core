@@ -7,7 +7,7 @@ use tracing::info;
 /// Manages all user profiles and performs risk checks as well as settlements
 /// This is the Rust equivalent of `RiskEngine.java`.
 pub struct RiskEngine {
-    user_profiles: HashMap<i64, UserProfile>,
+    pub user_profiles: HashMap<i64, UserProfile>,
 }
 
 impl RiskEngine {
@@ -59,7 +59,7 @@ impl RiskEngine {
     pub fn get_user_profile(&self, uid: i64) -> Option<&UserProfile> {
         self.user_profiles.get(&uid)
     }
-    
+
     pub fn add_user_profile(&mut self, uid: i64, profile: UserProfile) {
         self.user_profiles.insert(uid, profile);
     }
