@@ -20,6 +20,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          profile: minimal
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Install dependencies
         run: |
@@ -40,6 +43,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: dtolnay/rust-toolchain@stable
         with:
+          profile: minimal
           components: rustfmt
       - name: Enforce formatting
         run: cargo fmt --all -- --check
@@ -66,6 +70,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+            profile: minimal
+            components: rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Install dependencies
         run: |
