@@ -21,6 +21,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config build-essential libbsd-dev
       - name: Build workspace
         run: cargo build --workspace
       - name: Build workspace (release)
