@@ -24,13 +24,13 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config build-essential libbsd-dev
+          sudo apt-get update && sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make cmake gcc g++ clang zlib1g-dev libbsd-dev
       - name: Build workspace
         run: cargo build --workspace
       - name: Build workspace (release)
-        run: cargo build --workspace --release
+        run: cargo build --workspace --release --all-features --all-targets
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo test --workspace --all-features --all-targets
 
   fmt:
     name: Rustfmt
@@ -51,14 +51,14 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config build-essential libbsd-dev
+          sudo apt-get update && sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make cmake gcc g++ clang zlib1g-dev libbsd-dev
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Linting
-        run: cargo clippy --workspace -- -D warnings -A clippy::missing_errors_doc -A clippy::missing_panics_doc -A clippy::must_use_candidate -A clippy::default_trait_access -A clippy::ignored_unit_patterns -A clippy::module_name_repetitions -A clippy::cast_possible_truncation
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings -A clippy::missing_errors_doc -A clippy::missing_panics_doc -A clippy::must_use_candidate -A clippy::default_trait_access -A clippy::ignored_unit_patterns -A clippy::module_name_repetitions -A clippy::cast_possible_truncation
 
   coverage:
     name: Code coverage
@@ -70,7 +70,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config build-essential libbsd-dev
+          sudo apt-get update && sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make cmake gcc g++ clang zlib1g-dev libbsd-dev
       - name: Install tarpaulin
         run: cargo install cargo-tarpaulin
       - name: Generate code coverage
