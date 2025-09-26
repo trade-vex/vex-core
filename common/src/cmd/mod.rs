@@ -36,6 +36,10 @@ pub enum OrderCommandType {
 pub enum OrderCommandSerializationError {
     #[error("Unsupported SBE order command type: {0:?}")]
     UnsupportedSbeOrderCommandType(SbeOrderCommandType),
+    #[error("Unsupported SBE order type: {0:?}")]
+    UnsupportedSbeOrderType(u8),
+    #[error("Unsupported SBE order action: {0:?}")]
+    UnsupportedSbeOrderAction(u8),
     #[error("Unsupported order command type: {0:?}")]
     UnsupportedOrderCommandType(OrderCommandType),
     #[error("SBE serialization error: {0}")]
@@ -318,8 +322,8 @@ pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, OrderCommandSeri
         price: decoder.price(),
         reserve_bid_price: decoder.reserve_bid_price(),
         size: decoder.size(),
-        action: decoder.side().into(),
-        order_type: decoder.order_type().into(),
+        action: decoder.side().try_into()?,
+        order_type: decoder.order_type().try_into()?,
         timestamp: decoder.timestamp(),
         matcher_event: None,
         user_cookie: 0,

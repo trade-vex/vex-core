@@ -4,6 +4,8 @@ use sbe_order::order_type::OrderType as SbeOrderType;
 use sbe_order::side::Side as SbeSide;
 use serde::{Deserialize, Serialize};
 
+use crate::cmd::OrderCommandSerializationError;
+
 #[derive(
     Debug,
     PartialEq,
@@ -32,12 +34,14 @@ impl OrderAction {
     }
 }
 
-impl From<SbeSide> for OrderAction {
-    fn from(value: SbeSide) -> Self {
+impl TryFrom<SbeSide> for OrderAction {
+    type Error = OrderCommandSerializationError;
+
+    fn try_from(value: SbeSide) -> Result<Self, Self::Error> {
         match value {
-            SbeSide::Bid => Self::Bid,
-            SbeSide::Ask => Self::Ask,
-            SbeSide::NullVal => panic!("Unsupported"),
+            SbeSide::Bid => Ok(Self::Bid),
+            SbeSide::Ask => Ok(Self::Ask),
+            SbeSide::NullVal => Err(OrderCommandSerializationError::UnsupportedSbeOrderAction(value as u8)),
         }
     }
 }
@@ -76,15 +80,17 @@ pub enum OrderType {
     FokBudget = 4, // total amount cap
 }
 
-impl From<SbeOrderType> for OrderType {
-    fn from(value: SbeOrderType) -> Self {
+impl TryFrom<SbeOrderType> for OrderType {
+    type Error = OrderCommandSerializationError;
+
+    fn try_from(value: SbeOrderType) -> Result<Self, Self::Error> {
         match value {
-            SbeOrderType::Gtc => Self::Gtc,
-            SbeOrderType::Ioc => Self::Ioc,
-            SbeOrderType::IocBudget => Self::IocBudget,
-            SbeOrderType::Fok => Self::Fok,
-            SbeOrderType::FokBudget => Self::FokBudget,
-            _ => panic!("Unsupported SBE OrderType: {value:?}"),
+            SbeOrderType::Gtc => Ok(Self::Gtc),
+            SbeOrderType::Ioc => Ok(Self::Ioc),
+            SbeOrderType::IocBudget => Ok(Self::IocBudget),
+            SbeOrderType::Fok => Ok(Self::Fok),
+            SbeOrderType::FokBudget => Ok(Self::FokBudget),
+            SbeOrderType::NullVal => Err(OrderCommandSerializationError::UnsupportedSbeOrderType(value as u8)),
         }
     }
 }
