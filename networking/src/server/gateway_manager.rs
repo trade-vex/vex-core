@@ -128,7 +128,14 @@ impl GatewayManager {
 
         // Check various limits and constraints
         self.check_capacity_limits(publication, session_id, gateway_id)?;
-        let gateway_address = self.get_gateway_address(session_id)?;
+        let gateway_address = match self.get_gateway_address(session_id) {
+            Ok(address) => address,
+            Err(e) => {
+                let error_msg = format!("{session_id} {gateway_id} REJECT {e}");
+                send_message(publication, error_msg.as_bytes())?;
+                return Err(ServerError::GatewayMessageError(e.to_string()));
+            }
+        };
         self.check_address_limits(publication, session_id, gateway_id, &gateway_address)?;
         self.check_duplicate_connection(publication, session_id, gateway_id)?;
 
@@ -151,8 +158,15 @@ impl GatewayManager {
             "{} {} ACCEPT {} {} {}",
             session_id, gateway_id, ports[0], ports[1], encrypted_session
         );
-        send_message_with_retries(publication, accept_msg.as_bytes())?;
-
+        match send_message_with_retries(publication, accept_msg.as_bytes()) {
+            Ok(_) => (),
+            Err(e) => {
+                self.remove_gateway_session(session_id)?;
+                return Err(ServerError::GatewayMessageError(format!(
+                    "Failed to send ACCEPT message: {e}"
+                )));
+            }
+        }
         info!(
             "Gateway '{}' connected successfully. Session: 0x{:x}, ports: {}, {}",
             gateway_id, dedicated_session, ports[0], ports[1]
@@ -378,7 +392,7 @@ impl GatewayManager {
             // Free resources
             self.port_allocator.free(gateway_session.port_data);
             self.port_allocator.free(gateway_session.port_control);
-
+            self.session_allocator.free(gateway_session.session_id);
             // Update connection count
             if let Some((_id, address)) = self.gateway_session_addresses.remove(&session_id)
                 && let Some(count) = self.address_connection_count.get_mut(&address)

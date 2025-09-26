@@ -448,6 +448,7 @@ impl VexGateway {
         while start.elapsed() < CONNECT_TIMEOUT {
             subscription.poll(Some(&handler), 10)?;
             if let Some(response) = shared_response.lock().unwrap().take() {
+                handler.release();
                 return Ok(response);
             }
             // Sleeping breifly here. Larfer sleep as latency is not critical during handshake

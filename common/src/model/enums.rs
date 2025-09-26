@@ -41,7 +41,9 @@ impl TryFrom<SbeSide> for OrderAction {
         match value {
             SbeSide::Bid => Ok(Self::Bid),
             SbeSide::Ask => Ok(Self::Ask),
-            SbeSide::NullVal => Err(OrderCommandSerializationError::UnsupportedSbeOrderAction(value as u8)),
+            SbeSide::NullVal => Err(OrderCommandSerializationError::UnsupportedSbeOrderAction(
+                value as u8,
+            )),
         }
     }
 }
@@ -90,7 +92,9 @@ impl TryFrom<SbeOrderType> for OrderType {
             SbeOrderType::IocBudget => Ok(Self::IocBudget),
             SbeOrderType::Fok => Ok(Self::Fok),
             SbeOrderType::FokBudget => Ok(Self::FokBudget),
-            SbeOrderType::NullVal => Err(OrderCommandSerializationError::UnsupportedSbeOrderType(value as u8)),
+            SbeOrderType::NullVal => Err(OrderCommandSerializationError::UnsupportedSbeOrderType(
+                value as u8,
+            )),
         }
     }
 }

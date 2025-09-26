@@ -14,7 +14,16 @@ pub struct FragmentHandler {
 impl AeronFragmentHandlerCallback for FragmentHandler {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) {
         // is executor thread
-        let session_id = header.get_values().unwrap().frame.session_id;
+        let session_id = match header.get_values() {
+            Ok(values) => values.frame.session_id,
+            Err(_) => {
+                error!(
+                    "Gateway '{}': Missing session ID in Aeron header",
+                    self.gateway_id
+                );
+                return;
+            }
+        };
 
         // Deserialize OrderCommand
         match decode_order_command(buffer) {

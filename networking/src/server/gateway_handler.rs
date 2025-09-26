@@ -71,7 +71,13 @@ impl AeronAvailableImageCallback for GatewayImageAvailableHandler {
         _subscription: AeronSubscription,
         image: AeronImage,
     ) {
-        let session_id = image.get_constants().unwrap().session_id;
+        let session_id = match image.get_constants() {
+            Ok(b) => b.session_id,
+            Err(e) => {
+                error!("Failed to get image constants: {}", e);
+                return;
+            }
+        };
         let binding = image.get_constants().unwrap();
         let address = binding.source_identity();
 
@@ -106,8 +112,13 @@ impl AeronUnavailableImageCallback for GatewayImageUnavailableHandler {
         _subscription: AeronSubscription,
         image: AeronImage,
     ) {
-        let session_id = image.get_constants().unwrap().session_id;
-        let binding = image.get_constants().unwrap();
+        let (session_id, binding) = match image.get_constants() {
+            Ok(b) => (b.session_id, b),
+            Err(e) => {
+                error!("Failed to get image constants: {}", e);
+                return;
+            }
+        };
         let address = binding.source_identity();
 
         debug!(

@@ -37,12 +37,11 @@ use crate::server::gateway_handler::{
 use crate::server::gateway_manager::GatewayManager;
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
 use common::cmd::OrderCommand;
-use crossbeam::utils::CachePadded;
 use disruptor::{MultiConsumerBarrier, MultiProducer};
 use rusteron_client::{Aeron, AeronCError, AeronContext, Handler};
 use rusteron_media_driver::AeronIdleStrategy;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{error, info, instrument};
@@ -84,7 +83,7 @@ pub struct VexCoreServer {
     /// Gateway state management (lock-free)
     gateways: Rc<GatewayManager>,
     /// Last cleanup timestamp (atomic)
-    last_cleanup_nanos: CachePadded<AtomicU64>,
+    last_cleanup: Instant,
     /// shutdown flag
     shutdown: AtomicBool,
 }
@@ -105,13 +104,11 @@ impl VexCoreServer {
 
         let aeron = Rc::new(aeron);
 
-        let now_nanos = Instant::now().elapsed().as_nanos() as u64;
-
         Ok(Self {
             aeron: Rc::clone(&aeron),
             gateways: Rc::new(GatewayManager::new(config.clone(), aeron, producer)?),
             config,
-            last_cleanup_nanos: CachePadded::new(AtomicU64::new(now_nanos)),
+            last_cleanup: Instant::now(),
             shutdown: AtomicBool::new(false),
         })
     }
@@ -147,20 +144,10 @@ impl VexCoreServer {
     /// Performs periodic cleanup of expired gateways (lock-free)
     fn periodic_cleanup(&mut self) -> Result<(), ServerError> {
         let now_nanos = Instant::now().elapsed().as_nanos() as u64;
-        let last_cleanup_nanos = self.last_cleanup_nanos.load(Ordering::Relaxed);
+        let last_cleanup_nanos = self.last_cleanup.elapsed().as_nanos() as u64;
         let cleanup_interval_nanos = CLEANUP_INTERVAL.as_nanos() as u64;
 
         if now_nanos.saturating_sub(last_cleanup_nanos) >= cleanup_interval_nanos {
-            // Try to update cleanup timestamp atomically
-            if self
-                .last_cleanup_nanos
-                .compare_exchange_weak(
-                    last_cleanup_nanos,
-                    now_nanos,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
             {
                 info!("Performing periodic cleanup");
 

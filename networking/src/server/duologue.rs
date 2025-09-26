@@ -119,7 +119,16 @@ impl AeronAvailableImageCallback for DuologueImageAvailable {
         _subscription: AeronSubscription,
         image: AeronImage,
     ) {
-        let binding = image.get_constants().unwrap();
+        let binding = match image.get_constants() {
+            Ok(b) => b,
+            Err(e) => {
+                error!(
+                    "Failed to get image constants for gateway {}: {:?}",
+                    self.owner, e
+                );
+                return;
+            }
+        };
         let remote_addr = binding.source_identity();
         let session_id = binding.session_id;
 
@@ -150,7 +159,16 @@ impl AeronUnavailableImageCallback for DuologueImageUnavailable {
         _subscription: AeronSubscription,
         image: AeronImage,
     ) {
-        let binding = image.get_constants().unwrap();
+        let binding = match image.get_constants() {
+            Ok(b) => b,
+            Err(e) => {
+                error!(
+                    "Failed to get image constants for gateway {}: {:?}",
+                    self.owner, e
+                );
+                return;
+            }
+        };
         let remote_addr = binding.source_identity();
         let session_id = binding.session_id;
         // check image_count and close?
