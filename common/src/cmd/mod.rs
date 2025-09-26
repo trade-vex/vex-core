@@ -6,8 +6,8 @@ use sbe_order::order_command_message_codec::{
     OrderCommandMessageDecoder, OrderCommandMessageEncoder,
 };
 use sbe_order::order_command_type::OrderCommandType as SbeOrderCommandType;
-use sbe_order::{message_header_codec, ReadBuf, SbeResult, WriteBuf};
-use serde::de::value::Error as SerdeError;
+use sbe_order::{message_header_codec, ReadBuf, WriteBuf};
+use thiserror::Error;
 
 // TODO: translate OrderCommand
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -32,22 +32,38 @@ pub enum OrderCommandType {
     //    GROUPING_CONTROL,
 }
 
-impl From<SbeOrderCommandType> for OrderCommandType {
-    fn from(value: SbeOrderCommandType) -> Self {
+#[derive(Error, Debug)]
+pub enum OrderCommandSerializationError {
+    #[error("Unsupported SBE order command type: {0:?}")]
+    UnsupportedSbeOrderCommandType(SbeOrderCommandType),
+    #[error("Unsupported order command type: {0:?}")]
+    UnsupportedOrderCommandType(OrderCommandType),
+    #[error("SBE serialization error: {0}")]
+    SbeError(#[from] sbe_order::SbeErr),
+}
+
+impl TryFrom<SbeOrderCommandType> for OrderCommandType {
+    type Error = OrderCommandSerializationError;
+
+    fn try_from(value: SbeOrderCommandType) -> Result<Self, Self::Error> {
         match value {
-            SbeOrderCommandType::PlaceLimitOrder => Self::PlaceOrder,
-            SbeOrderCommandType::CancelOrder => Self::CancelOrder,
-            _ => panic!("Unsupported SBE OrderCommandType: {value:?}"),
+            SbeOrderCommandType::PlaceLimitOrder => Ok(Self::PlaceOrder),
+            SbeOrderCommandType::CancelOrder => Ok(Self::CancelOrder),
+            _ => Err(OrderCommandSerializationError::UnsupportedSbeOrderCommandType(value)),
         }
     }
 }
 
-impl From<OrderCommandType> for SbeOrderCommandType {
-    fn from(val: OrderCommandType) -> Self {
+impl TryFrom<OrderCommandType> for SbeOrderCommandType {
+    type Error = OrderCommandSerializationError;
+
+    fn try_from(val: OrderCommandType) -> Result<Self, Self::Error> {
         match val {
-            OrderCommandType::PlaceOrder => SbeOrderCommandType::PlaceLimitOrder,
-            OrderCommandType::CancelOrder => SbeOrderCommandType::CancelOrder,
-            _ => panic!("Unsupported OrderCommandType: {val:?}"),
+            OrderCommandType::PlaceOrder => Ok(SbeOrderCommandType::PlaceLimitOrder),
+            OrderCommandType::CancelOrder => Ok(SbeOrderCommandType::CancelOrder),
+            _ => Err(OrderCommandSerializationError::UnsupportedOrderCommandType(
+                val,
+            )),
         }
     }
 }
@@ -268,12 +284,15 @@ impl Default for MatcherTradeEvent {
     }
 }
 
-pub fn encode_order_command(order_command: OrderCommand, buf: &mut [u8]) -> SbeResult<()> {
+pub fn encode_order_command(
+    order_command: OrderCommand,
+    buf: &mut [u8],
+) -> Result<(), OrderCommandSerializationError> {
     let write_buf = WriteBuf::new(buf);
     let mut encoder = OrderCommandMessageEncoder::default();
     encoder = encoder.wrap(write_buf, message_header_codec::ENCODED_LENGTH);
     encoder = encoder.header(0).parent()?;
-    encoder.command(order_command.command.into());
+    encoder.command(order_command.command.try_into()?);
     encoder.order_id(order_command.order_id);
     encoder.symbol_id(order_command.symbol);
     encoder.user_id(order_command.uid);
@@ -286,13 +305,13 @@ pub fn encode_order_command(order_command: OrderCommand, buf: &mut [u8]) -> SbeR
     Ok(())
 }
 
-pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
+pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, OrderCommandSerializationError> {
     let buf = ReadBuf::new(buf);
     let mut decoder = OrderCommandMessageDecoder::default();
     let header = MessageHeaderDecoder::default().wrap(buf, 0);
     decoder = decoder.header(header, 0);
     Ok(OrderCommand {
-        command: decoder.command().into(),
+        command: decoder.command().try_into()?,
         order_id: decoder.order_id(),
         symbol: decoder.symbol_id(),
         uid: decoder.user_id(),

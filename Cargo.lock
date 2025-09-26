@@ -319,6 +319,7 @@ dependencies = [
  "num_enum",
  "sbe_order",
  "serde",
+ "thiserror 2.0.16",
  "tracing",
 ]
 
