@@ -27,8 +27,9 @@ impl AeronFragmentHandlerCallback for OrderCommandHandler {
             }
             Err(e) => {
                 error!(
-                    "Gateway {}: Failed to decode OrderCommand: {:?}",
-                    self.gateway_id, e
+                    gateway_id = %self.gateway_id,
+                    error = ?e,
+                    "Failed to decode OrderCommand"
                 );
             }
         }

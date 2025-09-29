@@ -249,12 +249,12 @@ impl VexGateway {
     }
 
     /// Starts the gateway and establishes connection to VEX Core
-    pub fn start<AeronFragmentHandlerHandlerImpl>(
+    pub fn start<AeronFragmentHandlerImpl>(
         &mut self,
-        handler: AeronFragmentHandlerHandlerImpl,
+        handler: AeronFragmentHandlerImpl,
     ) -> Result<(), GatewayError>
     where
-        AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback + Send + 'static,
+        AeronFragmentHandlerImpl: AeronFragmentHandlerCallback + Send + 'static,
     {
         info!("Starting VEX Gateway '{}'", self.config.gateway_id);
 

@@ -20,7 +20,8 @@ pub fn new_publication(
     stream_id: i32,
 ) -> Result<AeronPublication, AeronCError> {
     let endpoint = format!("{address}:{port}");
-    let uri = CString::new(format!("aeron:udp?endpoint={endpoint}")).unwrap();
+    let uri =
+        CString::new(format!("aeron:udp?endpoint={endpoint}")).expect("Creation of CString failed");
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -35,7 +36,7 @@ pub fn new_publication_with_mdc_and_session(
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic|session-id={session_id}"
     ))
-    .unwrap();
+    .expect("Creation of CString failed");
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -49,7 +50,7 @@ pub fn new_publication_with_mdc(
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic"
     ))
-    .unwrap();
+    .expect("Creation of CString failed");
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -64,7 +65,7 @@ pub fn new_publication_with_session(
     let uri = CString::new(format!(
         "aeron:udp?endpoint={endpoint}|session-id={session_id}"
     ))
-    .unwrap();
+    .expect("Creation of CString failed");
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -78,7 +79,7 @@ pub fn new_subscription_with_mdc(
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic"
     ))
-    .unwrap();
+    .expect("Creation of CString failed");
     let available_logger = AeronAvailableImageLogger {};
     let available_handler = Handler::leak(available_logger);
     let unavailable_logger = AeronUnavailableImageLogger {};
@@ -103,7 +104,7 @@ pub fn new_subscription_with_mdc_and_session(
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic|session-id={session_id}"
     ))
-    .unwrap();
+    .expect("Creation of CString failed");
     let available_logger = AeronAvailableImageLogger {};
     let available_handler = Handler::leak(available_logger);
     let unavailable_logger = AeronUnavailableImageLogger {};
@@ -133,7 +134,7 @@ pub fn new_subsciption_with_handlers_and_session<
     let uri = CString::new(format!(
         "aeron:udp?endpoint={endpoint}|session-id={session_id}"
     ))
-    .unwrap();
+    .expect("Creation of CString failed");
     aeron.add_subscription(
         &uri,
         stream_id,
@@ -155,7 +156,8 @@ pub fn new_subscription_with_handlers<
     on_image_unavailable: Y,
 ) -> Result<AeronSubscription, AeronCError> {
     let endpoint = format!("{address}:{port}");
-    let uri = CString::new(format!("aeron:udp?endpoint={endpoint}")).unwrap();
+    let uri =
+        CString::new(format!("aeron:udp?endpoint={endpoint}")).expect("Creation of CString failed");
     aeron.add_subscription(
         &uri,
         stream_id,
@@ -181,12 +183,6 @@ pub fn send_message_with_retries(
         let result = publication.offer::<AeronReservedValueSupplierLogger>(buffer, None);
         if result >= 0 {
             return Ok(());
-        }
-        if result < 0 {
-            error!(
-                "Failed to send message: {}",
-                AeronCError::from_code(result as i32)
-            );
         }
         error!(
             "Failed to send message (attempt {} of {}): {}",
