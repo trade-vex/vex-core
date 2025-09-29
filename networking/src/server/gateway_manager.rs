@@ -209,10 +209,14 @@ impl GatewayManager {
         let expired_sessions: Vec<i32> = self
             .gateway_sessions
             .iter()
-            .filter(|session| session.is_expired())
-            .map(|session| session.session_id)
+            .filter_map(|entry| {
+                if entry.value().is_expired() {
+                    Some(*entry.key())
+                } else {
+                    None
+                }
+            })
             .collect();
-
         let count = expired_sessions.len();
         for session_id in expired_sessions {
             self.remove_gateway_session(session_id)?;
@@ -330,17 +334,25 @@ impl GatewayManager {
         counter.fetch_add(1, Ordering::Relaxed);
 
         // Allocate resources
-        let ports = self
-            .port_allocator
-            .allocate(2)
-            .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?;
-        let dedicated_session = self
-            .session_allocator
-            .allocate()
-            .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?;
+        let ports = match self.port_allocator.allocate(2) {
+            Ok(p) => p,
+            Err(e) => {
+                counter.fetch_sub(1, Ordering::Relaxed);
+                return Err(ServerError::ResourceAllocationError(e.to_string()));
+            }     
+        };
+        let dedicated_session = match self.session_allocator.allocate() {
+            Ok(s) => s,
+            Err(e) => {
+                self.port_allocator.free(ports[0]);
+                self.port_allocator.free(ports[1]);
+                counter.fetch_sub(1, Ordering::Relaxed);
+                return Err(ServerError::ResourceAllocationError(e.to_string()));
+            }       
+        };
 
-        // Create session
-        let gateway_session = Duologue::new(
+        // gateway session
+        let gateway_session = match Duologue::new(
             &self.aeron,
             &self.config.local_address,
             gateway_id,
@@ -349,7 +361,18 @@ impl GatewayManager {
             ports[1],
             dedicated_session,
             self.producer.clone(),
-        )?;
+        ) {
+            Ok(session) => session,
+            Err(e) => {
+                self.port_allocator.free(ports[0]);
+                self.port_allocator.free(ports[1]);
+                self.session_allocator.free(dedicated_session);
+                counter.fetch_sub(1, Ordering::Relaxed);
+                return Err(ServerError::ResourceAllocationError(format!(
+                    "Failed to create Duologue: {e}"
+                )));
+            }
+        };
 
         // Store session
         self.gateway_sessions
@@ -361,7 +384,6 @@ impl GatewayManager {
             "Allocated session 0x{:x} for gateway '{}' with ports {}, {}",
             dedicated_session, gateway_id, ports[0], ports[1]
         );
-
         Ok((dedicated_session, [ports[0], ports[1]]))
     }
 

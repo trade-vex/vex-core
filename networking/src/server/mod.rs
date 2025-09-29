@@ -143,31 +143,22 @@ impl VexCoreServer {
 
     /// Performs periodic cleanup of expired gateways (lock-free)
     fn periodic_cleanup(&mut self) -> Result<(), ServerError> {
-        let now_nanos = Instant::now().elapsed().as_nanos() as u64;
-        let last_cleanup_nanos = self.last_cleanup.elapsed().as_nanos() as u64;
-        let cleanup_interval_nanos = CLEANUP_INTERVAL.as_nanos() as u64;
-
-        if now_nanos.saturating_sub(last_cleanup_nanos) >= cleanup_interval_nanos {
-            {
-                info!("Performing periodic cleanup");
-
-                // Clean up expired gateways (lock-free)
-                match self.gateways.cleanup_expired_gateways() {
-                    Ok(cleanup_count) => {
-                        if cleanup_count > 0 {
-                            info!("Cleaned up {} expired gateways", cleanup_count);
-                        }
-                    }
-                    Err(e) => {
-                        error!("Error during gateway cleanup: {}", e);
+        if self.last_cleanup.elapsed() >= CLEANUP_INTERVAL {
+            info!("Performing periodic cleanup");
+            match self.gateways.cleanup_expired_gateways() {
+                Ok(cleanup_count) => {
+                    if cleanup_count > 0 {
+                        info!("Cleaned up {} expired gateways", cleanup_count);
                     }
                 }
+                Err(e) => {
+                    error!("Error during gateway cleanup: {}", e);
+                }
             }
+            self.last_cleanup = Instant::now();
         }
-
         Ok(())
     }
-
     /// Gets core configuration
     pub fn config(&self) -> &CoreNetworkingConfig {
         &self.config

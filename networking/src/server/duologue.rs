@@ -102,9 +102,9 @@ impl Duologue {
     }
 
     pub fn close(&mut self) -> Result<(), AeronCError> {
-        self.is_closed = true;
         self.subscription.close::<AeronNotificationLogger>(None)?;
         self.fragment_handler.release();
+        self.is_closed = true;
         Ok(())
     }
 }
