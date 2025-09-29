@@ -339,7 +339,7 @@ impl GatewayManager {
             Err(e) => {
                 counter.fetch_sub(1, Ordering::Relaxed);
                 return Err(ServerError::ResourceAllocationError(e.to_string()));
-            }     
+            }
         };
         let dedicated_session = match self.session_allocator.allocate() {
             Ok(s) => s,
@@ -348,7 +348,7 @@ impl GatewayManager {
                 self.port_allocator.free(ports[1]);
                 counter.fetch_sub(1, Ordering::Relaxed);
                 return Err(ServerError::ResourceAllocationError(e.to_string()));
-            }       
+            }
         };
 
         // gateway session
