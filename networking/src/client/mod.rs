@@ -13,6 +13,7 @@ use std::ffi::CString;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{debug, error, info, warn};
@@ -205,6 +206,8 @@ pub struct VexGateway {
     core_publication: Option<AeronPublication>,
     /// Shutdown flag
     shutdown: Arc<AtomicBool>,
+    /// pollign thread
+    polling_thread: Option<JoinHandle<()>>,
 }
 
 impl VexGateway {
@@ -245,6 +248,7 @@ impl VexGateway {
             encryption_key: None,
             core_publication: None,
             shutdown: Arc::new(AtomicBool::new(false)),
+            polling_thread: None,
         })
     }
 
@@ -402,7 +406,7 @@ impl VexGateway {
 
     /// Starts polling for incoming messages in a separate thread
     fn start_message_polling<AeronFragmentHandlerHandlerImpl>(
-        &self,
+        &mut self,
         subscription: AeronSubscription,
         handler: AeronFragmentHandlerHandlerImpl,
     ) -> Result<(), GatewayError>
@@ -412,7 +416,7 @@ impl VexGateway {
         // Start polling thread
         let gateway_id = self.config.gateway_id.clone();
         let shutdown = self.shutdown.clone();
-        std::thread::spawn(move || {
+        self.polling_thread = Some(std::thread::spawn(move || {
             let mut handler = Handler::leak(handler);
 
             info!("Gateway '{}': Started message polling thread", gateway_id);
@@ -424,7 +428,7 @@ impl VexGateway {
                 AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
             }
             handler.release();
-        });
+        }));
 
         Ok(())
     }
@@ -558,6 +562,13 @@ impl VexGateway {
 
         // Set shutdown flag
         self.shutdown.store(true, Ordering::SeqCst);
+
+        // Wait for thread to finish
+        if let Some(handle) = self.polling_thread.take() {
+            handle
+                .join()
+                .map_err(|_| GatewayError::ProtocolError("Message Polling Thread panic".into()))?;
+        }
 
         info!(
             "VEX Gateway '{}' shut down successfully",
