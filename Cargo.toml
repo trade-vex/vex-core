@@ -11,7 +11,7 @@ members = [
     "orderbook", 
     "processors", 
     "server",
-    "vex-config"
+    "vex-config",
     "order",
     "xtask"
 ]
@@ -30,4 +30,3 @@ disruptor = "3.4.0"
 serde = { version = "1.0.203", features = ["derive"] }
 serde_json = "1.0"
 tracing = "0.1"
-rusteron-client = "0.1.132"
