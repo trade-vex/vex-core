@@ -451,7 +451,7 @@ impl VexGateway {
                 handler.release();
                 return Ok(response);
             }
-            // Sleeping breifly here. Larfer sleep as latency is not critical during handshake
+            // Sleeping breifly here. Larger sleep as latency is not critical during handshake
             std::thread::sleep(Duration::from_millis(10));
         }
         handler.release();
@@ -550,7 +550,7 @@ impl VexGateway {
     }
 
     /// Gracefully shuts down the gateway
-    pub async fn shutdown(&mut self) -> Result<(), GatewayError> {
+    pub fn shutdown(&mut self) -> Result<(), GatewayError> {
         info!("Shutting down VEX Gateway '{}'", self.config.gateway_id);
 
         // Update state
