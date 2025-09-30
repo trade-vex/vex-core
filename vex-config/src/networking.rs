@@ -1,8 +1,8 @@
 //! Networking configuration modules for VEX Core
 
 use crate::{ConfigError, Environment, Result};
-use serde::{Deserialize, Serialize};
 use common::cmd::ORDERCOMMANDSIZE;
+use serde::{Deserialize, Serialize};
 
 /// Core networking configuration for VEX Core server
 #[derive(Debug, Clone, Serialize, Deserialize)]
