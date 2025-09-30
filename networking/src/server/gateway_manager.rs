@@ -354,6 +354,7 @@ impl GatewayManager {
         // gateway session
         let gateway_session = match Duologue::new(
             &self.aeron,
+            self.config.gateway_timeout_seconds,
             &self.config.local_address,
             gateway_id,
             gateway_address,

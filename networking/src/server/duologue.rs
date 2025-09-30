@@ -29,6 +29,7 @@ pub struct Duologue {
 impl Duologue {
     pub fn new(
         aeron: &Aeron,
+        gateway_expiry_duration: u64,
         local: &str,
         gateway_id: &str,
         owner: &str,
@@ -37,7 +38,7 @@ impl Duologue {
         session_id: i32,
         producer: MultiProducer<OrderCommand, MultiConsumerBarrier>,
     ) -> Result<Self, AeronCError> {
-        let expire_time = (SystemTime::now() + Duration::from_secs(1_000_000))
+        let expire_time = (SystemTime::now() + Duration::from_secs(gateway_expiry_duration))
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_secs();
