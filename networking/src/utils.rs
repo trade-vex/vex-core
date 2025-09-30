@@ -127,8 +127,8 @@ pub fn new_subsciption_with_handlers_and_session<
     port: u16,
     stream_id: i32,
     session_id: i32,
-    on_image_available: X,
-    on_image_unavailable: Y,
+    on_image_available: Option<&Handler<X>>,
+    on_image_unavailable: Option<&Handler<Y>>,
 ) -> Result<AeronSubscription, AeronCError> {
     let endpoint = format!("{address}:{port}");
     let uri = CString::new(format!(
@@ -138,8 +138,8 @@ pub fn new_subsciption_with_handlers_and_session<
     aeron.add_subscription(
         &uri,
         stream_id,
-        Some(&Handler::leak(on_image_available)),
-        Some(&Handler::leak(on_image_unavailable)),
+        on_image_available,
+        on_image_unavailable,
         Duration::from_secs(1),
     )
 }
@@ -152,8 +152,8 @@ pub fn new_subscription_with_handlers<
     address: &str,
     port: u16,
     stream_id: i32,
-    on_image_available: X,
-    on_image_unavailable: Y,
+    on_image_available: Option<&Handler<X>>,
+    on_image_unavailable: Option<&Handler<Y>>,
 ) -> Result<AeronSubscription, AeronCError> {
     let endpoint = format!("{address}:{port}");
     let uri =
@@ -161,8 +161,8 @@ pub fn new_subscription_with_handlers<
     aeron.add_subscription(
         &uri,
         stream_id,
-        Some(&Handler::leak(on_image_available)),
-        Some(&Handler::leak(on_image_unavailable)),
+        on_image_available,
+        on_image_unavailable,
         Duration::from_secs(1),
     )
 }

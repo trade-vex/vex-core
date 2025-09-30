@@ -86,6 +86,10 @@ pub struct VexCoreServer {
     last_cleanup: Instant,
     /// shutdown flag
     shutdown: AtomicBool,
+    /// Image available handler
+    image_available_handler: Option<Handler<GatewayImageAvailableHandler>>,
+    /// Image unavailable handler
+    image_unavailable_handler: Option<Handler<GatewayImageUnavailableHandler>>,
 }
 
 impl VexCoreServer {
@@ -112,6 +116,8 @@ impl VexCoreServer {
             config,
             last_cleanup: Instant::now(),
             shutdown: AtomicBool::new(false),
+            image_available_handler: None,
+            image_unavailable_handler: None,
         })
     }
 
@@ -119,7 +125,19 @@ impl VexCoreServer {
     #[instrument(skip(self))]
     pub fn start(&mut self) -> Result<(), ServerError> {
         // Create publication for sending responses to gateways
-        let (subscription, handshake_handler) = self.setup_networking()?;
+        // Create image handlers
+        let image_available_handler = Handler::leak(GatewayImageAvailableHandler::new(Arc::clone(
+            &self.gateways,
+        )));
+        let image_unavailable_handler = Handler::leak(GatewayImageUnavailableHandler::new(
+            Arc::clone(&self.gateways),
+        ));
+
+        let (subscription, handshake_handler) =
+            self.setup_networking(&image_available_handler, &image_unavailable_handler)?;
+
+        self.image_available_handler = Some(image_available_handler);
+        self.image_unavailable_handler = Some(image_unavailable_handler);
 
         info!("VEX Core '{}' started successfully", self.config.core_id);
 
@@ -181,6 +199,12 @@ impl VexCoreServer {
         info!("Shutting down VEX Core '{}'", self.config.core_id);
         self.gateways.shutdown_all_gateways()?;
         self.shutdown.store(true, Ordering::SeqCst);
+        if let Some(mut handler) = self.image_available_handler.take() {
+            handler.release();
+        }
+        if let Some(mut handler) = self.image_unavailable_handler.take() {
+            handler.release();
+        }
         info!("VEX Core '{}' shut down successfully", self.config.core_id);
         Ok(())
     }
@@ -224,6 +248,8 @@ impl VexCoreServer {
     /// Sets up networking components for gateway communication
     fn setup_networking(
         &self,
+        image_available_handler: &Handler<GatewayImageAvailableHandler>,
+        image_unavailable_handler: &Handler<GatewayImageUnavailableHandler>,
     ) -> Result<(rusteron_client::AeronSubscription, HandshakeMessageHandler), ServerError> {
         // Create publication for responses
         let publication = new_publication_with_mdc(
@@ -233,19 +259,14 @@ impl VexCoreServer {
             ALL_GATEWAYS_STREAM_ID,
         )?;
 
-        // Create image handlers
-        let image_available_handler = GatewayImageAvailableHandler::new(Arc::clone(&self.gateways));
-        let image_unavailable_handler =
-            GatewayImageUnavailableHandler::new(Arc::clone(&self.gateways));
-
         // Create subscription for handshakes
         let subscription = new_subscription_with_handlers(
             &self.aeron,
             &self.config.local_address,
             self.config.initial_port,
             ALL_GATEWAYS_STREAM_ID,
-            image_available_handler,
-            image_unavailable_handler,
+            Some(image_available_handler),
+            Some(image_unavailable_handler),
         )?;
 
         // Create handshake handler

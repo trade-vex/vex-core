@@ -23,6 +23,8 @@ pub struct Duologue {
     pub port_control: u16,
     pub expire_time: u64,
     pub is_closed: bool,
+    on_image_available_handler: Handler<DuologueImageAvailable>,
+    on_image_unavailable_handler: Handler<DuologueImageUnavailable>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -51,12 +53,12 @@ impl Duologue {
             session_id,
         )?;
 
-        let on_image_available = DuologueImageAvailable {
+        let on_image_available_handler = Handler::leak(DuologueImageAvailable {
             owner: owner.to_string(),
-        };
-        let on_image_unavailable = DuologueImageUnavailable {
+        });
+        let on_image_unavailable_handler = Handler::leak(DuologueImageUnavailable {
             owner: owner.to_string(),
-        };
+        });
 
         let subscription = new_subsciption_with_handlers_and_session(
             aeron,
@@ -64,8 +66,8 @@ impl Duologue {
             port_data,
             DUOLOGUE_STREAM_ID,
             session_id,
-            on_image_available,
-            on_image_unavailable,
+            Some(&on_image_available_handler),
+            Some(&on_image_unavailable_handler),
         )?;
 
         let fragment_handler = FragmentHandler {
@@ -83,6 +85,8 @@ impl Duologue {
             expire_time,
             session_id,
             subscription,
+            on_image_available_handler,
+            on_image_unavailable_handler,
         })
     }
 
@@ -105,6 +109,8 @@ impl Duologue {
     pub fn close(&mut self) -> Result<(), AeronCError> {
         self.subscription.close::<AeronNotificationLogger>(None)?;
         self.fragment_handler.release();
+        self.on_image_available_handler.release();
+        self.on_image_unavailable_handler.release();
         self.is_closed = true;
         Ok(())
     }
