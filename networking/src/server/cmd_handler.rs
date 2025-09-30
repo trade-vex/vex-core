@@ -34,9 +34,15 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
                 );
 
                 // Process the order command (placeholder function)
-                self.producer.publish(|cmd| {
+                if let Err(e) = self.producer.try_publish(|cmd| {
                     *cmd = order_command.clone();
-                });
+                }) {
+                    error!(
+                        "[{}] Gateway '{}': Failed to publish OrderCommand to ring buffer: {}",
+                        session_id, self.gateway_id, e
+                    );
+                    return;
+                }
 
                 // Serialize and send back the processed command
                 let mut response_buffer = vec![0u8; 67];

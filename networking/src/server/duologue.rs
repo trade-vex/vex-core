@@ -15,10 +15,10 @@ use tracing::{error, info};
 pub const DUOLOGUE_STREAM_ID: i32 = 1002;
 
 pub struct Duologue {
-    pub fragment_handler: Handler<FragmentHandler>,
+    fragment_handler: Handler<FragmentHandler>,
     pub session_id: i32,
     pub gateway_id: String,
-    pub subscription: AeronSubscription,
+    subscription: AeronSubscription,
     pub port_data: u16,
     pub port_control: u16,
     pub expire_time: u64,
