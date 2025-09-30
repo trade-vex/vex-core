@@ -39,9 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server_port: u16 = env::var("VEX_SERVER_PORT")?.parse()?;
     // let sleep_duration = if args.rate > 0 { Duration::from_micros(1_000_000 / args.rate) } else { Duration::ZERO };
 
-    println!(
-        "Client starting. Attempting to connect to {server_host}:{server_port}"
-    );
+    println!("Client starting. Attempting to connect to {server_host}:{server_port}");
 
     let mut client_config = GatewayNetworkingConfig::test_defaults(); // Use your test defaults
     client_config.context_dir =
@@ -136,9 +134,7 @@ fn run_latency_test(
 
         let ack = rx.recv_timeout(Duration::from_secs(5))?;
         if ack.order_id == order_id as i64 {
-            println!(
-                "Client-{client_id} received ack for order_id: {order_id}"
-            );
+            println!("Client-{client_id} received ack for order_id: {order_id}");
             let rtt = start_time.elapsed().as_micros() as u64;
             histogram.record(rtt).unwrap();
         }
