@@ -1,6 +1,10 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use num_enum::TryFromPrimitive;
+use sbe_order::order_type::OrderType as SbeOrderType;
+use sbe_order::side::Side as SbeSide;
 use serde::{Deserialize, Serialize};
+
+use crate::cmd::OrderCommandSerializationError;
 
 #[derive(
     Debug,
@@ -30,6 +34,29 @@ impl OrderAction {
     }
 }
 
+impl TryFrom<SbeSide> for OrderAction {
+    type Error = OrderCommandSerializationError;
+
+    fn try_from(value: SbeSide) -> Result<Self, Self::Error> {
+        match value {
+            SbeSide::Bid => Ok(Self::Bid),
+            SbeSide::Ask => Ok(Self::Ask),
+            SbeSide::NullVal => Err(OrderCommandSerializationError::UnsupportedSbeOrderAction(
+                value as u8,
+            )),
+        }
+    }
+}
+
+impl From<OrderAction> for SbeSide {
+    fn from(val: OrderAction) -> Self {
+        match val {
+            OrderAction::Ask => SbeSide::Ask,
+            OrderAction::Bid => SbeSide::Bid,
+        }
+    }
+}
+
 #[derive(
     Debug,
     PartialEq,
@@ -53,6 +80,35 @@ pub enum OrderType {
     // Fill or Kill - execute immediately completely or not at all
     Fok = 3,       // with price cap
     FokBudget = 4, // total amount cap
+}
+
+impl TryFrom<SbeOrderType> for OrderType {
+    type Error = OrderCommandSerializationError;
+
+    fn try_from(value: SbeOrderType) -> Result<Self, Self::Error> {
+        match value {
+            SbeOrderType::Gtc => Ok(Self::Gtc),
+            SbeOrderType::Ioc => Ok(Self::Ioc),
+            SbeOrderType::IocBudget => Ok(Self::IocBudget),
+            SbeOrderType::Fok => Ok(Self::Fok),
+            SbeOrderType::FokBudget => Ok(Self::FokBudget),
+            SbeOrderType::NullVal => Err(OrderCommandSerializationError::UnsupportedSbeOrderType(
+                value as u8,
+            )),
+        }
+    }
+}
+
+impl From<OrderType> for SbeOrderType {
+    fn from(val: OrderType) -> Self {
+        match val {
+            OrderType::Gtc => SbeOrderType::Gtc,
+            OrderType::Ioc => SbeOrderType::Ioc,
+            OrderType::IocBudget => SbeOrderType::IocBudget,
+            OrderType::Fok => SbeOrderType::Fok,
+            OrderType::FokBudget => SbeOrderType::FokBudget,
+        }
+    }
 }
 
 #[derive(

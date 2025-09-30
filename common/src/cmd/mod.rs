@@ -1,6 +1,27 @@
 use crate::model::enums::{MatcherEventType, OrderAction, OrderType};
 use crate::model::order::OrderTrait;
 use borsh::{BorshDeserialize, BorshSerialize};
+use sbe_order::message_header_codec::MessageHeaderDecoder;
+use sbe_order::order_command_message_codec::{
+    OrderCommandMessageDecoder, OrderCommandMessageEncoder,
+};
+use sbe_order::order_command_type::OrderCommandType as SbeOrderCommandType;
+use sbe_order::{message_header_codec, ReadBuf, WriteBuf};
+use thiserror::Error;
+
+// Size of the serialized OrderCommand in bytes
+// Header: 8 bytes
+// command: 1 byte
+// order_id: 8 bytes
+// symbol: 4 bytes
+// uid: 8 bytes
+// price: 8 bytes
+// reserve_bid_price: 8 bytes
+// size: 8 bytes
+// action: 1 byte
+// order_type: 1 byte
+// timestamp: 8 bytes
+pub const ORDERCOMMANDSIZE: usize = 63;
 
 // TODO: translate OrderCommand
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -23,6 +44,46 @@ pub enum OrderCommandType {
     //    PERSIST_STATE_RISK,
     //
     //    GROUPING_CONTROL,
+}
+
+#[derive(Error, Debug)]
+pub enum OrderCommandSerializationError {
+    #[error("Unsupported SBE order command type: {0:?}")]
+    UnsupportedSbeOrderCommandType(SbeOrderCommandType),
+    #[error("Unsupported SBE order type: {0:?}")]
+    UnsupportedSbeOrderType(u8),
+    #[error("Unsupported SBE order action: {0:?}")]
+    UnsupportedSbeOrderAction(u8),
+    #[error("Unsupported order command type: {0:?}")]
+    UnsupportedOrderCommandType(OrderCommandType),
+    #[error("SBE serialization error: {0}")]
+    SbeError(#[from] sbe_order::SbeErr),
+}
+
+impl TryFrom<SbeOrderCommandType> for OrderCommandType {
+    type Error = OrderCommandSerializationError;
+
+    fn try_from(value: SbeOrderCommandType) -> Result<Self, Self::Error> {
+        match value {
+            SbeOrderCommandType::PlaceLimitOrder => Ok(Self::PlaceOrder),
+            SbeOrderCommandType::CancelOrder => Ok(Self::CancelOrder),
+            _ => Err(OrderCommandSerializationError::UnsupportedSbeOrderCommandType(value)),
+        }
+    }
+}
+
+impl TryFrom<OrderCommandType> for SbeOrderCommandType {
+    type Error = OrderCommandSerializationError;
+
+    fn try_from(val: OrderCommandType) -> Result<Self, Self::Error> {
+        match val {
+            OrderCommandType::PlaceOrder => Ok(SbeOrderCommandType::PlaceLimitOrder),
+            OrderCommandType::CancelOrder => Ok(SbeOrderCommandType::CancelOrder),
+            _ => Err(OrderCommandSerializationError::UnsupportedOrderCommandType(
+                val,
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
@@ -239,4 +300,46 @@ impl Default for MatcherTradeEvent {
             next_event: None,
         }
     }
+}
+
+pub fn encode_order_command(
+    order_command: OrderCommand,
+    buf: &mut [u8],
+) -> Result<(), OrderCommandSerializationError> {
+    let write_buf = WriteBuf::new(buf);
+    let mut encoder = OrderCommandMessageEncoder::default();
+    encoder = encoder.wrap(write_buf, message_header_codec::ENCODED_LENGTH);
+    encoder = encoder.header(0).parent()?;
+    encoder.command(order_command.command.try_into()?);
+    encoder.order_id(order_command.order_id);
+    encoder.symbol_id(order_command.symbol);
+    encoder.user_id(order_command.uid);
+    encoder.price(order_command.price);
+    encoder.reserve_bid_price(order_command.reserve_bid_price);
+    encoder.size(order_command.size);
+    encoder.side(order_command.action.into());
+    encoder.order_type(order_command.order_type.into());
+    encoder.timestamp(order_command.timestamp);
+    Ok(())
+}
+
+pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, OrderCommandSerializationError> {
+    let buf = ReadBuf::new(buf);
+    let mut decoder = OrderCommandMessageDecoder::default();
+    let header = MessageHeaderDecoder::default().wrap(buf, 0);
+    decoder = decoder.header(header, 0);
+    Ok(OrderCommand {
+        command: decoder.command().try_into()?,
+        order_id: decoder.order_id(),
+        symbol: decoder.symbol_id(),
+        uid: decoder.user_id(),
+        price: decoder.price(),
+        reserve_bid_price: decoder.reserve_bid_price(),
+        size: decoder.size(),
+        action: decoder.side().try_into()?,
+        order_type: decoder.order_type().try_into()?,
+        timestamp: decoder.timestamp(),
+        matcher_event: None,
+        user_cookie: 0,
+    })
 }

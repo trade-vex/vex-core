@@ -1,8 +1,19 @@
 [package]
-name = "networking"
+name = "vex-networking"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rusteron-client = { workspace = true }
-thiserror = "2.0.12"
+common = { workspace = true }
+rusteron-client = "0.1.143"
+rusteron-media-driver = "0.1.143"
+tracing = { workspace = true }
+thiserror = { workspace = true }
+vex-config = { workspace = true }
+disruptor = "3.4.0"
+rand = "0.8"
+crossbeam = "0.8.4"
+dashmap = "6.1.0"
+
+[dev-dependencies]
+test-log = { version = "0.2.15", features = ["trace"] }
