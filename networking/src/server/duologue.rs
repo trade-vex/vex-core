@@ -111,10 +111,10 @@ impl Duologue {
 
 impl Drop for Duologue {
     fn drop(&mut self) {
-        if !self.is_closed {
-            if let Err(e) = self.close() {
-                error!("Failed to close Duologue during drop: {:?}", e);
-            }
+        if !self.is_closed
+            && let Err(e) = self.close()
+        {
+            error!("Failed to close Duologue during drop: {:?}", e);
         }
     }
 }
