@@ -4,7 +4,7 @@ use common::cmd::OrderCommand;
 use dashmap::DashMap;
 use disruptor::{MultiConsumerBarrier, MultiProducer};
 use rusteron_client::{Aeron, AeronPublication};
-use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, error, info};
 use vex_config::CoreNetworkingConfig;
@@ -23,7 +23,7 @@ pub struct GatewayManager {
     /// Connection count per address for rate limiting
     address_connection_count: DashMap<String, AtomicU64>,
     /// Aeron messaging instance
-    aeron: Rc<Aeron>,
+    aeron: Arc<Aeron>,
     /// Core configuration
     config: CoreNetworkingConfig,
     /// Port allocator for gateway sessions
@@ -38,7 +38,7 @@ impl GatewayManager {
     /// Creates a new gateway manager
     pub fn new(
         config: CoreNetworkingConfig,
-        aeron: Rc<Aeron>,
+        aeron: Arc<Aeron>,
         producer: MultiProducer<OrderCommand, MultiConsumerBarrier>,
     ) -> Result<Self, ServerError> {
         Ok(Self {

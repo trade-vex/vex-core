@@ -40,7 +40,7 @@ use common::cmd::OrderCommand;
 use disruptor::{MultiConsumerBarrier, MultiProducer};
 use rusteron_client::{Aeron, AeronCError, AeronContext, Handler};
 use rusteron_media_driver::AeronIdleStrategy;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -77,11 +77,11 @@ pub enum ServerError {
 /// Enhanced VEX Core server for handling gateway connections
 pub struct VexCoreServer {
     /// Aeron instance for messaging
-    aeron: Rc<Aeron>,
+    aeron: Arc<Aeron>,
     /// Core configuration
     config: CoreNetworkingConfig,
     /// Gateway state management (lock-free)
-    gateways: Rc<GatewayManager>,
+    gateways: Arc<GatewayManager>,
     /// Last cleanup timestamp (atomic)
     last_cleanup: Instant,
     /// shutdown flag
@@ -102,11 +102,13 @@ impl VexCoreServer {
 
         info!("VEX Core '{}' initialized successfully", config.core_id);
 
-        let aeron = Rc::new(aeron);
+        #[allow(clippy::arc_with_non_send_sync)]
+        let aeron = Arc::new(aeron);
 
         Ok(Self {
-            aeron: Rc::clone(&aeron),
-            gateways: Rc::new(GatewayManager::new(config.clone(), aeron, producer)?),
+            aeron: Arc::clone(&aeron),
+            #[allow(clippy::arc_with_non_send_sync)]
+            gateways: Arc::new(GatewayManager::new(config.clone(), aeron, producer)?),
             config,
             last_cleanup: Instant::now(),
             shutdown: AtomicBool::new(false),
@@ -232,9 +234,9 @@ impl VexCoreServer {
         )?;
 
         // Create image handlers
-        let image_available_handler = GatewayImageAvailableHandler::new(Rc::clone(&self.gateways));
+        let image_available_handler = GatewayImageAvailableHandler::new(Arc::clone(&self.gateways));
         let image_unavailable_handler =
-            GatewayImageUnavailableHandler::new(Rc::clone(&self.gateways));
+            GatewayImageUnavailableHandler::new(Arc::clone(&self.gateways));
 
         // Create subscription for handshakes
         let subscription = new_subscription_with_handlers(
@@ -248,7 +250,7 @@ impl VexCoreServer {
 
         // Create handshake handler
         let handshake_handler =
-            HandshakeMessageHandler::new(Rc::clone(&self.gateways), publication);
+            HandshakeMessageHandler::new(Arc::clone(&self.gateways), publication);
 
         Ok((subscription, handshake_handler))
     }
