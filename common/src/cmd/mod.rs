@@ -9,6 +9,20 @@ use sbe_order::order_command_type::OrderCommandType as SbeOrderCommandType;
 use sbe_order::{message_header_codec, ReadBuf, WriteBuf};
 use thiserror::Error;
 
+// Size of the serialized OrderCommand in bytes
+// Header: 8 bytes
+// command: 1 byte
+// order_id: 8 bytes
+// symbol: 4 bytes
+// uid: 8 bytes
+// price: 8 bytes
+// reserve_bid_price: 8 bytes
+// size: 8 bytes
+// action: 1 byte
+// order_type: 1 byte
+// timestamp: 8 bytes
+pub const ORDERCOMMANDSIZE: usize = 63;
+
 // TODO: translate OrderCommand
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub enum OrderCommandType {

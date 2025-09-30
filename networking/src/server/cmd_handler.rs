@@ -1,4 +1,4 @@
-use common::cmd::{OrderCommand, decode_order_command, encode_order_command};
+use common::cmd::{ORDERCOMMANDSIZE, OrderCommand, decode_order_command, encode_order_command};
 use disruptor::{MultiConsumerBarrier, MultiProducer, Producer};
 use rusteron_client::{
     AeronFragmentHandlerCallback, AeronHeader, AeronPublication, AeronReservedValueSupplierLogger,
@@ -45,7 +45,7 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
                 }
 
                 // Serialize and send back the processed command
-                let mut response_buffer = vec![0u8; 67];
+                let mut response_buffer = vec![0u8; ORDERCOMMANDSIZE];
                 match encode_order_command(order_command, &mut response_buffer) {
                     Ok(_) => {
                         // Send the processed command back
