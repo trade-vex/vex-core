@@ -97,7 +97,7 @@ fn run_correctness_test(
             order_type: OrderType::Gtc,
             user_cookie: 40,
         };
-        client.send_order_command(&order_command)?;
+        client.send_order_command(order_command)?;
     }
     println!("Client finished sending.");
     std::thread::sleep(Duration::from_secs(2));
@@ -132,7 +132,7 @@ fn run_latency_test(
         let start_time = Instant::now();
         command.timestamp = start_time.elapsed().as_nanos() as i64; // This is a placeholder for a real timestamping mechanism
 
-        client.send_order_command(&command)?;
+        client.send_order_command(command)?;
 
         let ack = rx.recv_timeout(Duration::from_secs(5))?;
         if ack.order_id == order_id as i64 {
