@@ -4,6 +4,13 @@ use serde::Deserialize;
 use std::{collections::HashSet, env, fs, path::Path, time::Instant};
 use thiserror::Error;
 
+/// delay in network emulation in teste2e (high-latency scenario)
+const NETWORK_DELAY_MS: u64 = 100;
+/// packet loss percentage in network emulation in teste2e (packet-loss scenario)
+const PACKET_LOSS_PERCENT: u32 = 10;
+/// default number of messages each client sends in teste2e
+const DEFAULT_MSG_COUNT_PER_CLIENT: usize = 1000;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
@@ -172,7 +179,7 @@ fn apply_scenario_conditions(scenario: &str, clients: u32) -> Result<(), XTaskEr
                     "root",
                     "netem",
                     "delay",
-                    "50ms"
+                    format!("{NETWORK_DELAY_MS}ms")
                 )
                 .run()?;
                 // Apply 50ms latency to traffic leaving the server
@@ -188,7 +195,7 @@ fn apply_scenario_conditions(scenario: &str, clients: u32) -> Result<(), XTaskEr
                     "root",
                     "netem",
                     "delay",
-                    "50ms"
+                    format!("{NETWORK_DELAY_MS}ms")
                 )
                 .run()?;
             }
@@ -206,7 +213,7 @@ fn apply_scenario_conditions(scenario: &str, clients: u32) -> Result<(), XTaskEr
                     "root",
                     "netem",
                     "loss",
-                    "5%"
+                    format!("{PACKET_LOSS_PERCENT}%")
                 )
                 .run()?;
             }
@@ -246,8 +253,7 @@ fn run_correctness_task(
     // --- Scenario-specific setup ---
     apply_scenario_conditions(scenario, clients)?;
 
-    // --- Execute Test ---
-    let msg_count_per_client = 100;
+    let msg_count_per_client = DEFAULT_MSG_COUNT_PER_CLIENT;
     let total_msg_count = msg_count_per_client * clients as usize;
 
     println!("Executing {clients} clients to send {msg_count_per_client} messages each...");
