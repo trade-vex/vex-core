@@ -95,43 +95,34 @@ jobs:
 
   e2e-tests:
     name: End-to-end tests
-    runs-on: catthehacker/ubuntu-22.04:full
-    # services:
-    #   docker:
-    #     image: docker:24.0.5-dind
-    #     # privileged: true
-    #     options: >-
-    #       --network host
-    #       --entrypoint dockerd
-
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install Docker
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y docker.io docker-compose
-          docker --version
-
-      - name: Install dependencies
+      - name: Install Docker and dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            docker.io docker-compose \
             curl pkg-config libssl-dev uuid-dev ca-certificates \
             make cmake gcc g++ clang zlib1g-dev libbsd-dev
+          docker --version
 
       - name: Start Docker service
         run: |
           sudo systemctl start docker
-          docker info  # verify Docker is running
+          docker info
 
       - name: Run e2e tests
         run: |
-          cd ./xtask/tests && docker compose up media-driver --build && cd ../../
+          output=$(docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml up media-driver --build)
+          echo "$output"
+          if ! echo "$output" | grep -q "Media driver started"; then
+            echo "Media driver failed to start!"
+            exit 1
+          fi
           output=$(cargo xtask build-docker)
           echo "$output"
           if ! echo "$output" | grep -q "Docker images built successfully."; then
