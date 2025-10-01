@@ -92,3 +92,58 @@ jobs:
         run: cargo install cargo-audit
       - name: Run security audit
         run: cargo audit --deny warnings
+
+  e2e-tests:
+    name: End-to-end tests
+    runs-on: catthehacker/ubuntu-22.04:full
+    # services:
+    #   docker:
+    #     image: docker:24.0.5-dind
+    #     # privileged: true
+    #     options: >-
+    #       --network host
+    #       --entrypoint dockerd
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Docker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y docker.io docker-compose
+          docker --version
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl pkg-config libssl-dev uuid-dev ca-certificates \
+            make cmake gcc g++ clang zlib1g-dev libbsd-dev
+
+      - name: Start Docker service
+        run: |
+          sudo systemctl start docker
+          docker info  # verify Docker is running
+
+      - name: Run e2e tests
+        run: |
+          cd ./xtask/tests && docker compose up media-driver --build && cd ../../
+          output=$(cargo xtask build-docker)
+          echo "$output"
+          if ! echo "$output" | grep -q "Docker images built successfully."; then
+            echo "Docker image build failed!"
+            exit 1
+          fi
+          for scenario in basic-connectivity high-latency packet-loss; do
+            echo "Running test scenario: $scenario"
+            output=$(cargo xtask test-e2e --scenario "$scenario")
+            echo "$output"
+            if ! echo "$output" | grep -q "Scenario '$scenario' PASSED!"; then
+              echo "Test scenario '$scenario' failed!"
+              exit 1
+            fi
+          done
