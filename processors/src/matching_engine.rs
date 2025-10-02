@@ -1,6 +1,4 @@
 use std::sync::Arc;
-
-use common::L2MarketData;
 use common::OrderCommand;
 use common::OrderCommandType;
 use common::PriceCache;

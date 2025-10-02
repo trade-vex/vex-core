@@ -93,37 +93,25 @@ version = "1.0.0"
     let mut base_config = VexConfig::load_from_file(&base_config_path)?;
     let override_config = VexConfig::load_from_file(&override_config_path)?;
 
-    println!("   Before merge:");
-    println!("     - Port: {}", base_config.core_networking.initial_port);
+    println!("Before merge:");
+    println!("Port: {}", base_config.core_networking.initial_port);
     println!(
-        "     - Authentication: {}",
+        "Authentication: {}",
         base_config.core_networking.enable_authentication
     );
-    println!(
-        "     - Max gateways: {}",
-        base_config.core_networking.max_gateways
-    );
-    println!(
-        "     - Async logging: {}",
-        base_config.logging.async_logging
-    );
+    println!("Max gateways: {}", base_config.core_networking.max_gateways);
+    println!("Async logging: {}", base_config.logging.async_logging);
 
     base_config.merge_with(&override_config)?;
 
-    println!("   After merge:");
-    println!("     - Port: {}", base_config.core_networking.initial_port);
+    println!("After merge:");
+    println!("Port: {}", base_config.core_networking.initial_port);
     println!(
-        "     - Authentication: {}",
+        "Authentication: {}",
         base_config.core_networking.enable_authentication
     );
-    println!(
-        "     - Max gateways: {}",
-        base_config.core_networking.max_gateways
-    );
-    println!(
-        "     - Async logging: {}",
-        base_config.logging.async_logging
-    );
+    println!("Max gateways: {}", base_config.core_networking.max_gateways);
+    println!("Async logging: {}", base_config.logging.async_logging);
 
     println!();
 
@@ -147,17 +135,17 @@ version = "1.0.0"
         .allow_missing_files()
         .load_for_environment(Environment::Development)?;
 
-    println!("  Environment variables applied:");
+    println!("Environment variables applied:");
     println!(
-        "     - Port (from env): {}",
+        "Port (from env): {}",
         config_with_env.core_networking.initial_port
     );
     println!(
-        "     - Logging level (from env): {}",
+        "Logging level (from env): {}",
         config_with_env.logging.level
     );
     println!(
-        "     - Max message size (from env): {}",
+        "Max message size (from env): {}",
         config_with_env.gateway_networking.max_message_size
     );
 

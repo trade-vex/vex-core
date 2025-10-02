@@ -37,12 +37,11 @@ use crate::server::gateway_handler::{
 use crate::server::gateway_manager::GatewayManager;
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
 use common::OrderCommand;
-use crossbeam::utils::CachePadded;
-use disruptor::{MultiProducer, SingleConsumerBarrier};
+use disruptor::{SingleConsumerBarrier, MultiProducer};
 use rusteron_client::{Aeron, AeronCError, AeronContext, Handler};
 use rusteron_media_driver::AeronIdleStrategy;
-use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{error, info, instrument};
@@ -78,15 +77,19 @@ pub enum ServerError {
 /// Enhanced VEX Core server for handling gateway connections
 pub struct VexCoreServer {
     /// Aeron instance for messaging
-    aeron: Rc<Aeron>,
+    aeron: Arc<Aeron>,
     /// Core configuration
     config: CoreNetworkingConfig,
     /// Gateway state management (lock-free)
-    gateways: Rc<GatewayManager>,
+    gateways: Arc<GatewayManager>,
     /// Last cleanup timestamp (atomic)
-    last_cleanup_nanos: CachePadded<AtomicU64>,
+    last_cleanup: Instant,
     /// shutdown flag
     shutdown: AtomicBool,
+    /// Image available handler
+    image_available_handler: Option<Handler<GatewayImageAvailableHandler>>,
+    /// Image unavailable handler
+    image_unavailable_handler: Option<Handler<GatewayImageUnavailableHandler>>,
 }
 
 impl VexCoreServer {
@@ -103,16 +106,18 @@ impl VexCoreServer {
 
         info!("VEX Core '{}' initialized successfully", config.core_id);
 
-        let aeron = Rc::new(aeron);
-
-        let now_nanos = Instant::now().elapsed().as_nanos() as u64;
+        #[allow(clippy::arc_with_non_send_sync)]
+        let aeron = Arc::new(aeron);
 
         Ok(Self {
-            aeron: Rc::clone(&aeron),
-            gateways: Rc::new(GatewayManager::new(config.clone(), aeron, producer)?),
+            aeron: Arc::clone(&aeron),
+            #[allow(clippy::arc_with_non_send_sync)]
+            gateways: Arc::new(GatewayManager::new(config.clone(), aeron, producer)?),
             config,
-            last_cleanup_nanos: CachePadded::new(AtomicU64::new(now_nanos)),
+            last_cleanup: Instant::now(),
             shutdown: AtomicBool::new(false),
+            image_available_handler: None,
+            image_unavailable_handler: None,
         })
     }
 
@@ -120,7 +125,19 @@ impl VexCoreServer {
     #[instrument(skip(self))]
     pub fn start(&mut self) -> Result<(), ServerError> {
         // Create publication for sending responses to gateways
-        let (subscription, handshake_handler) = self.setup_networking()?;
+        // Create image handlers
+        let image_available_handler = Handler::leak(GatewayImageAvailableHandler::new(Arc::clone(
+            &self.gateways,
+        )));
+        let image_unavailable_handler = Handler::leak(GatewayImageUnavailableHandler::new(
+            Arc::clone(&self.gateways),
+        ));
+
+        let (subscription, handshake_handler) =
+            self.setup_networking(&image_available_handler, &image_unavailable_handler)?;
+
+        self.image_available_handler = Some(image_available_handler);
+        self.image_unavailable_handler = Some(image_unavailable_handler);
 
         info!("VEX Core '{}' started successfully", self.config.core_id);
 
@@ -146,41 +163,22 @@ impl VexCoreServer {
 
     /// Performs periodic cleanup of expired gateways (lock-free)
     fn periodic_cleanup(&mut self) -> Result<(), ServerError> {
-        let now_nanos = Instant::now().elapsed().as_nanos() as u64;
-        let last_cleanup_nanos = self.last_cleanup_nanos.load(Ordering::Relaxed);
-        let cleanup_interval_nanos = CLEANUP_INTERVAL.as_nanos() as u64;
-
-        if now_nanos.saturating_sub(last_cleanup_nanos) >= cleanup_interval_nanos {
-            // Try to update cleanup timestamp atomically
-            if self
-                .last_cleanup_nanos
-                .compare_exchange_weak(
-                    last_cleanup_nanos,
-                    now_nanos,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                info!("Performing periodic cleanup");
-
-                // Clean up expired gateways (lock-free)
-                match self.gateways.cleanup_expired_gateways() {
-                    Ok(cleanup_count) => {
-                        if cleanup_count > 0 {
-                            info!("Cleaned up {} expired gateways", cleanup_count);
-                        }
-                    }
-                    Err(e) => {
-                        error!("Error during gateway cleanup: {}", e);
+        if self.last_cleanup.elapsed() >= CLEANUP_INTERVAL {
+            info!("Performing periodic cleanup");
+            match self.gateways.cleanup_expired_gateways() {
+                Ok(cleanup_count) => {
+                    if cleanup_count > 0 {
+                        info!("Cleaned up {} expired gateways", cleanup_count);
                     }
                 }
+                Err(e) => {
+                    error!("Error during gateway cleanup: {}", e);
+                }
             }
+            self.last_cleanup = Instant::now();
         }
-
         Ok(())
     }
-
     /// Gets core configuration
     pub fn config(&self) -> &CoreNetworkingConfig {
         &self.config
@@ -201,6 +199,12 @@ impl VexCoreServer {
         info!("Shutting down VEX Core '{}'", self.config.core_id);
         self.gateways.shutdown_all_gateways()?;
         self.shutdown.store(true, Ordering::SeqCst);
+        if let Some(mut handler) = self.image_available_handler.take() {
+            handler.release();
+        }
+        if let Some(mut handler) = self.image_unavailable_handler.take() {
+            handler.release();
+        }
         info!("VEX Core '{}' shut down successfully", self.config.core_id);
         Ok(())
     }
@@ -244,6 +248,8 @@ impl VexCoreServer {
     /// Sets up networking components for gateway communication
     fn setup_networking(
         &self,
+        image_available_handler: &Handler<GatewayImageAvailableHandler>,
+        image_unavailable_handler: &Handler<GatewayImageUnavailableHandler>,
     ) -> Result<(rusteron_client::AeronSubscription, HandshakeMessageHandler), ServerError> {
         // Create publication for responses
         let publication = new_publication_with_mdc(
@@ -253,24 +259,19 @@ impl VexCoreServer {
             ALL_GATEWAYS_STREAM_ID,
         )?;
 
-        // Create image handlers
-        let image_available_handler = GatewayImageAvailableHandler::new(Rc::clone(&self.gateways));
-        let image_unavailable_handler =
-            GatewayImageUnavailableHandler::new(Rc::clone(&self.gateways));
-
         // Create subscription for handshakes
         let subscription = new_subscription_with_handlers(
             &self.aeron,
             &self.config.local_address,
             self.config.initial_port,
             ALL_GATEWAYS_STREAM_ID,
-            image_available_handler,
-            image_unavailable_handler,
+            Some(image_available_handler),
+            Some(image_unavailable_handler),
         )?;
 
         // Create handshake handler
         let handshake_handler =
-            HandshakeMessageHandler::new(Rc::clone(&self.gateways), publication);
+            HandshakeMessageHandler::new(Arc::clone(&self.gateways), publication);
 
         Ok((subscription, handshake_handler))
     }

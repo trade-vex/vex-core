@@ -15,20 +15,23 @@ use tracing::{error, info};
 pub const DUOLOGUE_STREAM_ID: i32 = 1002;
 
 pub struct Duologue {
-    pub fragment_handler: Handler<FragmentHandler>,
+    fragment_handler: Handler<FragmentHandler>,
     pub session_id: i32,
     pub gateway_id: String,
-    pub subscription: AeronSubscription,
+    subscription: AeronSubscription,
     pub port_data: u16,
     pub port_control: u16,
     pub expire_time: u64,
     pub is_closed: bool,
+    on_image_available_handler: Handler<DuologueImageAvailable>,
+    on_image_unavailable_handler: Handler<DuologueImageUnavailable>,
 }
 
 #[allow(clippy::too_many_arguments)]
 impl Duologue {
     pub fn new(
         aeron: &Aeron,
+        gateway_expiry_duration: u64,
         local: &str,
         gateway_id: &str,
         owner: &str,
@@ -37,7 +40,7 @@ impl Duologue {
         session_id: i32,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
     ) -> Result<Self, AeronCError> {
-        let expire_time = (SystemTime::now() + Duration::from_secs(1_000_000))
+        let expire_time = (SystemTime::now() + Duration::from_secs(gateway_expiry_duration))
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_secs();
@@ -50,12 +53,12 @@ impl Duologue {
             session_id,
         )?;
 
-        let on_image_available = DuologueImageAvailable {
+        let on_image_available_handler = Handler::leak(DuologueImageAvailable {
             owner: owner.to_string(),
-        };
-        let on_image_unavailable = DuologueImageUnavailable {
+        });
+        let on_image_unavailable_handler = Handler::leak(DuologueImageUnavailable {
             owner: owner.to_string(),
-        };
+        });
 
         let subscription = new_subsciption_with_handlers_and_session(
             aeron,
@@ -63,8 +66,8 @@ impl Duologue {
             port_data,
             DUOLOGUE_STREAM_ID,
             session_id,
-            on_image_available,
-            on_image_unavailable,
+            Some(&on_image_available_handler),
+            Some(&on_image_unavailable_handler),
         )?;
 
         let fragment_handler = FragmentHandler {
@@ -82,6 +85,8 @@ impl Duologue {
             expire_time,
             session_id,
             subscription,
+            on_image_available_handler,
+            on_image_unavailable_handler,
         })
     }
 
@@ -102,10 +107,22 @@ impl Duologue {
     }
 
     pub fn close(&mut self) -> Result<(), AeronCError> {
-        self.is_closed = true;
         self.subscription.close::<AeronNotificationLogger>(None)?;
         self.fragment_handler.release();
+        self.on_image_available_handler.release();
+        self.on_image_unavailable_handler.release();
+        self.is_closed = true;
         Ok(())
+    }
+}
+
+impl Drop for Duologue {
+    fn drop(&mut self) {
+        if !self.is_closed
+            && let Err(e) = self.close()
+        {
+            error!("Failed to close Duologue during drop: {:?}", e);
+        }
     }
 }
 
@@ -119,7 +136,16 @@ impl AeronAvailableImageCallback for DuologueImageAvailable {
         _subscription: AeronSubscription,
         image: AeronImage,
     ) {
-        let binding = image.get_constants().unwrap();
+        let binding = match image.get_constants() {
+            Ok(b) => b,
+            Err(e) => {
+                error!(
+                    "Failed to get image constants for gateway {}: {:?}",
+                    self.owner, e
+                );
+                return;
+            }
+        };
         let remote_addr = binding.source_identity();
         let session_id = binding.session_id;
 
@@ -150,7 +176,16 @@ impl AeronUnavailableImageCallback for DuologueImageUnavailable {
         _subscription: AeronSubscription,
         image: AeronImage,
     ) {
-        let binding = image.get_constants().unwrap();
+        let binding = match image.get_constants() {
+            Ok(b) => b,
+            Err(e) => {
+                error!(
+                    "Failed to get image constants for gateway {}: {:?}",
+                    self.owner, e
+                );
+                return;
+            }
+        };
         let remote_addr = binding.source_identity();
         let session_id = binding.session_id;
         // check image_count and close?

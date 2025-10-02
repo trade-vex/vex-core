@@ -4,7 +4,7 @@ use common::OrderCommand;
 use dashmap::DashMap;
 use disruptor::{MultiProducer, SingleConsumerBarrier};
 use rusteron_client::{Aeron, AeronPublication};
-use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, error, info};
 use vex_config::CoreNetworkingConfig;
@@ -23,7 +23,7 @@ pub struct GatewayManager {
     /// Connection count per address for rate limiting
     address_connection_count: DashMap<String, AtomicU64>,
     /// Aeron messaging instance
-    aeron: Rc<Aeron>,
+    aeron: Arc<Aeron>,
     /// Core configuration
     config: CoreNetworkingConfig,
     /// Port allocator for gateway sessions
@@ -38,7 +38,7 @@ impl GatewayManager {
     /// Creates a new gateway manager
     pub fn new(
         config: CoreNetworkingConfig,
-        aeron: Rc<Aeron>,
+        aeron: Arc<Aeron>,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
     ) -> Result<Self, ServerError> {
         Ok(Self {
@@ -128,7 +128,14 @@ impl GatewayManager {
 
         // Check various limits and constraints
         self.check_capacity_limits(publication, session_id, gateway_id)?;
-        let gateway_address = self.get_gateway_address(session_id)?;
+        let gateway_address = match self.get_gateway_address(session_id) {
+            Ok(address) => address,
+            Err(e) => {
+                let error_msg = format!("{session_id} {gateway_id} REJECT {e}");
+                send_message(publication, error_msg.as_bytes())?;
+                return Err(ServerError::GatewayMessageError(e.to_string()));
+            }
+        };
         self.check_address_limits(publication, session_id, gateway_id, &gateway_address)?;
         self.check_duplicate_connection(publication, session_id, gateway_id)?;
 
@@ -151,8 +158,15 @@ impl GatewayManager {
             "{} {} ACCEPT {} {} {}",
             session_id, gateway_id, ports[0], ports[1], encrypted_session
         );
-        send_message_with_retries(publication, accept_msg.as_bytes())?;
-
+        match send_message_with_retries(publication, accept_msg.as_bytes()) {
+            Ok(_) => (),
+            Err(e) => {
+                self.remove_gateway_session(session_id)?;
+                return Err(ServerError::GatewayMessageError(format!(
+                    "Failed to send ACCEPT message: {e}"
+                )));
+            }
+        }
         info!(
             "Gateway '{}' connected successfully. Session: 0x{:x}, ports: {}, {}",
             gateway_id, dedicated_session, ports[0], ports[1]
@@ -195,10 +209,14 @@ impl GatewayManager {
         let expired_sessions: Vec<i32> = self
             .gateway_sessions
             .iter()
-            .filter(|session| session.is_expired())
-            .map(|session| session.session_id)
+            .filter_map(|entry| {
+                if entry.value().is_expired() {
+                    Some(*entry.key())
+                } else {
+                    None
+                }
+            })
             .collect();
-
         let count = expired_sessions.len();
         for session_id in expired_sessions {
             self.remove_gateway_session(session_id)?;
@@ -316,18 +334,27 @@ impl GatewayManager {
         counter.fetch_add(1, Ordering::Relaxed);
 
         // Allocate resources
-        let ports = self
-            .port_allocator
-            .allocate(2)
-            .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?;
-        let dedicated_session = self
-            .session_allocator
-            .allocate()
-            .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?;
+        let ports = match self.port_allocator.allocate(2) {
+            Ok(p) => p,
+            Err(e) => {
+                counter.fetch_sub(1, Ordering::Relaxed);
+                return Err(ServerError::ResourceAllocationError(e.to_string()));
+            }
+        };
+        let dedicated_session = match self.session_allocator.allocate() {
+            Ok(s) => s,
+            Err(e) => {
+                self.port_allocator.free(ports[0]);
+                self.port_allocator.free(ports[1]);
+                counter.fetch_sub(1, Ordering::Relaxed);
+                return Err(ServerError::ResourceAllocationError(e.to_string()));
+            }
+        };
 
-        // Create session
-        let gateway_session = Duologue::new(
+        // gateway session
+        let gateway_session = match Duologue::new(
             &self.aeron,
+            self.config.gateway_timeout_seconds,
             &self.config.local_address,
             gateway_id,
             gateway_address,
@@ -335,7 +362,18 @@ impl GatewayManager {
             ports[1],
             dedicated_session,
             self.producer.clone(),
-        )?;
+        ) {
+            Ok(session) => session,
+            Err(e) => {
+                self.port_allocator.free(ports[0]);
+                self.port_allocator.free(ports[1]);
+                self.session_allocator.free(dedicated_session);
+                counter.fetch_sub(1, Ordering::Relaxed);
+                return Err(ServerError::ResourceAllocationError(format!(
+                    "Failed to create Duologue: {e}"
+                )));
+            }
+        };
 
         // Store session
         self.gateway_sessions
@@ -347,7 +385,6 @@ impl GatewayManager {
             "Allocated session 0x{:x} for gateway '{}' with ports {}, {}",
             dedicated_session, gateway_id, ports[0], ports[1]
         );
-
         Ok((dedicated_session, [ports[0], ports[1]]))
     }
 
@@ -378,7 +415,7 @@ impl GatewayManager {
             // Free resources
             self.port_allocator.free(gateway_session.port_data);
             self.port_allocator.free(gateway_session.port_control);
-
+            self.session_allocator.free(gateway_session.session_id);
             // Update connection count
             if let Some((_id, address)) = self.gateway_session_addresses.remove(&session_id)
                 && let Some(count) = self.address_connection_count.get_mut(&address)

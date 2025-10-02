@@ -80,11 +80,11 @@ impl Environment {
     }
 
     /// Get environment-specific configuration prefix for environment variables
-    pub fn env_prefix(&self) -> String {
+    pub fn env_key(&self) -> &'static str {
         match self {
-            Environment::Development => "VEX_DEV".to_string(),
-            Environment::Test => "VEX_TEST".to_string(),
-            Environment::Production => "VEX_PROD".to_string(),
+            Environment::Development => "DEV",
+            Environment::Test => "TEST",
+            Environment::Production => "PROD",
         }
     }
 }

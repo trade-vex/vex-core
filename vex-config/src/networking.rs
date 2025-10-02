@@ -1,6 +1,7 @@
 //! Networking configuration modules for VEX Core
 
 use crate::{ConfigError, Environment, Result};
+use common::ORDERCOMMANDSIZE;
 use serde::{Deserialize, Serialize};
 
 /// Core networking configuration for VEX Core server
@@ -28,7 +29,7 @@ pub struct CoreNetworkingConfig {
     pub enable_authentication: bool,
     /// Enable heartbeat monitoring
     pub enable_heartbeat: bool,
-    /// Gateway timeout in seconds
+    /// Gateway timeout in seconds, expires after this period.
     pub gateway_timeout_seconds: u64,
     /// Core identifier
     pub core_id: String,
@@ -64,7 +65,7 @@ impl CoreNetworkingConfig {
             reserved_session_id_high: 9999,
             enable_authentication: false,
             enable_heartbeat: true,
-            gateway_timeout_seconds: 60,
+            gateway_timeout_seconds: 1_000_000_000,
             core_id: "vex-core-dev".to_string(),
             buffer_size: 1024 * 1024, // 1MB
             retry_attempts: 3,
@@ -86,7 +87,7 @@ impl CoreNetworkingConfig {
             reserved_session_id_high: 2147483647,
             enable_authentication: true,
             enable_heartbeat: true,
-            gateway_timeout_seconds: 30,
+            gateway_timeout_seconds: 1_000_000_000,
             core_id: "vex-core-test".to_string(),
             buffer_size: 512 * 1024, // 512KB
             retry_attempts: 2,
@@ -108,7 +109,7 @@ impl CoreNetworkingConfig {
             reserved_session_id_high: 9999,
             enable_authentication: true,
             enable_heartbeat: true,
-            gateway_timeout_seconds: 15,
+            gateway_timeout_seconds: 1_000_000_000,
             core_id: "vex-core-prod".to_string(),
             buffer_size: 4 * 1024 * 1024, // 4MB
             retry_attempts: 5,
@@ -193,7 +194,7 @@ pub struct GatewayNetworkingConfig {
     pub core_control_port: u16,
     /// Gateway identifier for this instance
     pub gateway_id: String,
-    /// Maximum message size in bytes, 67 for OrderCommand
+    /// Maximum message size in bytes, 64 for OrderCommand
     pub max_message_size: usize,
     /// Enable heartbeat mechanism
     pub enable_heartbeat: bool,
@@ -228,7 +229,7 @@ impl GatewayNetworkingConfig {
             core_port: 40001,
             core_control_port: 40002,
             gateway_id: "gateway-dev-1".to_string(),
-            max_message_size: 67,
+            max_message_size: ORDERCOMMANDSIZE,
             enable_heartbeat: true,
             heartbeat_interval_seconds: 10,
             connection_timeout_seconds: 60,
@@ -247,7 +248,7 @@ impl GatewayNetworkingConfig {
             core_port: 41001,
             core_control_port: 41002,
             gateway_id: "gateway-test-1".to_string(),
-            max_message_size: 67,
+            max_message_size: ORDERCOMMANDSIZE,
             enable_heartbeat: true,
             heartbeat_interval_seconds: 5,
             connection_timeout_seconds: 30,
@@ -266,7 +267,7 @@ impl GatewayNetworkingConfig {
             core_port: 40001,
             core_control_port: 40002,
             gateway_id: "gateway-prod".to_string(),
-            max_message_size: 67,
+            max_message_size: ORDERCOMMANDSIZE,
             enable_heartbeat: true,
             heartbeat_interval_seconds: 5,
             connection_timeout_seconds: 15,

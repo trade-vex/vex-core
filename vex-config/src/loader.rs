@@ -66,8 +66,13 @@ impl ConfigLoader {
             )));
         }
 
-        let mut builder = Config::builder();
-
+        // Start with VexConfig defaults, so partial configs can be loaded.
+        let default_config_toml = toml::to_string(&VexConfig::default())
+            .map_err(|e| ConfigError::SerializationError(e.to_string()))?;
+        let mut builder = Config::builder().add_source(config::File::from_str(
+            &default_config_toml,
+            config::FileFormat::Toml,
+        ));
         // Add the specific file
         let format = self.detect_file_format(path)?;
         builder = builder.add_source(File::from(path).format(format));
@@ -92,7 +97,13 @@ impl ConfigLoader {
     pub fn load_with_environment(self, environment: Option<Environment>) -> Result<VexConfig> {
         let env = environment.unwrap_or_else(Environment::detect);
 
-        let mut builder = Config::builder();
+        // Start from env‑specific defaults so partial files/env vars can override safely
+        let env_config_toml = toml::to_string(&VexConfig::new(env.clone()))
+            .map_err(|e| ConfigError::SerializationError(e.to_string()))?;
+        let mut builder = Config::builder().add_source(config::File::from_str(
+            &env_config_toml,
+            config::FileFormat::Toml,
+        ));
 
         // Get search paths
         let search_paths = if self.search_paths.is_empty() {
@@ -103,7 +114,7 @@ impl ConfigLoader {
 
         // Add configuration files in order of precedence
         let mut files_found = false;
-        for path in &search_paths {
+        for path in search_paths.iter().rev() {
             let config_path = Path::new(path);
             if config_path.exists() {
                 files_found = true;
@@ -138,16 +149,17 @@ impl ConfigLoader {
 
         // Add environment-specific variables
         if let Some(prefix) = &self.env_prefix {
-            let env_prefix = format!("{}_{}", prefix, env.env_prefix());
+            let env_prefix = format!("{}_{}", prefix, env.env_key());
             builder = builder.add_source(
                 config::Environment::with_prefix(&env_prefix)
                     .try_parsing(true)
                     .separator("__"),
             );
 
-            // Also add general VEX prefix
+            // Add environment-specific prefix (higher precedence)
+            let env_specific_prefix = format!("{}_{}", prefix, env.env_key());
             builder = builder.add_source(
-                config::Environment::with_prefix(prefix)
+                config::Environment::with_prefix(&env_specific_prefix)
                     .try_parsing(true)
                     .separator("__"),
             );
@@ -175,7 +187,7 @@ impl ConfigLoader {
             .try_parsing(true)
             .separator("__");
 
-        let env_specific_prefix = format!("{}_{}", prefix, env.env_prefix());
+        let env_specific_prefix = format!("{}_{}", prefix, env.env_key());
         let env_specific_source = config::Environment::with_prefix(&env_specific_prefix)
             .try_parsing(true)
             .separator("__");

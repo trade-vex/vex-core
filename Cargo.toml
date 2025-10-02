@@ -1,3 +1,8 @@
+[package]
+name = "vex-core"
+version = "0.1.0"
+edition = "2021"
+
 [workspace]
 resolver = "2"
 members = [
@@ -20,6 +25,7 @@ vex-networking = { path = "./networking" }
 vex-orderbook = { path = "./orderbook" }
 processors = { path = "./processors" }
 borsh = { version = "1.5.7", default-features = false, features = ["hashbrown", "derive", "de_strict_order"] }
+tokio = { version = "1", features = ["full"] }
 hashbrown = { version = "0.15.4", features = ["serde"]}
 thiserror = "2.0.12"
 rusteron-client = "0.1.143"

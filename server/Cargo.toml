@@ -20,4 +20,5 @@ tikv-jemallocator = { workspace = true }
 
 [dev-dependencies]
 rusteron-client = { workspace = true }
+tokio = { workspace = true }
 

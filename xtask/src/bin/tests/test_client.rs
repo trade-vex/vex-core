@@ -98,7 +98,7 @@ fn run_correctness_test(
             balance: [UserBalance::default(); 2],
             l2_data: None,
         };
-        client.send_order_command(&order_command)?;
+        client.send_order_command(order_command)?;
     }
     println!("Client finished sending.");
     std::thread::sleep(Duration::from_secs(2));
@@ -135,7 +135,7 @@ fn run_latency_test(
         // The timestamp field is used to carry the start time as nanoseconds
         command.timestamp = start_time.elapsed().as_nanos() as u64; // This is a placeholder for a real timestamping mechanism
 
-        client.send_order_command(&command)?;
+        client.send_order_command(command)?;
 
         // --- Conceptual: Wait for the acknowledgment ---
         let ack = rx.recv_timeout(Duration::from_secs(5))?;

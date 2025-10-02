@@ -1,10 +1,23 @@
-use crate::{L2MarketData, L2SIZE, OrderCommandType, Side, TimeInForce, UserBalance};
+use crate::{L2MarketData, OrderCommandType, Side, TimeInForce, UserBalance};
 use sbe_order::message_header_codec::{self, MessageHeaderDecoder};
 use sbe_order::order_command_message_codec::{
     OrderCommandMessageDecoder, OrderCommandMessageEncoder,
 };
 use sbe_order::{ReadBuf, SbeResult, WriteBuf};
 use serde::de::value::Error as SerdeError;
+
+// Size of the serialized OrderCommand in bytes
+// Header: 8 bytes
+// command: 1 byte
+// order_id: 8 bytes
+// timestamp: 8 bytes
+// user_id: 8 bytes
+// market_id: 4 bytes
+// price: 8 bytes
+// size: 8 bytes
+// side: 1 byte
+// time_in_force: 1 byte
+pub const ORDERCOMMANDSIZE: usize = 59;
 
 /// OrderCommand: OrderCommand Plays the central role throughout the processing of the Order.
 /// It is created in the Gateway, and processed in VexCore in different processors through the Disruptor
