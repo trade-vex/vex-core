@@ -7,13 +7,38 @@ use crate::{ConfigError, Environment, Result};
 use common::CoreMarketSpecification;
 use common::MarketType;
 use hashbrown::HashMap;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Configuration for trading symbols
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolSpecificationConfig {
     /// Map of market_id to symbol specification
+    #[serde(serialize_with = "serialize_symbols", deserialize_with = "deserialize_symbols")]
     pub symbols: HashMap<u32, CoreMarketSpecification>,
+}
+
+fn serialize_symbols<S>(symbols: &HashMap<u32, CoreMarketSpecification>, serializer: S) -> std::result::Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let mut new_symbols = HashMap::new();
+    for (key, value) in symbols {
+        new_symbols.insert(key.to_string(), value.clone());
+    }
+    new_symbols.serialize(serializer)
+}
+
+fn deserialize_symbols<'de, D>(deserializer: D) -> std::result::Result<HashMap<u32, CoreMarketSpecification>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let new_symbols = HashMap::<String, CoreMarketSpecification>::deserialize(deserializer)?;
+    let mut symbols = HashMap::new();
+    for (key, value) in new_symbols {
+        let key = key.parse::<u32>().map_err(serde::de::Error::custom)?;
+        symbols.insert(key, value);
+    }
+    Ok(symbols)
 }
 
 impl SymbolSpecificationConfig {
