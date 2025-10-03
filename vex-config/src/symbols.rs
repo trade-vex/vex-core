@@ -13,11 +13,17 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolSpecificationConfig {
     /// Map of market_id to symbol specification
-    #[serde(serialize_with = "serialize_symbols", deserialize_with = "deserialize_symbols")]
+    #[serde(
+        serialize_with = "serialize_symbols",
+        deserialize_with = "deserialize_symbols"
+    )]
     pub symbols: HashMap<u32, CoreMarketSpecification>,
 }
 
-fn serialize_symbols<S>(symbols: &HashMap<u32, CoreMarketSpecification>, serializer: S) -> std::result::Result<S::Ok, S::Error>
+fn serialize_symbols<S>(
+    symbols: &HashMap<u32, CoreMarketSpecification>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -28,7 +34,9 @@ where
     new_symbols.serialize(serializer)
 }
 
-fn deserialize_symbols<'de, D>(deserializer: D) -> std::result::Result<HashMap<u32, CoreMarketSpecification>, D::Error>
+fn deserialize_symbols<'de, D>(
+    deserializer: D,
+) -> std::result::Result<HashMap<u32, CoreMarketSpecification>, D::Error>
 where
     D: Deserializer<'de>,
 {

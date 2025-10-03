@@ -95,9 +95,8 @@ impl CoreMarketSpecificationBuilder {
     }
 }
 
-
 /// Market ID Specification helper functions
-/// 
+///
 /// Base And Quote asset extraction from market_id
 /// The Base asset is stored in the lower 16 bits of the market_id
 /// The Quote asset is stored in the upper 16 bits of the market_id

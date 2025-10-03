@@ -1,5 +1,5 @@
 use common::{ORDERCOMMANDSIZE, OrderCommand, decode_order_command, encode_order_command};
-use disruptor::{SingleConsumerBarrier, MultiProducer, Producer};
+use disruptor::{MultiProducer, Producer, SingleConsumerBarrier};
 use rusteron_client::{
     AeronFragmentHandlerCallback, AeronHeader, AeronPublication, AeronReservedValueSupplierLogger,
 };

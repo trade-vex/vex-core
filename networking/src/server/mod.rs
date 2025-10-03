@@ -37,7 +37,7 @@ use crate::server::gateway_handler::{
 use crate::server::gateway_manager::GatewayManager;
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
 use common::OrderCommand;
-use disruptor::{SingleConsumerBarrier, MultiProducer};
+use disruptor::{MultiProducer, SingleConsumerBarrier};
 use rusteron_client::{Aeron, AeronCError, AeronContext, Handler};
 use rusteron_media_driver::AeronIdleStrategy;
 use std::sync::Arc;

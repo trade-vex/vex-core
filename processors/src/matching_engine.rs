@@ -1,12 +1,12 @@
-use std::sync::Arc;
 use common::OrderCommand;
 use common::OrderCommandType;
 use common::PriceCache;
 use common::Status;
 use hashbrown::HashMap;
+use std::sync::Arc;
 use tracing::{info, warn};
-use vex_orderbook::tree::{BTreeAskSide, BTreeBidSide};
 use vex_orderbook::OrderBook;
+use vex_orderbook::tree::{BTreeAskSide, BTreeBidSide};
 
 /// Owns all order books and routes commands to the correct one.
 pub struct MatchingEngineRouter {

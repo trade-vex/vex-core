@@ -82,7 +82,7 @@ impl BalanceStore {
         let key = BalanceKey { user_id, asset_id };
         self.balances
             .entry(key)
-            .or_insert_with(UserBalance::default)
+            .or_default()
     }
 
     // Lock funds (move from available to locked)

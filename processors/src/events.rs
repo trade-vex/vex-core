@@ -331,7 +331,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_kafka_events_handler_placed_order() {
-        let handler = KafkaEventsHandler::new("localhost:9093");
+        let handler = KafkaEventsHandler::new("localhost:9092");
 
         let mut cmd = OrderCommand::new(
             common::TimeInForce::Gtc,
@@ -353,7 +353,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_kafka_events_handler_cancelled_order() {
-        let handler = KafkaEventsHandler::new("localhost:9093");
+        let handler = KafkaEventsHandler::new("localhost:9092");
 
         let mut cmd = OrderCommand::new(
             common::TimeInForce::Gtc,
@@ -374,7 +374,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_kafka_events_handler_filled_order_with_trades() {
-        let handler = KafkaEventsHandler::new("localhost:9093");
+        let handler = KafkaEventsHandler::new("localhost:9092");
 
         // Create a processed command with Filled status and trade events
         let mut filled_cmd = OrderCommand::new(
