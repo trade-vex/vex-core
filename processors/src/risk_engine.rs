@@ -331,7 +331,7 @@ impl RiskEngine {
         let mut store = self.balances.lock();
         store
             .unlock_funds(user_id, asset_to_unlock, amount_to_unlock)
-            .map_err(|err| RiskEngineError::BalanceError(err))
+            .map_err(RiskEngineError::BalanceError)
     }
 
     pub fn get_balance(&self, user_id: u64, asset_id: u16) -> UserBalance {
@@ -433,7 +433,7 @@ mod tests {
     fn test_reserve_and_cancel_bid() {
         let engine = RiskEngine::default();
         let user_id = 1;
-        let market_id = ((2 as u32) << 16) | (1 as u32); // base=1 (e.g. BTC), quote=2 (e.g. USD)
+        let market_id = (2_u32 << 16) | 1_u32; // base=1 (e.g. BTC), quote=2 (e.g. USD)
         let quote_asset = quote_asset(market_id);
         let price = 100;
         let size = 10;
@@ -475,7 +475,7 @@ mod tests {
     fn test_reserve_and_cancel_ask() {
         let engine = RiskEngine::default();
         let user_id = 1;
-        let market_id = ((2 as u32) << 16) | (1 as u32); // base=1 (e.g. BTC), quote=2 (e.g. USD)
+        let market_id = (2_u32 << 16) | 1_u32; // base=1 (e.g. BTC), quote=2 (e.g. USD)
         let base_asset = base_asset(market_id);
         let price = 100;
         let size = 10;
@@ -516,7 +516,7 @@ mod tests {
     fn test_insufficient_funds() {
         let engine = RiskEngine::default();
         let user_id = 1;
-        let market_id = ((2 as u32) << 16) | (1 as u32);
+        let market_id = (2_u32 << 16) | 1_u32;
         let quote_asset = quote_asset(market_id);
         let price = 100;
         let size = 10;
@@ -546,7 +546,7 @@ mod tests {
         assert!(res.is_err());
         match res.unwrap_err() {
             RiskEngineError::BalanceError(BalanceError::InsufficientAvailableFunds { .. }) => (),
-            e => panic!("Unexpected error: {:?}", e),
+            e => panic!("Unexpected error: {e:?}"),
         }
     }
 
@@ -689,7 +689,7 @@ mod tests {
         assert!(res.is_err());
         match res.unwrap_err() {
             RiskEngineError::InvalidArguments { .. } => (),
-            e => panic!("Expected InvalidArguments, got {:?}", e),
+            e => panic!("Expected InvalidArguments, got {e:?}"),
         }
 
         // --- Test 2: Market Buy with liquidity ---
@@ -719,7 +719,7 @@ mod tests {
         assert!(res.is_err());
         match res.unwrap_err() {
             RiskEngineError::BalanceError(BalanceError::InsufficientAvailableFunds { .. }) => (),
-            e => panic!("Expected InsufficientAvailableFunds, got {:?}", e),
+            e => panic!("Expected InsufficientAvailableFunds, got {e:?}"),
         }
 
         // --- Test 4: Market Sell ---

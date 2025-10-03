@@ -36,12 +36,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path = "examples/symbols.toml";
     match VexConfig::load_from_file(config_path) {
         Ok(config) => {
-            println!("   Successfully loaded configuration from {}", config_path);
+            println!("   Successfully loaded configuration from {config_path}");
             println!("   Environment: {}", config.environment);
             println!("   Symbols configured: {}", config.symbols.len());
         }
         Err(e) => {
-            println!("   Failed to load from {}: {}", config_path, e);
+            println!("   Failed to load from {config_path}: {e}");
             println!("   (This is expected if the file doesn't exist)");
         }
     }
@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n4. Validating symbol configuration:");
     match custom_symbols.validate() {
         Ok(()) => println!("   ✓ Configuration is valid"),
-        Err(e) => println!("   ✗ Configuration validation failed: {}", e),
+        Err(e) => println!("   ✗ Configuration validation failed: {e}"),
     }
 
     // Example 5: Create full VEX configuration with custom symbols
@@ -95,8 +95,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n6. Saving configuration to file:");
     let output_path = "/tmp/vex_config_example.toml";
     match full_config.save_to_file(output_path) {
-        Ok(()) => println!("   ✓ Configuration saved to {}", output_path),
-        Err(e) => println!("   ✗ Failed to save configuration: {}", e),
+        Ok(()) => println!("   ✓ Configuration saved to {output_path}"),
+        Err(e) => println!("   ✗ Failed to save configuration: {e}"),
     }
 
     println!("\n=== Example completed successfully ===");

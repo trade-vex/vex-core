@@ -25,8 +25,7 @@ impl MatchingEngineRouter {
         // Validate num_shards is power of 2
         if num_shards.count_ones() != 1 {
             panic!(
-                "Invalid number of shards {} - must be power of 2",
-                num_shards
+                "Invalid number of shards {num_shards} - must be power of 2"
             );
         }
 
