@@ -2795,6 +2795,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "vex-server"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "ctrlc",
+ "disruptor",
+ "hashbrown 0.15.5",
+ "parking_lot",
+ "processors",
+ "rusteron-client",
+ "test-log",
+ "tikv-jemallocator",
+ "tokio",
+ "tracing",
+ "tracing-subscriber 0.1.6",
+ "vex-config",
+ "vex-networking",
+ "vex-orderbook",
+]
+
+[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

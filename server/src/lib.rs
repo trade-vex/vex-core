@@ -20,7 +20,7 @@ pub fn init_exchange(
     let journaling_processor = JournalingProcessor::new();
 
     // Create events handler for trade events
-    let events_handler = Arc::new(KafkaEventsHandler::new("localhost:9093"));
+    let events_handler = Arc::new(KafkaEventsHandler::new("localhost:9092"));
 
     // Create the Exchange Core with sharded risk engines and matching engines
     // Symbols are automatically added to matching engines during initialization
@@ -88,7 +88,7 @@ mod test {
         let (_core_engine, producer, risk_engines_opt) = CoreEngine::new(
             specs,
             JournalingProcessor::new(),
-            Arc::new(KafkaEventsHandler::new("localhost:9093")),
+            Arc::new(KafkaEventsHandler::new("localhost:9092")),
             test_handler,
         );
         let risk_engines = risk_engines_opt.expect("Risk engines should be available in test mode");
@@ -107,7 +107,7 @@ mod test {
             let (_, producer, _) = CoreEngine::new(
                 specs,
                 JournalingProcessor::new(),
-                Arc::new(KafkaEventsHandler::new("localhost:9093")),
+                Arc::new(KafkaEventsHandler::new("localhost:9092")),
                 test_handler.unwrap(),
             );
             producer
@@ -115,7 +115,7 @@ mod test {
             let (_, producer, _) = CoreEngine::new(
                 specs,
                 JournalingProcessor::new(),
-                Arc::new(KafkaEventsHandler::new("localhost:9093")),
+                Arc::new(KafkaEventsHandler::new("localhost:9092")),
                 |_cmd: &mut OrderCommand, _seq: i64, _end_of_batch: bool| {},
             );
             producer
@@ -165,7 +165,7 @@ mod test {
         let (_core_engine, mut producer, risk_engines_opt) = CoreEngine::new(
             specs,
             JournalingProcessor::new(),
-            Arc::new(KafkaEventsHandler::new("localhost:9093")),
+            Arc::new(KafkaEventsHandler::new("localhost:9092")),
             test_handler,
         );
         let risk_engines = risk_engines_opt.expect("Risk engines should be available in test mode");
@@ -253,7 +253,7 @@ mod test {
         let (_core_engine, mut producer, risk_engines_opt) = CoreEngine::new(
             specs,
             JournalingProcessor::new(),
-            Arc::new(KafkaEventsHandler::new("localhost:9093")),
+            Arc::new(KafkaEventsHandler::new("localhost:9092")),
             test_handler,
         );
         let risk_engines = risk_engines_opt.expect("Risk engines should be available in test mode");
@@ -405,7 +405,7 @@ mod test {
         let (_core_engine, mut producer, risk_engines_opt) = CoreEngine::new(
             specs,
             JournalingProcessor::new(),
-            Arc::new(KafkaEventsHandler::new("localhost:9093")),
+            Arc::new(KafkaEventsHandler::new("localhost:9092")),
             test_handler,
         );
         let risk_engines = risk_engines_opt.expect("Risk engines should be available in test mode");
@@ -1258,7 +1258,7 @@ mod test {
         }
     }
 
-    #[test]
+    #[test_log::test]
     fn test_multi_market_stress_scenario() {
         // This test simulates a high-volatility session across three interconnected markets:
         // - BTC/USD: A high-liquidity pair.
