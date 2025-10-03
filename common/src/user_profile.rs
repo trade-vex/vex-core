@@ -77,35 +77,9 @@ impl BalanceStore {
 
     pub fn set_balance(&mut self, user_id: UserId, asset_id: MarketId, balance: UserBalance) {
         let key = BalanceKey { user_id, asset_id };
-        self.balances.insert(key, balance);
-    }
-
-    pub fn update_available(
-        &mut self,
-        user_id: UserId,
-        asset_id: MarketId,
-        amount: u64,
-    ) -> Result<(), BalanceError> {
-        let key = BalanceKey { user_id, asset_id };
-        match self.balances.get_mut(&key) {
-            Some(balance) => balance.available = amount,
-            None => return Err(BalanceError::UserNotFound { user_id, asset_id }),
-        };
-        Ok(())
-    }
-
-    pub fn update_locked(
-        &mut self,
-        user_id: UserId,
-        asset_id: MarketId,
-        amount: u64,
-    ) -> Result<(), BalanceError> {
-        let key = BalanceKey { user_id, asset_id };
-        match self.balances.get_mut(&key) {
-            Some(balance) => balance.locked = amount,
-            None => return Err(BalanceError::UserNotFound { user_id, asset_id }),
-        };
-        Ok(())
+        self.balances
+            .entry(key)
+            .or_default()
     }
 
     // Lock funds (move from available to locked)
