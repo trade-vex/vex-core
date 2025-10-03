@@ -146,15 +146,13 @@ impl SymbolSpecificationConfig {
             // Validate scale factors are non-zero
             if spec.base_scale_k == 0 {
                 return Err(ConfigError::ValidationError(format!(
-                    "Symbol {}: base_scale_k cannot be zero",
-                    market_id
+                    "Symbol {market_id}: base_scale_k cannot be zero"
                 )));
             }
 
             if spec.quote_scale_k == 0 {
                 return Err(ConfigError::ValidationError(format!(
-                    "Symbol {}: quote_scale_k cannot be zero",
-                    market_id
+                    "Symbol {market_id}: quote_scale_k cannot be zero"
                 )));
             }
 
@@ -249,10 +247,7 @@ mod tests {
     #[test]
     fn test_validation_market_id_mismatch() {
         let mut symbols = HashMap::new();
-        let spec = CoreMarketSpecification {
-            market_id: 123,
-            ..Default::default()
-        };
+        let spec = CoreMarketSpecification { market_id: 0, ..Default::default() };
         symbols.insert(456, spec); // Mismatch: key 456 != spec.market_id 123
 
         let config = SymbolSpecificationConfig { symbols };
@@ -262,11 +257,7 @@ mod tests {
     #[test]
     fn test_validation_zero_scale() {
         let mut symbols = HashMap::new();
-        let spec = CoreMarketSpecification {
-            market_id: 123,
-            base_scale_k: 0, // Invalid: base_scale_k = 0
-            ..Default::default()
-        };
+        let spec = CoreMarketSpecification {market_id: 123, base_scale_k: 0, ..Default::default() }; // Invalid: base_scale_k = 0
         symbols.insert(123, spec);
 
         let config = SymbolSpecificationConfig { symbols };
@@ -276,14 +267,7 @@ mod tests {
     #[test]
     fn test_validation_taker_fee_less_than_maker() {
         let mut symbols = HashMap::new();
-        let spec = CoreMarketSpecification {
-            market_id: 123,
-            base_scale_k: 1,
-            quote_scale_k: 1,
-            taker_fee: 100,
-            maker_fee: 200, // Invalid: taker < maker
-            ..Default::default()
-        };
+        let spec = CoreMarketSpecification {market_id: 123, base_scale_k: 1, quote_scale_k: 1, taker_fee: 100, maker_fee: 200, ..Default::default() }; // Invalid: taker < maker
         symbols.insert(123, spec);
 
         let config = SymbolSpecificationConfig { symbols };

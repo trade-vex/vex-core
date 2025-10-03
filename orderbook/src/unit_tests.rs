@@ -95,9 +95,9 @@ mod test {
 
     #[cfg(test)]
     impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
+        
         /// Helper function to check if the order book state is consistent
         /// Get the best bid price and volume
-
         pub fn verify_state(&mut self) -> Result<(), String> {
             // Check that each order referenced in self.orders exists in one of the sides
             for (order_id, price) in &self.orders {
@@ -119,8 +119,7 @@ mod test {
 
                 if !found {
                     return Err(format!(
-                        "Order {} at price {} not found on either side",
-                        order_id, price
+                        "Order {order_id} at price {price} not found on either side"
                     ));
                 }
             }
@@ -2052,11 +2051,6 @@ mod test {
         assert_eq!(ask_levels, expected_asks, "Ask levels don't match");
     }
 
-    /// Test helper to create a test order book
-    // pub fn create_test_order_book() -> OrderBook<BTreeAskSide, BTreeBidSide> {
-    //     OrderBook::new(BTreeBidSide::new(), BTreeAskSide::new())
-    // }
-
     /// Counter for generating unique order IDs and timestamps
     pub struct TestCounter {
         order_id: u64,
@@ -2665,14 +2659,6 @@ mod test {
             &[(1001, 80), (1002, 60), (1003, 90)],
         );
     }
-
-    // A type alias for the concrete OrderBook implementation used in tests
-    // type TestVexOrderBook = OrderBook<BTreeAskSide, BTreeBidSide>;
-
-    /// Creates a new, empty order book with BTree-backed sides.
-    // fn create_empty_book() -> TestVexOrderBook {
-    //     OrderBook::new(BTreeBidSide::new(), BTreeAskSide::new())
-    // }
 
     /// A helper struct to manage state for tests, ensuring unique and incremental
     /// order IDs and timestamps, which is crucial for simulating a real-world scenario.
@@ -3307,7 +3293,7 @@ mod test {
             let price = 99 - i;
             let size = (i + 1) * 10;
             let mut bid_cmd = harness.create_place_order_cmd(
-                200 + i as u64,
+                200 + i,
                 Side::Bid,
                 price,
                 size,
@@ -3321,7 +3307,7 @@ mod test {
             let price = 101 + i;
             let size = (i + 1) * 10;
             let mut ask_cmd = harness.create_place_order_cmd(
-                300 + i as u64,
+                300 + i,
                 Side::Ask,
                 price,
                 size,

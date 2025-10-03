@@ -28,7 +28,7 @@ pub fn init_exchange(
     #[cfg(test)]
     {
         let test_handler = |cmd: &mut common::OrderCommand, _seq: i64, _end_of_batch: bool| {
-            println!("Test handler received command: {:?}", cmd);
+            println!("Test handler received command: {cmd:?}");
         };
         let (core_engine, producer, _) = CoreEngine::new(
             symbol_specs.clone(),
@@ -36,13 +36,13 @@ pub fn init_exchange(
             events_handler,
             test_handler,
         );
-        return (core_engine, producer);
+        (core_engine, producer)
     }
     #[cfg(not(test))]
     {
         let (core_engine, producer, _) =
             CoreEngine::new(symbol_specs.clone(), journaling_processor, events_handler);
-        return (core_engine, producer);
+        (core_engine, producer)
     }
 }
 
@@ -126,7 +126,7 @@ mod test {
     fn test_simple() {
         let test_handler = Some(Box::new(
             |cmd: &mut OrderCommand, _seq: i64, _end_of_batch: bool| {
-                println!("Test handler received command: {:?}", cmd);
+                println!("Test handler received command: {cmd:?}");
             },
         ));
         let mut producer = get_producer(test_handler);
@@ -1243,8 +1243,7 @@ mod test {
             let expected_balance = UserBalance::new(expected_available, expected_locked);
             assert_eq!(
                 balance, expected_balance,
-                "Balance check failed for User {} Asset {} [Context: {}]",
-                user_id, asset_id, context
+                "Balance check failed for User {user_id} Asset {asset_id} [Context: {context}]"
             );
         }
 

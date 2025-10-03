@@ -83,7 +83,7 @@ impl KafkaEventsHandler {
         for (balance, asset_id) in balance.iter().zip([base_asset_id, quote_asset_id]) {
             let balance_event = BalanceEvent {
                 user_id,
-                asset_id: asset_id,
+                asset_id,
                 available: balance.available(),
                 locked: balance.locked(),
                 total: balance.total(),
@@ -142,7 +142,7 @@ impl KafkaEventsHandler {
             timestamp: cmd.timestamp(),
         };
 
-        let topic_name = format!("market-{}-trades", market_id);
+        let topic_name = format!("market-{market_id}-trades");
         let trade_key = format!("{}:{}", taker_order_id, event.matched_order_id);
         self.publish_event(&topic_name, &trade_key, &trade_event);
 
@@ -199,7 +199,7 @@ impl KafkaEventsHandler {
                 timestamp: snapshot.timestamp,
             };
 
-            let topic_name = format!("market-{}-orderbook", market_id);
+            let topic_name = format!("market-{market_id}-orderbook");
             self.publish_event(&topic_name, &market_id.to_string(), &orderbook_event);
 
             info!(
@@ -234,7 +234,7 @@ impl EventsHandler for KafkaEventsHandler {
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
             Status::Cancelled => {
-                self.publish_balance_event(taker_id, &cmd, &cmd.balance);
+                self.publish_balance_event(taker_id, cmd, &cmd.balance);
                 self.publish_cancel_order_event(cmd);
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
@@ -245,12 +245,12 @@ impl EventsHandler for KafkaEventsHandler {
                     self.publish_trade_event(event, cmd, market_id, taker_id, taker_order_id);
 
                     // Balance Event for the maker
-                    self.publish_balance_event(event.maker_user_id, &cmd, &event.maker_balance);
+                    self.publish_balance_event(event.maker_user_id, cmd, &event.maker_balance);
 
                     curr_event = event.next_event.as_deref();
                 }
                 // Publish balance event for the taker
-                self.publish_balance_event(taker_id, &cmd, &cmd.balance);
+                self.publish_balance_event(taker_id, cmd, &cmd.balance);
             }
             Status::Processing => {
                 // this should ideally be unreachable
@@ -327,7 +327,7 @@ mod tests {
     use super::*;
     use common::{Side, UserBalance};
 
-    const MARKET_ID: u32 = 10_000_0010; // Example market_id encoding
+    const MARKET_ID: u32 = 100_000_010; // Example market_id encoding
 
     #[tokio::test]
     async fn test_kafka_events_handler_placed_order() {
