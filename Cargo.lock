@@ -2932,6 +2932,7 @@ dependencies = [
  "parking_lot",
  "processors",
  "rusteron-client",
+ "test-log",
  "tikv-jemallocator",
  "tokio",
  "tracing",

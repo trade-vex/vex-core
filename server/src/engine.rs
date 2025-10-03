@@ -171,7 +171,7 @@ impl CoreEngine {
 
             return (Self {}, producer, Some(risk_engines_arc));
         }
-
+        #[allow(unreachable_code)]
         let producer = producer.build();
 
         let engine = Self {};
