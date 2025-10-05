@@ -1,7 +1,7 @@
 //! Networking configuration modules for VEX Core
 
 use crate::{ConfigError, Environment, Result};
-use common::ORDERCOMMANDSIZE;
+use common::{MAX_GATEWAYS, ORDERCOMMANDSIZE};
 use serde::{Deserialize, Serialize};
 
 /// Core networking configuration for VEX Core server
@@ -193,7 +193,7 @@ pub struct GatewayNetworkingConfig {
     /// VEX Core control port for receiving messages
     pub core_control_port: u16,
     /// Gateway identifier for this instance
-    pub gateway_id: String,
+    pub gateway_id: u8,
     /// Maximum message size in bytes, 64 for OrderCommand
     pub max_message_size: usize,
     /// Enable heartbeat mechanism
@@ -228,7 +228,7 @@ impl GatewayNetworkingConfig {
             core_address: "127.0.0.1".to_string(),
             core_port: 40001,
             core_control_port: 40002,
-            gateway_id: "gateway-dev-1".to_string(),
+            gateway_id: 1,
             max_message_size: ORDERCOMMANDSIZE,
             enable_heartbeat: true,
             heartbeat_interval_seconds: 10,
@@ -247,7 +247,7 @@ impl GatewayNetworkingConfig {
             core_address: "127.0.0.1".to_string(),
             core_port: 41001,
             core_control_port: 41002,
-            gateway_id: "gateway-test-1".to_string(),
+            gateway_id: 1,
             max_message_size: ORDERCOMMANDSIZE,
             enable_heartbeat: true,
             heartbeat_interval_seconds: 5,
@@ -266,7 +266,7 @@ impl GatewayNetworkingConfig {
             core_address: "127.0.0.1".to_string(), // Example production IP
             core_port: 40001,
             core_control_port: 40002,
-            gateway_id: "gateway-prod".to_string(),
+            gateway_id: 1,
             max_message_size: ORDERCOMMANDSIZE,
             enable_heartbeat: true,
             heartbeat_interval_seconds: 5,
@@ -293,8 +293,11 @@ impl GatewayNetworkingConfig {
             ));
         }
 
-        if self.gateway_id.is_empty() {
-            return Err(ConfigError::network("Gateway ID cannot be empty"));
+        if self.gateway_id > MAX_GATEWAYS as u8  {
+            return Err(ConfigError::network(format!(
+                "Gateway ID must be between 0 and {}",
+                MAX_GATEWAYS
+            )));
         }
 
         if self.max_message_size == 0 {
@@ -360,10 +363,10 @@ mod tests {
         let mut config = GatewayNetworkingConfig::development_defaults();
         assert!(config.validate().is_ok());
 
-        config.gateway_id = String::new();
+        config.gateway_id = 20;
         assert!(config.validate().is_err());
 
-        config.gateway_id = "test".to_string();
+        config.gateway_id = 16;
         config.max_message_size = 0;
         assert!(config.validate().is_err());
     }
