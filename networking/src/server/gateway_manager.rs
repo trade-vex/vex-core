@@ -1,11 +1,13 @@
 use crate::server::duologue::Duologue;
-use crate::utils::{PortAllocator, SessionAllocator, send_message, send_message_with_retries};
-use common::OrderCommand;
+use crate::server::gateway_publications::GatewayPublications;
+use crate::server::GatewayPublications;
+use crate::utils::{send_message, send_message_with_retries, PortAllocator, SessionAllocator};
+use common::{OrderCommand, MAX_GATEWAYS};
 use dashmap::DashMap;
 use disruptor::{MultiProducer, SingleConsumerBarrier};
 use rusteron_client::{Aeron, AeronPublication};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tracing::{debug, error, info};
 use vex_config::CoreNetworkingConfig;
 
@@ -32,6 +34,8 @@ pub struct GatewayManager {
     session_allocator: SessionAllocator,
     /// Producer that sends commands to the disruptor ring
     producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
+    /// Aeron publications for each gateway
+    publications: GatewayPublications,
 }
 
 impl GatewayManager {
@@ -40,6 +44,7 @@ impl GatewayManager {
         config: CoreNetworkingConfig,
         aeron: Arc<Aeron>,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
+        publications: GatewayPublications,
     ) -> Result<Self, ServerError> {
         Ok(Self {
             gateway_session_addresses: DashMap::new(),
@@ -58,6 +63,7 @@ impl GatewayManager {
             .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?,
             config,
             producer,
+            publications,
         })
     }
 
@@ -352,7 +358,7 @@ impl GatewayManager {
         };
 
         // gateway session
-        let gateway_session = match Duologue::new(
+        let (gateway_session, publication) = match Duologue::new(
             &self.aeron,
             self.config.gateway_timeout_seconds,
             &self.config.local_address,
@@ -374,6 +380,8 @@ impl GatewayManager {
                 )));
             }
         };
+
+        self.publications.set(gateway_id, Box::new(publication));
 
         // Store session
         self.gateway_sessions

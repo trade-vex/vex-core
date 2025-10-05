@@ -8,7 +8,7 @@ use common::OrderCommand;
 use disruptor::{MultiProducer, SingleConsumerBarrier};
 use rusteron_client::{
     Aeron, AeronAvailableImageCallback, AeronCError, AeronImage, AeronNotificationLogger,
-    AeronSubscription, AeronUnavailableImageCallback, Handler,
+    AeronPublication, AeronSubscription, AeronUnavailableImageCallback, Handler,
 };
 use tracing::{error, info};
 
@@ -39,7 +39,7 @@ impl Duologue {
         port_control: u16,
         session_id: i32,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
-    ) -> Result<Self, AeronCError> {
+    ) -> Result<(Self, AeronPublication), AeronCError> {
         let expire_time = (SystemTime::now() + Duration::from_secs(gateway_expiry_duration))
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
@@ -71,23 +71,25 @@ impl Duologue {
         )?;
 
         let fragment_handler = FragmentHandler {
-            publication,
             gateway_id: gateway_id.to_string(),
             producer,
         };
 
-        Ok(Self {
-            fragment_handler: Handler::leak(fragment_handler),
-            gateway_id: gateway_id.to_string(),
-            port_data,
-            port_control,
-            is_closed: false,
-            expire_time,
-            session_id,
-            subscription,
-            on_image_available_handler,
-            on_image_unavailable_handler,
-        })
+        Ok((
+            Self {
+                fragment_handler: Handler::leak(fragment_handler),
+                gateway_id: gateway_id.to_string(),
+                port_data,
+                port_control,
+                is_closed: false,
+                expire_time,
+                session_id,
+                subscription,
+                on_image_available_handler,
+                on_image_unavailable_handler,
+            },
+            publication,
+        ))
     }
 
     pub fn poll(&mut self) -> Result<i32, AeronCError> {
