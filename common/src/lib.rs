@@ -4,6 +4,7 @@ mod l2_market_data;
 mod market_specification;
 mod order;
 mod user_profile;
+mod snowflake;
 
 pub use cmd::{
     MatcherTradeEvent, ORDERCOMMANDSIZE, OrderCommand, Status, decode_order_command,
@@ -16,6 +17,7 @@ pub use market_specification::{
 };
 pub use order::{Order, PriceCache};
 pub use user_profile::{BalanceError, BalanceKey, BalanceStore, UserBalance};
+pub use snowflake::Snowflake;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use sbe_order::order_command_type::OrderCommandType as SbeOrderCommandType;
