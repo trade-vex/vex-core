@@ -127,6 +127,11 @@ impl Snowflake {
             | (sequence as u64)
     }
 
+    /// Gateway ID from ID
+    pub fn gateway_from_id(id: u64) -> u8 {
+        ((id >> NODE_SHIFT) & (NODE_MAX as u64)) as u8
+    }
+
     /// Returns the milliseconds elapsed since the Snowflake generator was created.
     fn current_time_millis(&self) -> u64 {
         self.epoch_offset + self.start.elapsed().as_millis() as u64
@@ -306,5 +311,15 @@ mod tests {
         
         // Verify sequence doesn't overflow into node bits
         assert!(sequence <= STEP_MAX);
+    }
+
+    #[test]
+    fn test_gateway_from_id() {
+        let mut snowflake = Snowflake::new(None).unwrap();
+        for gateway in 0..=NODE_MAX {
+            let id = snowflake.generate(gateway).unwrap();
+            let extracted_gateway = Snowflake::gateway_from_id(id);
+            assert_eq!(extracted_gateway, gateway, "Extracted gateway should match original");
+        }
     }
 }
