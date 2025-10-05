@@ -27,6 +27,8 @@ use serde::de::Error;
 use serde::de::value::Error as SerdeError;
 use serde::{Deserialize, Serialize};
 
+pub const MAX_GATEWAYS: usize = 16;
+
 pub const L2SIZE: usize = 10;
 
 #[derive(

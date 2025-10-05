@@ -6,7 +6,6 @@ use rusteron_client::{
 use tracing::{debug, error};
 
 pub struct FragmentHandler {
-    pub publication: AeronPublication,
     pub gateway_id: String,
     pub producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
 }
@@ -30,33 +29,33 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
                 });
 
                 // Serialize and send back the processed command
-                let mut response_buffer = vec![0u8; 67];
-                match encode_order_command(order_command, &mut response_buffer) {
-                    Ok(_) => {
-                        // Send the processed command back
-                        let result = self
-                            .publication
-                            .offer::<AeronReservedValueSupplierLogger>(&response_buffer, None);
+                // let mut response_buffer = vec![0u8; ORDERCOMMANDSIZE];
+                // match encode_order_command(order_command, &mut response_buffer) {
+                //     Ok(_) => {
+                //         // Send the processed command back
+                //         let result = self
+                //             .publication
+                //             .offer::<AeronReservedValueSupplierLogger>(&response_buffer, None);
 
-                        if result < 0 {
-                            error!(
-                                "[{}] Gateway '{}': Failed to send processed OrderCommand, result: {}",
-                                session_id, self.gateway_id, result
-                            );
-                        } else {
-                            debug!(
-                                "[{}] Gateway '{}': Successfully sent processed OrderCommand",
-                                session_id, self.gateway_id
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        error!(
-                            "[{}] Gateway '{}': Failed to encode processed OrderCommand: {:?}",
-                            session_id, self.gateway_id, e
-                        );
-                    }
-                }
+                //         if result < 0 {
+                //             error!(
+                //                 "[{}] Gateway '{}': Failed to send processed OrderCommand, result: {}",
+                //                 session_id, self.gateway_id, result
+                //             );
+                //         } else {
+                //             debug!(
+                //                 "[{}] Gateway '{}': Successfully sent processed OrderCommand",
+                //                 session_id, self.gateway_id
+                //             );
+                //         }
+                //     }
+                //     Err(e) => {
+                //         error!(
+                //             "[{}] Gateway '{}': Failed to encode processed OrderCommand: {:?}",
+                //             session_id, self.gateway_id, e
+                //         );
+                //     }
+                // }
             }
             Err(e) => {
                 error!(

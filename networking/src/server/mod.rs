@@ -30,18 +30,19 @@ mod cmd_handler;
 mod duologue;
 mod gateway_handler;
 mod gateway_manager;
+mod gateway_publications;
 
 use crate::server::gateway_handler::{
     GatewayImageAvailableHandler, GatewayImageUnavailableHandler, HandshakeMessageHandler,
 };
 use crate::server::gateway_manager::GatewayManager;
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
-use common::OrderCommand;
+use common::{OrderCommand, MAX_GATEWAYS};
 use disruptor::{MultiProducer, SingleConsumerBarrier};
-use rusteron_client::{Aeron, AeronCError, AeronContext, Handler};
+use rusteron_client::{Aeron, AeronCError, AeronContext, AeronPublication, Handler};
 use rusteron_media_driver::AeronIdleStrategy;
-use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{error, info, instrument};
@@ -93,6 +94,7 @@ impl VexCoreServer {
     pub fn new(
         config: CoreNetworkingConfig,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
+        publications: Arc<[Option<Box<AeronPublication>>; MAX_GATEWAYS]>,
     ) -> Result<Self, ServerError> {
         // Validate configuration
         Self::validate_config(&config)?;
@@ -107,8 +109,14 @@ impl VexCoreServer {
         let now_nanos = Instant::now().elapsed().as_nanos() as u64;
 
         Ok(Self {
-            aeron: Rc::clone(&aeron),
-            gateways: Rc::new(GatewayManager::new(config.clone(), aeron, producer)?),
+            aeron: Arc::clone(&aeron),
+            #[allow(clippy::arc_with_non_send_sync)]
+            gateways: Arc::new(GatewayManager::new(
+                config.clone(),
+                aeron,
+                producer,
+                publications,
+            )?),
             config,
             last_cleanup_nanos: CachePadded::new(AtomicU64::new(now_nanos)),
             shutdown: AtomicBool::new(false),
