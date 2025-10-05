@@ -80,7 +80,7 @@ pub enum MatcherEventType {
 /// The specific action the command represents.
 ///
 /// This serves as the primary discriminant for the `OrderCommand` struct.
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy,  Clone)]
 #[repr(u8)]
 pub enum OrderCommandType {
     /// A command to place a new order. All fields in `OrderCommand` are relevant.

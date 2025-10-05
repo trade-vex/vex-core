@@ -251,7 +251,7 @@ impl MatcherTradeEvent {
     }
 }
 
-pub fn encode_order_command(order_command: OrderCommand, buf: &mut [u8]) -> SbeResult<()> {
+pub fn encode_order_command(order_command: &OrderCommand, buf: &mut [u8]) -> SbeResult<()> {
     let write_buf = WriteBuf::new(buf);
     let mut encoder = OrderCommandMessageEncoder::default();
     encoder = encoder.wrap(write_buf, message_header_codec::ENCODED_LENGTH);
