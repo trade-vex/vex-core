@@ -4,7 +4,7 @@ use std::sync::mpsc::Sender;
 use tracing::{error, info};
 
 pub struct OrderCommandHandler {
-    gateway_id: String,
+    gateway_id: u8,
     sender: Sender<OrderCommand>,
 }
 
@@ -13,14 +13,14 @@ impl AeronFragmentHandlerCallback for OrderCommandHandler {
         // Deserialize OrderCommand
         match decode_order_command(buffer) {
             Ok(order_command) => {
-                info!(
-                    "Gateway {}: Received OrderCommand: {:?}",
+                debug!(
+                    "gateway-{}: Received OrderCommand: {:?}",
                     self.gateway_id, order_command
                 );
 
                 self.sender.send(order_command).unwrap_or_else(|e| {
                     error!(
-                        "Gateway {}: Failed to send OrderCommand to channel: {:?}",
+                        "gateway-{}: Failed to send OrderCommand to channel: {:?}",
                         self.gateway_id, e
                     );
                 });
@@ -36,7 +36,7 @@ impl AeronFragmentHandlerCallback for OrderCommandHandler {
 }
 
 impl OrderCommandHandler {
-    pub fn new(gateway_id: String, sender: Sender<OrderCommand>) -> Self {
+    pub fn new(gateway_id: u8, sender: Sender<OrderCommand>) -> Self {
         Self { gateway_id, sender }
     }
 }
