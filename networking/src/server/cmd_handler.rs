@@ -1,12 +1,12 @@
-use common::{ORDERCOMMANDSIZE, OrderCommand, decode_order_command, encode_order_command};
+use common::{OrderCommand, Status, decode_order_command};
 use disruptor::{MultiProducer, Producer, SingleConsumerBarrier};
 use rusteron_client::{
-    AeronFragmentHandlerCallback, AeronHeader, AeronPublication, AeronReservedValueSupplierLogger,
+    AeronFragmentHandlerCallback, AeronHeader,
 };
 use tracing::{debug, error};
 
 pub struct FragmentHandler {
-    pub gateway_id: String,
+    pub gateway_id: u8,
     pub producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
 }
 
@@ -17,7 +17,7 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
             Ok(values) => values.frame.session_id,
             Err(_) => {
                 error!(
-                    "Gateway '{}': Missing session ID in Aeron header",
+                    "gateway-{}: Missing session ID in Aeron header",
                     self.gateway_id
                 );
                 return;
@@ -26,55 +26,30 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
 
         // Deserialize OrderCommand
         match decode_order_command(buffer) {
-            Ok(order_command) => {
+            Ok(mut order_command) => {
+                order_command.status = Status::Processing;
+                // order_id is updated in journaling processor
+                // the snowflake algorithm requires gateway_id to be part of order_id
+                // instead of adding a new field, we repurpose order_id here
+                order_command.order_id = self.gateway_id as u64;
                 debug!(
-                    "[{}] Gateway '{}': Received OrderCommand: {:?}",
+                    "[{}] gateway-{}: Received OrderCommand: {:?}",
                     session_id, self.gateway_id, order_command
                 );
 
-                // Process the order command (placeholder function)
                 if let Err(e) = self.producer.try_publish(|cmd| {
                     *cmd = order_command.clone();
                 }) {
                     error!(
-                        "[{}] Gateway '{}': Failed to publish OrderCommand to ring buffer: {}",
+                        "[{}] gateway-{}: Failed to publish OrderCommand to ring buffer: {}",
                         session_id, self.gateway_id, e
                     );
                     return;
                 }
-
-                // Serialize and send back the processed command
-                // let mut response_buffer = vec![0u8; ORDERCOMMANDSIZE];
-                // match encode_order_command(order_command, &mut response_buffer) {
-                //     Ok(_) => {
-                //         // Send the processed command back
-                //         let result = self
-                //             .publication
-                //             .offer::<AeronReservedValueSupplierLogger>(&response_buffer, None);
-
-                //         if result < 0 {
-                //             error!(
-                //                 "[{}] Gateway '{}': Failed to send processed OrderCommand, result: {}",
-                //                 session_id, self.gateway_id, result
-                //             );
-                //         } else {
-                //             debug!(
-                //                 "[{}] Gateway '{}': Successfully sent processed OrderCommand",
-                //                 session_id, self.gateway_id
-                //             );
-                //         }
-                //     }
-                //     Err(e) => {
-                //         error!(
-                //             "[{}] Gateway '{}': Failed to encode processed OrderCommand: {:?}",
-                //             session_id, self.gateway_id, e
-                //         );
-                //     }
-                // }
             }
             Err(e) => {
                 error!(
-                    "[{}] Gateway '{}': Failed to decode OrderCommand: {:?}",
+                    "[{}] gateway-{}: Failed to decode OrderCommand: {:?}",
                     session_id, self.gateway_id, e
                 );
             }
