@@ -1,13 +1,12 @@
 use crate::server::duologue::Duologue;
 use crate::server::gateway_publications::GatewayPublications;
-use crate::server::GatewayPublications;
-use crate::utils::{send_message, send_message_with_retries, PortAllocator, SessionAllocator};
-use common::{OrderCommand, MAX_GATEWAYS};
+use crate::utils::{PortAllocator, SessionAllocator, send_message, send_message_with_retries};
+use common::OrderCommand;
 use dashmap::DashMap;
 use disruptor::{MultiProducer, SingleConsumerBarrier};
 use rusteron_client::{Aeron, AeronPublication};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, error, info};
 use vex_config::CoreNetworkingConfig;
 
@@ -35,7 +34,7 @@ pub struct GatewayManager {
     /// Producer that sends commands to the disruptor ring
     producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
     /// Aeron publications for each gateway
-    publications: GatewayPublications,
+    publications: Arc<GatewayPublications>,
 }
 
 impl GatewayManager {
@@ -44,7 +43,7 @@ impl GatewayManager {
         config: CoreNetworkingConfig,
         aeron: Rc<Aeron>,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
-        publications: GatewayPublications,
+        publications: Arc<GatewayPublications>,
     ) -> Result<Self, ServerError> {
         Ok(Self {
             gateway_session_addresses: DashMap::new(),
@@ -73,7 +72,7 @@ impl GatewayManager {
     }
 
     /// Checks if a gateway is currently connected
-    pub fn is_gateway_connected(&self, gateway_id: &str) -> bool {
+    pub fn is_gateway_connected(&self, gateway_id: u8) -> bool {
         self.gateway_sessions
             .iter()
             .any(|session| session.gateway_id == gateway_id)
@@ -111,9 +110,43 @@ impl GatewayManager {
             ));
         }
 
-        let gateway_id = parts
+        let gateway_id_str = parts
             .next()
             .ok_or_else(|| ServerError::GatewayMessageError("Missing gateway ID".to_string()))?;
+
+        let gateway_id = {
+            const PREFIX: &str = "gateway-";
+            if !gateway_id_str.starts_with(PREFIX) {
+                let error_msg = format!(
+                    "{session_id} {gateway_id_str} REJECT Invalid gateway ID format, expected 'gateway-{{id}}'"
+                );
+                send_message(publication, error_msg.as_bytes())?;
+                return Err(ServerError::GatewayMessageError(
+                    "Invalid gateway ID format".to_string(),
+                ));
+            }
+            match gateway_id_str[PREFIX.len()..].parse::<u8>() {
+                Ok(id) if id <= 15 => id,
+                Ok(id) => {
+                    let error_msg = format!(
+                        "{session_id} gateway-{id} REJECT Gateway ID out of range, expected 0-15"
+                    );
+                    send_message(publication, error_msg.as_bytes())?;
+                    return Err(ServerError::GatewayMessageError(
+                        "Gateway ID out of range".to_string(),
+                    ));
+                }
+                Err(_) => {
+                    let error_msg = format!(
+                        "{session_id} {gateway_id_str} REJECT Invalid gateway ID, expected numeric ID"
+                    );
+                    send_message(publication, error_msg.as_bytes())?;
+                    return Err(ServerError::GatewayMessageError(
+                        "Invalid gateway ID".to_string(),
+                    ));
+                }
+            }
+        };
 
         let encryption_key_str = parts.next().ok_or_else(|| {
             ServerError::GatewayMessageError("Missing encryption key".to_string())
@@ -123,18 +156,16 @@ impl GatewayManager {
             ServerError::GatewayMessageError(format!("Invalid encryption key: {e}"))
         })?;
 
-        // Validate gateway ID
-        if gateway_id.is_empty() {
-            let error_msg = format!("{session_id} {gateway_id} REJECT Empty gateway ID");
-            send_message(publication, error_msg.as_bytes())?;
-            return Err(ServerError::GatewayMessageError(
-                "Empty gateway ID".to_string(),
-            ));
-        }
-
         // Check various limits and constraints
         self.check_capacity_limits(publication, session_id, gateway_id)?;
-        let gateway_address = self.get_gateway_address(session_id)?;
+        let gateway_address = match self.get_gateway_address(session_id) {
+            Ok(address) => address,
+            Err(e) => {
+                let error_msg = format!("{session_id} gateway-{gateway_id} REJECT {e}");
+                send_message(publication, error_msg.as_bytes())?;
+                return Err(ServerError::GatewayMessageError(e.to_string()));
+            }
+        };
         self.check_address_limits(publication, session_id, gateway_id, &gateway_address)?;
         self.check_duplicate_connection(publication, session_id, gateway_id)?;
 
@@ -142,7 +173,8 @@ impl GatewayManager {
         if self.config.enable_authentication
             && let Err(e) = self.authenticate_gateway(gateway_id, &encryption_key.to_string())
         {
-            let error_msg = format!("{session_id} {gateway_id} REJECT Authentication failed");
+            let error_msg =
+                format!("{session_id} gateway-{gateway_id} REJECT Authentication failed");
             send_message(publication, error_msg.as_bytes())?;
             return Err(e);
         }
@@ -154,13 +186,13 @@ impl GatewayManager {
 
         // Send success response
         let accept_msg = format!(
-            "{} {} ACCEPT {} {} {}",
+            "{} gateway-{} ACCEPT {} {} {}",
             session_id, gateway_id, ports[0], ports[1], encrypted_session
         );
         send_message_with_retries(publication, accept_msg.as_bytes())?;
 
         info!(
-            "Gateway '{}' connected successfully. Session: 0x{:x}, ports: {}, {}",
+            "Gateway 'gateway-{}' connected successfully. Session: 0x{:x}, ports: {}, {}",
             gateway_id, dedicated_session, ports[0], ports[1]
         );
 
@@ -250,10 +282,11 @@ impl GatewayManager {
         &self,
         publication: &AeronPublication,
         session_id: i32,
-        gateway_id: &str,
+        gateway_id: u8,
     ) -> Result<(), ServerError> {
         if self.gateway_sessions.len() >= self.config.max_gateways as usize {
-            let error_msg = format!("{session_id} {gateway_id} REJECT Core capacity exceeded");
+            let error_msg =
+                format!("{session_id} gateway-{gateway_id} REJECT Core capacity exceeded");
             send_message(publication, error_msg.as_bytes())?;
             return Err(ServerError::CapacityExceededError(
                 "Too many gateways connected".to_string(),
@@ -275,14 +308,15 @@ impl GatewayManager {
         &self,
         publication: &AeronPublication,
         session_id: i32,
-        gateway_id: &str,
+        gateway_id: u8,
         gateway_address: &str,
     ) -> Result<(), ServerError> {
         if let Some(count_entry) = self.address_connection_count.get(gateway_address)
             && count_entry.load(Ordering::Relaxed) >= self.config.max_connections_per_address as u64
         {
-            let error_msg =
-                format!("{session_id} {gateway_id} REJECT Too many connections from address");
+            let error_msg = format!(
+                "{session_id} gateway-{gateway_id} REJECT Too many connections from address"
+            );
             send_message(publication, error_msg.as_bytes())?;
             return Err(ServerError::CapacityExceededError(
                 "Too many connections from this address".to_string(),
@@ -296,10 +330,11 @@ impl GatewayManager {
         &self,
         publication: &AeronPublication,
         session_id: i32,
-        gateway_id: &str,
+        gateway_id: u8,
     ) -> Result<(), ServerError> {
         if self.is_gateway_connected(gateway_id) {
-            let error_msg = format!("{session_id} {gateway_id} REJECT Gateway already connected");
+            let error_msg =
+                format!("{session_id} gateway-{gateway_id} REJECT Gateway already connected");
             send_message(publication, error_msg.as_bytes())?;
             return Err(ServerError::GatewayMessageError(
                 "Gateway already connected".to_string(),
@@ -311,7 +346,7 @@ impl GatewayManager {
     fn allocate_gateway_session(
         &self,
         initial_session_id: i32,
-        gateway_id: &str,
+        gateway_id: u8,
         gateway_address: &str,
     ) -> Result<(i32, [u16; 2]), ServerError> {
         // Update connection count
@@ -352,32 +387,23 @@ impl GatewayManager {
             .insert(initial_session_id, gateway_address.to_string());
 
         debug!(
-            "Allocated session 0x{:x} for gateway '{}' with ports {}, {}",
+            "Allocated session 0x{:x} for gateway 'gateway-{}' with ports {}, {}",
             dedicated_session, gateway_id, ports[0], ports[1]
         );
 
         Ok((dedicated_session, [ports[0], ports[1]]))
     }
 
-    fn authenticate_gateway(
-        &self,
-        gateway_id: &str,
-        _credentials: &str,
-    ) -> Result<(), ServerError> {
+    fn authenticate_gateway(&self, gateway_id: u8, _credentials: &str) -> Result<(), ServerError> {
         // TODO: Implement proper authentication
-        if gateway_id.len() < 3 || !gateway_id.starts_with("gateway-") {
-            return Err(ServerError::AuthenticationError(
-                "Invalid gateway ID format".to_string(),
-            ));
-        }
-        info!("Gateway '{}' authenticated", gateway_id);
+        info!("Gateway 'gateway-{}' authenticated", gateway_id);
         Ok(())
     }
 
     fn remove_gateway_session(&self, session_id: i32) -> Result<(), ServerError> {
         if let Some((session_id, mut gateway_session)) = self.gateway_sessions.remove(&session_id) {
             info!(
-                "Removing gateway session 0x{:x} for '{}'",
+                "Removing gateway session 0x{:x} for 'gateway-{}'",
                 session_id, gateway_session.gateway_id
             );
 

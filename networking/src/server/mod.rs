@@ -37,16 +37,18 @@ use crate::server::gateway_handler::{
 };
 use crate::server::gateway_manager::GatewayManager;
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
-use common::{OrderCommand, MAX_GATEWAYS};
+use common::OrderCommand;
 use disruptor::{MultiProducer, SingleConsumerBarrier};
-use rusteron_client::{Aeron, AeronCError, AeronContext, AeronPublication, Handler};
+use rusteron_client::{Aeron, AeronCError, AeronContext, Handler};
 use rusteron_media_driver::AeronIdleStrategy;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{error, info, instrument};
 use vex_config::CoreNetworkingConfig;
+
+pub use gateway_publications::GatewayPublications;
 
 /// Stream ID for gateway communication
 const ALL_GATEWAYS_STREAM_ID: i32 = 1001;
@@ -94,7 +96,7 @@ impl VexCoreServer {
     pub fn new(
         config: CoreNetworkingConfig,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
-        publications: Arc<[Option<Box<AeronPublication>>; MAX_GATEWAYS]>,
+        publications: Arc<GatewayPublications>,
     ) -> Result<Self, ServerError> {
         // Validate configuration
         Self::validate_config(&config)?;
@@ -194,7 +196,7 @@ impl VexCoreServer {
     }
 
     /// Checks if a gateway is connected (lock-free)
-    pub fn is_gateway_connected(&self, gateway_id: &str) -> bool {
+    pub fn is_gateway_connected(&self, gateway_id: u8) -> bool {
         self.gateways.is_gateway_connected(gateway_id)
     }
 

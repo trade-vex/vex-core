@@ -17,8 +17,8 @@ pub const DUOLOGUE_STREAM_ID: i32 = 1002;
 pub struct Duologue {
     pub fragment_handler: Handler<FragmentHandler>,
     pub session_id: i32,
-    pub gateway_id: String,
-    pub subscription: AeronSubscription,
+    pub gateway_id: u8,
+    subscription: AeronSubscription,
     pub port_data: u16,
     pub port_control: u16,
     pub expire_time: u64,
@@ -30,7 +30,7 @@ impl Duologue {
     pub fn new(
         aeron: &Aeron,
         local: &str,
-        gateway_id: &str,
+        gateway_id: u8,
         owner: &str,
         port_data: u16,
         port_control: u16,
@@ -68,14 +68,14 @@ impl Duologue {
         )?;
 
         let fragment_handler = FragmentHandler {
-            gateway_id: gateway_id.to_string(),
+            gateway_id,
             producer,
         };
 
         Ok((
             Self {
                 fragment_handler: Handler::leak(fragment_handler),
-                gateway_id: gateway_id.to_string(),
+                gateway_id,
                 port_data,
                 port_control,
                 is_closed: false,
