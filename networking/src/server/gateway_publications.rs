@@ -8,7 +8,6 @@ use tracing::{debug, error};
 
 pub struct GatewayPublications {
     gateways: [AtomicPtr<AeronPublication>; MAX_GATEWAYS],
-    response_buffer: [u8; ORDERCOMMANDSIZE],
 }
 
 impl GatewayPublications {
@@ -16,7 +15,6 @@ impl GatewayPublications {
         const INIT: AtomicPtr<AeronPublication> = AtomicPtr::new(std::ptr::null_mut());
         Self {
             gateways: [INIT; MAX_GATEWAYS],
-            response_buffer: [0u8; ORDERCOMMANDSIZE],
         }
     }
 
@@ -32,15 +30,16 @@ impl GatewayPublications {
     }
 
     // Publisher (event handler thread)
-    pub fn publish_response(&mut self, cmd: &OrderCommand) {
+    pub fn publish_response(&self, cmd: &OrderCommand) {
         let gateway_id = Snowflake::gateway_from_id(cmd.order_id());
         let ptr = self.gateways[gateway_id as usize].load(Ordering::Acquire);
         let publication = unsafe { &*ptr };
-        match encode_order_command(cmd, &mut self.response_buffer) {
+        let mut response_buffer = [0; ORDERCOMMANDSIZE];
+        match encode_order_command(cmd, &mut response_buffer) {
             Ok(_) => {
                 // Send the processed command back
                 let result =
-                    publication.offer::<AeronReservedValueSupplierLogger>(&self.response_buffer, None);
+                    publication.offer::<AeronReservedValueSupplierLogger>(&response_buffer, None);
 
                 if result < 0 {
                     error!(

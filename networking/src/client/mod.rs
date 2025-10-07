@@ -222,7 +222,6 @@ pub struct VexGateway {
 
 pub struct Publisher {
     pub publication: AeronPublication,
-    pub message_buffer: [u8; ORDERCOMMANDSIZE],
     pub gateway_id: u8,
 }
 
@@ -230,20 +229,21 @@ impl Publisher {
     fn new(publication: AeronPublication, gateway_id: u8) -> Self {
         Self {
             publication,
-            message_buffer: [0u8; ORDERCOMMANDSIZE],
             gateway_id,
         }
     }
 
     /// Sends an OrderCommand to the core
-    pub fn send_order_command(&mut self, order_command: &OrderCommand) -> Result<(), GatewayError> {
+    pub fn send_order_command(&self, order_command: &OrderCommand) -> Result<(), GatewayError> {
         // Send the binary message directly
         debug!(
             "gateway-{}: sending OrderCommand: {:?}",
             self.gateway_id, order_command
         );
 
-        encode_order_command(&order_command, &mut self.message_buffer).map_err(|e| {
+        let mut message_buffer =  [0u8; ORDERCOMMANDSIZE];
+
+        encode_order_command(&order_command, &mut message_buffer).map_err(|e| {
             GatewayError::ProtocolError(format!("Failed to encode OrderCommand: {e:?}"))
         })?;
 
@@ -251,7 +251,7 @@ impl Publisher {
         for attempt in 0..MESSAGE_RETRY_COUNT {
             let result = self
                 .publication
-                .offer::<AeronReservedValueSupplierLogger>(&self.message_buffer, None);
+                .offer::<AeronReservedValueSupplierLogger>(&message_buffer, None);
 
             if result >= 0 {
                 return Ok(());
