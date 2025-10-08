@@ -95,7 +95,6 @@ mod test {
 
     #[cfg(test)]
     impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
-        
         /// Helper function to check if the order book state is consistent
         /// Get the best bid price and volume
         pub fn verify_state(&mut self) -> Result<(), String> {
@@ -218,6 +217,7 @@ mod test {
         time_in_force: TimeInForce,
     ) -> OrderCommand {
         OrderCommand {
+            client_order_id: 0,
             command,
             order_id,
             timestamp,
@@ -1816,6 +1816,7 @@ mod test {
 
         // Test CancelOrder
         let mut cancel_cmd = OrderCommand {
+            client_order_id: 0,
             command: OrderCommandType::CancelOrder,
             order_id: 1,
             timestamp: 101,
@@ -1982,6 +1983,7 @@ mod test {
         pub fn build_place_order(self) -> OrderCommand {
             OrderCommand {
                 command: OrderCommandType::PlaceOrder,
+                client_order_id: 0,
                 order_id: self.order_id,
                 timestamp: self.timestamp,
                 user_id: self.user_id,
@@ -2000,6 +2002,7 @@ mod test {
         pub fn build_cancel_order(self) -> OrderCommand {
             OrderCommand {
                 command: OrderCommandType::CancelOrder,
+                client_order_id: 0,
                 order_id: self.order_id,
                 timestamp: self.timestamp,
                 user_id: self.user_id,
@@ -2696,6 +2699,7 @@ mod test {
         ) -> OrderCommand {
             OrderCommand {
                 command: OrderCommandType::PlaceOrder,
+                client_order_id: 0,
                 order_id: self.next_order_id(),
                 timestamp: self.next_timestamp(),
                 user_id,
@@ -2723,6 +2727,7 @@ mod test {
         fn create_cancel_order_cmd(&self, order_to_cancel: &OrderCommand) -> OrderCommand {
             OrderCommand {
                 command: OrderCommandType::CancelOrder,
+                client_order_id: 0,
                 order_id: order_to_cancel.order_id,
                 timestamp: self.next_timestamp(),
                 user_id: order_to_cancel.user_id,
@@ -3292,13 +3297,8 @@ mod test {
         for i in 0..12 {
             let price = 99 - i;
             let size = (i + 1) * 10;
-            let mut bid_cmd = harness.create_place_order_cmd(
-                200 + i,
-                Side::Bid,
-                price,
-                size,
-                TimeInForce::Gtc,
-            );
+            let mut bid_cmd =
+                harness.create_place_order_cmd(200 + i, Side::Bid, price, size, TimeInForce::Gtc);
             book.place_order(&mut bid_cmd, price_cache.clone());
         }
 
@@ -3306,13 +3306,8 @@ mod test {
         for i in 0..12 {
             let price = 101 + i;
             let size = (i + 1) * 10;
-            let mut ask_cmd = harness.create_place_order_cmd(
-                300 + i,
-                Side::Ask,
-                price,
-                size,
-                TimeInForce::Gtc,
-            );
+            let mut ask_cmd =
+                harness.create_place_order_cmd(300 + i, Side::Ask, price, size, TimeInForce::Gtc);
             book.place_order(&mut ask_cmd, price_cache.clone());
         }
 
