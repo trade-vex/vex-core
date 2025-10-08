@@ -69,7 +69,7 @@ fn test_client_server_communication() {
             gateway_id: client.gateway_id().to_string(),
         };
 
-        let mut publisher = client.start(handler).expect("Failed to start VexGateway");
+        let publisher = client.start(handler).expect("Failed to start VexGateway");
 
         let mut order_command = OrderCommand {
             command: OrderCommandType::PlaceOrder,

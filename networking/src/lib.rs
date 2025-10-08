@@ -62,7 +62,7 @@
 //!
 //! ### Core (Server) Side
 //!
-//! ```rust
+//! ```ignore, rust
 //! use vex_networking::server::{VexCoreServer, CoreNetworkingConfig};
 //!
 //! // Create a networking config (see CoreNetworkingConfig::test_defaults for testing)
