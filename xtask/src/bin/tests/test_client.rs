@@ -6,7 +6,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 use std::{env, thread};
 use vex_config::GatewayNetworkingConfig;
-use vex_networking::client::{OrderCommandHandler, VexGateway};
+use vex_networking::client::{OrderCommandHandler, Publisher, VexGateway};
 
 #[derive(Parser, Debug)]
 #[command(name = "test_client")]
@@ -49,49 +49,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     client_config.core_address = server_host;
     client_config.core_port = server_port;
     client_config.core_control_port = server_port + 1;
-    client_config.gateway_id = format!("gateway-{}", args.client_id);
+    client_config.gateway_id = args.client_id as u8;
 
     let mut client = VexGateway::new(client_config)?;
     let (sx, mut rx) = mpsc::channel();
-    let handler = OrderCommandHandler::new(client.gateway_id().to_string(), sx);
-    match client.start(handler) {
-        Ok(()) => println!("Client run() completed successfully"),
-        Err(e) => println!("Client run() error: {e}"),
-    }
+    let handler = OrderCommandHandler::new(client.gateway_id(), sx);
+    let publisher =  client.start(handler).expect("Client should start");
 
     thread::sleep(Duration::from_secs(5)); // Give some time for the client to start
 
     // The client's main loop to send commands
     match args.mode {
         Mode::Correctness { count } => {
-            run_correctness_test(&mut client, count, args.client_id)?;
+            run_correctness_test(&publisher, count, args.client_id)?;
         }
         Mode::Latency { samples } => {
             // For this to work, the client needs a way to receive acks.
             // This is a conceptual implementation.
             println!("NOTE: Latency test requires the client to be able to receive messages.");
-            run_latency_test(&mut client, &mut rx, samples, args.client_id)?;
+            run_latency_test(&publisher, &mut rx, samples, args.client_id)?;
         }
     }
     Ok(())
 }
 
 fn run_correctness_test(
-    client: &mut VexGateway,
+    client: &Publisher,
     count: u64,
     client_id: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Client-{client_id} sending {count} messages...");
+    let base_asset_id = 1;
+    let quote_asset_id = 2;
+    // Market ID: base asset in lower 16 bits, quote in upper 16
+    let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
     for i in 0..count {
         let order_command = OrderCommand {
             command: OrderCommandType::PlaceOrder,
-            user_id: 1,
+            user_id: if (i % 2) == 0 { 1 } else { 2 },
             size: 100,
             time_in_force: TimeInForce::Gtc,
             timestamp: 1,
-            side: Side::Ask,
+            side: if (i % 2) == 0 { Side::Bid } else { Side::Ask },
             order_id: client_id * 1_000_000 + i,
-            market_id: 3124,
+            market_id,
             price: 150,
             status: common::Status::Processing,
             events: None,
@@ -106,7 +107,7 @@ fn run_correctness_test(
 }
 
 fn run_latency_test(
-    client: &mut VexGateway,
+    client: &Publisher,
     rx: &mut Receiver<OrderCommand>,
     samples: u64,
     client_id: u64,
