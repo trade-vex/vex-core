@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = VexGateway::new(client_config)?;
     let (sx, mut rx) = mpsc::channel();
     let handler = OrderCommandHandler::new(client.gateway_id(), sx);
-    let publisher =  client.start(handler).expect("Client should start");
+    let publisher = client.start(handler).expect("Client should start");
 
     thread::sleep(Duration::from_secs(5)); // Give some time for the client to start
 
@@ -85,6 +85,7 @@ fn run_correctness_test(
     let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
     for i in 0..count {
         let order_command = OrderCommand {
+            client_order_id: 0,
             command: OrderCommandType::PlaceOrder,
             user_id: if (i % 2) == 0 { 1 } else { 2 },
             size: 100,
@@ -117,6 +118,7 @@ fn run_latency_test(
     for i in 0..samples {
         let order_id = client_id * 1_000_000 + i;
         let mut command = OrderCommand {
+            client_order_id: 0,
             command: OrderCommandType::PlaceOrder,
             user_id: 1,
             size: 100,
