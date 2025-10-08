@@ -41,9 +41,8 @@
 //! ```ignore
 //! // Core subscribes to orders and publishes market data
 //!
-//! pub const ORDER_STREAM_ID: i32 = 1001;
-//! let mut subscriber = AeronSubscriber::new("/aeron/dir", assembler)?;
-//! subscriber.add_subscription("aeron:ipc", ORDER_STREAM_ID)?;
+//! ```ignore, rust
+//! use vex_networking::server::{VexCoreServer, CoreNetworkingConfig};
 //!
 //! // Start processing loop
 //! subscriber.start();

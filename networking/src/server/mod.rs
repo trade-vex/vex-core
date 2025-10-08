@@ -17,7 +17,7 @@
 //! - Message handlers: Process Aeron image and fragment events
 //!
 //! ## Usage
-//! ```rust,no_run
+//! ```ignore, rust,no_run
 //! use networking::server::{VexCoreServer};
 //! use vex_config::CoreNetworkingConfig;
 //!

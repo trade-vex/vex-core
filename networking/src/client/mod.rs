@@ -40,7 +40,7 @@ pub enum CoreResponse {
         dedicated_port: u16,
         dedicated_control_port: u16,
         encrypted_session: i32,
-        gateway_id: String,
+        gateway_id: u8,
     },
     /// Core rejected the gateway connection
     Reject { reason: String },
@@ -125,7 +125,7 @@ fn parse_core_response(
                     dedicated_port: port,
                     dedicated_control_port: control_port,
                     encrypted_session,
-                    gateway_id: gateway_id.to_string(),
+                    gateway_id,
                 },
                 _ => {
                     error!("Malformed ACCEPT message: invalid parameters");
@@ -643,7 +643,7 @@ mod tests {
                 dedicated_port: 40003,
                 dedicated_control_port: 40004,
                 encrypted_session: 98765,
-                gateway_id: "gateway-1".to_string(),
+                gateway_id: 1,
             }
         );
     }
