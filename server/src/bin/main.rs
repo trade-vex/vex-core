@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let symbol_specs = config.symbols.symbols.clone();
     info!("Loading {} symbols from configuration", symbol_specs.len());
 
-    let (mut core_engine, producer) = init_exchange(symbol_specs.clone());
+    let (mut core_engine, producer, _) = init_exchange(symbol_specs.clone());
 
     info!("Exchange core initialized successfully");
     for symbol_id in symbol_specs.keys() {
