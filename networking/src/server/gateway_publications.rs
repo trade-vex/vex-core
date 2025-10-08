@@ -1,9 +1,7 @@
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use common::{MAX_GATEWAYS, ORDERCOMMANDSIZE, OrderCommand, Snowflake, encode_order_command};
-use rusteron_client::{
-    AeronPublication, AeronReservedValueSupplierLogger,
-};
+use rusteron_client::{AeronPublication, AeronReservedValueSupplierLogger};
 use tracing::{debug, error};
 
 pub struct GatewayPublications {
@@ -33,7 +31,15 @@ impl GatewayPublications {
     pub fn publish_response(&self, cmd: &OrderCommand) {
         let gateway_id = Snowflake::gateway_from_id(cmd.order_id());
         let ptr = self.gateways[gateway_id as usize].load(Ordering::Acquire);
-        let publication = unsafe { &*ptr };
+        let publication = unsafe { ptr.as_ref() };
+        if publication.is_none() {
+            error!(
+                "gateway-{}: No publication found to send response",
+                gateway_id
+            );
+            return;
+        }
+        let publication = publication.unwrap();
         let mut response_buffer = [0; ORDERCOMMANDSIZE];
         match encode_order_command(cmd, &mut response_buffer) {
             Ok(_) => {
