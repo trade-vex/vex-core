@@ -15,3 +15,4 @@ serde_json = { workspace = true }
 parking_lot = { workspace = true }
 tokio = { workspace = true }
 rdkafka = { version = "0.36", features = ["tokio"] }
+vex-networking = { workspace = true }

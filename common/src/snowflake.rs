@@ -1,4 +1,5 @@
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime};
+use std::time::UNIX_EPOCH;
 use std::error::Error;
 use std::fmt;
 
@@ -133,8 +134,14 @@ impl Snowflake {
     fn current_time_millis(&self) -> u64 {
         self.epoch_offset + self.start.elapsed().as_millis() as u64
     }
-}
 
+    pub fn timestamp(&self) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_else(|_| std::time::Duration::from_millis(self.epoch_offset))
+            .as_millis() as u64
+    }
+}
 
 #[cfg(test)]
 mod tests {

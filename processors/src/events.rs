@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::thread;
 
 use common::L2MarketData;
@@ -9,9 +10,9 @@ use common::UserBalance;
 use common::{base_asset, quote_asset};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
-// Real Kafka dependencies
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
+use vex_networking::server::GatewayPublications;
 
 pub trait EventsHandler: Send + Sync {
     fn handle_processed_command(&self, cmd: &mut OrderCommand);
@@ -20,10 +21,11 @@ pub trait EventsHandler: Send + Sync {
 // Real Kafka Events Handler
 pub struct KafkaEventsHandler {
     producer: FutureProducer,
+    publications: Arc<GatewayPublications>
 }
 
 impl KafkaEventsHandler {
-    pub fn new(brokers: &str) -> Self {
+    pub fn new(brokers: &str, publications: Arc<GatewayPublications>) -> Self {
         let producer: FutureProducer = ClientConfig::new()
             .set("bootstrap.servers", brokers)
             .set("message.timeout.ms", "5000")
@@ -37,7 +39,7 @@ impl KafkaEventsHandler {
             brokers
         );
 
-        Self { producer }
+        Self { producer, publications }
     }
 
     fn publish_event<T: Serialize>(&self, topic_name: &str, message_key: &str, payload: &T) {
@@ -174,7 +176,7 @@ impl KafkaEventsHandler {
             let mut bids = Vec::new();
             let mut asks = Vec::new();
 
-            for i in 0..snapshot.depth() {
+            for i in 0..snapshot.bid_depth() {
                 if snapshot.bid_prices[i] > 0 {
                     bids.push(OrderbookLevel {
                         price: snapshot.bid_prices[i],
@@ -183,7 +185,7 @@ impl KafkaEventsHandler {
                 }
             }
 
-            for i in 0..snapshot.depth() {
+            for i in 0..snapshot.ask_depth() {
                 if snapshot.ask_prices[i] > 0 {
                     asks.push(OrderbookLevel {
                         price: snapshot.ask_prices[i],
@@ -207,6 +209,10 @@ impl KafkaEventsHandler {
                 market_id
             );
         }
+    }
+
+    fn publish_response(&self, cmd: &OrderCommand) {
+        self.publications.publish_response(cmd);
     }
 }
 
@@ -258,6 +264,8 @@ impl EventsHandler for KafkaEventsHandler {
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
         }
+        // Always publish the response back to the gateway
+        self.publish_response(cmd);
     }
 }
 
@@ -331,7 +339,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_kafka_events_handler_placed_order() {
-        let handler = KafkaEventsHandler::new("localhost:9092");
+        let handler = KafkaEventsHandler::new("localhost:9092", Arc::new(GatewayPublications::new()));
 
         let mut cmd = OrderCommand::new(
             common::TimeInForce::Gtc,
@@ -353,7 +361,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_kafka_events_handler_cancelled_order() {
-        let handler = KafkaEventsHandler::new("localhost:9092");
+        let handler = KafkaEventsHandler::new("localhost:9092", Arc::new(GatewayPublications::new()));
 
         let mut cmd = OrderCommand::new(
             common::TimeInForce::Gtc,
@@ -374,7 +382,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_kafka_events_handler_filled_order_with_trades() {
-        let handler = KafkaEventsHandler::new("localhost:9092");
+        let handler = KafkaEventsHandler::new("localhost:9092", Arc::new(GatewayPublications::new()));
 
         // Create a processed command with Filled status and trade events
         let mut filled_cmd = OrderCommand::new(
