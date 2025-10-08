@@ -1755,6 +1755,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber 0.1.6",
+ "vex-networking",
  "vex-orderbook",
 ]
 
