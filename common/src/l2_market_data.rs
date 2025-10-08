@@ -38,8 +38,13 @@ impl L2MarketData {
     }
 
     /// Returns the depth of the order book.
-    pub fn depth(&self) -> usize {
-        self.ask_prices.len().min(self.bid_prices.len())
+    pub fn bid_depth(&self) -> usize {
+        self.bid_prices.len()
+    }
+
+    /// Returns the depth of the order book.
+    pub fn ask_depth(&self) -> usize {
+        self.ask_prices.len()
     }
 
     /// Calculates the total volume on the ask side of the order book.

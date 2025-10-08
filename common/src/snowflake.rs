@@ -6,11 +6,11 @@ const NODE_BITS: u8 = 4;
 const STEP_BITS: u8 = 12;
 const TIMESTAMP_BITS: u8 = 48;
 
-const NODE_MAX: u8 = (1 << NODE_BITS) - 1;
+const NODE_MAX: u64 = (1 << NODE_BITS) - 1;
 const STEP_MAX: u16 = (1 << STEP_BITS) - 1;
 
-const TIMESTAMP_SHIFT: u8 = NODE_BITS + STEP_BITS;
-const NODE_SHIFT: u8 = STEP_BITS;
+const TIMESTAMP_SHIFT: u8 = STEP_BITS + NODE_BITS; // 12 + 4 = 16
+const SEQUENCE_SHIFT: u8 = NODE_BITS;              // 4
 
 /// Default epoch (2025-01-01T00:00:00Z in milliseconds since Unix epoch)
 const DEFAULT_EPOCH: u64 = 1735689600000;
@@ -40,8 +40,8 @@ impl Error for SnowflakeError {}
 /// This struct implements the Snowflake algorithm for generating unique monotonically increasing IDs.
 /// Each ID is composed of:
 /// - Timestamp (48 bits)
-/// - Node ID (4 bits)
 /// - Sequence number (12 bits)
+/// - Node ID (4 bits)
 pub struct Snowflake {
     start: Instant,
     last_timestamp: u64,
@@ -73,7 +73,7 @@ impl Snowflake {
         })
     }
 
-    pub fn generate(&mut self, gateway: u8) -> Result<u64, SnowflakeError> {
+    pub fn generate(&mut self, gateway: u64) -> Result<u64, SnowflakeError> {
         if gateway > NODE_MAX {
             return Err(SnowflakeError::MachineIdOutOfRange);
         }
@@ -93,19 +93,17 @@ impl Snowflake {
             self.sequence = 0;
         }
 
-        // Create the ID from the final state.
         Ok(self.create_id(self.last_timestamp, self.sequence, gateway))
     }
     
-    /// Parses a Snowflake ID into its components.
+    /// Parses a Snowflake ID into its components based on the new layout.
     pub fn parse_id(id: u64) -> (u64, u8, u16) {
         let timestamp = (id >> TIMESTAMP_SHIFT) & ((1 << TIMESTAMP_BITS) - 1);
-        let node = ((id >> NODE_SHIFT) & (NODE_MAX as u64)) as u8;
-        let sequence = (id & (STEP_MAX as u64)) as u16;
+        let sequence = ((id >> SEQUENCE_SHIFT) & (STEP_MAX as u64)) as u16;
+        let node = (id & NODE_MAX) as u8;
         (timestamp, node, sequence)
     }
 
-    /// Spins until the clock ticks to the next millisecond.
     fn wait_next_millis(&self, last_timestamp: u64) -> Result<u64, SnowflakeError> {
         let start = Instant::now();
         loop {
@@ -120,19 +118,18 @@ impl Snowflake {
         }
     }
 
-    /// Creates the final ID by combining timestamp, gateway ID, and sequence.
-    fn create_id(&self, timestamp: u64, sequence: u16, gateway: u8) -> u64 {
+    /// Creates the final ID using the Timestamp-Sequence-Node layout.
+    fn create_id(&self, timestamp: u64, sequence: u16, gateway: u64) -> u64 {
         (timestamp << TIMESTAMP_SHIFT)
-            | ((gateway as u64) << NODE_SHIFT)
-            | (sequence as u64)
+            | ((sequence as u64) << SEQUENCE_SHIFT)
+            | gateway
     }
 
-    /// Gateway ID from ID
+    /// Extracts the Gateway ID from an ID based on the new layout.
     pub fn gateway_from_id(id: u64) -> u8 {
-        ((id >> NODE_SHIFT) & (NODE_MAX as u64)) as u8
+        (id & NODE_MAX) as u8
     }
 
-    /// Returns the milliseconds elapsed since the Snowflake generator was created.
     fn current_time_millis(&self) -> u64 {
         self.epoch_offset + self.start.elapsed().as_millis() as u64
     }
@@ -212,12 +209,12 @@ mod tests {
     #[test]
     fn test_parse_id() {
         let mut snowflake = Snowflake::new(None).unwrap();
-        let gateway = 5u8;
+        let gateway = 5;
         let id = snowflake.generate(gateway).unwrap();
         
         let (timestamp, node, sequence) = Snowflake::parse_id(id);
         
-        assert_eq!(node, gateway);
+        assert_eq!(node, gateway as u8);
         assert!(timestamp > 0);
         assert_eq!(sequence, 0); // First ID should have sequence 0
     }
@@ -225,7 +222,7 @@ mod tests {
     #[test]
     fn test_sequence_increment() {
         let mut snowflake = Snowflake::new(None).unwrap();
-        let gateway = 3u8;
+        let gateway = 3;
         
         // Generate multiple IDs rapidly to ensure same timestamp
         let ids: Vec<u64> = (0..10)
@@ -235,7 +232,7 @@ mod tests {
         // Parse and check sequences
         for (i, &id) in ids.iter().enumerate() {
             let (_, node, sequence) = Snowflake::parse_id(id);
-            assert_eq!(node, gateway);
+            assert_eq!(node, gateway as u8);
             // Sequence should increment (though may reset if millisecond changes)
             if i > 0 {
                 let (prev_ts, _, prev_seq) = Snowflake::parse_id(ids[i - 1]);
@@ -255,7 +252,7 @@ mod tests {
         for gateway in 0..=NODE_MAX {
             let id = snowflake.generate(gateway).unwrap();
             let (_, node, _) = Snowflake::parse_id(id);
-            assert_eq!(node, gateway);
+            assert_eq!(node, gateway as u8);
         }
     }
 
@@ -297,14 +294,14 @@ mod tests {
     #[test]
     fn test_bit_layout() {
         let mut snowflake = Snowflake::new(None).unwrap();
-        let gateway = 0b1111u8; // All bits set (15)
+        let gateway = 0b1111; // All bits set (15)
         
         // Generate ID and verify bit layout
         let id = snowflake.generate(gateway).unwrap();
         let (timestamp, node, sequence) = Snowflake::parse_id(id);
         
         // Verify node bits are correct
-        assert_eq!(node, gateway);
+        assert_eq!(node, gateway as u8);
         
         // Verify timestamp doesn't overflow into node bits
         assert!(timestamp < (1u64 << TIMESTAMP_BITS));
@@ -319,7 +316,7 @@ mod tests {
         for gateway in 0..=NODE_MAX {
             let id = snowflake.generate(gateway).unwrap();
             let extracted_gateway = Snowflake::gateway_from_id(id);
-            assert_eq!(extracted_gateway, gateway, "Extracted gateway should match original");
+            assert_eq!(extracted_gateway, gateway as u8, "Extracted gateway should match original");
         }
     }
 }
