@@ -7,7 +7,7 @@ pub use crate::SBE_SCHEMA_ID;
 pub use crate::SBE_SCHEMA_VERSION;
 pub use crate::SBE_SEMANTIC_VERSION;
 
-pub const SBE_BLOCK_LENGTH: u16 = 47;
+pub const SBE_BLOCK_LENGTH: u16 = 64;
 pub const SBE_TEMPLATE_ID: u16 = 1;
 
 pub mod encoder {
@@ -72,7 +72,7 @@ pub mod encoder {
             self.get_buf_mut().put_u8_at(offset, value as u8)
         }
 
-        /// primitive field 'order_id'
+        /// primitive field 'client_order_id'
         /// - min value: 0
         /// - max value: -2
         /// - null value: 0xffffffffffffffff_u64
@@ -82,8 +82,38 @@ pub mod encoder {
         /// - encodedLength: 8
         /// - version: 0
         #[inline]
-        pub fn order_id(&mut self, value: u64) {
+        pub fn client_order_id(&mut self, value: u64) {
             let offset = self.offset + 1;
+            self.get_buf_mut().put_u64_at(offset, value);
+        }
+
+        /// primitive field 'order_id'
+        /// - min value: 0
+        /// - max value: -2
+        /// - null value: 0xffffffffffffffff_u64
+        /// - characterEncoding: null
+        /// - semanticType: null
+        /// - encodedOffset: 9
+        /// - encodedLength: 8
+        /// - version: 0
+        #[inline]
+        pub fn order_id(&mut self, value: u64) {
+            let offset = self.offset + 9;
+            self.get_buf_mut().put_u64_at(offset, value);
+        }
+
+        /// primitive field 'user_id'
+        /// - min value: 0
+        /// - max value: -2
+        /// - null value: 0xffffffffffffffff_u64
+        /// - characterEncoding: null
+        /// - semanticType: null
+        /// - encodedOffset: 17
+        /// - encodedLength: 8
+        /// - version: 0
+        #[inline]
+        pub fn user_id(&mut self, value: u64) {
+            let offset = self.offset + 17;
             self.get_buf_mut().put_u64_at(offset, value);
         }
 
@@ -93,46 +123,16 @@ pub mod encoder {
         /// - null value: 0xffffffff_u32
         /// - characterEncoding: null
         /// - semanticType: null
-        /// - encodedOffset: 9
+        /// - encodedOffset: 25
         /// - encodedLength: 4
         /// - version: 0
         #[inline]
         pub fn market_id(&mut self, value: u32) {
-            let offset = self.offset + 9;
+            let offset = self.offset + 25;
             self.get_buf_mut().put_u32_at(offset, value);
         }
 
-        /// primitive field 'user_id'
-        /// - min value: 0
-        /// - max value: -2
-        /// - null value: 0xffffffffffffffff_u64
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 13
-        /// - encodedLength: 8
-        /// - version: 0
-        #[inline]
-        pub fn user_id(&mut self, value: u64) {
-            let offset = self.offset + 13;
-            self.get_buf_mut().put_u64_at(offset, value);
-        }
-
         /// primitive field 'price'
-        /// - min value: 0
-        /// - max value: -2
-        /// - null value: 0xffffffffffffffff_u64
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 21
-        /// - encodedLength: 8
-        /// - version: 0
-        #[inline]
-        pub fn price(&mut self, value: u64) {
-            let offset = self.offset + 21;
-            self.get_buf_mut().put_u64_at(offset, value);
-        }
-
-        /// primitive field 'size'
         /// - min value: 0
         /// - max value: -2
         /// - null value: 0xffffffffffffffff_u64
@@ -142,22 +142,37 @@ pub mod encoder {
         /// - encodedLength: 8
         /// - version: 0
         #[inline]
-        pub fn size(&mut self, value: u64) {
+        pub fn price(&mut self, value: u64) {
             let offset = self.offset + 29;
+            self.get_buf_mut().put_u64_at(offset, value);
+        }
+
+        /// primitive field 'size'
+        /// - min value: 0
+        /// - max value: -2
+        /// - null value: 0xffffffffffffffff_u64
+        /// - characterEncoding: null
+        /// - semanticType: null
+        /// - encodedOffset: 37
+        /// - encodedLength: 8
+        /// - version: 0
+        #[inline]
+        pub fn size(&mut self, value: u64) {
+            let offset = self.offset + 37;
             self.get_buf_mut().put_u64_at(offset, value);
         }
 
         /// REQUIRED enum
         #[inline]
         pub fn side(&mut self, value: side::Side) {
-            let offset = self.offset + 37;
+            let offset = self.offset + 45;
             self.get_buf_mut().put_u8_at(offset, value as u8)
         }
 
         /// REQUIRED enum
         #[inline]
         pub fn time_in_force(&mut self, value: time_in_force::TimeInForce) {
-            let offset = self.offset + 38;
+            let offset = self.offset + 46;
             self.get_buf_mut().put_u8_at(offset, value as u8)
         }
 
@@ -167,15 +182,24 @@ pub mod encoder {
         /// - null value: 0xffffffffffffffff_u64
         /// - characterEncoding: null
         /// - semanticType: null
-        /// - encodedOffset: 39
+        /// - encodedOffset: 47
         /// - encodedLength: 8
         /// - version: 0
         #[inline]
         pub fn timestamp(&mut self, value: u64) {
-            let offset = self.offset + 39;
+            let offset = self.offset + 47;
             self.get_buf_mut().put_u64_at(offset, value);
         }
+
+        /// REQUIRED enum
+        #[inline]
+        pub fn status(&mut self, value: status::Status) {
+            let offset = self.offset + 55;
+            self.get_buf_mut().put_u8_at(offset, value as u8)
+        }
+
     }
+
 } // end encoder
 
 pub mod decoder {
@@ -262,50 +286,65 @@ pub mod decoder {
 
         /// primitive field - 'REQUIRED'
         #[inline]
-        pub fn order_id(&self) -> u64 {
+        pub fn client_order_id(&self) -> u64 {
             self.get_buf().get_u64_at(self.offset + 1)
         }
 
         /// primitive field - 'REQUIRED'
         #[inline]
-        pub fn market_id(&self) -> u32 {
-            self.get_buf().get_u32_at(self.offset + 9)
+        pub fn order_id(&self) -> u64 {
+            self.get_buf().get_u64_at(self.offset + 9)
         }
 
         /// primitive field - 'REQUIRED'
         #[inline]
         pub fn user_id(&self) -> u64 {
-            self.get_buf().get_u64_at(self.offset + 13)
+            self.get_buf().get_u64_at(self.offset + 17)
+        }
+
+        /// primitive field - 'REQUIRED'
+        #[inline]
+        pub fn market_id(&self) -> u32 {
+            self.get_buf().get_u32_at(self.offset + 25)
         }
 
         /// primitive field - 'REQUIRED'
         #[inline]
         pub fn price(&self) -> u64 {
-            self.get_buf().get_u64_at(self.offset + 21)
+            self.get_buf().get_u64_at(self.offset + 29)
         }
 
         /// primitive field - 'REQUIRED'
         #[inline]
         pub fn size(&self) -> u64 {
-            self.get_buf().get_u64_at(self.offset + 29)
+            self.get_buf().get_u64_at(self.offset + 37)
         }
 
         /// REQUIRED enum
         #[inline]
         pub fn side(&self) -> side::Side {
-            self.get_buf().get_u8_at(self.offset + 37).into()
+            self.get_buf().get_u8_at(self.offset + 45).into()
         }
 
         /// REQUIRED enum
         #[inline]
         pub fn time_in_force(&self) -> time_in_force::TimeInForce {
-            self.get_buf().get_u8_at(self.offset + 38).into()
+            self.get_buf().get_u8_at(self.offset + 46).into()
         }
 
         /// primitive field - 'REQUIRED'
         #[inline]
         pub fn timestamp(&self) -> u64 {
-            self.get_buf().get_u64_at(self.offset + 39)
+            self.get_buf().get_u64_at(self.offset + 47)
         }
+
+        /// REQUIRED enum
+        #[inline]
+        pub fn status(&self) -> status::Status {
+            self.get_buf().get_u8_at(self.offset + 55).into()
+        }
+
     }
+
 } // end decoder
+

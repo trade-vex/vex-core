@@ -15,19 +15,18 @@ WORKDIR /app
 COPY . .
 
 # Fetch and build SBE tool
-RUN git clone --depth=1 https://github.com/real-logic/simple-binary-encoding.git sbe
+RUN git clone --branch 1.36.0 --depth=1 https://github.com/real-logic/simple-binary-encoding.git sbe
 WORKDIR /app/sbe
 
 # Build the SBE tool and all dependencies
 RUN ./gradlew jar
 
 # Generate Rust code from ordercmd.xml
-RUN mkdir /app/generated && java --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
+RUN java --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
   -Dsbe.output.dir=/app/generated \
   -Dsbe.target.language=Rust \
   -Dsbe.target.namespace=sbe \
-  -cp "sbe-tool/build/libs/sbe-tool-1.36.0-SNAPSHOT.jar:sbe-all/build/libs/sbe-all-1.36.0-SNAPSHOT.jar" \
-  uk.co.real_logic.sbe.SbeTool \
+  -jar ./sbe-all/build/libs/sbe-all-1.36.0.jar \
   /app/resources/ordercmd.xml
 
 # Runtime stage
