@@ -15,8 +15,10 @@ use processors::{
 };
 use std::sync::Arc;
 use std::thread;
+use std::thread::JoinHandle;
 use tracing::info;
 use vex_config::CoreNetworkingConfig;
+use vex_networking::server::GatewayPublications;
 use vex_networking::server::VexCoreServer;
 
 pub type OrderProducer = MultiProducer<OrderCommand, SingleConsumerBarrier>;
@@ -27,7 +29,10 @@ pub type OrderProducer = MultiProducer<OrderCommand, SingleConsumerBarrier>;
 /// 3. Risk Engine release (R2) for settlement (embedded in matching engine events)
 ///
 /// Each processor runs on its own dedicated thread/core.
-pub struct CoreEngine {}
+pub struct CoreEngine {
+    /// Gateway Publications for sending responses back to gateways
+    publications: Arc<GatewayPublications>,
+}
 
 impl CoreEngine {
     /// Creates a new CoreEngine
@@ -50,8 +55,9 @@ impl CoreEngine {
     /// ```
     pub fn new(
         symbol_specs: HashMap<u32, CoreMarketSpecification>,
-        journaling_processor: JournalingProcessor,
+        mut journaling_processor: JournalingProcessor,
         events_handler: Arc<dyn EventsHandler>,
+        publications: Arc<GatewayPublications>,
         #[cfg(test)] test_handler: impl 'static + Send + FnMut(&mut OrderCommand, i64, bool),
     ) -> (Self, OrderProducer, Option<Arc<Vec<RiskEngine>>>) {
         // Setup PriceCache
@@ -60,12 +66,10 @@ impl CoreEngine {
         let order_factory = || OrderCommand::default();
         let buffer_size = 1024; // Power of 2 for disruptor efficiency
 
-        let journaling_arc = Arc::new(journaling_processor);
         // Create journaling handler for audit trail and recovery
         let journaling_handler = {
-            let journaling_clone = journaling_arc.clone();
             move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
-                journaling_clone.journal_command(cmd);
+                journaling_processor.journal_command(cmd);
             }
         };
         let events_handler_arc = events_handler.clone();
@@ -169,28 +173,33 @@ impl CoreEngine {
                 .handle_events_with(test_handler)
                 .build();
 
-            return (Self {}, producer, Some(risk_engines_arc));
+            return (Self { publications }, producer, Some(risk_engines_arc));
         }
         #[allow(unreachable_code)]
         let producer = producer.build();
 
-        let engine = Self {};
-        (engine, producer, None)
+        let engine = Self { publications };
+        (engine, producer, Some(risk_engines_arc))
     }
 
     /// Run Starts the Networking. 2 Processes Starts
     /// 1. Listens for New Gateway Clients  
     /// 2. Listens for OrderCommands from Gateways
-    pub fn run(&mut self, producer: OrderProducer, networking_config: CoreNetworkingConfig) {
+    pub fn run(
+        &mut self,
+        producer: OrderProducer,
+        networking_config: CoreNetworkingConfig,
+    ) -> JoinHandle<()> {
         // Start the disruptor ring buffer processing
         // This will block and process events in parallel across all handlers
-        let _ = thread::spawn(move || {
-            let mut core_server = VexCoreServer::new(networking_config, producer)
+        let publications = self.publications.clone();
+        thread::spawn(move || {
+            let mut core_server = VexCoreServer::new(networking_config, producer, publications)
                 .expect("Failed to create VexCoreServer");
             match core_server.start() {
                 Ok(()) => println!("Server run() completed successfully (unexpected)"),
                 Err(e) => println!("Server run() error: {e}"),
             }
-        });
+        })
     }
 }
