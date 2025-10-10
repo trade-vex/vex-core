@@ -5,8 +5,8 @@ use sbe_order::order_command_message_codec::{
 };
 use sbe_order::status::Status as SbeStatus;
 use sbe_order::{ReadBuf, SbeResult, WriteBuf};
-use serde::de::Error;
 use serde::de::value::Error as SerdeError;
+use serde::de::Error;
 
 // Size of the serialized OrderCommand in bytes
 // Header: 8 bytes
@@ -323,7 +323,7 @@ pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
         side: decoder.side().try_into()?,
         time_in_force: decoder.time_in_force().try_into()?,
         timestamp: decoder.timestamp(),
-        status: Status::Rejected, // Default status since decoder doesn't have status method
+        status: decoder.status().try_into()?, // Default status since decoder doesn't have status method
         events: None,
         balance: [UserBalance::default(); 2],
         l2_data: None,
