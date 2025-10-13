@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 use vex_networking::server::GatewayPublications;
 
-pub trait EventsHandler: Send + Sync {
+pub trait EventsHandler: Send + Sync + 'static {
     fn handle_processed_command(&self, cmd: &mut OrderCommand);
 }
 
