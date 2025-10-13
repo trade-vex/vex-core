@@ -88,6 +88,10 @@ pub enum OrderCommandType {
     /// A command to cancel an existing order. Only `order_id`, `user_id`, and
     /// `symbol_id` are relevant. Other fields should be ignored.
     CancelOrder,
+    /// Deposit funds to a user's account. Only `user_id` and `amount`, `market` are relevant, where market id is used as asset id.
+    DepositFunds,
+    /// Withdraw funds from a user's account. Only `user_id` and `amount`, `market` are relevant, where market id is used as asset id.
+    WithdrawFunds,
 }
 
 impl TryFrom<SbeOrderCommandType> for OrderCommandType {
@@ -97,6 +101,8 @@ impl TryFrom<SbeOrderCommandType> for OrderCommandType {
         match value {
             SbeOrderCommandType::PlaceOrder => Ok(OrderCommandType::PlaceOrder),
             SbeOrderCommandType::CancelOrder => Ok(OrderCommandType::CancelOrder),
+            SbeOrderCommandType::DepositFunds => Ok(OrderCommandType::DepositFunds),
+            SbeOrderCommandType::WithdrawFunds => Ok(OrderCommandType::WithdrawFunds),
             SbeOrderCommandType::NullVal => Err(SerdeError::custom("NullVal")), // Maybe handle NullVal specially
         }
     }
@@ -107,6 +113,8 @@ impl From<OrderCommandType> for SbeOrderCommandType {
         match val {
             OrderCommandType::PlaceOrder => SbeOrderCommandType::PlaceOrder,
             OrderCommandType::CancelOrder => SbeOrderCommandType::CancelOrder,
+            OrderCommandType::DepositFunds => SbeOrderCommandType::DepositFunds,
+            OrderCommandType::WithdrawFunds => SbeOrderCommandType::WithdrawFunds
         }
     }
 }
