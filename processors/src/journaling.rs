@@ -1,7 +1,7 @@
-use common::{OrderCommand, Snowflake};
+use common::{OrderCommand, OrderCommandType, Snowflake};
 use tracing::info;
 
-pub struct JournalingProcessor{
+pub struct JournalingProcessor {
     snowflake: Snowflake,
 }
 
@@ -12,9 +12,11 @@ impl JournalingProcessor {
         }
     }
 
-    // Ring buffer Disruptor to JournalingProcessor - Logger(Excali-0)
+    // Ring buforder_idfer Disruptor to JournalingProcessor - Logger(Excali-0)
     pub fn journal_command(&mut self, cmd: &mut OrderCommand) {
-        cmd.order_id = self.snowflake.generate(cmd.order_id).unwrap();
+        if cmd.command == OrderCommandType::PlaceOrder {
+            cmd.order_id = self.snowflake.generate(cmd.order_id).unwrap();
+        }
         cmd.timestamp = self.snowflake.timestamp();
         info!("[Journal] Writing command to disk: ID {}", cmd.order_id);
     }
