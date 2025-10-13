@@ -3,8 +3,8 @@ mod core_arithmetic;
 mod l2_market_data;
 mod market_specification;
 mod order;
-mod user_profile;
 mod snowflake;
+mod user_profile;
 
 pub use cmd::{
     MatcherTradeEvent, ORDERCOMMANDSIZE, OrderCommand, Status, decode_order_command,
@@ -16,8 +16,8 @@ pub use market_specification::{
     CoreMarketSpecification, CoreMarketSpecificationBuilder, base_asset, quote_asset,
 };
 pub use order::{Order, PriceCache};
-pub use user_profile::{BalanceError, BalanceKey, BalanceStore, UserBalance};
 pub use snowflake::Snowflake;
+pub use user_profile::{BalanceError, BalanceKey, BalanceStore, UserBalance};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use sbe_order::order_command_type::OrderCommandType as SbeOrderCommandType;
@@ -80,7 +80,7 @@ pub enum MatcherEventType {
 /// The specific action the command represents.
 ///
 /// This serves as the primary discriminant for the `OrderCommand` struct.
-#[derive(Debug, Copy,  Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
 pub enum OrderCommandType {
     /// A command to place a new order. All fields in `OrderCommand` are relevant.
