@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(spec) = dev_config.symbols.get_symbol(market_id) {
             println!(
                 "   Symbol {}: {:?} ({}/{})",
-                market_id, spec.market_type, spec.base_currency, spec.quote_currency
+                market_id, spec.market_type, spec.base_asset, spec.quote_asset
             );
         }
     }
@@ -54,8 +54,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let btc_usd_spec = CoreMarketSpecification {
         market_id: 1001,
         market_type: MarketType::Spot,
-        base_currency: 3762,   // BTC (satoshi)
-        quote_currency: 840,   // USD
+        base_asset: 3762,      // BTC (satoshi)
+        quote_asset: 840,      // USD
         base_scale_k: 100_000, // 1 lot = 0.001 BTC
         quote_scale_k: 100,    // 1 step = $0.01
         taker_fee: 25,         // 0.25 USD per lot
