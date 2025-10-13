@@ -41,6 +41,7 @@
             <validValue name="PartiallyFilled" value="3">3</validValue>
             <validValue name="Filled" value="4">4</validValue>
             <validValue name="Processing" value="5">5</validValue>
+            <validValue name="Processed" value="6">6</validValue>
         </enum>
     </types>
 
