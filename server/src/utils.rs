@@ -22,7 +22,7 @@ macro_rules! create_risk_r2_handler {
         let risk_engines = $risk_engines.clone();
         let shard_mask = $risk_engines.len() as u64 - 1;
         move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
-            if (cmd.status == Status::Rejected) {
+            if (cmd.status == Status::Rejected || cmd.status == Status::Processed) {
                 return;
             }
             let risk_engine = &risk_engines[$shard_id];
@@ -90,10 +90,20 @@ macro_rules! create_event_handler {
 #[macro_export]
 macro_rules! create_matching_handler {
     ($shard_id:expr, $routers:expr, $price_cache:expr) => {{
-        let router = &mut $routers[$shard_id];
+        let routers = $routers.clone();
+        let shard_id = $shard_id;
         let price_cache = $price_cache.clone();
         move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
-            router.process_order(cmd, price_cache.clone());
+            // Non-op commands for order book processing
+            if cmd.command == OrderCommandType::DepositFunds
+                || cmd.command == OrderCommandType::WithdrawFunds
+                || cmd.status == Status::Rejected
+            {
+                return;
+            }
+            let router = &routers[shard_id];
+            let price_cache = price_cache.clone();
+            router.process_order(cmd, price_cache);
         }
     }};
 }
