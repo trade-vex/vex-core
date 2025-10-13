@@ -95,7 +95,7 @@ impl KafkaEventsHandler {
                 timestamp: cmd.timestamp(),
             };
 
-            let topic_name = format!("market-{}-balances", cmd.market_id);
+            let topic_name = format!("asset-{}-balances", asset_id);
             self.publish_event(&topic_name, &user_id.to_string(), &balance_event);
             info!(
                 "[KafkaEventsHandler] Published balance event for user {} in market {}",
@@ -119,7 +119,7 @@ impl KafkaEventsHandler {
             timestamp: cmd.timestamp(),
         };
 
-        let topic_name = format!("market-{}-balances", cmd.market_id);
+        let topic_name = format!("asset-{}-balances", cmd.market_id);
         self.publish_event(&topic_name, &cmd.user_id.to_string(), &balance_event);
         info!(
             "[KafkaEventsHandler] Published balance event for user {} in market {}",
