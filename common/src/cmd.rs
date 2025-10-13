@@ -76,6 +76,8 @@ pub struct OrderCommand {
     pub events: Option<Box<MatcherTradeEvent>>,
 
     /// Final balance of the user/maker after this trade
+    /// For Deposit/Withdraw commands, only balance[0] is used to represent the asset balance change
+    /// For OrderBook commands, balance[0] is base currency, balance[1] is quote currency
     pub balance: [UserBalance; 2], // [0] = base currency, [1] = quote currency
 
     /// L2 Market Data Snapshot after the order is processed, it is not recorded when the status is Rejected
