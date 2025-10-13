@@ -1,4 +1,4 @@
-use common::{CoreMarketSpecification, MarketType, UserBalance};
+use common::{CoreMarketSpecification, MarketType};
 use hashbrown::HashMap;
 use std::env;
 use vex_config::CoreNetworkingConfig;
@@ -38,16 +38,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
     add_spec(market_id, &mut specs);
 
-    let (mut core_engine, producer, risk_engines) = init_exchange(specs);
-    let risk_engines = risk_engines.unwrap();
-    risk_engines[1].set_balance(1, base_asset_id, UserBalance::new(10000000, 0));
-    risk_engines[1].set_balance(1, quote_asset_id, UserBalance::new(10000000, 0));
-    risk_engines[2].set_balance(2, base_asset_id, UserBalance::new(10000000, 0));
-    risk_engines[2].set_balance(2, quote_asset_id, UserBalance::new(10000000, 0));
-
+    let (core_engine, producer) = init_exchange(specs);
     let t = core_engine.run(producer, server_config);
 
-    t.join().unwrap();
+    t.join().unwrap()?;
+
     Ok(())
 }
 
