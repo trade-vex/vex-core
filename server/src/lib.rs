@@ -1,75 +1,197 @@
 pub mod engine;
-pub mod utils;
-
-use processors::risk_engine::RiskEngine;
-use std::sync::Arc;
+mod utils;
 
 use common::CoreMarketSpecification;
+use engine::{CoreEngine, CoreEngineBuilder, EngineResult, OrderProducer, RiskEngines};
 use hashbrown::HashMap;
-use processors::events::KafkaEventsHandler;
-use processors::journaling::JournalingProcessor;
+use processors::{events::KafkaEventsHandler, journaling::JournalingProcessor};
+use std::{sync::Arc, thread::JoinHandle};
+use vex_config::VexConfig;
 use vex_networking::server::GatewayPublications;
 
-use crate::engine::{CoreEngine, OrderProducer};
+// Re-export for convenience
+pub use engine::EngineError;
 
-/// Sets up the entire Exchange Core application with all processors.
+/// Running engine instance that manages server lifecycle
 ///
-/// This creates the core engine and adds symbols from the provided configuration
-pub fn init_exchange(
+/// When dropped, the server will be gracefully shut down.
+pub struct RunningEngine {
+    pub thread: JoinHandle<Result<(), EngineError>>,
+}
+
+impl RunningEngine {
+    /// Returns on panic or error during server execution
+    pub fn join(self) -> Result<(), EngineError> {
+        self.thread.join().unwrap_or_else(|e| {
+            Err(EngineError::ServerRuntime(format!(
+                "Server thread panicked: {:?}",
+                e
+            )))
+        })
+    }
+}
+
+/// Starts the exchange core server with the given configuration
+///
+/// This is the main entry point for production use. It initializes all components
+/// (risk engines, matching engines, journaling, event handlers) and starts the
+/// networking layer.
+///
+/// # Arguments
+///
+/// * `config` - Complete server configuration including symbols and networking
+///
+/// # Returns
+///
+/// A `RunningEngine` handle that keeps the server running. When dropped,
+/// the server will shut down gracefully.
+///
+/// # Errors
+///
+/// Returns `EngineError` if initialization or server startup fails.
+///
+/// # Example
+///
+/// ```no_run
+/// use vex_config::{VexConfig, Environment};
+/// use vex_server::start;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let config = VexConfig::new(Environment::Development);
+/// let _engine = start(config)?;
+/// // Server runs until _engine is dropped
+/// # Ok(())
+/// # }
+/// ```
+pub fn start(config: VexConfig) -> Result<RunningEngine, EngineError> {
+    let (engine, producer, _) =
+        init_internal(config.symbols.symbols.clone(), "localhost:9092".to_string())?;
+
+    let thread_handle = engine.run(producer, config.core_networking);
+
+    Ok(RunningEngine {
+        thread: thread_handle,
+    })
+}
+
+/// Internal initialization function
+///
+/// Creates the core engine with all necessary components. This is used by both
+/// the production `start()` function and the test `setup()` function.
+pub fn init_internal(
     symbol_specs: HashMap<u32, CoreMarketSpecification>,
-) -> (CoreEngine, OrderProducer, Option<Arc<Vec<RiskEngine>>>) {
-    // Initialize journaling processor for audit trail
+    kafka_broker: String,
+) -> EngineResult<(CoreEngine, OrderProducer, Option<RiskEngines>)> {
     let journaling_processor = JournalingProcessor::new();
-
     let publications = Arc::new(GatewayPublications::new());
-
-    // Create events handler for trade events
     let events_handler = Arc::new(KafkaEventsHandler::new(
-        "localhost:9092",
-        publications.clone(),
+        &kafka_broker,
+        Arc::clone(&publications),
     ));
 
-    // Create the Exchange Core with sharded risk engines and matching engines
-    // Symbols are automatically added to matching engines during initialization
+    CoreEngineBuilder::new()
+        .with_symbol_specs(symbol_specs)
+        .with_journaling_processor(journaling_processor)
+        .with_events_handler(events_handler)
+        .with_publications(publications)
+        .build()
+}
 
-    #[cfg(test)]
-    {
-        let test_handler = |cmd: &mut common::OrderCommand, _seq: i64, _end_of_batch: bool| {
-            println!("Test handler received command: {cmd:?}");
+/// Initializes the exchange for backward compatibility
+///
+/// # Deprecated
+///
+/// Use `start()` for production or `test::setup()` for testing instead.
+#[deprecated(since = "0.1.0", note = "Use `start()` or `test::setup()` instead")]
+pub fn init_exchange(
+    symbol_specs: HashMap<u32, CoreMarketSpecification>,
+) -> (CoreEngine, OrderProducer, Option<RiskEngines>) {
+    init_internal(symbol_specs, "localhost:9092".to_string())
+        .expect("Failed to initialize exchange")
+}
+
+/// Test utilities for vex-server
+///
+/// This module provides a simplified API for testing the exchange engine.
+/// Use `test::setup()` to create a test environment with direct access to
+/// the producer and risk engines.
+#[cfg(test)]
+pub mod test {
+    use super::*;
+    use common::{OrderCommand, Status};
+    use std::sync::mpsc;
+
+    /// Test engine instance with access to internals for testing
+    pub struct TestEngine {
+        /// Order producer for publishing test commands
+        pub producer: OrderProducer,
+        /// Risk engines for balance manipulation and verification
+        pub risk_engines: RiskEngines,
+        /// Receiver for processed commands
+        pub receiver: mpsc::Receiver<OrderCommand>,
+    }
+
+    /// Sets up a test environment with the given market specifications
+    ///
+    /// This creates a complete engine instance configured for testing, with
+    /// a channel for receiving processed commands.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use vex_server::test::setup;
+    /// use hashbrown::HashMap;
+    ///
+    /// let mut specs = HashMap::new();
+    /// // ... add market specs ...
+    ///
+    /// let test_env = setup(specs);
+    /// test_env.producer.publish(|cmd| {
+    ///     // Configure order command
+    /// });
+    ///
+    /// let result = test_env.receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+    /// ```
+    pub fn setup(specs: HashMap<u32, CoreMarketSpecification>) -> TestEngine {
+        let (tx, rx) = mpsc::channel::<OrderCommand>();
+        let test_handler = move |cmd: &mut OrderCommand, _: i64, _: bool| {
+            if cmd.status != Status::Processing {
+                let _ = tx.send(cmd.clone());
+            }
         };
-        let (core_engine, producer, risk_engines) = CoreEngine::new(
-            symbol_specs.clone(),
-            journaling_processor,
-            events_handler,
+
+        let publications = Arc::new(GatewayPublications::new());
+        let (_engine, producer, risk_engines_opt) = CoreEngine::new(
+            specs,
+            JournalingProcessor::new(),
+            Arc::new(KafkaEventsHandler::new(
+                "localhost:9092",
+                Arc::clone(&publications),
+            )),
             publications,
             test_handler,
         );
-        (core_engine, producer, risk_engines)
-    }
-    #[cfg(not(test))]
-    {
-        let (core_engine, producer, risk_engines) = CoreEngine::new(
-            symbol_specs.clone(),
-            journaling_processor,
-            events_handler,
-            publications,
-        );
-        (core_engine, producer, risk_engines)
+
+        TestEngine {
+            producer,
+            risk_engines: risk_engines_opt.expect("Risk engines should be available in test mode"),
+            receiver: rx,
+        }
     }
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
+    use super::test::setup;
     use super::*;
-    use tracing::debug;
-    use common::PriceCache;
-    use common::{CoreMarketSpecification, MarketType, OrderCommand, Side, Status};
-    use common::{TimeInForce, UserBalance};
+    use common::{MarketType, OrderCommand, PriceCache, Side, Status, TimeInForce, UserBalance};
     use disruptor::Producer;
-    use std::sync::{Arc, mpsc};
-    use std::time::Duration;
+    use processors::risk_engine::RiskEngine;
+    use std::{sync::mpsc, time::Duration};
+    use tracing::debug;
 
-    fn add_spec(market_id: u32, specs: &mut HashMap<u32, CoreMarketSpecification>) {
+    /// Helper function to add a market specification to the specs map
+    pub fn add_spec(market_id: u32, specs: &mut HashMap<u32, CoreMarketSpecification>) {
         specs.insert(
             market_id,
             CoreMarketSpecification::builder()
@@ -83,36 +205,53 @@ mod test {
         );
     }
 
-    // Helper function to reduce test boilerplate
-    fn setup_test_env(
-        specs: HashMap<u32, CoreMarketSpecification>,
-    ) -> (
-        OrderProducer,
-        Arc<Vec<processors::risk_engine::RiskEngine>>,
-        mpsc::Receiver<OrderCommand>,
-    ) {
-        let (tx, rx) = mpsc::channel::<OrderCommand>();
-        let test_handler = move |cmd: &mut OrderCommand, _, _| {
-            if cmd.status != Status::Processing {
-                tx.send(cmd.clone()).unwrap();
+    /// Helper struct for checking user balances in tests
+    pub struct BalanceChecker<'a> {
+        risk_engines: &'a Arc<Vec<RiskEngine>>,
+        shard_mask: u64,
+    }
+
+    impl<'a> BalanceChecker<'a> {
+        /// Creates a new balance checker
+        pub fn new(risk_engines: &'a Arc<Vec<RiskEngine>>) -> Self {
+            Self {
+                risk_engines,
+                shard_mask: risk_engines.len() as u64 - 1,
             }
-        };
+        }
 
-        let publications = Arc::new(GatewayPublications::new());
+        /// Gets the shard ID for a given user
+        fn get_shard_id(&self, user_id: u64) -> usize {
+            (user_id & self.shard_mask) as usize
+        }
 
-        let (_core_engine, producer, risk_engines_opt) = CoreEngine::new(
-            specs,
-            JournalingProcessor::new(),
-            Arc::new(KafkaEventsHandler::new(
-                "localhost:9092",
-                publications.clone(),
-            )),
-            publications,
-            test_handler,
-        );
-        let risk_engines = risk_engines_opt.expect("Risk engines should be available in test mode");
+        /// Checks if a user's balance matches expected values
+        pub fn check(
+            &self,
+            user_id: u64,
+            asset_id: u16,
+            expected_available: u64,
+            expected_locked: u64,
+            context: &str,
+        ) {
+            let shard_id = self.get_shard_id(user_id);
+            let balance = self.risk_engines[shard_id].get_balance(user_id, asset_id);
+            let expected_balance = UserBalance::new(expected_available, expected_locked);
+            assert_eq!(
+                balance, expected_balance,
+                "Balance check failed for User {user_id} Asset {asset_id} [Context: {context}]"
+            );
+        }
 
-        (producer, risk_engines, rx)
+        /// Sets a user's balance
+        pub fn set_balance(&self, user_id: u64, asset_id: u16, available: u64, locked: u64) {
+            let shard_id = self.get_shard_id(user_id);
+            self.risk_engines[shard_id].set_balance(
+                user_id,
+                asset_id,
+                UserBalance::new(available, locked),
+            );
+        }
     }
 
     fn get_producer(
@@ -285,7 +424,10 @@ mod test {
         let (_core_engine, mut producer, risk_engines_opt) = CoreEngine::new(
             specs,
             JournalingProcessor::new(),
-            Arc::new(KafkaEventsHandler::new("localhost:9092", publications.clone())),
+            Arc::new(KafkaEventsHandler::new(
+                "localhost:9092",
+                publications.clone(),
+            )),
             publications,
             test_handler,
         );
@@ -438,7 +580,10 @@ mod test {
         let (_core_engine, mut producer, risk_engines_opt) = CoreEngine::new(
             specs,
             JournalingProcessor::new(),
-            Arc::new(KafkaEventsHandler::new("localhost:9092", publications.clone())),
+            Arc::new(KafkaEventsHandler::new(
+                "localhost:9092",
+                publications.clone(),
+            )),
             publications,
             test_handler,
         );
@@ -517,7 +662,7 @@ mod test {
             // assert if the balance is locked correctly for the maker
             assert_eq!(placed_cmd.balance[0].locked, size);
             assert_eq!(placed_cmd.balance[0].available, 0); // All base is locked
-            // assert that the balance in the command is correct and matches the risk engine state
+                                                            // assert that the balance in the command is correct and matches the risk engine state
             assert_eq!(
                 placed_cmd.balance[0],
                 risk_engines[get_shard_id(id)].get_balance(id, base_asset_id)
@@ -713,7 +858,7 @@ mod test {
         let quote_asset_id = 2;
         let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
         add_spec(market_id, &mut specs);
-        let (mut producer, risk_engines, rx) = setup_test_env(specs.clone());
+        let (mut producer, risk_engines, rx) = setup(specs.clone());
 
         let price_cache = Arc::new(PriceCache::new(specs.keys()));
 
@@ -1125,7 +1270,7 @@ mod test {
             taker_d_cmd.balance[1].available,
             1_000_000 - ((10 * 1010) + (15 * 1020) + (5 * 1020))
         ); // quote after spending
-        // gets equivalent base - taker fee
+           // gets equivalent base - taker fee
         assert_eq!(taker_d_cmd.balance[0].locked, 0);
         let gross_base_recv = 30;
         assert_eq!(
@@ -1247,50 +1392,6 @@ mod test {
         );
     }
 
-    struct BalanceChecker<'a> {
-        risk_engines: &'a Arc<Vec<processors::risk_engine::RiskEngine>>,
-        shard_mask: u64,
-    }
-
-    impl<'a> BalanceChecker<'a> {
-        fn new(risk_engines: &'a Arc<Vec<processors::risk_engine::RiskEngine>>) -> Self {
-            Self {
-                risk_engines,
-                shard_mask: risk_engines.len() as u64 - 1,
-            }
-        }
-
-        fn get_shard_id(&self, user_id: u64) -> usize {
-            (user_id & self.shard_mask) as usize
-        }
-
-        fn check(
-            &self,
-            user_id: u64,
-            asset_id: u16,
-            expected_available: u64,
-            expected_locked: u64,
-            context: &str,
-        ) {
-            let shard_id = self.get_shard_id(user_id);
-            let balance = self.risk_engines[shard_id].get_balance(user_id, asset_id);
-            let expected_balance = UserBalance::new(expected_available, expected_locked);
-            assert_eq!(
-                balance, expected_balance,
-                "Balance check failed for User {user_id} Asset {asset_id} [Context: {context}]"
-            );
-        }
-
-        fn set_balance(&self, user_id: u64, asset_id: u16, available: u64, locked: u64) {
-            let shard_id = self.get_shard_id(user_id);
-            self.risk_engines[shard_id].set_balance(
-                user_id,
-                asset_id,
-                UserBalance::new(available, locked),
-            );
-        }
-    }
-
     #[test_log::test]
     fn test_multi_market_stress_scenario() {
         // This test simulates a high-volatility session across three interconnected markets:
@@ -1336,7 +1437,7 @@ mod test {
 
         // Bob needs USD and BTC to be a taker
         checker.set_balance(bob_taker_id, usd_asset, 10_000_000, 0); // 10M USD
-        // CORRECTED: Increased Bob's BTC to support his large SOL trade
+                                                                     // CORRECTED: Increased Bob's BTC to support his large SOL trade
         checker.set_balance(bob_taker_id, btc_asset, 5_000_000, 0); // 5M BTC
 
         // Charlie needs a bit of everything for his special orders
@@ -1345,7 +1446,7 @@ mod test {
 
         // David needs SOL and BTC to make the SOL/BTC market
         checker.set_balance(david_sol_mm_id, sol_asset, 1_000_000, 0); // 1M SOL
-        // CORRECTED: Increased David's BTC to support his large market making bid
+                                                                       // CORRECTED: Increased David's BTC to support his large market making bid
         checker.set_balance(david_sol_mm_id, btc_asset, 5_000_000, 0); // 5M BTC
 
         // --- Phase 1: Building the Order Books ---
