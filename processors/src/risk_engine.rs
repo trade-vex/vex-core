@@ -64,34 +64,75 @@ impl RiskEngine {
             "[RiskEngine] Validating arguments for order {}",
             cmd.order_id
         );
-        if matches!(cmd.command, OrderCommandType::PlaceOrder) {
-            info!(
-                "[RiskEngine] Looking up market_id spec for market_id {}",
-                cmd.market_id
-            );
-
-            if self.symbol_specs.get(&cmd.market_id).is_none() {
-                warn!(
-                    "[RiskEngine] Market spec not found for market_id {}",
+        match cmd.command {
+            OrderCommandType::PlaceOrder => {
+                info!(
+                    "[RiskEngine] Looking up market_id spec for market_id {}",
                     cmd.market_id
                 );
-                cmd.status = common::Status::Rejected;
-                return;
-            }
 
-            info!(
-                "[RiskEngine] Found market_id spec for market_id {}",
-                cmd.market_id
-            );
+                if self.symbol_specs.get(&cmd.market_id).is_none() {
+                    warn!(
+                        "[RiskEngine] Market spec not found for market_id {}",
+                        cmd.market_id
+                    );
+                    cmd.status = common::Status::Rejected;
+                    return;
+                }
 
-            // Note: Fees are always in the receiving asset, hence are cut on post-processing (settlement)
-            if let Err(err) = self.reserve_funds_for_order(cmd, price_cache) {
-                warn!(
-                    "[RiskEngine] Insufficient funds for user {}: {:?}",
-                    cmd.user_id, err
+                info!(
+                    "[RiskEngine] Found market_id spec for market_id {}",
+                    cmd.market_id
                 );
-                cmd.set_status(Status::Rejected);
+
+                // Note: Fees are always in the receiving asset, hence are cut on post-processing (settlement)
+                if let Err(err) = self.reserve_funds_for_order(cmd, price_cache) {
+                    warn!(
+                        "[RiskEngine] Insufficient funds for user {}: {:?}",
+                        cmd.user_id, err
+                    );
+                    cmd.set_status(Status::Rejected);
+                }
             }
+            OrderCommandType::DepositFunds => {
+                info!(
+                    "[RiskEngine] Depositing {} units of asset {} for user {}",
+                    cmd.size, cmd.market_id, cmd.user_id
+                );
+                match self.handle_deposit(cmd) {
+                    Ok(_) => {
+                        cmd.balance[0] = self.get_balance(cmd.user_id(), cmd.market_id as u16);
+                        cmd.set_status(Status::Processed);
+                    }
+                    Err(err) => {
+                        warn!(
+                            "[RiskEngine] Failed to deposit funds for user {}: {:?}",
+                            cmd.user_id, err
+                        );
+                        cmd.set_status(Status::Rejected);
+                    }
+                }
+            }
+            OrderCommandType::WithdrawFunds => {
+                info!(
+                    "[RiskEngine] Withdrawing {} units of asset {} for user {}",
+                    cmd.size, cmd.market_id, cmd.user_id
+                );
+                match self.handle_withdrawal(cmd) {
+                    Ok(_) => {
+                        cmd.balance[0] = self.get_balance(cmd.user_id(), cmd.market_id as u16);
+                        cmd.set_status(Status::Processed);
+                    }
+                    Err(err) => {
+                        warn!(
+                            "[RiskEngine] Failed to withdraw funds for user {}: {:?}",
+                            cmd.user_id, err
+                        );
+                        cmd.set_status(Status::Rejected);
+                    }
+                }
+            }
+            _ => {} // no balance change happens in case of cancel
         }
 
         info!(
@@ -347,6 +388,50 @@ impl RiskEngine {
     pub fn set_balance(&self, user_id: u64, asset_id: u16, balance: UserBalance) {
         let mut store = self.balances.lock();
         *store.get_balance_mut(user_id, asset_id) = balance;
+    }
+
+    /// Handles deposit funds command
+    /// The market_id field is used to represent the asset_id for deposits
+    fn handle_deposit(&self, cmd: &mut OrderCommand) -> Result<()> {
+        let asset_id = cmd.market_id as u16;
+        let amount = cmd.size;
+
+        info!(
+            "[RiskEngine] Processing deposit: user={}, asset={}, amount={}",
+            cmd.user_id, asset_id, amount
+        );
+
+        let mut store = self.balances.lock();
+        store.add_funds(cmd.user_id, asset_id, amount)?;
+
+        info!(
+            "[RiskEngine] Successfully deposited {} units of asset {} for user {}",
+            amount, asset_id, cmd.user_id
+        );
+
+        Ok(())
+    }
+
+    /// Handles withdrawal funds command
+    /// The market_id field is used to represent the asset_id for withdrawals
+    fn handle_withdrawal(&self, cmd: &mut OrderCommand) -> Result<()> {
+        let asset_id = cmd.market_id as u16;
+        let amount = cmd.size;
+
+        info!(
+            "[RiskEngine] Processing withdrawal: user={}, asset={}, amount={}",
+            cmd.user_id, asset_id, amount
+        );
+
+        let mut store = self.balances.lock();
+        store.subtract_funds(cmd.user_id, asset_id, amount)?;
+
+        info!(
+            "[RiskEngine] Successfully withdrew {} units of asset {} for user {}",
+            amount, asset_id, cmd.user_id
+        );
+
+        Ok(())
     }
 }
 
