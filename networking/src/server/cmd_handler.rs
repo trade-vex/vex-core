@@ -1,8 +1,6 @@
-use common::{OrderCommand, Status, decode_order_command};
+use common::{OrderCommand, OrderCommandType, Status, decode_order_command};
 use disruptor::{MultiProducer, Producer, SingleConsumerBarrier};
-use rusteron_client::{
-    AeronFragmentHandlerCallback, AeronHeader,
-};
+use rusteron_client::{AeronFragmentHandlerCallback, AeronHeader};
 use tracing::{debug, error};
 
 pub struct FragmentHandler {
@@ -31,7 +29,9 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
                 // order_id is updated in journaling processor
                 // the snowflake algorithm requires gateway_id to be part of order_id
                 // instead of adding a new field, we repurpose order_id here
-                order_command.order_id = self.gateway_id as u64;
+                if order_command.command == OrderCommandType::PlaceOrder {
+                    order_command.order_id = self.gateway_id as u64;
+                }
                 debug!(
                     "[{}] gateway-{}: Received OrderCommand: {:?}",
                     session_id, self.gateway_id, order_command
