@@ -147,6 +147,25 @@ impl BalanceStore {
         Ok(*balance)
     }
 
+    // Subract from available funds
+    pub fn subtract_funds(
+        &mut self,
+        user_id: u64,
+        asset_id: u16,
+        amount: u64,
+    ) -> Result<UserBalance, BalanceError> {
+        let balance = self.get_balance_mut(user_id, asset_id);
+        if balance.available >= amount {
+            balance.available -= amount;
+            Ok(*balance)
+        } else {
+            Err(BalanceError::InsufficientAvailableFunds {
+                available: balance.available,
+                needed: amount,
+            })
+        }
+    }
+
     // Subtract from locked funds
     pub fn subtract_locked_funds(
         &mut self,
