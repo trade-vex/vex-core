@@ -233,6 +233,8 @@ pub enum Status {
     Filled,
     /// Processing state
     Processing,
+    /// For Deposit/Withdraw commands
+    Processed,
 }
 
 impl TryFrom<SbeStatus> for Status {
@@ -246,6 +248,7 @@ impl TryFrom<SbeStatus> for Status {
             SbeStatus::PartiallyFilled => Ok(Status::PartiallyFilled),
             SbeStatus::Filled => Ok(Status::Filled),
             SbeStatus::Processing => Ok(Status::Processing),
+            SbeStatus::Processed => Ok(Status::Processed),
             SbeStatus::NullVal => Err(SerdeError::custom("Invalid status: NullVal")),
         }
     }
@@ -260,6 +263,7 @@ impl Into<SbeStatus> for Status {
             Status::PartiallyFilled => SbeStatus::PartiallyFilled,
             Status::Filled => SbeStatus::Filled,
             Status::Processing => SbeStatus::Processing,
+            Status::Processed => SbeStatus::Processed,
         }
     }
 }
