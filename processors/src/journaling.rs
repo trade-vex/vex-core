@@ -14,7 +14,7 @@ impl JournalingProcessor {
 
     // Ring buforder_idfer Disruptor to JournalingProcessor - Logger(Excali-0)
     pub fn journal_command(&mut self, cmd: &mut OrderCommand) {
-        if cmd.command == OrderCommandType::PlaceOrder {
+        if cmd.command != OrderCommandType::CancelOrder {
             cmd.order_id = self.snowflake.generate(cmd.order_id).unwrap();
         }
         cmd.timestamp = self.snowflake.timestamp();

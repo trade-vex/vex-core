@@ -2934,6 +2934,7 @@ dependencies = [
  "processors",
  "rusteron-client",
  "test-log",
+ "thiserror 2.0.17",
  "tikv-jemallocator",
  "tokio",
  "tracing",
@@ -3395,6 +3396,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "common",
+ "ctrlc",
  "disruptor",
  "duct",
  "hashbrown 0.15.5",
@@ -3403,6 +3405,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.17",
+ "tikv-jemallocator",
  "tracing",
  "tracing-subscriber 0.1.6",
  "vex-config",
