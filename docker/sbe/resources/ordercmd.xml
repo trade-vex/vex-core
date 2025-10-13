@@ -19,6 +19,8 @@
         <enum name="OrderCommandType" encodingType="uint8" description="Order command types">
             <validValue name="PlaceOrder" value="0">0</validValue>
             <validValue name="CancelOrder" value="1">1</validValue>
+            <validValue name="DepositFunds" value="2">2</validValue>
+            <validValue name="WithdrawFunds" value="3">3</validValue>
         </enum>
 
         <enum name="Side" encodingType="uint8" description="Order Side types">
