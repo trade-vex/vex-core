@@ -104,6 +104,29 @@ impl KafkaEventsHandler {
         }
     }
 
+    fn publish_deposit_withdrwal_event(
+        &self,
+        cmd: &OrderCommand,
+    ) {
+        let asset_id = cmd.market_id as u16;
+
+        let balance_event = BalanceEvent {
+            user_id: cmd.user_id(),
+            asset_id,
+            available: cmd.balance[0].available(),
+            locked: cmd.balance[0].locked(),
+            total: cmd.balance[0].total(),
+            timestamp: cmd.timestamp(),
+        };
+
+        let topic_name = format!("market-{}-balances", cmd.market_id);
+        self.publish_event(&topic_name, &cmd.user_id.to_string(), &balance_event);
+        info!(
+            "[KafkaEventsHandler] Published balance event for user {} in market {}",
+            cmd.user_id, cmd.market_id
+        );
+    }
+
     fn publish_order_event(&self, cmd: &OrderCommand) {
         let order = Order {
             order_id: cmd.order_id(),
@@ -266,6 +289,9 @@ impl EventsHandler for KafkaEventsHandler {
                 // this should ideally be unreachable
                 error!("[KafkaEventsHandler] Order was not processed correctly");
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
+            }
+            Status::Processed => {
+                self.publish_deposit_withdrwal_event(cmd);
             }
         }
         // Always publish the response back to the gateway
