@@ -56,18 +56,18 @@ impl CoreNetworkingConfig {
         Self {
             context_dir: "/dev/shm/aeron-test-server".to_string(),
             local_address: "127.0.0.1".to_string(),
-            initial_port: 40001,
-            initial_control_port: 40002,
+            initial_port: 3521,
+            initial_control_port: 3522,
             base_gateway_port: 50000,
-            max_gateways: 10,
-            max_connections_per_address: 5,
+            max_gateways: 15,
+            max_connections_per_address: 10,
             reserved_session_id_low: 1000,
             reserved_session_id_high: 9999,
             enable_authentication: false,
             enable_heartbeat: true,
             gateway_timeout_seconds: 60,
             core_id: "vex-core-dev".to_string(),
-            buffer_size: 1024 * 1024, // 1MB
+            buffer_size: 1024 * 1024,
             retry_attempts: 3,
             retry_delay_ms: 1000,
         }
@@ -78,20 +78,20 @@ impl CoreNetworkingConfig {
         Self {
             context_dir: "/dev/shm/aeron-test-server".to_string(),
             local_address: "127.0.0.1".to_string(),
-            initial_port: 41001,
-            initial_control_port: 41002,
-            base_gateway_port: 40350,
-            max_gateways: 5,
-            max_connections_per_address: 2,
-            reserved_session_id_low: 0,
-            reserved_session_id_high: 2147483647,
+            initial_port: 3521,
+            initial_control_port: 3522,
+            base_gateway_port: 50000,
+            max_gateways: 15,
+            max_connections_per_address: 10,
+            reserved_session_id_low: 1000,
+            reserved_session_id_high: 9999,
             enable_authentication: true,
             enable_heartbeat: true,
             gateway_timeout_seconds: 30,
             core_id: "vex-core-test".to_string(),
-            buffer_size: 512 * 1024, // 512KB
-            retry_attempts: 2,
-            retry_delay_ms: 500,
+            buffer_size: 1024 * 1024,
+            retry_attempts: 3,
+            retry_delay_ms: 1000,
         }
     }
 
@@ -100,8 +100,8 @@ impl CoreNetworkingConfig {
         Self {
             context_dir: "/var/lib/vex/aeron-core".to_string(),
             local_address: "127.0.0.1".to_string(), // Bind to all interfaces
-            initial_port: 40001,
-            initial_control_port: 40002,
+            initial_port: 3521,
+            initial_control_port: 3522,
             base_gateway_port: 50000,
             max_gateways: 1000,
             max_connections_per_address: 50,
@@ -226,8 +226,8 @@ impl GatewayNetworkingConfig {
             context_dir: "/tmp/aeron-test-client".to_string(),
             local_address: "127.0.0.1".to_string(),
             core_address: "127.0.0.1".to_string(),
-            core_port: 40001,
-            core_control_port: 40002,
+            core_port: 3521,
+            core_control_port: 3522,
             gateway_id: 1,
             max_message_size: ORDERCOMMANDSIZE,
             enable_heartbeat: true,
@@ -245,8 +245,8 @@ impl GatewayNetworkingConfig {
             context_dir: "/dev/shm/aeron-test-client".to_string(),
             local_address: "127.0.0.1".to_string(),
             core_address: "127.0.0.1".to_string(),
-            core_port: 41001,
-            core_control_port: 41002,
+            core_port: 3521,
+            core_control_port: 3522,
             gateway_id: 1,
             max_message_size: ORDERCOMMANDSIZE,
             enable_heartbeat: true,
@@ -264,8 +264,8 @@ impl GatewayNetworkingConfig {
             context_dir: "/var/lib/vex/aeron-gateway".to_string(),
             local_address: "127.0.0.1".to_string(),
             core_address: "127.0.0.1".to_string(), // Example production IP
-            core_port: 40001,
-            core_control_port: 40002,
+            core_port: 3521,
+            core_control_port: 3522,
             gateway_id: 1,
             max_message_size: ORDERCOMMANDSIZE,
             enable_heartbeat: true,
@@ -381,8 +381,8 @@ mod tests {
         assert!(test_config.enable_authentication);
         assert!(prod_config.enable_authentication);
 
-        assert_eq!(dev_config.initial_port, 40001);
-        assert_eq!(test_config.initial_port, 41001);
-        assert_eq!(prod_config.initial_port, 40001);
+        assert_eq!(dev_config.initial_port, 3521);
+        assert_eq!(test_config.initial_port, 3521);
+        assert_eq!(prod_config.initial_port, 3521);
     }
 }
