@@ -43,7 +43,6 @@ use rusteron_client::{Aeron, AeronCError, AeronContext, Handler};
 use rusteron_media_driver::AeronIdleStrategy;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{error, info, instrument};
 use vex_config::CoreNetworkingConfig;
@@ -52,9 +51,6 @@ pub use gateway_publications::GatewayPublications;
 
 /// Stream ID for gateway communication
 const ALL_GATEWAYS_STREAM_ID: i32 = 1001;
-
-/// Cleanup interval for expired gateways
-const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Error types for VEX Core server operations
 #[derive(Error, Debug)]
@@ -85,8 +81,6 @@ pub struct VexCoreServer {
     config: CoreNetworkingConfig,
     /// Gateway state management (lock-free)
     gateways: Arc<GatewayManager>,
-    /// Last cleanup timestamp (atomic)
-    last_cleanup: Instant,
     /// shutdown flag
     shutdown: AtomicBool,
     /// Image available handler
@@ -123,7 +117,6 @@ impl VexCoreServer {
                 publications,
             )?),
             config,
-            last_cleanup: Instant::now(),
             shutdown: AtomicBool::new(false),
             image_available_handler: None,
             image_unavailable_handler: None,
@@ -133,8 +126,6 @@ impl VexCoreServer {
     /// Starts the VEX Core server
     #[instrument(skip(self))]
     pub fn start(&mut self) -> Result<(), ServerError> {
-        // Create publication for sending responses to gateways
-        // Create image handlers
         let image_available_handler = Handler::leak(GatewayImageAvailableHandler::new(Arc::clone(
             &self.gateways,
         )));
@@ -153,16 +144,15 @@ impl VexCoreServer {
         let mut handler = Handler::leak(handshake_handler);
         // Main event loop
         while !self.shutdown.load(Ordering::SeqCst) {
-            // Process incoming handshake messages
-            subscription.poll(Some(&handler), 10)?;
+            // incoming handshake messages
+            if let Err(e) = subscription.poll(Some(&handler), 10) {
+                error!("Error polling subscription: {}", e);
+            }
 
-            // Poll all active gateway sessions (lock-free)
+            // poll order command from gateways
             if let Err(e) = self.gateways.poll() {
                 error!("Error polling gateways: {}", e);
             }
-
-            // Perform periodic cleanup
-            self.periodic_cleanup()?;
 
             AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
         }
@@ -170,24 +160,6 @@ impl VexCoreServer {
         Ok(())
     }
 
-    /// Performs periodic cleanup of expired gateways (lock-free)
-    fn periodic_cleanup(&mut self) -> Result<(), ServerError> {
-        if self.last_cleanup.elapsed() >= CLEANUP_INTERVAL {
-            info!("Performing periodic cleanup");
-            match self.gateways.cleanup_expired_gateways() {
-                Ok(cleanup_count) => {
-                    if cleanup_count > 0 {
-                        info!("Cleaned up {} expired gateways", cleanup_count);
-                    }
-                }
-                Err(e) => {
-                    error!("Error during gateway cleanup: {}", e);
-                }
-            }
-            self.last_cleanup = Instant::now();
-        }
-        Ok(())
-    }
     /// Gets core configuration
     pub fn config(&self) -> &CoreNetworkingConfig {
         &self.config

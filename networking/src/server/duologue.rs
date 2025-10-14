@@ -1,5 +1,3 @@
-use std::time::{Duration, SystemTime};
-
 use crate::server::cmd_handler::FragmentHandler;
 use crate::utils::{
     new_publication_with_mdc_and_session, new_subsciption_with_handlers_and_session,
@@ -21,7 +19,6 @@ pub struct Duologue {
     subscription: AeronSubscription,
     pub port_data: u16,
     pub port_control: u16,
-    pub expire_time: u64,
     pub is_closed: bool,
     on_image_available_handler: Handler<DuologueImageAvailable>,
     on_image_unavailable_handler: Handler<DuologueImageUnavailable>,
@@ -31,7 +28,6 @@ pub struct Duologue {
 impl Duologue {
     pub fn new(
         aeron: &Aeron,
-        gateway_expiry_duration: u64,
         local: &str,
         gateway_id: u8,
         owner: &str,
@@ -40,11 +36,6 @@ impl Duologue {
         session_id: i32,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
     ) -> Result<(Self, AeronPublication), AeronCError> {
-        let expire_time = (SystemTime::now() + Duration::from_secs(gateway_expiry_duration))
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
         let publication = new_publication_with_mdc_and_session(
             aeron,
             local,
@@ -82,7 +73,6 @@ impl Duologue {
                 port_data,
                 port_control,
                 is_closed: false,
-                expire_time,
                 session_id,
                 subscription,
                 on_image_available_handler,
@@ -94,18 +84,6 @@ impl Duologue {
 
     pub fn poll(&mut self) -> Result<i32, AeronCError> {
         self.subscription.poll(Some(&self.fragment_handler), 2048)
-    }
-
-    pub fn is_expired(&self) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        now > self.expire_time
-    }
-
-    pub fn is_closed(&self) -> bool {
-        self.is_closed
     }
 
     pub fn close(&mut self) -> Result<(), AeronCError> {
