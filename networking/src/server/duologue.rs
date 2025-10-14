@@ -5,30 +5,24 @@ use rusteron_client::{
     AeronAvailableImageCallback, AeronCError, AeronImage, AeronNotificationLogger,
     AeronSubscription, AeronUnavailableImageCallback, Handler,
 };
+use std::sync::Arc;
 use tracing::{error, info};
 
 pub const DUOLOGUE_STREAM_ID: i32 = 1002;
 
 pub struct Duologue {
-    pub fragment_handler: Handler<FragmentHandler>,
-    pub session_id: i32,
+    fragment_handler: Handler<FragmentHandler>,
     pub gateway_id: u8,
     subscription: AeronSubscription,
-    pub port_data: u16,
-    pub port_control: u16,
     pub is_closed: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
 impl Duologue {
     pub fn new(
         subscription: AeronSubscription,
         on_image_available_handler: Handler<DuologueImageAvailable>,
         on_image_unavailable_handler: Handler<DuologueImageUnavailable>,
         gateway_id: u8,
-        port_data: u16,
-        port_control: u16,
-        session_id: i32,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
     ) -> Self {
         let fragment_handler = FragmentHandler {
@@ -39,10 +33,7 @@ impl Duologue {
         Self {
             fragment_handler: Handler::leak(fragment_handler),
             gateway_id,
-            port_data,
-            port_control,
             is_closed: false,
-            session_id,
             subscription,
             on_image_available_handler,
             on_image_unavailable_handler,
@@ -102,6 +93,7 @@ impl AeronAvailableImageCallback for DuologueImageAvailable {
 pub struct DuologueImageUnavailable {
     pub session_id: i32,
     pub gateway_id: u8,
+    pub cleanup_callback: Option<Arc<dyn Fn(u8) + Send + Sync>>,
 }
 
 impl AeronUnavailableImageCallback for DuologueImageUnavailable {
@@ -111,8 +103,12 @@ impl AeronUnavailableImageCallback for DuologueImageUnavailable {
         _image: AeronImage,
     ) {
         info!(
-            "gateway-{}, session: [{:#?}] session disconnected",
+            "gateway-{}, session: [{:#?}] session disconnected - triggering cleanup",
             self.gateway_id, self.session_id
         );
+
+        if let Some(ref callback) = self.cleanup_callback {
+            callback(self.gateway_id);
+        }
     }
 }
