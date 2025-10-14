@@ -1705,7 +1705,9 @@ mod tests {
         debug!("here");
         // --- Phase 5: Final Clean-up and State Verification ---
         // Bob cancels his resting GTC ask on BTC/USD
-        producer.publish(|cmd| *cmd = OrderCommand::cancel(bob_gtc_order_id, Side::Ask, market_btc_usd));
+        producer.publish(|cmd| {
+            *cmd = OrderCommand::cancel(bob_gtc_order_id, Side::Ask, market_btc_usd)
+        });
         let cancelled_bob = rx.recv().unwrap();
         assert_eq!(cancelled_bob.status, Status::Cancelled);
 

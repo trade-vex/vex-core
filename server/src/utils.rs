@@ -84,10 +84,7 @@ macro_rules! create_risk_r2_handler {
                 if is_maker_shard {
                     let maker_side = taker_side.op_side();
                     risk_engine.handle_trade_event(
-                        maker_id,
-                        market_id,
-                        maker_side,
-                        event,
+                        maker_id, market_id, maker_side, event,
                         None, // Maker uses matched price, not limit price
                     );
                 }
