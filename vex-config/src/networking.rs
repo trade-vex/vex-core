@@ -293,7 +293,7 @@ impl GatewayNetworkingConfig {
             ));
         }
 
-        if self.gateway_id > MAX_GATEWAYS as u8  {
+        if self.gateway_id > MAX_GATEWAYS as u8 {
             return Err(ConfigError::network(format!(
                 "Gateway ID must be between 0 and {}",
                 MAX_GATEWAYS
