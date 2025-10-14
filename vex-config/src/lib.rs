@@ -17,8 +17,8 @@ pub use loader::ConfigLoader;
 pub use logging::LoggingConfig;
 pub use networking::{CoreNetworkingConfig, GatewayNetworkingConfig};
 use serde::{Deserialize, Serialize};
-pub use symbols::SymbolSpecificationConfig;
 use std::fmt::{Display, Formatter};
+pub use symbols::SymbolSpecificationConfig;
 
 /// Main configuration structure that combines all VEX Core configuration modules
 #[derive(Debug, Clone, Serialize, Deserialize)]
