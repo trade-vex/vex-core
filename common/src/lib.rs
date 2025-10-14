@@ -1,5 +1,6 @@
 mod cmd;
 mod core_arithmetic;
+mod events;
 mod l2_market_data;
 mod market_specification;
 mod order;
@@ -11,6 +12,9 @@ pub use cmd::{
     encode_order_command,
 };
 pub use core_arithmetic::CoreArithmetic;
+pub use events::{
+    BalanceEvent, CancelOrderEvent, OrderEvent, OrderbookEvent, OrderbookLevel, TradeEvent,
+};
 pub use l2_market_data::L2MarketData;
 pub use market_specification::{
     CoreMarketSpecification, CoreMarketSpecificationBuilder, base_asset, quote_asset,
@@ -114,7 +118,7 @@ impl From<OrderCommandType> for SbeOrderCommandType {
             OrderCommandType::PlaceOrder => SbeOrderCommandType::PlaceOrder,
             OrderCommandType::CancelOrder => SbeOrderCommandType::CancelOrder,
             OrderCommandType::DepositFunds => SbeOrderCommandType::DepositFunds,
-            OrderCommandType::WithdrawFunds => SbeOrderCommandType::WithdrawFunds
+            OrderCommandType::WithdrawFunds => SbeOrderCommandType::WithdrawFunds,
         }
     }
 }

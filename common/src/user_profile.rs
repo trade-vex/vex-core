@@ -80,9 +80,7 @@ impl BalanceStore {
 
     pub fn get_balance_mut(&mut self, user_id: u64, asset_id: u16) -> &mut UserBalance {
         let key = BalanceKey { user_id, asset_id };
-        self.balances
-            .entry(key)
-            .or_default()
+        self.balances.entry(key).or_default()
     }
 
     // Lock funds (move from available to locked)

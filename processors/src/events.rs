@@ -7,10 +7,13 @@ use common::Order;
 use common::OrderCommand;
 use common::Status;
 use common::UserBalance;
+use common::{
+    BalanceEvent, CancelOrderEvent, OrderEvent, OrderbookEvent, OrderbookLevel, TradeEvent,
+};
 use common::{base_asset, quote_asset};
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tracing::{error, info};
 use vex_networking::server::GatewayPublications;
 
@@ -104,10 +107,7 @@ impl KafkaEventsHandler {
         }
     }
 
-    fn publish_deposit_withdrwal_event(
-        &self,
-        cmd: &OrderCommand,
-    ) {
+    fn publish_deposit_withdrwal_event(&self, cmd: &OrderCommand) {
         let asset_id = cmd.market_id as u16;
 
         let balance_event = BalanceEvent {
@@ -308,56 +308,6 @@ impl Drop for KafkaEventsHandler {
             info!("[KafkaEventsHandler] Kafka producer flushed successfully");
         }
     }
-}
-// Event structures for Kafka messages
-#[derive(Serialize, Deserialize, Debug)]
-struct BalanceEvent {
-    user_id: u64,
-    asset_id: u16,
-    available: u64,
-    locked: u64,
-    total: u64,
-    timestamp: u64,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct OrderEvent {
-    order: Order,
-    market_id: u32,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct TradeEvent {
-    maker_user_id: u64,
-    taker_user_id: u64,
-    market_id: u32,
-    price: u64,
-    size: u64,
-    maker_order_id: u64,
-    taker_order_id: u64,
-    timestamp: u64,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct CancelOrderEvent {
-    order_id: u64,
-    market_id: u32,
-    user_id: u64,
-    timestamp: u64,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct OrderbookEvent {
-    market_id: u32,
-    bids: Vec<OrderbookLevel>,
-    asks: Vec<OrderbookLevel>,
-    timestamp: u64,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct OrderbookLevel {
-    price: u64,
-    size: u64,
 }
 
 #[cfg(test)]
