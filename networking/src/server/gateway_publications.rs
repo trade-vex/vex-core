@@ -1,37 +1,38 @@
-use std::sync::atomic::{AtomicPtr, Ordering};
-
+use arc_swap::ArcSwapOption;
 use common::{MAX_GATEWAYS, ORDERCOMMANDSIZE, OrderCommand, Snowflake, encode_order_command};
 use rusteron_client::{AeronPublication, AeronReservedValueSupplierLogger};
+use std::sync::Arc;
 use tracing::{debug, error};
 
 pub struct GatewayPublications {
-    gateways: [AtomicPtr<AeronPublication>; MAX_GATEWAYS],
+    gateways: [ArcSwapOption<AeronPublication>; MAX_GATEWAYS],
 }
 
 impl GatewayPublications {
     pub fn new() -> Self {
-        const INIT: AtomicPtr<AeronPublication> = AtomicPtr::new(std::ptr::null_mut());
+        const INIT: ArcSwapOption<AeronPublication> = ArcSwapOption::const_empty();
         Self {
             gateways: [INIT; MAX_GATEWAYS],
         }
     }
 
-    // Writer (networking thread)
-    pub fn set(&self, gateway_id: u8, publication: Box<AeronPublication>) {
-        self.gateways[gateway_id as usize].store(Box::into_raw(publication), Ordering::Release);
+    pub fn set(&self, gateway_id: u8, publication: Arc<AeronPublication>) {
+        self.gateways[gateway_id as usize].store(Some(publication));
     }
 
-    // Reader (event handler thread)
-    pub fn get(&self, gateway_id: u8) -> &AeronPublication {
-        let ptr = self.gateways[gateway_id as usize].load(Ordering::Acquire);
-        unsafe { &*ptr }
+    pub fn get(&self, gateway_id: u8) -> Option<Arc<AeronPublication>> {
+        self.gateways[gateway_id as usize].load_full()
+    }
+
+    pub fn remove(&self, gateway_id: u8) {
+        self.gateways[gateway_id as usize].store(None);
     }
 
     // Publisher (event handler thread)
     pub fn publish_response(&self, cmd: &OrderCommand) {
         let gateway_id = Snowflake::gateway_from_id(cmd.order_id());
-        let ptr = self.gateways[gateway_id as usize].load(Ordering::Acquire);
-        let publication = unsafe { ptr.as_ref() };
+        let ptr = self.get(gateway_id);
+        let publication =  ptr.as_ref();
         if publication.is_none() {
             error!(
                 "gateway-{}: No publication found to send response",

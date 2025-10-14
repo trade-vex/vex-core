@@ -306,7 +306,7 @@ impl GatewayManager {
             }
         };
 
-        self.publications.set(gateway_id, Box::new(publication));
+        self.publications.set(gateway_id, Arc::new(publication));
 
         // Store session
         self.gateway_sessions
