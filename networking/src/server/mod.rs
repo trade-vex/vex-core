@@ -46,7 +46,7 @@ use rusteron_media_driver::AeronIdleStrategy;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
-use tracing::{error, info, instrument};
+use tracing::{error, info};
 use vex_config::CoreNetworkingConfig;
 
 pub use gateway_publications::GatewayPublications;
@@ -106,7 +106,11 @@ impl VexCoreServer {
         // Initialize Aeron context
         let aeron = Self::initialize_aeron(&config)?;
 
-        info!("VEX Core '{}' initialized successfully", config.core_id);
+        info!(
+            target: "core_server",
+            action = "initialized",
+            core_id = %config.core_id
+        );
 
         let image_available_handler = Handler::leak(GatewayImageAvailableHandler);
         let image_unavailable_handler = Handler::leak(GatewayImageUnavailableHandler);
@@ -150,9 +154,12 @@ impl VexCoreServer {
     }
 
     /// Starts the VEX Core server
-    #[instrument(skip(self))]
     pub fn start(&mut self) -> Result<(), ServerError> {
-        info!("VEX Core '{}' started successfully", self.config.core_id);
+        info!(
+            target: "core_server",
+            action = "started",
+            core_id = %self.config.core_id
+        );
 
         // Main Message Polling Loop
         // 1. Listens for new handhakes
@@ -160,12 +167,22 @@ impl VexCoreServer {
         while !self.shutdown.load(Ordering::SeqCst) {
             // incoming handshake messages
             if let Err(e) = self.subscription.poll(Some(&self.handshake_handler), 10) {
-                error!("Error polling subscription: {}", e);
+                error!(
+                    target: "core_server",
+                    action = "poll_subscription_failed",
+                    core_id = %self.config.core_id,
+                    error = %e
+                );
             }
 
             // poll order command from gateways
             if let Err(e) = self.gateways.poll() {
-                error!("Error polling gateways: {}", e);
+                error!(
+                    target: "core_server",
+                    action = "poll_gateways_failed",
+                    core_id = %self.config.core_id,
+                    error = %e
+                );
             }
 
             AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
@@ -180,14 +197,22 @@ impl VexCoreServer {
     /// # Returns
     /// * `Result<(), ServerError>` - Success or shutdown error
     pub fn shutdown(&mut self) -> Result<(), ServerError> {
-        info!("Shutting down VEX Core '{}'", self.config.core_id);
+        info!(
+            target: "core_server",
+            action = "shutdown_requested",
+            core_id = %self.config.core_id
+        );
         self.gateways.shutdown_all_gateways()?;
         self.shutdown.store(true, Ordering::SeqCst);
         self.image_available_handler.release();
         self.image_unavailable_handler.release();
         self.handshake_handler.release();
         self.subscription.close::<AeronNotificationLogger>(None)?;
-        info!("VEX Core '{}' shut down successfully", self.config.core_id);
+        info!(
+            target: "core_server",
+            action = "shutdown_complete",
+            core_id = %self.config.core_id
+        );
         Ok(())
     }
 

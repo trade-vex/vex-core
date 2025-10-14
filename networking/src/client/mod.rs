@@ -3,7 +3,7 @@ use crate::utils::{
     new_subscription_with_mdc_and_session,
 };
 use common::ORDERCOMMANDSIZE;
-use common::{OrderCommand, encode_order_command};
+use common::{order_debug, OrderCommand, encode_order_command};
 use rand;
 use rusteron_client::{
     Aeron, AeronCError, AeronContext, AeronFragmentHandlerCallback, AeronHeader, AeronPublication,
@@ -70,7 +70,12 @@ fn parse_core_response(
     let parts: Vec<&str> = clean_message.split_whitespace().collect();
 
     if parts.len() < 3 {
-        warn!("Malformed core response: insufficient parts");
+        warn!(
+            target: "gateway_client",
+            action = "core_response_invalid",
+            reason = "insufficient_parts",
+            raw_message = %clean_message
+        );
         return CoreResponse::Ignore;
     }
 
@@ -78,15 +83,25 @@ fn parse_core_response(
     let session_id = match parts[0].parse::<i32>() {
         Ok(id) => id,
         Err(_) => {
-            warn!("Invalid session ID in core response: {}", parts[0]);
+            warn!(
+                target: "gateway_client",
+                action = "core_response_invalid",
+                reason = "invalid_session_id",
+                raw_session = %parts[0],
+                raw_message = %clean_message
+            );
             return CoreResponse::Ignore;
         }
     };
 
     if session_id != expected_session {
         warn!(
-            "Session ID mismatch for expected gateway: {}. Expected: {}, Got: {}, Ignoring Because this is for Gateway: {}",
-            expected_session, expected_gateway_id, session_id, parts[1]
+            target: "gateway_client",
+            action = "core_response_mismatch",
+            field = "session_id",
+            expected_value = expected_session,
+            actual_value = session_id,
+            raw_gateway = %parts[1]
         );
         return CoreResponse::Ignore;
     }
@@ -97,19 +112,34 @@ fn parse_core_response(
         Some(id_str) => match id_str.parse::<u8>() {
             Ok(id) => id,
             Err(_) => {
-                warn!("Invalid gateway ID format in core response: {}", gateway_id);
+                warn!(
+                    target: "gateway_client",
+                    action = "core_response_invalid",
+                    reason = "invalid_gateway_id_format",
+                    raw_gateway = %gateway_id,
+                    raw_message = %clean_message
+                );
                 return CoreResponse::Ignore;
             }
         },
         None => {
-            warn!("Invalid gateway ID prefix in core response: {}", gateway_id);
+            warn!(
+                target: "gateway_client",
+                action = "core_response_invalid",
+                reason = "invalid_gateway_prefix",
+                raw_gateway = %gateway_id,
+                raw_message = %clean_message
+            );
             return CoreResponse::Ignore;
         }
     };
     if gateway_id != expected_gateway_id {
         warn!(
-            "Gateway ID mismatch. Expected: {}, Got: {}",
-            expected_gateway_id, gateway_id
+            target: "gateway_client",
+            action = "core_response_mismatch",
+            field = "gateway_id",
+            expected_value = expected_gateway_id,
+            actual_value = gateway_id
         );
         return CoreResponse::Ignore;
     }
@@ -129,7 +159,13 @@ fn parse_core_response(
                     gateway_id,
                 },
                 _ => {
-                    error!("Malformed ACCEPT message: invalid parameters");
+                    error!(
+                        target: "gateway_client",
+                        action = "core_response_invalid",
+                        command = "ACCEPT",
+                        reason = "invalid_parameters",
+                        raw_message = %clean_message
+                    );
                     CoreResponse::Ignore
                 }
             }
@@ -145,7 +181,13 @@ fn parse_core_response(
             _ => CoreResponse::Ignore,
         },
         _ => {
-            warn!("Unknown or malformed core response command: {}", parts[2]);
+            warn!(
+                target: "gateway_client",
+                action = "core_response_invalid",
+                reason = "unknown_command",
+                command = %parts[2],
+                raw_message = %clean_message
+            );
             CoreResponse::Ignore
         }
     }
@@ -165,14 +207,19 @@ impl AeronFragmentHandlerCallback for HandshakeResponseHandler {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], _header: AeronHeader) {
         let message = String::from_utf8_lossy(buffer);
         debug!(
-            "Received handshake response from core: {} (length: {})",
-            message,
-            buffer.len()
+            target: "gateway_client",
+            action = "handshake_response_received",
+            length = buffer.len(),
+            message = %message
         );
 
         let parsed = parse_core_response(&message, self.expected_session, self.expected_gateway_id);
         if parsed != CoreResponse::Ignore {
-            info!("Valid core response received: {:?}", parsed);
+            info!(
+                target: "gateway_client",
+                action = "core_response_parsed",
+                response = ?parsed
+            );
             *self.response.lock().unwrap() = Some(parsed);
         }
     }
@@ -239,9 +286,10 @@ impl Publisher {
     /// Sends an OrderCommand to the core
     pub fn send_order_command(&self, order_command: &OrderCommand) -> Result<(), GatewayError> {
         // Send the binary message directly
-        debug!(
-            "gateway-{}: sending OrderCommand: {:?}",
-            self.gateway_id, order_command
+        order_debug!(
+            "gateway_send_attempt",
+            order_command,
+            gateway_id = self.gateway_id
         );
 
         let mut message_buffer =  [0u8; ORDERCOMMANDSIZE];
@@ -290,7 +338,11 @@ impl VexGateway {
         let aeron = Aeron::new(&ctx)?;
         aeron.start()?;
 
-        info!("gateway-{} initialized successfully", config.gateway_id);
+        info!(
+            target: "gateway_client",
+            action = "gateway_initialized",
+            gateway_id = config.gateway_id
+        );
 
         Ok(Self {
             aeron,
@@ -312,7 +364,11 @@ impl VexGateway {
     where
         AeronFragmentHandlerImpl: AeronFragmentHandlerCallback + Send + 'static,
     {
-        info!("Starting VEX gateway-{}", self.config.gateway_id);
+        info!(
+            target: "gateway_client",
+            action = "start_requested",
+            gateway_id = self.config.gateway_id
+        );
 
         // Update state to connecting
         *self.state.write().unwrap() = GatewayState::Connecting;
@@ -320,9 +376,13 @@ impl VexGateway {
         // Phase 1: Perform handshake with VEX Core
         let (dedicated_port, dedicated_control_port, session_id) = self.perform_handshake()?;
 
-        info!(
-            "gateway-{}: Handshake successful. Port: {}, Control Port: {}, Session ID: {}",
-            self.config.gateway_id, dedicated_port, dedicated_control_port, session_id
+        debug!(
+            target: "gateway_client",
+            action = "handshake_success",
+            gateway_id = self.config.gateway_id,
+            data_port = dedicated_port,
+            control_port = dedicated_control_port,
+            session = session_id
         );
 
         // Phase 2: Establish dedicated communication channel
@@ -339,8 +399,9 @@ impl VexGateway {
         *self.state.write().unwrap() = GatewayState::Connected;
 
         info!(
-            "gateway-{} successfully connected and authenticated",
-            self.config.gateway_id
+            target: "gateway_client",
+            action = "connected",
+            gateway_id = self.config.gateway_id
         );
         Ok(publisher)
     }
@@ -372,9 +433,11 @@ impl VexGateway {
         let encryption_key = rand::random::<i32>();
         self.encryption_key = Some(encryption_key);
 
-        info!(
-            "gateway-{}: Connected to handshake channel with session ID: {}",
-            self.config.gateway_id, session_id
+        debug!(
+            target: "gateway_client",
+            action = "handshake_channel_ready",
+            gateway_id = self.config.gateway_id,
+            session = session_id
         );
 
         // Send HELLO message with gateway identification
@@ -452,9 +515,10 @@ impl VexGateway {
         // Wait for connections
         self.wait_for_channel_connections(&publication, &subscription)?;
 
-        info!(
-            "gateway-{}: Successfully established dedicated channel",
-            self.config.gateway_id
+        debug!(
+            target: "gateway_client",
+            action = "dedicated_channel_ready",
+            gateway_id = self.config.gateway_id
         );
 
         // Start polling for messages in a separate thread
@@ -473,15 +537,24 @@ impl VexGateway {
         AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback + Send + 'static,
     {
         // Start polling thread
-        let gateway_id = self.config.gateway_id.clone();
+        let gateway_id = self.config.gateway_id;
         let shutdown = self.shutdown.clone();
         self.polling_thread = Some(std::thread::spawn(move || {
             let mut handler = Handler::leak(handler);
 
-            info!("gateway-{}: Started message polling thread", gateway_id);
+            debug!(
+                target: "gateway_client",
+                action = "polling_thread_started",
+                gateway_id
+            );
             while !shutdown.load(Ordering::SeqCst) {
                 if let Err(e) = subscription.poll(Some(&handler), 10) {
-                    error!("gateway-{}: Error polling messages: {}", gateway_id, e);
+                    error!(
+                        target: "gateway_client",
+                        action = "polling_failed",
+                        gateway_id,
+                        error = %e
+                    );
                     break;
                 }
                 AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
@@ -566,8 +639,10 @@ impl VexGateway {
         text: &str,
     ) -> Result<(), GatewayError> {
         debug!(
-            "gateway-{}: Sending message: {}",
-            self.config.gateway_id, text
+            target: "gateway_client",
+            action = "send_message",
+            gateway_id = self.config.gateway_id,
+            payload = %text
         );
 
         let value = text.as_bytes();
@@ -614,7 +689,11 @@ impl VexGateway {
 
     /// Gracefully shuts down the gateway
     pub fn shutdown(&mut self) -> Result<(), GatewayError> {
-        info!("Shutting down VEX gateway-{}", self.config.gateway_id);
+        info!(
+            target: "gateway_client",
+            action = "shutdown_requested",
+            gateway_id = self.config.gateway_id
+        );
 
         // Update state
         *self.state.write().unwrap() = GatewayState::Disconnected;
@@ -630,8 +709,9 @@ impl VexGateway {
         }
 
         info!(
-            "VEX gateway-{} shut down successfully",
-            self.config.gateway_id
+            target: "gateway_client",
+            action = "shutdown_complete",
+            gateway_id = self.config.gateway_id
         );
         Ok(())
     }

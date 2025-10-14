@@ -1,8 +1,8 @@
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::fmt;
-use vex_config::{Environment, VexConfig};
+use vex_config::{VexConfig, environment::Environment};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -26,23 +26,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Validate configuration
     config.validate().map_err(|e| {
-        error!("Configuration validation failed: {e}");
+        error!(
+            target: "server_main",
+            action = "config_validation_failed",
+            error = %e
+        );
         e
     })?;
 
-    info!("Configuration validated successfully");
-    info!("Config: {}", config);
+    info!(
+        target: "server_main",
+        action = "config_validated"
+    );
+    debug!(target: "server_main", action = "config_snapshot", config = ?config);
 
     let engine = vex_server::start(config).map_err(|e| {
-        error!("Failed to start the engine: {e}");
+        error!(
+            target: "server_main",
+            action = "engine_start_failed",
+            error = %e
+        );
         e
     })?;
 
-    info!("Server started successfully. Press Ctrl+C to shutdown.");
+    info!(
+        target: "server_main",
+        action = "server_started"
+    );
 
     // Setup shutdown handler
     ctrlc::set_handler(|| {
-        info!("Shutdown signal received. Terminating...");
+        info!(
+            target: "server_main",
+            action = "shutdown_signal_received"
+        );
         std::process::exit(0);
     })?;
 

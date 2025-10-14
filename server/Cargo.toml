@@ -17,6 +17,7 @@ vex-networking = { workspace = true }
 parking_lot = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-appender = "0.2"
 hashbrown = { workspace = true }
 disruptor = { workspace = true }
 thiserror = { workspace = true }

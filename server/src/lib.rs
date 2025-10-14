@@ -215,7 +215,6 @@ mod tests {
     use disruptor::Producer;
     use processors::risk_engine::RiskEngine;
     use std::time::Duration;
-    use tracing::debug;
 
     /// Helper function to add a market specification to the specs map
     pub fn add_spec(market_id: u32, specs: &mut HashMap<u32, CoreMarketSpecification>) {
@@ -1381,7 +1380,6 @@ mod tests {
                 market_btc_usd,
             )
         });
-        debug!("heree 1 ----------------------------------------------------------------");
         producer.publish(|cmd| {
             *cmd = OrderCommand::new(
                 TimeInForce::Gtc,
@@ -1394,7 +1392,6 @@ mod tests {
             )
         });
 
-        debug!("heree 2 ----------------------------------------------------------------");
         producer.publish(|cmd| {
             *cmd = OrderCommand::new(
                 TimeInForce::Gtc,
@@ -1420,7 +1417,6 @@ mod tests {
             )
         });
 
-        debug!("heree3 ----------------------------------------------------------------");
         // David builds depth in SOL/BTC
         producer.publish(|cmd| {
             *cmd = OrderCommand::new(
@@ -1444,7 +1440,6 @@ mod tests {
                 market_sol_btc,
             )
         });
-        debug!("heree4 ----------------------------------------------------------------");
         // Consume placement messages
         for _ in 0..6 {
             rx.recv().unwrap();
@@ -1666,7 +1661,6 @@ mod tests {
             200,
             "Bob's BTC locked for GTC ask",
         );
-        debug!("heree ----------------------------------------------------------------");
         // NOW, he tries to buy 2000 BTC @ 50100. Estimated cost = 100,200,000 USD.
         // He has 10M USD, so this must be rejected by the risk engine.
         producer.publish(|cmd| {
@@ -1702,7 +1696,6 @@ mod tests {
             0,
             "Bob's USD unaffected by rejected order",
         );
-        debug!("here");
         // --- Phase 5: Final Clean-up and State Verification ---
         // Bob cancels his resting GTC ask on BTC/USD
         producer.publish(|cmd| {

@@ -9,12 +9,11 @@ use common::PriceCache;
 use common::Side;
 use common::Status;
 use common::UserBalance;
-use common::{base_asset, quote_asset};
+use common::{base_asset, order_debug, order_warn, quote_asset};
 use hashbrown::HashMap;
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tracing::error;
-use tracing::{info, warn};
+use tracing::{debug, error, warn, info};
 
 /// Manages all user profiles and performs risk checks as well as settlements
 pub struct RiskEngine {
@@ -54,79 +53,81 @@ impl RiskEngine {
             return; // Not for this shard, skip
         }
 
-        info!(
-            "[RiskEngine_{}] Pre-processing command: {:?}",
-            self.shard_id, cmd
-        );
-
         // Validate the command arguments
-        info!(
-            "[RiskEngine] Validating arguments for order {}",
-            cmd.order_id
+        order_debug!(
+            "risk_preprocess_start",
+            cmd,
+            stage = "risk_r1",
+            shard_id = self.shard_id
         );
         match cmd.command {
             OrderCommandType::PlaceOrder => {
-                info!(
-                    "[RiskEngine] Looking up market_id spec for market_id {}",
-                    cmd.market_id
-                );
-
                 if self.symbol_specs.get(&cmd.market_id).is_none() {
-                    warn!(
-                        "[RiskEngine] Market spec not found for market_id {}",
-                        cmd.market_id
+                    order_warn!(
+                        "risk_missing_market_spec",
+                        cmd,
+                        stage = "risk_r1",
+                        shard_id = self.shard_id
                     );
                     cmd.status = common::Status::Rejected;
                     return;
                 }
 
-                info!(
-                    "[RiskEngine] Found market_id spec for market_id {}",
-                    cmd.market_id
-                );
-
                 // Note: Fees are always in the receiving asset, hence are cut on post-processing (settlement)
                 if let Err(err) = self.reserve_funds_for_order(cmd, price_cache) {
-                    warn!(
-                        "[RiskEngine] Insufficient funds for user {}: {:?}",
-                        cmd.user_id, err
+                    order_warn!(
+                        "risk_reserve_failed",
+                        cmd,
+                        stage = "risk_r1",
+                        shard_id = self.shard_id,
+                        error = ?err
                     );
                     cmd.set_status(Status::Rejected);
                 }
             }
             OrderCommandType::DepositFunds => {
-                info!(
-                    "[RiskEngine] Depositing {} units of asset {} for user {}",
-                    cmd.size, cmd.market_id, cmd.user_id
-                );
                 match self.handle_deposit(cmd) {
                     Ok(_) => {
                         cmd.balance[0] = self.get_balance(cmd.user_id(), cmd.market_id as u16);
                         cmd.set_status(Status::Processed);
+                        order_debug!(
+                            "risk_deposit_applied",
+                            cmd,
+                            stage = "risk_r1",
+                            shard_id = self.shard_id
+                        );
                     }
                     Err(err) => {
-                        warn!(
-                            "[RiskEngine] Failed to deposit funds for user {}: {:?}",
-                            cmd.user_id, err
+                        order_warn!(
+                            "risk_deposit_failed",
+                            cmd,
+                            stage = "risk_r1",
+                            shard_id = self.shard_id,
+                            error = ?err
                         );
                         cmd.set_status(Status::Rejected);
                     }
                 }
             }
             OrderCommandType::WithdrawFunds => {
-                info!(
-                    "[RiskEngine] Withdrawing {} units of asset {} for user {}",
-                    cmd.size, cmd.market_id, cmd.user_id
-                );
                 match self.handle_withdrawal(cmd) {
                     Ok(_) => {
                         cmd.balance[0] = self.get_balance(cmd.user_id(), cmd.market_id as u16);
                         cmd.set_status(Status::Processed);
+                        order_debug!(
+                            "risk_withdrawal_applied",
+                            cmd,
+                            stage = "risk_r1",
+                            shard_id = self.shard_id
+                        );
                     }
                     Err(err) => {
-                        warn!(
-                            "[RiskEngine] Failed to withdraw funds for user {}: {:?}",
-                            cmd.user_id, err
+                        order_warn!(
+                            "risk_withdrawal_failed",
+                            cmd,
+                            stage = "risk_r1",
+                            shard_id = self.shard_id,
+                            error = ?err
                         );
                         cmd.set_status(Status::Rejected);
                     }
@@ -135,10 +136,14 @@ impl RiskEngine {
             _ => {} // no balance change happens in case of cancel
         }
 
-        info!(
-            "[RiskEngine] Pre-processing and approving command for user {}",
-            cmd.user_id
-        );
+        if cmd.status != Status::Rejected {
+            order_debug!(
+                "risk_preprocess_complete",
+                cmd,
+                stage = "risk_r1",
+                shard_id = self.shard_id
+            );
+        }
     }
 
     /// Handles a single trade event from the matching engine to settle funds
@@ -151,9 +156,15 @@ impl RiskEngine {
         event: &mut MatcherTradeEvent,
         taker_cmd: Option<u64>,
     ) {
-        info!(
-            "[RiskEngine_{}] Processing settelement for user: {}, event: maker={:?}, price={}, size={}",
-            self.shard_id, user_id, event.maker_user_id, event.price, event.size,
+        debug!(
+            target: "risk_engine",
+            event = "settlement_start",
+            shard_id = self.shard_id,
+            user_id,
+            market_id,
+            maker_user_id = event.maker_user_id,
+            price = event.price,
+            size = event.size
         );
 
         // Get market specification for fee calculations
@@ -161,8 +172,10 @@ impl RiskEngine {
             Some(spec) => spec,
             None => {
                 warn!(
-                    "[RiskEngine_{}] Market spec not found for market_id {}",
-                    self.shard_id, market_id
+                    target: "risk_engine",
+                    event = "missing_market_spec",
+                    shard_id = self.shard_id,
+                    market_id
                 );
                 return;
             }
@@ -170,13 +183,20 @@ impl RiskEngine {
 
         if let Err(err) = self.settle_trade(user_id, market_id, user_side, event, spec, taker_cmd) {
             error!(
-                "[RiskEngine_{}] Failed to settle trade for user {}: {:?}",
-                self.shard_id, user_id, err
+                target: "risk_engine",
+                event = "settlement_failed",
+                shard_id = self.shard_id,
+                user_id,
+                market_id,
+                error = ?err
             );
         } else {
-            info!(
-                "[RiskEngine_{}] Successfully settled trade for user {}",
-                self.shard_id, user_id
+            debug!(
+                target: "risk_engine",
+                event = "settlement_complete",
+                shard_id = self.shard_id,
+                user_id,
+                market_id
             );
         }
     }

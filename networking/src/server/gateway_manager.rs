@@ -154,8 +154,10 @@ impl GatewayManager {
             Ok(guard) => guard.is_gateway_connected(gateway_id),
             Err(e) => {
                 error!(
-                    "Gateway sessions lock poisoned in is_gateway_connected: {}",
-                    e
+                    target: "gateway_manager",
+                    action = "lock_poisoned",
+                    context = "is_gateway_connected",
+                    error = %e
                 );
                 false // Assume not connected if lock is poisoned
             }
@@ -167,16 +169,19 @@ impl GatewayManager {
         let tx = self.cleanup_tx.clone();
 
         Arc::new(move |gateway_id: u8| {
-            info!(
-                "Cleanup callback: image unavailable for gateway-{}, sending cleanup request",
+            debug!(
+                target: "gateway_manager",
+                action = "cleanup_requested",
                 gateway_id
             );
 
             // Send cleanup request through channel
             if let Err(e) = tx.send(gateway_id) {
                 error!(
-                    "Cleanup callback: failed to send cleanup request for gateway-{}: {}",
-                    gateway_id, e
+                    target: "gateway_manager",
+                    action = "cleanup_channel_error",
+                    gateway_id,
+                    error = %e
                 );
             }
         })
@@ -187,18 +192,27 @@ impl GatewayManager {
         loop {
             match self.cleanup_rx.try_recv() {
                 Ok(gateway_id) => {
-                    info!("Processing cleanup request for gateway-{}", gateway_id);
+                    debug!(
+                        target: "gateway_manager",
+                        action = "cleanup_process",
+                        gateway_id
+                    );
                     if let Err(e) = self.remove_gateway_session(gateway_id) {
                         // Log but don't fail - session might already be removed
                         warn!(
-                            "Cleanup request: failed to remove gateway-{}: {}",
-                            gateway_id, e
+                            target: "gateway_manager",
+                            action = "cleanup_remove_failed",
+                            gateway_id,
+                            error = %e
                         );
                     }
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    error!("Cleanup channel disconnected");
+                    error!(
+                        target: "gateway_manager",
+                        action = "cleanup_channel_disconnected"
+                    );
                     break;
                 }
             }
@@ -313,8 +327,12 @@ impl GatewayManager {
             }
         }
         info!(
-            "Gateway 'gateway-{}' connected successfully. Session: 0x{:x}, ports: {}, {}",
-            gateway_id, dedicated_session, ports[0], ports[1]
+            target: "gateway_manager",
+            action = "gateway_connected",
+            gateway_id,
+            session = format_args!("{:#x}", dedicated_session),
+            data_port = ports[0],
+            control_port = ports[1]
         );
 
         Ok(())
@@ -329,8 +347,10 @@ impl GatewayManager {
         for subscription in guard.iter() {
             if let Err(e) = subscription.poll() {
                 error!(
-                    "Error polling gateway session 0x{:x}: {}",
-                    subscription.gateway_id, e
+                    target: "gateway_manager",
+                    action = "poll_failed",
+                    gateway_id = subscription.gateway_id,
+                    error = %e
                 );
             }
         }
@@ -351,7 +371,10 @@ impl GatewayManager {
             self.remove_gateway_session(gateway_id)?;
         }
 
-        info!("All gateway sessions shut down");
+        info!(
+            target: "gateway_manager",
+            action = "shutdown_complete"
+        );
         Ok(())
     }
 
@@ -471,15 +494,23 @@ impl GatewayManager {
         guard.insert(gateway_id, dedicated_session, gateway_session, &ports);
 
         debug!(
-            "Allocated session 0x{:x} for gateway 'gateway-{}' with ports {}, {}",
-            dedicated_session, gateway_id, ports[0], ports[1]
+            target: "gateway_manager",
+            action = "session_allocated",
+            gateway_id,
+            session = format_args!("{:#x}", dedicated_session),
+            data_port = ports[0],
+            control_port = ports[1]
         );
         Ok((dedicated_session, [ports[0], ports[1]]))
     }
 
     fn authenticate_gateway(&self, gateway_id: u8, _credentials: &str) -> Result<(), ServerError> {
         // TODO: Implement proper authentication
-        info!("Gateway 'gateway-{}' authenticated", gateway_id);
+        info!(
+            target: "gateway_manager",
+            action = "gateway_authenticated",
+            gateway_id
+        );
         Ok(())
     }
 
@@ -500,8 +531,10 @@ impl GatewayManager {
         // close subscription
         if let Err(e) = session.close() {
             error!(
-                "Failed to close subscription for gateway-{}: {:?}",
-                gateway_id, e
+                target: "gateway_manager",
+                action = "session_close_failed",
+                gateway_id,
+                error = ?e
             );
         }
 

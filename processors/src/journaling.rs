@@ -1,5 +1,4 @@
-use common::{OrderCommand, OrderCommandType, Snowflake};
-use tracing::info;
+use common::{order_debug, order_info, OrderCommand, OrderCommandType, Snowflake};
 
 pub struct JournalingProcessor {
     snowflake: Snowflake,
@@ -18,21 +17,20 @@ impl JournalingProcessor {
             cmd.order_id = self.snowflake.generate(cmd.order_id).unwrap();
         }
         cmd.timestamp = self.snowflake.timestamp();
-        info!("[Journal] Writing command to disk: ID {}", cmd.order_id);
+        order_info!("command_ingested", cmd, stage = "journal");
     }
 
     pub fn journal_event(&self, cmd: &mut OrderCommand) {
-        info!(
-            "[Journal] Writing processed command to disk: Order ID {}, Status {:?}",
-            cmd.order_id(),
-            cmd.status()
-        );
+        order_debug!("command_written", cmd, stage = "journal");
 
         // Also journal any trade events if they exist
         if let Some(event) = cmd.events() {
-            info!(
-                "[Journal] Writing trade event to disk: Price {}, Size {}",
-                event.price, event.size
+            tracing::debug!(
+                target: "order_pipeline",
+                event = "trade_snapshot",
+                order_id = cmd.order_id,
+                price = event.price,
+                size = event.size
             );
         }
     }

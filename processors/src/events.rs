@@ -10,11 +10,11 @@ use common::UserBalance;
 use common::{
     BalanceEvent, CancelOrderEvent, OrderEvent, OrderbookEvent, OrderbookLevel, TradeEvent,
 };
-use common::{base_asset, quote_asset};
+use common::{base_asset, order_debug, order_info, quote_asset};
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
 use serde::Serialize;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use vex_networking::server::GatewayPublications;
 
 pub trait EventsHandler: Send + Sync + 'static {
@@ -38,8 +38,10 @@ impl KafkaEventsHandler {
             .expect("Producer creation failed");
 
         info!(
-            "[KafkaEventsHandler] Connected to Kafka brokers at {}",
-            brokers
+            target: "events",
+            component = "kafka_handler",
+            action = "connected",
+            brokers = %brokers
         );
 
         Self {
@@ -63,23 +65,32 @@ impl KafkaEventsHandler {
 
                     match producer.send_result(record) {
                         Ok(_) => {
-                            info!(
-                                "[KafkaEventsHandler] Successfully sent event to topic '{}'",
-                                topic_name
+                            debug!(
+                                target: "events",
+                                component = "kafka_handler",
+                                action = "event_sent",
+                                topic = %topic_name,
+                                key = %message_key
                             );
                         }
                         Err((e, _)) => {
                             error!(
-                                "[KafkaEventsHandler] Failed to send event to topic '{}': {}",
-                                topic_name, e
+                                target: "events",
+                                component = "kafka_handler",
+                                action = "event_failed",
+                                topic = %topic_name,
+                                error = ?e
                             );
                         }
                     }
                 });
             }
             Err(e) => error!(
-                "Failed to serialize payload for topic '{}': {}",
-                topic_name, e
+                target: "events",
+                component = "kafka_handler",
+                action = "serialization_failed",
+                topic = %topic_name,
+                error = ?e
             ),
         }
     }
@@ -100,9 +111,14 @@ impl KafkaEventsHandler {
 
             let topic_name = format!("asset-{}-balances", asset_id);
             self.publish_event(&topic_name, &user_id.to_string(), &balance_event);
-            info!(
-                "[KafkaEventsHandler] Published balance event for user {} in market {}",
-                user_id, cmd.market_id
+            debug!(
+                target: "events",
+                component = "kafka_handler",
+                action = "balance_event_published",
+                user_id,
+                market_id = cmd.market_id(),
+                asset_id,
+                topic = %topic_name
             );
         }
     }
@@ -121,9 +137,14 @@ impl KafkaEventsHandler {
 
         let topic_name = format!("asset-{}-balances", cmd.market_id);
         self.publish_event(&topic_name, &cmd.user_id.to_string(), &balance_event);
-        info!(
-            "[KafkaEventsHandler] Published balance event for user {} in market {}",
-            cmd.user_id, cmd.market_id
+        debug!(
+            target: "events",
+            component = "kafka_handler",
+            action = "balance_event_published",
+            user_id = cmd.user_id(),
+            market_id = cmd.market_id(),
+            asset_id,
+            topic = %topic_name
         );
     }
 
@@ -144,10 +165,13 @@ impl KafkaEventsHandler {
 
         let topic_name = format!("market-{}-orders", cmd.market_id());
         self.publish_event(&topic_name, &cmd.order_id().to_string(), &order_event);
-        info!(
-            "[KafkaEventsHandler] Published order event for order {} in market {}",
-            cmd.order_id(),
-            cmd.market_id()
+        debug!(
+            target: "events",
+            component = "kafka_handler",
+            action = "order_event_published",
+            order_id = cmd.order_id(),
+            market_id = cmd.market_id(),
+            topic = %topic_name
         );
     }
 
@@ -173,10 +197,15 @@ impl KafkaEventsHandler {
         let topic_name = format!("market-{market_id}-trades");
         let trade_key = format!("{}:{}", taker_order_id, event.matched_order_id);
         self.publish_event(&topic_name, &trade_key, &trade_event);
-
-        info!(
-            "[KafkaEventsHandler] Published trade event for maker order {} and taker order {} in market {}",
-            event.matched_order_id, taker_order_id, market_id
+        debug!(
+            target: "events",
+            component = "kafka_handler",
+            action = "trade_event_published",
+            maker_order_id = event.matched_order_id,
+            taker_order_id,
+            market_id,
+            topic = %topic_name,
+            key = %trade_key
         );
     }
 
@@ -190,10 +219,13 @@ impl KafkaEventsHandler {
 
         let topic_name = format!("market-{}-cancels", cmd.market_id());
         self.publish_event(&topic_name, &cmd.order_id().to_string(), &cancel_event);
-        info!(
-            "[KafkaEventsHandler] Published cancel order event for order {} in market {}",
-            cmd.order_id(),
-            cmd.market_id()
+        debug!(
+            target: "events",
+            component = "kafka_handler",
+            action = "cancel_event_published",
+            order_id = cmd.order_id(),
+            market_id = cmd.market_id(),
+            topic = %topic_name
         );
     }
 
@@ -230,9 +262,12 @@ impl KafkaEventsHandler {
             let topic_name = format!("market-{market_id}-orderbook");
             self.publish_event(&topic_name, &market_id.to_string(), &orderbook_event);
 
-            info!(
-                "[KafkaEventsHandler] Published orderbook event for market {}",
-                market_id
+            debug!(
+                target: "events",
+                component = "kafka_handler",
+                action = "orderbook_event_published",
+                market_id,
+                topic = %topic_name
             );
         }
     }
@@ -244,11 +279,7 @@ impl KafkaEventsHandler {
 
 impl EventsHandler for KafkaEventsHandler {
     fn handle_processed_command(&self, cmd: &mut OrderCommand) {
-        info!(
-            "[KafkaEventsHandler] Processing command: Order {}, Status {:?}",
-            cmd.order_id(),
-            cmd.status()
-        );
+        order_info!("command_processed", cmd, stage = "events", handler = "kafka");
 
         let market_id = cmd.market_id();
         let taker_id = cmd.user_id();
@@ -256,22 +287,37 @@ impl EventsHandler for KafkaEventsHandler {
 
         match cmd.status() {
             Status::Rejected => {
-                info!(
-                    "[KafkaEventsHandler] Order {} rejected - no events published",
-                    cmd.order_id()
+                order_debug!(
+                    "events_noop_rejected",
+                    cmd,
+                    stage = "events",
+                    handler = "kafka"
                 );
             }
             Status::Placed => {
+                order_debug!("events_publish_placed", cmd, stage = "events", handler = "kafka");
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
                 self.publish_order_event(cmd);
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
             Status::Cancelled => {
+                order_debug!(
+                    "events_publish_cancelled",
+                    cmd,
+                    stage = "events",
+                    handler = "kafka"
+                );
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
                 self.publish_cancel_order_event(cmd);
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
             Status::PartiallyFilled | Status::Filled => {
+                order_debug!(
+                    "events_publish_trade",
+                    cmd,
+                    stage = "events",
+                    handler = "kafka"
+                );
                 let mut curr_event = cmd.events();
                 while let Some(event) = curr_event {
                     // Trade Event
@@ -287,10 +333,21 @@ impl EventsHandler for KafkaEventsHandler {
             }
             Status::Processing => {
                 // this should ideally be unreachable
-                error!("[KafkaEventsHandler] Order was not processed correctly");
+                error!(
+                    target: "events",
+                    component = "kafka_handler",
+                    action = "unexpected_processing_status",
+                    order_id = cmd.order_id()
+                );
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
             Status::Processed => {
+                order_debug!(
+                    "events_publish_balance_update",
+                    cmd,
+                    stage = "events",
+                    handler = "kafka"
+                );
                 self.publish_deposit_withdrwal_event(cmd);
             }
         }
@@ -303,9 +360,18 @@ impl Drop for KafkaEventsHandler {
     fn drop(&mut self) {
         // Flush any remaining messages before dropping
         if let Err(e) = self.producer.flush(std::time::Duration::from_secs(20)) {
-            error!("[KafkaEventsHandler] Failed to flush Kafka producer: {}", e);
+            error!(
+                target: "events",
+                component = "kafka_handler",
+                action = "flush_failed",
+                error = ?e
+            );
         } else {
-            info!("[KafkaEventsHandler] Kafka producer flushed successfully");
+            debug!(
+                target: "events",
+                component = "kafka_handler",
+                action = "flush_complete"
+            );
         }
     }
 }
