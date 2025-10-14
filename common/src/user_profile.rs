@@ -77,9 +77,7 @@ impl BalanceStore {
 
     pub fn set_balance(&mut self, user_id: UserId, asset_id: MarketId, balance: UserBalance) {
         let key = BalanceKey { user_id, asset_id };
-        self.balances
-            .entry(key)
-            .or_default()
+        self.balances.entry(key).or_default()
     }
 
     // Lock funds (move from available to locked)

@@ -5,8 +5,8 @@ use sbe_order::order_command_message_codec::{
 };
 use sbe_order::status::Status as SbeStatus;
 use sbe_order::{ReadBuf, SbeResult, WriteBuf};
-use serde::de::value::Error as SerdeError;
 use serde::de::Error;
+use serde::de::value::Error as SerdeError;
 
 // Size of the serialized OrderCommand in bytes
 // Header: 8 bytes
