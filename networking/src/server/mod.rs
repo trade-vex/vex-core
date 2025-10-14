@@ -39,7 +39,9 @@ use crate::server::gateway_manager::GatewayManager;
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
 use common::OrderCommand;
 use disruptor::{MultiProducer, SingleConsumerBarrier};
-use rusteron_client::{Aeron, AeronCError, AeronContext, Handler};
+use rusteron_client::{
+    Aeron, AeronCError, AeronContext, AeronNotificationLogger, AeronSubscription, Handler,
+};
 use rusteron_media_driver::AeronIdleStrategy;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -75,14 +77,20 @@ pub enum ServerError {
 
 /// Enhanced VEX Core server for handling gateway connections
 pub struct VexCoreServer {
-    /// Aeron instance for messaging
-    aeron: Rc<Aeron>,
     /// Core configuration
     config: CoreNetworkingConfig,
     /// Gateway state management (lock-free)
     gateways: Arc<GatewayManager>,
     /// shutdown flag
     shutdown: AtomicBool,
+    /// Image available handler
+    image_available_handler: Handler<GatewayImageAvailableHandler>,
+    /// Image unavailable handler
+    image_unavailable_handler: Handler<GatewayImageUnavailableHandler>,
+    /// Handshake message handler
+    handshake_handler: Handler<HandshakeMessageHandler>,
+    /// Subscription for handshake messages
+    subscription: AeronSubscription,
 }
 
 impl VexCoreServer {
@@ -100,43 +108,58 @@ impl VexCoreServer {
 
         info!("VEX Core '{}' initialized successfully", config.core_id);
 
-        let aeron = Rc::new(aeron);
+        let image_available_handler = Handler::leak(GatewayImageAvailableHandler);
+        let image_unavailable_handler = Handler::leak(GatewayImageUnavailableHandler);
 
-        let now_nanos = Instant::now().elapsed().as_nanos() as u64;
+        let publication = new_publication_with_mdc(
+            &aeron,
+            &config.local_address,
+            config.initial_control_port,
+            ALL_GATEWAYS_STREAM_ID,
+        )?;
+
+        // Create subscription for handshakes
+        let subscription = new_subscription_with_handlers(
+            &aeron,
+            &config.local_address,
+            config.initial_port,
+            ALL_GATEWAYS_STREAM_ID,
+            Some(&image_available_handler),
+            Some(&image_unavailable_handler),
+        )?;
+
+        let gateways = Arc::new(GatewayManager::new(
+            config.clone(),
+            aeron,
+            producer,
+            publications,
+        )?);
+
+        // Create handshake handler
+        let handshake_handler = HandshakeMessageHandler::new(Arc::clone(&gateways), publication);
 
         Ok(Self {
-            aeron: Arc::clone(&aeron),
-            #[allow(clippy::arc_with_non_send_sync)]
-            gateways: Arc::new(GatewayManager::new(
-                config.clone(),
-                aeron,
-                producer,
-                publications,
-            )?),
+            gateways,
             config,
+            subscription,
+            handshake_handler: Handler::leak(handshake_handler),
             shutdown: AtomicBool::new(false),
+            image_available_handler,
+            image_unavailable_handler,
         })
     }
 
     /// Starts the VEX Core server
     #[instrument(skip(self))]
     pub fn start(&mut self) -> Result<(), ServerError> {
-        let image_available_handler = Handler::leak(GatewayImageAvailableHandler);
-        let image_unavailable_handler = Handler::leak(GatewayImageUnavailableHandler);
-
-        let (subscription, handshake_handler) =
-            self.setup_networking(&image_available_handler, &image_unavailable_handler)?;
-
-        self.image_available_handler = Some(image_available_handler);
-        self.image_unavailable_handler = Some(image_unavailable_handler);
-
         info!("VEX Core '{}' started successfully", self.config.core_id);
 
-        let mut handler = Handler::leak(handshake_handler);
-        // Main event loop
+        // Main Message Polling Loop
+        // 1. Listens for new handhakes
+        // 2. Listens for new orders
         while !self.shutdown.load(Ordering::SeqCst) {
             // incoming handshake messages
-            if let Err(e) = subscription.poll(Some(&handler), 10) {
+            if let Err(e) = self.subscription.poll(Some(&self.handshake_handler), 10) {
                 error!("Error polling subscription: {}", e);
             }
 
@@ -147,18 +170,7 @@ impl VexCoreServer {
 
             AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
         }
-        handler.release();
         Ok(())
-    }
-
-    /// Gets core configuration
-    pub fn config(&self) -> &CoreNetworkingConfig {
-        &self.config
-    }
-
-    /// Checks if a gateway is connected (lock-free)
-    pub fn is_gateway_connected(&self, gateway_id: u8) -> bool {
-        self.gateways.is_gateway_connected(gateway_id)
     }
 
     /// Gracefully shuts down the core server
@@ -171,11 +183,13 @@ impl VexCoreServer {
         info!("Shutting down VEX Core '{}'", self.config.core_id);
         self.gateways.shutdown_all_gateways()?;
         self.shutdown.store(true, Ordering::SeqCst);
+        self.image_available_handler.release();
+        self.image_unavailable_handler.release();
+        self.handshake_handler.release();
+        self.subscription.close::<AeronNotificationLogger>(None)?;
         info!("VEX Core '{}' shut down successfully", self.config.core_id);
         Ok(())
     }
-
-    // Private helper methods
 
     /// Validates the core configuration
     fn validate_config(config: &CoreNetworkingConfig) -> Result<(), ServerError> {
@@ -211,47 +225,8 @@ impl VexCoreServer {
         Ok(aeron)
     }
 
-    /// Sets up networking components for gateway communication
-    fn setup_networking(
-        &self,
-    ) -> Result<(rusteron_client::AeronSubscription, HandshakeMessageHandler), ServerError> {
-        // Create publication for responses
-        let publication = new_publication_with_mdc(
-            &self.aeron,
-            &self.config.local_address,
-            self.config.initial_control_port,
-            ALL_GATEWAYS_STREAM_ID,
-        )?;
-
-        // Create image handlers
-        let image_available_handler = GatewayImageAvailableHandler::new(Rc::clone(&self.gateways));
-        let image_unavailable_handler =
-            GatewayImageUnavailableHandler::new(Rc::clone(&self.gateways));
-
-        // Create subscription for handshakes
-        let subscription = new_subscription_with_handlers(
-            &self.aeron,
-            &self.config.local_address,
-            self.config.initial_port,
-            ALL_GATEWAYS_STREAM_ID,
-            image_available_handler,
-            image_unavailable_handler,
-        )?;
-
-        // Create handshake handler
-        let handshake_handler =
-            HandshakeMessageHandler::new(Rc::clone(&self.gateways), publication);
-
-        Ok((subscription, handshake_handler))
-    }
-
-    /// Number of connected gateways
-    pub fn connected_gateway_count(&self) -> usize {
-        self.gateways.active_gateways_count()
-    }
-
-    /// Checks if there are no connected gateways
-    pub fn is_empty(&self) -> bool {
-        self.gateways.is_empty()
+    /// Gets core configuration
+    pub fn config(&self) -> &CoreNetworkingConfig {
+        &self.config
     }
 }

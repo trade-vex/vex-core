@@ -24,7 +24,7 @@ pub struct GatewayManager {
     /// Active gateway sessions mapped by session ID
     gateway_sessions: DashMap<i32, Duologue>,
     /// Aeron messaging instance
-    aeron: Rc<Aeron>,
+    aeron: Aeron,
     /// Core configuration
     config: CoreNetworkingConfig,
     /// Port allocator for gateway sessions
@@ -41,7 +41,7 @@ impl GatewayManager {
     /// Creates a new gateway manager
     pub fn new(
         config: CoreNetworkingConfig,
-        aeron: Rc<Aeron>,
+        aeron: Aeron,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
         publications: Arc<GatewayPublications>,
     ) -> Result<Self, ServerError> {
@@ -62,11 +62,6 @@ impl GatewayManager {
             producer,
             publications,
         })
-    }
-
-    /// Returns is the gateway manager is empty
-    pub fn is_empty(&self) -> bool {
-        self.gateway_sessions.is_empty()
     }
 
     /// Checks if a gateway is currently connected
@@ -219,13 +214,6 @@ impl GatewayManager {
         info!("All gateway sessions shut down");
         Ok(())
     }
-
-    /// Returns Number of active gateways
-    pub fn active_gateways_count(&self) -> usize {
-        self.gateway_sessions.len()
-    }
-
-    // Private implementation methods
 
     fn check_capacity_limits(
         &self,
