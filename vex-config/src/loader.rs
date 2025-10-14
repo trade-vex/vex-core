@@ -120,7 +120,11 @@ impl ConfigLoader {
                 files_found = true;
                 let format = self.detect_file_format(config_path)?;
                 builder = builder.add_source(File::from(config_path).format(format));
-                tracing::info!("Loaded config file: {}", path);
+                tracing::debug!(
+                    target: "config",
+                    action = "config_file_loaded",
+                    path = %path
+                );
             }
         }
 
