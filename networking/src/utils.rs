@@ -1,5 +1,4 @@
 use crate::server::ServerError;
-use dashmap::DashSet;
 use rand::Rng;
 use rand::thread_rng;
 use rusteron_client::{
@@ -198,10 +197,11 @@ pub fn send_message_with_retries(
     Ok(())
 }
 
-#[derive(Debug)]
+/// Port allocator that randomly selects ports from a given range.
+/// Does not track allocated ports - the Session struct is the source of truth.
+#[derive(Debug, Clone)]
 pub struct PortAllocator {
     port_range: std::ops::RangeInclusive<u16>,
-    ports_used: dashmap::DashSet<u16>,
     low: u16,
     high: u16,
 }
@@ -241,7 +241,6 @@ impl PortAllocator {
 
         Ok(Self {
             port_range,
-            ports_used: dashmap::DashSet::new(),
             low: port_base,
             high: port_hi,
         })
@@ -252,58 +251,54 @@ impl PortAllocator {
         self.port_range.clone().count()
     }
 
-    // /// Get the number of available ports
-    // pub fn available_ports(&self) -> usize {
-    //     self.ports_free.len()
-    // }
-
-    // /// Get the number of used ports
-    // pub fn used_ports(&self) -> usize {
-    //     self.ports_used.len()
-    // }
-
-    /// Free a given port. Has no effect if the given port is outside of the range
-    /// considered by the allocator.
-    ///
-    /// # Arguments
-    /// * `port` - The port to free
-    pub fn free(&self, port: u16) {
-        if self.port_range.contains(&port) {
-            self.ports_used.remove(&port);
-        }
-    }
-
-    /// Allocate `count` ports.
+    /// Allocate `count` ports randomly, avoiding the ports already in use.
     ///
     /// # Arguments
     /// * `count` - The number of ports that will be allocated
+    /// * `ports_in_use` - Slice of ports currently in use (from Session)
     ///
     /// # Returns
     /// A vector of allocated ports
     ///
     /// # Errors
     /// Returns `ResourceAllocationError` if there are fewer than `count` ports available to allocate
-    pub fn allocate(&self, mut count: usize) -> Result<Vec<u16>, ServerError> {
+    /// or if unable to find free ports after reasonable attempts
+    pub fn allocate(&self, count: usize, ports_in_use: &[u16]) -> Result<Vec<u16>, ServerError> {
         if count == 0 {
             return Ok(Vec::new());
         }
+
         let total = self.total_ports();
-        let used = self.ports_used.len();
+        let used = ports_in_use.len();
+
         if count > total.saturating_sub(used) {
             return Err(ServerError::ResourceAllocationError(format!(
                 "Requested {count} ports, but only {} available",
                 total - used
             )));
         }
+
         let mut result = Vec::with_capacity(count);
         let mut rng = rand::thread_rng();
-        while count != 0 {
-            let port = rng.gen_range(self.low..=self.high);
-            if !self.ports_used.contains(&port) {
-                result.push(port);
-                self.ports_used.insert(port);
-                count -= 1;
+        let max_attempts = (total * 2).max(100); // Try at most 2x the total ports or 100 attempts
+        let mut attempts = 0;
+
+        while result.len() < count {
+            if attempts >= max_attempts {
+                return Err(ServerError::ResourceAllocationError(format!(
+                    "Failed to allocate {} ports after {} attempts ({} already allocated)",
+                    count, max_attempts, result.len()
+                )));
             }
+
+            let port = rng.gen_range(self.low..=self.high);
+
+            // Check if port is not in use and not already in result
+            if !ports_in_use.contains(&port) && !result.contains(&port) {
+                result.push(port);
+            }
+
+            attempts += 1;
         }
 
         Ok(result)
@@ -311,15 +306,10 @@ impl PortAllocator {
 }
 
 /// An allocator for session IDs. The allocator randomly selects values from
-/// the given range `[min, max)` and will not return a previously-returned value `x`
-/// until `x` has been freed with `free()`.
-///
-/// This implementation uses storage proportional to the number of currently-allocated
-/// values. Allocation time is bounded by `max - min`, will be `O(1)` with no allocated
-/// values, and will increase to `O(n)` as the number of allocated values approaches `max - min`.
-#[derive(Debug)]
+/// the given range `[min, max)`.
+/// Does not track allocated sessions - the Session struct is the source of truth.
+#[derive(Debug, Clone)]
 pub struct SessionAllocator {
-    used: DashSet<i32>,
     min: i32,
     max_count: i32,
 }
@@ -344,21 +334,23 @@ impl SessionAllocator {
         }
 
         Ok(Self {
-            used: DashSet::new(),
             min,
             max_count: std::cmp::max(max - min, 1),
         })
     }
 
-    /// Allocate a new session.
+    /// Allocate a new session, avoiding sessions already in use.
+    ///
+    /// # Arguments
+    /// * `sessions_in_use` - Slice of session IDs currently in use (from Session)
     ///
     /// # Returns
     /// A new session ID
     ///
     /// # Errors
     /// Returns `ResourceAllocationError` if there are no non-allocated sessions left
-    pub fn allocate(&self) -> Result<i32, ServerError> {
-        if self.used.len() as i32 == self.max_count {
+    pub fn allocate(&self, sessions_in_use: &[i32]) -> Result<i32, ServerError> {
+        if sessions_in_use.len() as i32 >= self.max_count {
             return Err(ServerError::ResourceAllocationError(
                 "No session IDs left to allocate".to_string(),
             ));
@@ -368,8 +360,7 @@ impl SessionAllocator {
         let mut rng = thread_rng();
         for _ in 0..self.max_count {
             let session = rng.gen_range(self.min..self.min + self.max_count);
-            if !self.used.contains(&session) {
-                self.used.insert(session);
+            if !sessions_in_use.contains(&session) {
                 return Ok(session);
             }
         }
@@ -377,31 +368,12 @@ impl SessionAllocator {
         Err(ServerError::ResourceAllocationError(format!(
             "Unable to allocate a session ID after {} attempts ({} values in use)",
             self.max_count,
-            self.used.len()
+            sessions_in_use.len()
         )))
-    }
-
-    /// Free a session. After this method returns, `session` becomes eligible
-    /// for allocation by future calls to `allocate()`.
-    ///
-    /// # Arguments
-    /// * `session` - The session to free
-    pub fn free(&self, session: i32) {
-        self.used.remove(&session);
-    }
-
-    /// Get the number of currently allocated sessions
-    pub fn allocated_count(&self) -> usize {
-        self.used.len()
     }
 
     /// Get the maximum number of sessions that can be allocated
     pub fn max_sessions(&self) -> i32 {
         self.max_count
-    }
-
-    /// Check if a session is currently allocated
-    pub fn is_allocated(&self, session: i32) -> bool {
-        self.used.contains(&session)
     }
 }
