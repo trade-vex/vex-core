@@ -6,7 +6,6 @@ use dashmap::DashMap;
 use disruptor::{MultiProducer, SingleConsumerBarrier};
 use rusteron_client::{Aeron, AeronPublication};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, error, info};
 use vex_config::CoreNetworkingConfig;
 
@@ -21,8 +20,6 @@ pub struct GatewayManager {
     gateway_sessions: DashMap<i32, Duologue>,
     /// Gateway addresses mapped by session ID
     gateway_session_addresses: DashMap<i32, String>,
-    /// Connection count per address for rate limiting
-    address_connection_count: DashMap<String, AtomicU64>,
     /// Aeron messaging instance
     aeron: Rc<Aeron>,
     /// Core configuration
@@ -48,7 +45,6 @@ impl GatewayManager {
         Ok(Self {
             gateway_session_addresses: DashMap::new(),
             gateway_sessions: DashMap::new(),
-            address_connection_count: DashMap::new(),
             aeron,
             port_allocator: PortAllocator::new(
                 config.base_gateway_port,
@@ -166,7 +162,6 @@ impl GatewayManager {
                 return Err(ServerError::GatewayMessageError(e.to_string()));
             }
         };
-        self.check_address_limits(publication, session_id, gateway_id, &gateway_address)?;
         self.check_duplicate_connection(publication, session_id, gateway_id)?;
 
         // Authenticate if enabled
@@ -275,28 +270,6 @@ impl GatewayManager {
             })
     }
 
-    fn check_address_limits(
-        &self,
-        publication: &AeronPublication,
-        session_id: i32,
-        gateway_id: u8,
-        gateway_address: &str,
-    ) -> Result<(), ServerError> {
-        if let Some(count_entry) = self.address_connection_count.get(gateway_address)
-            && count_entry.load(Ordering::Relaxed) >= self.config.max_connections_per_address as u64
-        {
-            let error_msg = format!(
-                "{session_id} gateway-{gateway_id} REJECT Too many connections from address"
-            );
-            send_message(publication, error_msg.as_bytes())?;
-            return Err(ServerError::CapacityExceededError(
-                "Too many connections from this address".to_string(),
-            ));
-        }
-
-        Ok(())
-    }
-
     fn check_duplicate_connection(
         &self,
         publication: &AeronPublication,
@@ -320,22 +293,21 @@ impl GatewayManager {
         gateway_id: u8,
         gateway_address: &str,
     ) -> Result<(i32, [u16; 2]), ServerError> {
-        // Update connection count
-        let counter = self
-            .address_connection_count
-            .entry(gateway_address.to_string())
-            .or_insert(AtomicU64::new(0));
-        counter.fetch_add(1, Ordering::Relaxed);
-
         // Allocate resources
-        let ports = self
-            .port_allocator
-            .allocate(2)
-            .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?;
-        let dedicated_session = self
-            .session_allocator
-            .allocate()
-            .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?;
+        let ports = match self.port_allocator.allocate(2) {
+            Ok(p) => p,
+            Err(e) => {
+                return Err(ServerError::ResourceAllocationError(e.to_string()));
+            }
+        };
+        let dedicated_session = match self.session_allocator.allocate() {
+            Ok(s) => s,
+            Err(e) => {
+                self.port_allocator.free(ports[0]);
+                self.port_allocator.free(ports[1]);
+                return Err(ServerError::ResourceAllocationError(e.to_string()));
+            }
+        };
 
         // gateway session
         let (gateway_session, publication) = match Duologue::new(
@@ -347,7 +319,17 @@ impl GatewayManager {
             ports[1],
             dedicated_session,
             self.producer.clone(),
-        )?;
+        ) {
+            Ok(session) => session,
+            Err(e) => {
+                self.port_allocator.free(ports[0]);
+                self.port_allocator.free(ports[1]);
+                self.session_allocator.free(dedicated_session);
+                return Err(ServerError::ResourceAllocationError(format!(
+                    "Failed to create Duologue: {e}"
+                )));
+            }
+        };
 
         self.publications.set(gateway_id, Box::new(publication));
 
@@ -385,14 +367,7 @@ impl GatewayManager {
             self.port_allocator.free(gateway_session.port_control);
 
             // Update connection count
-            if let Some((_id, address)) = self.gateway_session_addresses.remove(&session_id)
-                && let Some(count) = self.address_connection_count.get_mut(&address)
-            {
-                let _ = count.fetch_sub(1, Ordering::Relaxed);
-                if count.load(Ordering::Relaxed) == 0 {
-                    self.address_connection_count.remove(&address);
-                }
-            }
+            self.gateway_session_addresses.remove(&session_id);
         }
 
         Ok(())
