@@ -126,12 +126,8 @@ impl VexCoreServer {
     /// Starts the VEX Core server
     #[instrument(skip(self))]
     pub fn start(&mut self) -> Result<(), ServerError> {
-        let image_available_handler = Handler::leak(GatewayImageAvailableHandler::new(Arc::clone(
-            &self.gateways,
-        )));
-        let image_unavailable_handler = Handler::leak(GatewayImageUnavailableHandler::new(
-            Arc::clone(&self.gateways),
-        ));
+        let image_available_handler = Handler::leak(GatewayImageAvailableHandler);
+        let image_unavailable_handler = Handler::leak(GatewayImageUnavailableHandler);
 
         let (subscription, handshake_handler) =
             self.setup_networking(&image_available_handler, &image_unavailable_handler)?;

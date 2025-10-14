@@ -18,8 +18,6 @@ use super::ServerError;
 pub struct GatewayManager {
     /// Active gateway sessions mapped by session ID
     gateway_sessions: DashMap<i32, Duologue>,
-    /// Gateway addresses mapped by session ID
-    gateway_session_addresses: DashMap<i32, String>,
     /// Aeron messaging instance
     aeron: Arc<Aeron>,
     /// Core configuration
@@ -43,7 +41,6 @@ impl GatewayManager {
         publications: Arc<GatewayPublications>,
     ) -> Result<Self, ServerError> {
         Ok(Self {
-            gateway_session_addresses: DashMap::new(),
             gateway_sessions: DashMap::new(),
             aeron,
             port_allocator: PortAllocator::new(
@@ -154,14 +151,6 @@ impl GatewayManager {
 
         // Check various limits and constraints
         self.check_capacity_limits(publication, session_id, gateway_id)?;
-        let gateway_address = match self.get_gateway_address(session_id) {
-            Ok(address) => address,
-            Err(e) => {
-                let error_msg = format!("{session_id} gateway-{gateway_id} REJECT {e}");
-                send_message(publication, error_msg.as_bytes())?;
-                return Err(ServerError::GatewayMessageError(e.to_string()));
-            }
-        };
         self.check_duplicate_connection(publication, session_id, gateway_id)?;
 
         // Authenticate if enabled
@@ -176,7 +165,7 @@ impl GatewayManager {
 
         // Allocate resources and create session
         let (dedicated_session, ports) =
-            self.allocate_gateway_session(session_id, gateway_id, &gateway_address)?;
+            self.allocate_gateway_session(session_id, gateway_id)?;
         let encrypted_session = encryption_key ^ dedicated_session;
 
         // Send success response
@@ -234,16 +223,6 @@ impl GatewayManager {
         Ok(())
     }
 
-    /// Associates gateway address with session
-    pub fn set_gateway_address(&self, session_id: i32, address: String) {
-        self.gateway_session_addresses.insert(session_id, address);
-    }
-
-    /// Removes gateway address association
-    pub fn remove_gateway_address(&self, session_id: i32) {
-        self.gateway_session_addresses.remove(&session_id);
-    }
-
     /// Returns Number of active gateways
     pub fn active_gateways_count(&self) -> usize {
         self.gateway_sessions.len()
@@ -268,15 +247,6 @@ impl GatewayManager {
         Ok(())
     }
 
-    fn get_gateway_address(&self, session_id: i32) -> Result<String, ServerError> {
-        self.gateway_session_addresses
-            .get(&session_id)
-            .map(|addr| addr.clone())
-            .ok_or_else(|| {
-                ServerError::GatewayMessageError("Gateway address not found".to_string())
-            })
-    }
-
     fn check_duplicate_connection(
         &self,
         publication: &AeronPublication,
@@ -298,7 +268,6 @@ impl GatewayManager {
         &self,
         initial_session_id: i32,
         gateway_id: u8,
-        gateway_address: &str,
     ) -> Result<(i32, [u16; 2]), ServerError> {
         // Allocate resources
         let ports = match self.port_allocator.allocate(2) {
@@ -321,7 +290,6 @@ impl GatewayManager {
             &self.aeron,
             &self.config.local_address,
             gateway_id,
-            gateway_address,
             ports[0],
             ports[1],
             dedicated_session,
@@ -343,8 +311,6 @@ impl GatewayManager {
         // Store session
         self.gateway_sessions
             .insert(initial_session_id, gateway_session);
-        self.gateway_session_addresses
-            .insert(initial_session_id, gateway_address.to_string());
 
         debug!(
             "Allocated session 0x{:x} for gateway 'gateway-{}' with ports {}, {}",
@@ -372,8 +338,6 @@ impl GatewayManager {
             self.port_allocator.free(gateway_session.port_data);
             self.port_allocator.free(gateway_session.port_control);
             self.session_allocator.free(gateway_session.session_id);
-            // Update connection count
-            self.gateway_session_addresses.remove(&session_id);
         }
 
         Ok(())

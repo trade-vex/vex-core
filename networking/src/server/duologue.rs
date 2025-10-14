@@ -30,7 +30,6 @@ impl Duologue {
         aeron: &Aeron,
         local: &str,
         gateway_id: u8,
-        gateway_address: &str,
         port_data: u16,
         port_control: u16,
         session_id: i32,
@@ -45,10 +44,12 @@ impl Duologue {
         )?;
 
         let on_image_available_handler = Handler::leak(DuologueImageAvailable {
-            gateway_address: gateway_address.to_string(),
+            expected_session_id: session_id,
+            gateway_id,
         });
         let on_image_unavailable_handler = Handler::leak(DuologueImageUnavailable {
-            gateway_address: gateway_address.to_string(),
+            session_id,
+            gateway_id,
         });
 
         let subscription = new_subsciption_with_handlers_and_session(
@@ -107,7 +108,8 @@ impl Drop for Duologue {
 }
 
 pub struct DuologueImageAvailable {
-    pub gateway_address: String,
+    pub expected_session_id: i32,
+    pub gateway_id: u8,
 }
 
 impl AeronAvailableImageCallback for DuologueImageAvailable {
@@ -120,58 +122,43 @@ impl AeronAvailableImageCallback for DuologueImageAvailable {
             Ok(b) => b,
             Err(e) => {
                 error!(
-                    "Failed to get image constants for gateway {}: {:?}",
-                    self.gateway_address, e
+                    "Failed to get image constants for session {:x}: {:?}",
+                    self.expected_session_id, e
                 );
                 return;
             }
         };
-        let remote_addr = binding.source_identity();
+        let address = binding.source_identity();
         let session_id = binding.session_id;
 
-        let expected_address = self.gateway_address.split(':').next().unwrap_or("");
-        let actual_address = remote_addr.split(':').next().unwrap_or("");
-
-        if actual_address != expected_address {
+        if self.expected_session_id != session_id {
             error!(
-                "Client Connecting with the wrong address, expected: {}, got: {}",
-                expected_address, actual_address
+                "Expected session ID {:x}, but got {:x}",
+                self.expected_session_id, session_id
             );
         } else {
             info!(
-                "[{}] Client Connected, address: {}",
-                session_id, actual_address
+                "gateway-{}, [{:x}] session connected, address: {}",
+                self.gateway_id, session_id, address
             );
         }
     }
 }
 
 pub struct DuologueImageUnavailable {
-    pub gateway_address: String,
+    pub session_id: i32,
+    pub gateway_id: u8,
 }
 
 impl AeronUnavailableImageCallback for DuologueImageUnavailable {
     fn handle_aeron_on_unavailable_image(
         &mut self,
         _subscription: AeronSubscription,
-        image: AeronImage,
+        _image: AeronImage,
     ) {
-        let binding = match image.get_constants() {
-            Ok(b) => b,
-            Err(e) => {
-                error!(
-                    "Failed to get image constants for gateway {}: {:?}",
-                    self.gateway_address, e
-                );
-                return;
-            }
-        };
-        let remote_addr = binding.source_identity();
-        let session_id = binding.session_id;
-        // check image_count and close?
         info!(
-            "[{}] Client Disconnected, address: {}, gateway: {}",
-            session_id, remote_addr, self.gateway_address
+            "gateway-{}, session: [{:#?}] session disconnected",
+            self.gateway_id, self.session_id
         );
     }
 }
