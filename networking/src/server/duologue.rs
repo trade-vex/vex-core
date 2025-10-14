@@ -1,12 +1,9 @@
 use crate::server::cmd_handler::FragmentHandler;
-use crate::utils::{
-    new_publication_with_mdc_and_session, new_subsciption_with_handlers_and_session,
-};
 use common::OrderCommand;
 use disruptor::{MultiProducer, SingleConsumerBarrier};
 use rusteron_client::{
-    Aeron, AeronAvailableImageCallback, AeronCError, AeronImage, AeronNotificationLogger,
-    AeronPublication, AeronSubscription, AeronUnavailableImageCallback, Handler,
+    AeronAvailableImageCallback, AeronCError, AeronImage, AeronNotificationLogger,
+    AeronSubscription, AeronUnavailableImageCallback, Handler,
 };
 use tracing::{error, info};
 
@@ -27,60 +24,31 @@ pub struct Duologue {
 #[allow(clippy::too_many_arguments)]
 impl Duologue {
     pub fn new(
-        aeron: &Aeron,
-        local: &str,
+        subscription: AeronSubscription,
+        on_image_available_handler: Handler<DuologueImageAvailable>,
+        on_image_unavailable_handler: Handler<DuologueImageUnavailable>,
         gateway_id: u8,
         port_data: u16,
         port_control: u16,
         session_id: i32,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
-    ) -> Result<(Self, AeronPublication), AeronCError> {
-        let publication = new_publication_with_mdc_and_session(
-            aeron,
-            local,
-            port_control,
-            DUOLOGUE_STREAM_ID,
-            session_id,
-        )?;
-
-        let on_image_available_handler = Handler::leak(DuologueImageAvailable {
-            expected_session_id: session_id,
-            gateway_id,
-        });
-        let on_image_unavailable_handler = Handler::leak(DuologueImageUnavailable {
-            session_id,
-            gateway_id,
-        });
-
-        let subscription = new_subsciption_with_handlers_and_session(
-            aeron,
-            local,
-            port_data,
-            DUOLOGUE_STREAM_ID,
-            session_id,
-            Some(&on_image_available_handler),
-            Some(&on_image_unavailable_handler),
-        )?;
-
+    ) -> Self {
         let fragment_handler = FragmentHandler {
             gateway_id,
             producer,
         };
 
-        Ok((
-            Self {
-                fragment_handler: Handler::leak(fragment_handler),
-                gateway_id,
-                port_data,
-                port_control,
-                is_closed: false,
-                session_id,
-                subscription,
-                on_image_available_handler,
-                on_image_unavailable_handler,
-            },
-            publication,
-        ))
+        Self {
+            fragment_handler: Handler::leak(fragment_handler),
+            gateway_id,
+            port_data,
+            port_control,
+            is_closed: false,
+            session_id,
+            subscription,
+            on_image_available_handler,
+            on_image_unavailable_handler,
+        }
     }
 
     pub fn poll(&mut self) -> Result<i32, AeronCError> {

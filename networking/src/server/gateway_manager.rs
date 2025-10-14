@@ -1,10 +1,15 @@
-use crate::server::duologue::Duologue;
+use crate::server::duologue::{
+    DUOLOGUE_STREAM_ID, Duologue, DuologueImageAvailable, DuologueImageUnavailable,
+};
 use crate::server::gateway_publications::GatewayPublications;
-use crate::utils::{PortAllocator, SessionAllocator, send_message, send_message_with_retries};
+use crate::utils::{
+    PortAllocator, SessionAllocator, new_publication_with_mdc_and_session,
+    new_subsciption_with_handlers_and_session, send_message, send_message_with_retries,
+};
 use common::OrderCommand;
 use dashmap::DashMap;
 use disruptor::{MultiProducer, SingleConsumerBarrier};
-use rusteron_client::{Aeron, AeronPublication};
+use rusteron_client::{Aeron, AeronPublication, Handler};
 use std::sync::Arc;
 use tracing::{debug, error, info};
 use vex_config::CoreNetworkingConfig;
@@ -164,8 +169,7 @@ impl GatewayManager {
         }
 
         // Allocate resources and create session
-        let (dedicated_session, ports) =
-            self.allocate_gateway_session(session_id, gateway_id)?;
+        let (dedicated_session, ports) = self.allocate_gateway_session(session_id, gateway_id)?;
         let encrypted_session = encryption_key ^ dedicated_session;
 
         // Send success response
@@ -285,26 +289,65 @@ impl GatewayManager {
             }
         };
 
-        // gateway session
-        let (gateway_session, publication) = match Duologue::new(
+        let publication = match new_publication_with_mdc_and_session(
             &self.aeron,
             &self.config.local_address,
-            gateway_id,
-            ports[0],
             ports[1],
+            DUOLOGUE_STREAM_ID,
             dedicated_session,
-            self.producer.clone(),
         ) {
-            Ok(session) => session,
+            Ok(publication) => publication,
             Err(e) => {
                 self.port_allocator.free(ports[0]);
                 self.port_allocator.free(ports[1]);
                 self.session_allocator.free(dedicated_session);
                 return Err(ServerError::ResourceAllocationError(format!(
-                    "Failed to create Duologue: {e}"
+                    "Failed to create publication: {e}"
                 )));
             }
         };
+
+        let on_image_available_handler = Handler::leak(DuologueImageAvailable {
+            expected_session_id: dedicated_session,
+            gateway_id,
+        });
+
+        let on_image_unavailable_handler = Handler::leak(DuologueImageUnavailable {
+            session_id: dedicated_session,
+            gateway_id,
+        });
+
+        let subscription = match new_subsciption_with_handlers_and_session(
+            &self.aeron,
+            &self.config.local_address,
+            ports[0],
+            DUOLOGUE_STREAM_ID,
+            dedicated_session,
+            Some(&on_image_available_handler),
+            Some(&on_image_unavailable_handler),
+        ) {
+            Ok(subscription) => subscription,
+            Err(e) => {
+                self.port_allocator.free(ports[0]);
+                self.port_allocator.free(ports[1]);
+                self.session_allocator.free(dedicated_session);
+                return Err(ServerError::ResourceAllocationError(format!(
+                    "Failed to create subscription: {e}"
+                )));
+            }
+        };
+
+        // gateway session
+        let gateway_session = Duologue::new(
+            subscription,
+            on_image_available_handler,
+            on_image_unavailable_handler,
+            gateway_id,
+            ports[0],
+            ports[1],
+            dedicated_session,
+            self.producer.clone(),
+        );
 
         self.publications.set(gateway_id, Arc::new(publication));
 
