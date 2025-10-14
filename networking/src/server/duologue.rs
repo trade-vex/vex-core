@@ -52,6 +52,21 @@ impl Duologue {
     }
 }
 
+impl Drop for Duologue {
+    fn drop(&mut self) {
+        if !self.is_closed
+            && let Err(e) = self.close()
+        {
+            error!(
+                target: "gateway_session",
+                action = "close_failed_on_drop",
+                gateway_id = self.gateway_id,
+                error = ?e
+            );
+        }
+    }
+}
+
 pub struct DuologueImageAvailable {
     pub expected_session_id: i32,
     pub gateway_id: u8,
@@ -67,8 +82,11 @@ impl AeronAvailableImageCallback for DuologueImageAvailable {
             Ok(b) => b,
             Err(e) => {
                 error!(
-                    "Failed to get image constants for session {:x}: {:?}",
-                    self.expected_session_id, e
+                    target: "gateway_session",
+                    action = "image_constants_failed",
+                    gateway_id = self.gateway_id,
+                    expected_session = format_args!("{:#x}", self.expected_session_id),
+                    error = ?e
                 );
                 return;
             }
@@ -78,13 +96,19 @@ impl AeronAvailableImageCallback for DuologueImageAvailable {
 
         if self.expected_session_id != session_id {
             error!(
-                "Expected session ID {:x}, but got {:x}",
-                self.expected_session_id, session_id
+                target: "gateway_session",
+                action = "session_mismatch",
+                gateway_id = self.gateway_id,
+                expected_session = format_args!("{:#x}", self.expected_session_id),
+                actual_session = format_args!("{:#x}", session_id)
             );
         } else {
             info!(
-                "gateway-{}, [{:x}] session connected, address: {}",
-                self.gateway_id, session_id, address
+                target: "gateway_session",
+                action = "image_connected",
+                gateway_id = self.gateway_id,
+                session = format_args!("{:#x}", session_id),
+                address = %address
             );
         }
     }
@@ -103,8 +127,10 @@ impl AeronUnavailableImageCallback for DuologueImageUnavailable {
         _image: AeronImage,
     ) {
         info!(
-            "gateway-{}, session: [{:#?}] session disconnected - triggering cleanup",
-            self.gateway_id, self.session_id
+            target: "gateway_session",
+            action = "image_disconnected",
+            gateway_id = self.gateway_id,
+            session = format_args!("{:#x}", self.session_id)
         );
 
         if let Some(ref callback) = self.cleanup_callback {

@@ -1,6 +1,7 @@
 mod cmd;
 mod core_arithmetic;
 mod events;
+mod logging;
 mod l2_market_data;
 mod market_specification;
 mod order;
