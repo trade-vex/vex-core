@@ -51,7 +51,7 @@ impl Duologue {
         }
     }
 
-    pub fn poll(&mut self) -> Result<i32, AeronCError> {
+    pub fn poll(&self) -> Result<i32, AeronCError> {
         self.subscription.poll(Some(&self.fragment_handler), 2048)
     }
 
