@@ -205,12 +205,6 @@ impl GatewayManager {
 
         for mut x in self.gateway_sessions.iter_mut() {
             let (initial_session_id, gateway_session) = x.pair_mut();
-
-            if gateway_session.is_expired() || gateway_session.is_closed() {
-                sessions_to_remove.push(*initial_session_id);
-                continue;
-            }
-
             if let Err(e) = gateway_session.poll() {
                 error!(
                     "Error polling gateway session 0x{:x}: {}",
@@ -219,30 +213,7 @@ impl GatewayManager {
                 sessions_to_remove.push(*initial_session_id);
             }
         }
-
-        // Clean up terminated sessions
-        for session_id in sessions_to_remove {
-            self.remove_gateway_session(session_id)?;
-        }
-
         Ok(())
-    }
-
-    /// Cleans up expired gateways
-    pub fn cleanup_expired_gateways(&self) -> Result<usize, ServerError> {
-        let expired_sessions: Vec<i32> = self
-            .gateway_sessions
-            .iter()
-            .filter(|session| session.is_expired())
-            .map(|session| session.session_id)
-            .collect();
-
-        let count = expired_sessions.len();
-        for session_id in expired_sessions {
-            self.remove_gateway_session(session_id)?;
-        }
-
-        Ok(count)
     }
 
     /// Shuts down all gateway connections

@@ -43,7 +43,6 @@ use rusteron_client::{Aeron, AeronCError, AeronContext, Handler};
 use rusteron_media_driver::AeronIdleStrategy;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{error, info, instrument};
 use vex_config::CoreNetworkingConfig;
@@ -52,9 +51,6 @@ pub use gateway_publications::GatewayPublications;
 
 /// Stream ID for gateway communication
 const ALL_GATEWAYS_STREAM_ID: i32 = 1001;
-
-/// Cleanup interval for expired gateways
-const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Error types for VEX Core server operations
 #[derive(Error, Debug)]
@@ -84,9 +80,7 @@ pub struct VexCoreServer {
     /// Core configuration
     config: CoreNetworkingConfig,
     /// Gateway state management (lock-free)
-    gateways: Rc<GatewayManager>,
-    /// Last cleanup timestamp (atomic)
-    last_cleanup_nanos: CachePadded<AtomicU64>,
+    gateways: Arc<GatewayManager>,
     /// shutdown flag
     shutdown: AtomicBool,
 }
@@ -120,7 +114,6 @@ impl VexCoreServer {
                 publications,
             )?),
             config,
-            last_cleanup_nanos: CachePadded::new(AtomicU64::new(now_nanos)),
             shutdown: AtomicBool::new(false),
         })
     }
@@ -128,65 +121,37 @@ impl VexCoreServer {
     /// Starts the VEX Core server
     #[instrument(skip(self))]
     pub fn start(&mut self) -> Result<(), ServerError> {
-        // Create publication for sending responses to gateways
-        let (subscription, handshake_handler) = self.setup_networking()?;
+        let image_available_handler = Handler::leak(GatewayImageAvailableHandler::new(Arc::clone(
+            &self.gateways,
+        )));
+        let image_unavailable_handler = Handler::leak(GatewayImageUnavailableHandler::new(
+            Arc::clone(&self.gateways),
+        ));
+
+        let (subscription, handshake_handler) =
+            self.setup_networking(&image_available_handler, &image_unavailable_handler)?;
+
+        self.image_available_handler = Some(image_available_handler);
+        self.image_unavailable_handler = Some(image_unavailable_handler);
 
         info!("VEX Core '{}' started successfully", self.config.core_id);
 
         let mut handler = Handler::leak(handshake_handler);
         // Main event loop
         while !self.shutdown.load(Ordering::SeqCst) {
-            // Process incoming handshake messages
-            subscription.poll(Some(&handler), 10)?;
+            // incoming handshake messages
+            if let Err(e) = subscription.poll(Some(&handler), 10) {
+                error!("Error polling subscription: {}", e);
+            }
 
-            // Poll all active gateway sessions (lock-free)
+            // poll order command from gateways
             if let Err(e) = self.gateways.poll() {
                 error!("Error polling gateways: {}", e);
             }
 
-            // Perform periodic cleanup
-            self.periodic_cleanup()?;
-
             AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
         }
         handler.release();
-        Ok(())
-    }
-
-    /// Performs periodic cleanup of expired gateways (lock-free)
-    fn periodic_cleanup(&mut self) -> Result<(), ServerError> {
-        let now_nanos = Instant::now().elapsed().as_nanos() as u64;
-        let last_cleanup_nanos = self.last_cleanup_nanos.load(Ordering::Relaxed);
-        let cleanup_interval_nanos = CLEANUP_INTERVAL.as_nanos() as u64;
-
-        if now_nanos.saturating_sub(last_cleanup_nanos) >= cleanup_interval_nanos {
-            // Try to update cleanup timestamp atomically
-            if self
-                .last_cleanup_nanos
-                .compare_exchange_weak(
-                    last_cleanup_nanos,
-                    now_nanos,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                info!("Performing periodic cleanup");
-
-                // Clean up expired gateways (lock-free)
-                match self.gateways.cleanup_expired_gateways() {
-                    Ok(cleanup_count) => {
-                        if cleanup_count > 0 {
-                            info!("Cleaned up {} expired gateways", cleanup_count);
-                        }
-                    }
-                    Err(e) => {
-                        error!("Error during gateway cleanup: {}", e);
-                    }
-                }
-            }
-        }
-
         Ok(())
     }
 
