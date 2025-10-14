@@ -30,7 +30,7 @@ impl Duologue {
         aeron: &Aeron,
         local: &str,
         gateway_id: u8,
-        owner: &str,
+        gateway_address: &str,
         port_data: u16,
         port_control: u16,
         session_id: i32,
@@ -45,10 +45,10 @@ impl Duologue {
         )?;
 
         let on_image_available_handler = Handler::leak(DuologueImageAvailable {
-            owner: owner.to_string(),
+            gateway_address: gateway_address.to_string(),
         });
         let on_image_unavailable_handler = Handler::leak(DuologueImageUnavailable {
-            owner: owner.to_string(),
+            gateway_address: gateway_address.to_string(),
         });
 
         let subscription = new_subsciption_with_handlers_and_session(
@@ -107,7 +107,7 @@ impl Drop for Duologue {
 }
 
 pub struct DuologueImageAvailable {
-    pub owner: String,
+    pub gateway_address: String,
 }
 
 impl AeronAvailableImageCallback for DuologueImageAvailable {
@@ -121,7 +121,7 @@ impl AeronAvailableImageCallback for DuologueImageAvailable {
             Err(e) => {
                 error!(
                     "Failed to get image constants for gateway {}: {:?}",
-                    self.owner, e
+                    self.gateway_address, e
                 );
                 return;
             }
@@ -129,7 +129,7 @@ impl AeronAvailableImageCallback for DuologueImageAvailable {
         let remote_addr = binding.source_identity();
         let session_id = binding.session_id;
 
-        let expected_address = self.owner.split(':').next().unwrap_or("");
+        let expected_address = self.gateway_address.split(':').next().unwrap_or("");
         let actual_address = remote_addr.split(':').next().unwrap_or("");
 
         if actual_address != expected_address {
@@ -147,7 +147,7 @@ impl AeronAvailableImageCallback for DuologueImageAvailable {
 }
 
 pub struct DuologueImageUnavailable {
-    pub owner: String,
+    pub gateway_address: String,
 }
 
 impl AeronUnavailableImageCallback for DuologueImageUnavailable {
@@ -161,7 +161,7 @@ impl AeronUnavailableImageCallback for DuologueImageUnavailable {
             Err(e) => {
                 error!(
                     "Failed to get image constants for gateway {}: {:?}",
-                    self.owner, e
+                    self.gateway_address, e
                 );
                 return;
             }
@@ -171,7 +171,7 @@ impl AeronUnavailableImageCallback for DuologueImageUnavailable {
         // check image_count and close?
         info!(
             "[{}] Client Disconnected, address: {}, gateway: {}",
-            session_id, remote_addr, self.owner
+            session_id, remote_addr, self.gateway_address
         );
     }
 }
