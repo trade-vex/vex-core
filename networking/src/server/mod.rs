@@ -31,25 +31,30 @@ mod duologue;
 mod gateway_handler;
 mod gateway_manager;
 mod gateway_publications;
+mod replay;
 
+use crate::server::cmd_handler::ReplayFragmentHandler;
 use crate::server::gateway_handler::{
     GatewayImageAvailableHandler, GatewayImageUnavailableHandler, HandshakeMessageHandler,
 };
 use crate::server::gateway_manager::GatewayManager;
+use crate::server::replay::RecorderDescriptorReader;
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
-use common::OrderCommand;
+use common::{FRAMESIZE, OrderCommand};
 use disruptor::{MultiProducer, SingleConsumerBarrier};
-use rusteron_archive::AeronArchiveContext;
 use rusteron_archive::{
-    Aeron, AeronArchiveAsyncConnect, AeronCError, AeronContext, AeronNotificationLogger,
-    AeronSubscription, Handler, IntoCString, SourceLocation,
+    Aeron, AeronArchiveAsyncConnect, AeronArchiveReplayParams, AeronAvailableImageLogger,
+    AeronCError, AeronContext, AeronNotificationLogger, AeronSubscription,
+    AeronUnavailableImageLogger, Handler, IntoCString, SourceLocation,
 };
+use rusteron_archive::{AeronArchive, AeronArchiveContext};
 use rusteron_media_driver::AeronIdleStrategy;
+use std::i32;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use thiserror::Error;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use vex_config::CoreNetworkingConfig;
 
 pub use gateway_publications::Publications;
@@ -59,8 +64,10 @@ const ALL_GATEWAYS_STREAM_ID: i32 = 1001;
 
 /// Recording stream ID for Aeron Archive
 const RECORDING_STREAM_ID: i32 = 2001;
-/// Channel for Aeron Recording
-const RECORDING_CHANNEL: &str = "aeron:udp?endpoint=localhost:9123";
+/// Replay Stram ID for Aeron Archive
+pub const REPLAY_STREAM_ID: i32 = 2002;
+/// Channel for Aeron Recording also known as Aeron Control Channel
+const RECORDING_CHANNEL: &str = "aeron:ipc";
 
 /// Error types for VEX Core server operations
 #[derive(Error, Debug)]
@@ -106,6 +113,7 @@ impl VexCoreServer {
     pub fn new(
         config: CoreNetworkingConfig,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
+        replay_producer: Option<MultiProducer<OrderCommand, SingleConsumerBarrier>>,
         publications: Arc<Publications>,
     ) -> Result<Self, ServerError> {
         // Validate configuration
@@ -113,6 +121,100 @@ impl VexCoreServer {
 
         // Initialize Aeron context
         let aeron = Self::initialize_aeron(&config)?;
+
+        // Initialize Aeron Archive
+        let archive = Self::initialize_archive(&config, &aeron)?;
+
+        // Replay
+        if let Some(replay_producer) = replay_producer {
+            let mut reader = Handler::leak(RecorderDescriptorReader::new());
+            let last_recording_id = archive.list_recordings_for_uri(
+                0,
+                i32::MAX,
+                &RECORDING_CHANNEL.into_c_string(), // aeron control request channel
+                RECORDING_STREAM_ID,
+                Some(&reader),
+            )?;
+            info!("last recording id: {}", last_recording_id);
+            if let Some(record) = &reader.last_recording {
+                let session_id = record.session_id;
+                info!("found recording to replay: {:?}", record);
+                let params = AeronArchiveReplayParams::new(
+                    0,
+                    i32::MAX,
+                    record.start_position,
+                    record.stop_position - record.start_position,
+                    0,
+                    0,
+                )?;
+                info!("replay params: {:?}", params);
+                let replay_session_id = archive.start_replay(
+                    record.recording_id,
+                    &RECORDING_CHANNEL.into_c_string(),
+                    REPLAY_STREAM_ID,
+                    &params,
+                )? as i32;
+
+                let replay_channel_with_session =
+                    format!("{}?session-id={}", &RECORDING_CHANNEL, replay_session_id);
+                info!("replay subscription {:?}", replay_channel_with_session);
+
+                let mut h1 = Handler::leak(AeronAvailableImageLogger);
+                let mut h2 = Handler::leak(AeronUnavailableImageLogger);
+                let mut message_handler = Handler::leak(ReplayFragmentHandler {
+                    producer: replay_producer,
+                    gateway_id: 0,
+                });
+                let subscription = aeron.add_subscription(
+                    &replay_channel_with_session.into_c_string(),
+                    REPLAY_STREAM_ID,
+                    Some(&h1),
+                    Some(&h2),
+                    Duration::from_secs(5),
+                )?;
+
+                while !subscription.is_connected() {
+                    std::thread::sleep(Duration::from_millis(100));
+                    info!("waiting for replay subscription to be connected...");
+                }
+
+                info!(
+                    "starting replay for recording id: {}, session id: {}",
+                    record.recording_id, session_id
+                );
+
+                info!(
+                    "start recording position: {}",
+                    archive.get_recording_position(record.recording_id)?
+                );
+                let mut position = record.start_position;
+                while subscription.poll(Some(&message_handler), 1).is_ok()
+                    && position < record.stop_position
+                {
+                    position += FRAMESIZE;
+                    debug!(
+                        "recording position: {position}",
+                    );
+
+                    AeronIdleStrategy::yielding_idle(std::ptr::null_mut(), 0);
+                }
+                h1.release();
+                h2.release();
+                message_handler.release();
+                subscription.close::<AeronNotificationLogger>(None)?;
+
+                info!(
+                    "replay completed for recording id: {}, session id: {}",
+                    record.recording_id, session_id
+                );
+                reader.release();
+            } else {
+                info!("no recordings found to replay");
+            }
+        }
+
+        // Start recording
+        Self::start_recording(&archive)?;
 
         // Publisher for Recording the incoming messages
         let archive_publication = aeron.add_publication(
@@ -131,7 +233,7 @@ impl VexCoreServer {
 
         info!(
             target: "core_server",
-            action = "initialized",
+            action = "server: initialized, archive: recording started",
             core_id = %config.core_id
         );
 
@@ -269,8 +371,13 @@ impl VexCoreServer {
 
         let aeron = Aeron::new(&ctx)?;
         aeron.start()?;
+        Ok(aeron)
+    }
 
-        info!("creating archine context");
+    fn initialize_archive(
+        config: &CoreNetworkingConfig,
+        aeron: &Aeron,
+    ) -> Result<AeronArchive, ServerError> {
         let archive_ctx = AeronArchiveContext::new_with_no_credentials_supplier(
             &aeron,
             &config.request_control_channel,
@@ -278,21 +385,19 @@ impl VexCoreServer {
             &RECORDING_CHANNEL,
         )?;
 
-        info!("archive ctx created");
         let archive_async_connect = AeronArchiveAsyncConnect::new_with_aeron(&archive_ctx, &aeron)?;
-        info!("archive async connect created");
         let archive = archive_async_connect.poll_blocking(Duration::from_secs(10))?;
-        info!("archive created");
+        Ok(archive)
+    }
+
+    fn start_recording(archive: &AeronArchive) -> Result<(), ServerError> {
         archive.start_recording(
             &RECORDING_CHANNEL.into_c_string(),
             RECORDING_STREAM_ID,
             SourceLocation::AERON_ARCHIVE_SOURCE_LOCATION_LOCAL,
             false,
         )?;
-
-        info!("archive, started recording");
-
-        Ok(aeron)
+        Ok(())
     }
 
     /// Gets core configuration

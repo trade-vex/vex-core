@@ -120,7 +120,7 @@ fn test_client_server_communication() {
         })
         .build();
         let publications = Arc::new(Publications::new());
-        let mut server = VexCoreServer::new(server_config, producer, publications).unwrap();
+        let mut server = VexCoreServer::new(server_config, producer, None,  publications).unwrap();
         match server.start() {
             Ok(()) => println!("Server run() completed successfully (unexpected)"),
             Err(e) => println!("Server run() error: {e}"),

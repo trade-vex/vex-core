@@ -1,6 +1,6 @@
 use arc_swap::ArcSwapOption;
 use common::{MAX_GATEWAYS, ORDERCOMMANDSIZE, OrderCommand, Snowflake, encode_order_command};
-use rusteron_archive::{AeronCError, AeronPublication, AeronReservedValueSupplierLogger};
+use rusteron_archive::{AeronPublication, AeronReservedValueSupplierLogger};
 use std::sync::Arc;
 use tracing::{debug, error};
 
@@ -39,19 +39,12 @@ impl Publications {
         let gateway_id = Snowflake::gateway_from_id(cmd.order_id());
         let ptr = self.get(gateway_id);
         let publication = ptr.as_ref();
-        let ptr = self.get(MAX_GATEWAYS as u8);
-        let archive_publication = ptr.as_ref();
         if publication.is_none() {
             error!(
                 "gateway-{}: No publication found to send response",
                 gateway_id
             );
             return;
-        }
-        let skip_archival = archive_publication.is_none();
-        if skip_archival {
-            // undesired behavior
-            error!("No archive publication found to send response, skipping archival");
         }
         let publication = publication.unwrap();
         let mut response_buffer = [0; ORDERCOMMANDSIZE];
@@ -72,23 +65,45 @@ impl Publications {
                         gateway_id
                     );
                 }
+            }
+            Err(e) => {
+                error!(
+                    "gateway-{}: Failed to encode processed OrderCommand: {:?}",
+                    gateway_id, e
+                );
+            }
+        }
+    }
 
-                if !skip_archival {
-                    let archive_publication = archive_publication.unwrap();
-                    let archive_result = archive_publication
-                        .offer::<AeronReservedValueSupplierLogger>(&response_buffer, None);
-                    if archive_result < 0 {
-                        error!(
-                            "gateway-{}: Failed to archive processed OrderCommand, result: {}",
-                            gateway_id,
-                            AeronCError::from_code(archive_result as i32)
-                        );
-                    } else {
-                        debug!(
-                            "gateway-{}: Successfully archived processed OrderCommand",
-                            gateway_id
-                        );
-                    }
+    // Publisher (event handler thread)
+    pub fn publish_to_archive(&self, cmd: &OrderCommand) {
+        let gateway_id = cmd.order_id;
+        let ptr = self.get(MAX_GATEWAYS as u8);
+        let publication = ptr.as_ref();
+        if publication.is_none() {
+            error!(
+                "gateway-{}: Archive publication not set, cannot archive command, client order_id: {}",
+                gateway_id, cmd.client_order_id
+            );
+            return;
+        }
+        let publication = publication.unwrap();
+        let mut response_buffer = [0; ORDERCOMMANDSIZE];
+        match encode_order_command(cmd, &mut response_buffer) {
+            Ok(_) => {
+                let result =
+                    publication.offer::<AeronReservedValueSupplierLogger>(&response_buffer, None);
+
+                if result < 0 {
+                    error!(
+                        "gateway-{}: Failed to archive OrderCommand, client order_id: {}, result: {}",
+                        gateway_id, cmd.client_order_id, result
+                    );
+                } else {
+                    debug!(
+                        "gateway-{}: Successfully sent processed OrderCommand, client order_id: {}",
+                        gateway_id, cmd.client_order_id
+                    );
                 }
             }
             Err(e) => {

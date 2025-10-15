@@ -10,7 +10,8 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 vex-config = { workspace = true }
 disruptor = { workspace = true }
-rusteron-archive = { workspace = true, features = ["extra-logging"] }
+rusteron-archive = { workspace = true}
+# features = ["extra-logging", "log-c-bindings"] 
 rand = "0.8"
 arc-swap = "1.7.1"
 

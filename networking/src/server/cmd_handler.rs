@@ -1,7 +1,7 @@
 use common::{OrderCommand, OrderCommandType, Status, decode_order_command};
 use disruptor::{MultiProducer, Producer, SingleConsumerBarrier};
 use rusteron_archive::{AeronFragmentHandlerCallback, AeronHeader};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 pub struct FragmentHandler {
     pub gateway_id: u8,
@@ -12,7 +12,13 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) {
         // is executor thread
         let session_id = match header.get_values() {
-            Ok(values) => values.frame.session_id,
+            Ok(values) => {
+                info!(
+                    "[{}] gateway-{}: Received OrderCommand, len of buffer: {}, frame length: {}, term id: {}, term offset: {}",
+                    values.frame.session_id, self.gateway_id, buffer.len(), values.frame.frame_length, values.frame.term_id, values.frame.term_offset
+                );
+                values.frame.session_id
+            }
             Err(_) => {
                 error!(
                     "gateway-{}: Missing session ID in Aeron header",
@@ -51,6 +57,59 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
                 error!(
                     "[{}] gateway-{}: Failed to decode OrderCommand: {:?}",
                     session_id, self.gateway_id, e
+                );
+            }
+        }
+    }
+}
+
+pub struct ReplayFragmentHandler {
+    pub gateway_id: u8,
+    pub producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
+}
+
+impl AeronFragmentHandlerCallback for ReplayFragmentHandler {
+    fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) {
+        // is executor thread
+        let values = match header.get_values() {
+            Ok(values) => values.frame,
+            Err(_) => {
+                error!(
+                    "gateway-{}: Missing session ID in Aeron header",
+                    self.gateway_id
+                );
+                return;
+            }
+        };
+
+        info!(
+            "[{}] gateway-{}: Received replayed OrderCommand, len of buffer: {}, frame length: {}, term id: {}, term offset: {}",
+            values.session_id, self.gateway_id, buffer.len(), values.frame_length, values.term_id, values.term_offset
+        );
+
+        // Deserialize OrderCommand
+        match decode_order_command(buffer) {
+            Ok(mut order_command) => {
+                order_command.status = Status::Processing;
+                debug!(
+                    "[{}] gateway-{}: Received OrderCommand: {:?}",
+                    values.session_id, self.gateway_id, order_command
+                );
+
+                if let Err(e) = self.producer.try_publish(|cmd| {
+                    *cmd = order_command.clone();
+                }) {
+                    error!(
+                        "[{}] gateway-{}: Failed to publish OrderCommand to ring buffer: {}",
+                        values.session_id, self.gateway_id, e
+                    );
+                    return;
+                }
+            }
+            Err(e) => {
+                error!(
+                    "[{}] gateway-{}: Failed to decode OrderCommand: {:?}",
+                    values.session_id, self.gateway_id, e
                 );
             }
         }
