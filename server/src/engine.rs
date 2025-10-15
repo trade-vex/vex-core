@@ -8,7 +8,9 @@ use disruptor::{
 };
 use hashbrown::HashMap;
 use processors::{
-    events::EventsHandler, journaling::JournalingProcessor, matching_engine::MatchingEngineRouter,
+    events::EventsHandler,
+    journaling::{JournalingProcessor, ReplayControl},
+    matching_engine::MatchingEngineRouter,
     risk_engine::RiskEngine,
 };
 use std::{
@@ -22,6 +24,12 @@ use vex_networking::server::VexCoreServer;
 
 /// Type alias for the order command producer
 pub type OrderProducer = MultiProducer<OrderCommand, SingleConsumerBarrier>;
+
+#[derive(Clone)]
+pub struct ReplayContext {
+    pub producer: OrderProducer,
+    pub control: ReplayControl,
+}
 
 /// Type alias for a shared reference to the risk engines
 pub type RiskEngines = Arc<Vec<RiskEngine>>;
@@ -129,12 +137,53 @@ impl CoreEngine {
     /// Currently does not return errors, but signature allows for future error handling
     pub fn new(
         symbol_specs: HashMap<u32, CoreMarketSpecification>,
-        mut journaling_processor: JournalingProcessor,
+        journaling_processor: JournalingProcessor,
         events_handler: impl EventsHandler,
         publications: Arc<Publications>,
         core_pinning: CorePinning,
     ) -> EngineResult<(Self, OrderProducer)> {
+        let (engine, producer, _) = Self::build_engine(
+            symbol_specs,
+            journaling_processor,
+            events_handler,
+            publications,
+            core_pinning,
+        )?;
+        Ok((engine, producer))
+    }
+
+    pub fn new_with_replay(
+        symbol_specs: HashMap<u32, CoreMarketSpecification>,
+        journaling_processor: JournalingProcessor,
+        events_handler: impl EventsHandler,
+        publications: Arc<Publications>,
+        core_pinning: CorePinning,
+    ) -> EngineResult<(Self, OrderProducer, ReplayContext)> {
+        let (engine, producer, replay_control) = Self::build_engine(
+            symbol_specs,
+            journaling_processor,
+            events_handler,
+            publications,
+            core_pinning,
+        )?;
+
+        let replay_context = ReplayContext {
+            producer: producer.clone(),
+            control: replay_control,
+        };
+
+        Ok((engine, producer, replay_context))
+    }
+
+    fn build_engine(
+        symbol_specs: HashMap<u32, CoreMarketSpecification>,
+        mut journaling_processor: JournalingProcessor,
+        events_handler: impl EventsHandler,
+        publications: Arc<Publications>,
+        core_pinning: CorePinning,
+    ) -> EngineResult<(Self, OrderProducer, ReplayControl)> {
         let price_cache = Arc::new(PriceCache::new(symbol_specs.keys()));
+        let replay_control = journaling_processor.replay_control();
 
         let order_factory = OrderCommand::default;
 
@@ -178,7 +227,7 @@ impl CoreEngine {
         );
 
         let engine = Self { publications };
-        Ok((engine, producer))
+        Ok((engine, producer, replay_control))
     }
 
     /// Initializes risk engines with specified sharding
@@ -303,6 +352,7 @@ impl CoreEngine {
     pub fn run(
         &self,
         producer: OrderProducer,
+        replay: Option<ReplayContext>,
         networking_config: CoreNetworkingConfig,
     ) -> JoinHandle<Result<(), EngineError>> {
         let publications = Arc::clone(&self.publications);
@@ -310,12 +360,24 @@ impl CoreEngine {
         thread::Builder::new()
             .name("vex-core-server".into())
             .spawn(move || {
-                let mut core_server = VexCoreServer::new(networking_config, producer, publications)
-                    .map_err(|e| {
-                        EngineError::ServerInitialization(format!(
-                            "Failed to create VexCoreServer: {e}"
-                        ))
-                    })?;
+                let replay_producer = replay.as_ref().map(|ctx| ctx.producer.clone());
+                if let Some(ctx) = replay.as_ref() {
+                    ctx.control.enable();
+                }
+
+                let server_result =
+                    VexCoreServer::new(networking_config, producer, replay_producer, publications)
+                        .map_err(|e| {
+                            EngineError::ServerInitialization(format!(
+                                "Failed to create VexCoreServer: {e}"
+                            ))
+                        });
+
+                if let Some(ctx) = replay.as_ref() {
+                    ctx.control.disable();
+                }
+
+                let mut core_server = server_result?;
 
                 core_server
                     .start()
