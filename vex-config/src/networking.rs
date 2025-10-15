@@ -19,18 +19,12 @@ pub struct CoreNetworkingConfig {
     pub base_gateway_port: u16,
     /// The maximum number of gateways to support
     pub max_gateways: u16,
-    /// The maximum number of connections per address
-    pub max_connections_per_address: u16,
     /// Reserved session id lower bound
     pub reserved_session_id_low: i32,
     /// Reserved session id upper bound
     pub reserved_session_id_high: i32,
     /// Enable authentication for gateways
     pub enable_authentication: bool,
-    /// Enable heartbeat monitoring
-    pub enable_heartbeat: bool,
-    /// Gateway timeout in seconds, expires after this period.
-    pub gateway_timeout_seconds: u64,
     /// Core identifier
     pub core_id: String,
     /// Buffer size for network operations (bytes)
@@ -39,6 +33,10 @@ pub struct CoreNetworkingConfig {
     pub retry_attempts: u32,
     /// Connection retry delay in milliseconds
     pub retry_delay_ms: u64,
+    /// Control Response Channel for Aeron Archive
+    pub request_control_channel: String,
+    pub response_control_channel: String,
+    pub recording_events_channel: String,
 }
 
 impl CoreNetworkingConfig {
@@ -60,16 +58,16 @@ impl CoreNetworkingConfig {
             initial_control_port: 3522,
             base_gateway_port: 50000,
             max_gateways: 15,
-            max_connections_per_address: 10,
             reserved_session_id_low: 1000,
             reserved_session_id_high: 9999,
             enable_authentication: false,
-            enable_heartbeat: true,
-            gateway_timeout_seconds: 1_000_000_000,
             core_id: "vex-core-dev".to_string(),
             buffer_size: 1024 * 1024,
             retry_attempts: 3,
             retry_delay_ms: 1000,
+            request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
+            response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
+            recording_events_channel: "aeron:udp?endpoint=localhost:8012".to_string(),
         }
     }
 
@@ -82,16 +80,16 @@ impl CoreNetworkingConfig {
             initial_control_port: 3522,
             base_gateway_port: 50000,
             max_gateways: 15,
-            max_connections_per_address: 10,
             reserved_session_id_low: 1000,
             reserved_session_id_high: 9999,
             enable_authentication: true,
-            enable_heartbeat: true,
-            gateway_timeout_seconds: 1_000_000_000,
             core_id: "vex-core-test".to_string(),
             buffer_size: 1024 * 1024,
             retry_attempts: 3,
             retry_delay_ms: 1000,
+            request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
+            response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
+            recording_events_channel: "aeron:udp?endpoint=localhost:9123".to_string(),
         }
     }
 
@@ -104,16 +102,16 @@ impl CoreNetworkingConfig {
             initial_control_port: 3522,
             base_gateway_port: 50000,
             max_gateways: 1000,
-            max_connections_per_address: 50,
             reserved_session_id_low: 1000,
             reserved_session_id_high: 9999,
             enable_authentication: true,
-            enable_heartbeat: true,
-            gateway_timeout_seconds: 1_000_000_000,
             core_id: "vex-core-prod".to_string(),
             buffer_size: 4 * 1024 * 1024, // 4MB
             retry_attempts: 5,
             retry_delay_ms: 2000,
+            request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
+            response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
+            recording_events_channel: "aeron:udp?endpoint=localhost:8012".to_string(),
         }
     }
 
@@ -137,21 +135,9 @@ impl CoreNetworkingConfig {
             return Err(ConfigError::network("Max gateways must be greater than 0"));
         }
 
-        if self.max_connections_per_address == 0 {
-            return Err(ConfigError::network(
-                "Max connections per address must be greater than 0",
-            ));
-        }
-
         if self.reserved_session_id_low >= self.reserved_session_id_high {
             return Err(ConfigError::network(
                 "Reserved session ID low must be less than high",
-            ));
-        }
-
-        if self.gateway_timeout_seconds == 0 {
-            return Err(ConfigError::network(
-                "Gateway timeout must be greater than 0",
             ));
         }
 

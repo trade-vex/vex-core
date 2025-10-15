@@ -7,7 +7,7 @@ use hashbrown::HashMap;
 use processors::{events::KafkaEventsHandler, journaling::JournalingProcessor};
 use std::{sync::Arc, thread::JoinHandle};
 use vex_config::VexConfig;
-use vex_networking::server::GatewayPublications;
+use vex_networking::server::Publications;
 
 // Re-export for convenience
 pub use engine::EngineError;
@@ -85,7 +85,7 @@ pub fn init_internal(
     kafka_broker: String,
 ) -> EngineResult<(CoreEngine, OrderProducer)> {
     let journaling_processor = JournalingProcessor::new();
-    let publications = Arc::new(GatewayPublications::new());
+    let publications = Arc::new(Publications::new());
     let events_handler = KafkaEventsHandler::new(&kafka_broker, Arc::clone(&publications));
 
     CoreEngine::new(
@@ -176,7 +176,7 @@ pub mod test {
             }
         };
 
-        let publications = Arc::new(GatewayPublications::new());
+        let publications = Arc::new(Publications::new());
 
         // Create risk engines manually for test access
         use processors::risk_engine::RiskEngine;

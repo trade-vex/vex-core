@@ -2,9 +2,9 @@ use clap::{Parser, Subcommand};
 use common::{OrderCommand, UserBalance};
 use common::{OrderCommandType, Side, TimeInForce};
 use hdrhistogram::Histogram;
+use std::env;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
-use std::{env, thread};
 use vex_config::GatewayNetworkingConfig;
 use vex_networking::client::{OrderCommandHandler, Publisher, VexGateway};
 
@@ -56,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let handler = OrderCommandHandler::new(client.gateway_id(), sx);
     let publisher = client.start(handler).expect("Client should start");
 
-    thread::sleep(Duration::from_secs(5)); // Give some time for the client to start
+    // thread::sleep(Duration::from_secs(5)); // Give some time for the client to start
 
     // The client's main loop to send commands
     match args.mode {
@@ -79,13 +79,13 @@ fn run_correctness_test(
     client_id: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Client-{client_id} sending {count} messages...");
-    let base_asset_id = 1;
-    let quote_asset_id = 2;
+    let base_asset_id = 2;
+    let quote_asset_id = 1;
     // Market ID: base asset in lower 16 bits, quote in upper 16
     let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
     for i in 0..count {
         let order_command = OrderCommand {
-            client_order_id: 0,
+            client_order_id: i,
             command: OrderCommandType::PlaceOrder,
             user_id: if (i % 2) == 0 { 1 } else { 2 },
             size: 100,
@@ -103,7 +103,7 @@ fn run_correctness_test(
         client.send_order_command(&order_command)?;
     }
     println!("Client finished sending.");
-    std::thread::sleep(Duration::from_secs(2));
+    // std::thread::sleep(Duration::from_secs(2));
     Ok(())
 }
 
@@ -118,7 +118,7 @@ fn run_latency_test(
     for i in 0..samples {
         let order_id = client_id * 1_000_000 + i;
         let mut command = OrderCommand {
-            client_order_id: 0,
+            client_order_id: order_id,
             command: OrderCommandType::PlaceOrder,
             user_id: 1,
             size: 100,
@@ -142,7 +142,7 @@ fn run_latency_test(
 
         // --- Conceptual: Wait for the acknowledgment ---
         let ack = rx.recv_timeout(Duration::from_secs(5))?;
-        if ack.order_id == order_id {
+        if ack.client_order_id == order_id {
             println!("Client-{client_id} received ack for order_id: {order_id}");
             let rtt = start_time.elapsed().as_micros() as u64;
             histogram.record(rtt).unwrap();

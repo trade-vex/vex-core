@@ -15,7 +15,7 @@ use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
 use serde::Serialize;
 use tracing::{debug, error, info};
-use vex_networking::server::GatewayPublications;
+use vex_networking::server::Publications;
 
 pub trait EventsHandler: Send + Sync + 'static {
     fn handle_processed_command(&self, cmd: &mut OrderCommand);
@@ -24,11 +24,11 @@ pub trait EventsHandler: Send + Sync + 'static {
 // Real Kafka Events Handler
 pub struct KafkaEventsHandler {
     producer: FutureProducer,
-    publications: Arc<GatewayPublications>,
+    publications: Arc<Publications>,
 }
 
 impl KafkaEventsHandler {
-    pub fn new(brokers: &str, publications: Arc<GatewayPublications>) -> Self {
+    pub fn new(brokers: &str, publications: Arc<Publications>) -> Self {
         let producer: FutureProducer = ClientConfig::new()
             .set("bootstrap.servers", brokers)
             .set("message.timeout.ms", "5000")
@@ -279,7 +279,12 @@ impl KafkaEventsHandler {
 
 impl EventsHandler for KafkaEventsHandler {
     fn handle_processed_command(&self, cmd: &mut OrderCommand) {
-        order_info!("command_processed", cmd, stage = "events", handler = "kafka");
+        order_info!(
+            "command_processed",
+            cmd,
+            stage = "events",
+            handler = "kafka"
+        );
 
         let market_id = cmd.market_id();
         let taker_id = cmd.user_id();
@@ -295,7 +300,12 @@ impl EventsHandler for KafkaEventsHandler {
                 );
             }
             Status::Placed => {
-                order_debug!("events_publish_placed", cmd, stage = "events", handler = "kafka");
+                order_debug!(
+                    "events_publish_placed",
+                    cmd,
+                    stage = "events",
+                    handler = "kafka"
+                );
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
                 self.publish_order_event(cmd);
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
@@ -385,8 +395,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_kafka_events_handler_placed_order() {
-        let handler =
-            KafkaEventsHandler::new("localhost:9092", Arc::new(GatewayPublications::new()));
+        let handler = KafkaEventsHandler::new("localhost:9092", Arc::new(Publications::new()));
 
         let mut cmd = OrderCommand::new(
             common::TimeInForce::Gtc,
@@ -408,8 +417,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_kafka_events_handler_cancelled_order() {
-        let handler =
-            KafkaEventsHandler::new("localhost:9092", Arc::new(GatewayPublications::new()));
+        let handler = KafkaEventsHandler::new("localhost:9092", Arc::new(Publications::new()));
 
         let mut cmd = OrderCommand::new(
             common::TimeInForce::Gtc,
@@ -430,8 +438,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_kafka_events_handler_filled_order_with_trades() {
-        let handler =
-            KafkaEventsHandler::new("localhost:9092", Arc::new(GatewayPublications::new()));
+        let handler = KafkaEventsHandler::new("localhost:9092", Arc::new(Publications::new()));
 
         // Create a processed command with Filled status and trade events
         let mut filled_cmd = OrderCommand::new(

@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use super::Order;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct BalanceEvent {

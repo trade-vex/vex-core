@@ -13,7 +13,7 @@ use common::{base_asset, order_debug, order_warn, quote_asset};
 use hashbrown::HashMap;
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tracing::{debug, error, warn, info};
+use tracing::{debug, error, info, warn};
 
 /// Manages all user profiles and performs risk checks as well as settlements
 pub struct RiskEngine {
@@ -85,54 +85,50 @@ impl RiskEngine {
                     cmd.set_status(Status::Rejected);
                 }
             }
-            OrderCommandType::DepositFunds => {
-                match self.handle_deposit(cmd) {
-                    Ok(_) => {
-                        cmd.balance[0] = self.get_balance(cmd.user_id(), cmd.market_id as u16);
-                        cmd.set_status(Status::Processed);
-                        order_debug!(
-                            "risk_deposit_applied",
-                            cmd,
-                            stage = "risk_r1",
-                            shard_id = self.shard_id
-                        );
-                    }
-                    Err(err) => {
-                        order_warn!(
-                            "risk_deposit_failed",
-                            cmd,
-                            stage = "risk_r1",
-                            shard_id = self.shard_id,
-                            error = ?err
-                        );
-                        cmd.set_status(Status::Rejected);
-                    }
+            OrderCommandType::DepositFunds => match self.handle_deposit(cmd) {
+                Ok(_) => {
+                    cmd.balance[0] = self.get_balance(cmd.user_id(), cmd.market_id as u16);
+                    cmd.set_status(Status::Processed);
+                    order_debug!(
+                        "risk_deposit_applied",
+                        cmd,
+                        stage = "risk_r1",
+                        shard_id = self.shard_id
+                    );
                 }
-            }
-            OrderCommandType::WithdrawFunds => {
-                match self.handle_withdrawal(cmd) {
-                    Ok(_) => {
-                        cmd.balance[0] = self.get_balance(cmd.user_id(), cmd.market_id as u16);
-                        cmd.set_status(Status::Processed);
-                        order_debug!(
-                            "risk_withdrawal_applied",
-                            cmd,
-                            stage = "risk_r1",
-                            shard_id = self.shard_id
-                        );
-                    }
-                    Err(err) => {
-                        order_warn!(
-                            "risk_withdrawal_failed",
-                            cmd,
-                            stage = "risk_r1",
-                            shard_id = self.shard_id,
-                            error = ?err
-                        );
-                        cmd.set_status(Status::Rejected);
-                    }
+                Err(err) => {
+                    order_warn!(
+                        "risk_deposit_failed",
+                        cmd,
+                        stage = "risk_r1",
+                        shard_id = self.shard_id,
+                        error = ?err
+                    );
+                    cmd.set_status(Status::Rejected);
                 }
-            }
+            },
+            OrderCommandType::WithdrawFunds => match self.handle_withdrawal(cmd) {
+                Ok(_) => {
+                    cmd.balance[0] = self.get_balance(cmd.user_id(), cmd.market_id as u16);
+                    cmd.set_status(Status::Processed);
+                    order_debug!(
+                        "risk_withdrawal_applied",
+                        cmd,
+                        stage = "risk_r1",
+                        shard_id = self.shard_id
+                    );
+                }
+                Err(err) => {
+                    order_warn!(
+                        "risk_withdrawal_failed",
+                        cmd,
+                        stage = "risk_r1",
+                        shard_id = self.shard_id,
+                        error = ?err
+                    );
+                    cmd.set_status(Status::Rejected);
+                }
+            },
             _ => {} // no balance change happens in case of cancel
         }
 
