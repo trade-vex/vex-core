@@ -1,14 +1,14 @@
 use crate::server::duologue::{
     DUOLOGUE_STREAM_ID, Duologue, DuologueImageAvailable, DuologueImageUnavailable,
 };
-use crate::server::gateway_publications::GatewayPublications;
+use crate::server::gateway_publications::Publications;
 use crate::utils::{
     PortAllocator, SessionAllocator, new_publication_with_mdc_and_session,
     new_subsciption_with_handlers_and_session, send_message, send_message_with_retries,
 };
 use common::{MAX_GATEWAYS, OrderCommand};
 use disruptor::{MultiProducer, SingleConsumerBarrier};
-use rusteron_client::{Aeron, AeronPublication, Handler};
+use rusteron_archive::{Aeron, AeronPublication, Handler};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, RwLock};
 use tracing::{debug, error, info, warn};
@@ -110,7 +110,7 @@ pub struct GatewayManager {
     /// Producer that sends commands to the disruptor ring
     producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
     /// Aeron publications for each gateway
-    publications: Arc<GatewayPublications>,
+    publications: Arc<Publications>,
     /// Channel for receiving cleanup requests from image unavailable callbacks
     cleanup_rx: Receiver<u8>,
     /// Channel sender cloned for each callback
@@ -123,7 +123,7 @@ impl GatewayManager {
         config: CoreNetworkingConfig,
         aeron: Aeron,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
-        publications: Arc<GatewayPublications>,
+        publications: Arc<Publications>,
     ) -> Result<Self, ServerError> {
         let (cleanup_tx, cleanup_rx) = channel();
 

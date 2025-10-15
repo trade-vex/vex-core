@@ -39,20 +39,28 @@ use crate::server::gateway_manager::GatewayManager;
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
 use common::OrderCommand;
 use disruptor::{MultiProducer, SingleConsumerBarrier};
-use rusteron_client::{
-    Aeron, AeronCError, AeronContext, AeronNotificationLogger, AeronSubscription, Handler,
+use rusteron_archive::AeronArchiveContext;
+use rusteron_archive::{
+    Aeron, AeronArchiveAsyncConnect, AeronCError, AeronContext, AeronNotificationLogger,
+    AeronSubscription, Handler, IntoCString, SourceLocation,
 };
 use rusteron_media_driver::AeronIdleStrategy;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use thiserror::Error;
 use tracing::{error, info};
 use vex_config::CoreNetworkingConfig;
 
-pub use gateway_publications::GatewayPublications;
+pub use gateway_publications::Publications;
 
 /// Stream ID for gateway communication
 const ALL_GATEWAYS_STREAM_ID: i32 = 1001;
+
+/// Recording stream ID for Aeron Archive
+const RECORDING_STREAM_ID: i32 = 2001;
+/// Channel for Aeron Recording
+const RECORDING_CHANNEL: &str = "aeron:udp?endpoint=localhost:9123";
 
 /// Error types for VEX Core server operations
 #[derive(Error, Debug)]
@@ -98,13 +106,28 @@ impl VexCoreServer {
     pub fn new(
         config: CoreNetworkingConfig,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
-        publications: Arc<GatewayPublications>,
+        publications: Arc<Publications>,
     ) -> Result<Self, ServerError> {
         // Validate configuration
         Self::validate_config(&config)?;
 
         // Initialize Aeron context
         let aeron = Self::initialize_aeron(&config)?;
+
+        // Publisher for Recording the incoming messages
+        let archive_publication = aeron.add_publication(
+            &RECORDING_CHANNEL.into_c_string(),
+            RECORDING_STREAM_ID,
+            Duration::from_secs(1),
+        )?;
+
+        // wait for publication to be connected
+        while !archive_publication.is_connected() {
+            std::thread::sleep(Duration::from_millis(100));
+            info!("waiting for archive publication to be connected...");
+        }
+
+        publications.set_archive_publication(archive_publication);
 
         info!(
             target: "core_server",
@@ -246,6 +269,28 @@ impl VexCoreServer {
 
         let aeron = Aeron::new(&ctx)?;
         aeron.start()?;
+
+        info!("creating archine context");
+        let archive_ctx = AeronArchiveContext::new_with_no_credentials_supplier(
+            &aeron,
+            &config.request_control_channel,
+            &config.response_control_channel,
+            &RECORDING_CHANNEL,
+        )?;
+
+        info!("archive ctx created");
+        let archive_async_connect = AeronArchiveAsyncConnect::new_with_aeron(&archive_ctx, &aeron)?;
+        info!("archive async connect created");
+        let archive = archive_async_connect.poll_blocking(Duration::from_secs(10))?;
+        info!("archive created");
+        archive.start_recording(
+            &RECORDING_CHANNEL.into_c_string(),
+            RECORDING_STREAM_ID,
+            SourceLocation::AERON_ARCHIVE_SOURCE_LOCATION_LOCAL,
+            false,
+        )?;
+
+        info!("archive, started recording");
 
         Ok(aeron)
     }

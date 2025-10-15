@@ -2,14 +2,14 @@ use common::OrderCommandType;
 use common::{OrderCommand, decode_order_command};
 use common::{Side, TimeInForce};
 use disruptor::{BusySpin, ProcessorSettings, build_multi_producer};
-use rusteron_client::{AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port};
+use rusteron_archive::{AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port};
 use std::sync::Arc;
 use std::time::Duration;
 use std::{net::SocketAddr, thread};
 use tracing::{error, info};
 use vex_config::{CoreNetworkingConfig, GatewayNetworkingConfig};
 use vex_networking::client::{GatewayError, VexGateway};
-use vex_networking::server::{GatewayPublications, VexCoreServer};
+use vex_networking::server::{Publications, VexCoreServer};
 
 /// Fragment handler for processing OrderCommand messages from core
 struct OrderCommandHandler {
@@ -119,7 +119,7 @@ fn test_client_server_communication() {
             }
         })
         .build();
-        let publications = Arc::new(GatewayPublications::new());
+        let publications = Arc::new(Publications::new());
         let mut server = VexCoreServer::new(server_config, producer, publications).unwrap();
         match server.start() {
             Ok(()) => println!("Server run() completed successfully (unexpected)"),

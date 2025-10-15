@@ -1,6 +1,6 @@
 use common::{OrderCommand, OrderCommandType, Status, decode_order_command};
 use disruptor::{MultiProducer, Producer, SingleConsumerBarrier};
-use rusteron_client::{AeronFragmentHandlerCallback, AeronHeader};
+use rusteron_archive::{AeronFragmentHandlerCallback, AeronHeader};
 use tracing::{debug, error};
 
 pub struct FragmentHandler {
