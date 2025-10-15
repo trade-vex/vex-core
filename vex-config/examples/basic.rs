@@ -91,10 +91,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "     - Authentication: {}",
             config.core_networking.enable_authentication
         );
-        println!(
-            "     - Max connections per address: {}",
-            config.core_networking.max_connections_per_address
-        );
     }
 
     println!("\n=== Example completed successfully ===");

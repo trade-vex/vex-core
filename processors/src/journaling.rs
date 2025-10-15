@@ -1,4 +1,4 @@
-use common::{order_debug, order_info, OrderCommand, OrderCommandType, Snowflake};
+use common::{OrderCommand, OrderCommandType, Snowflake, order_debug, order_info};
 
 pub struct JournalingProcessor {
     snowflake: Snowflake,

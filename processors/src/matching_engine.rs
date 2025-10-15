@@ -1,9 +1,9 @@
-use common::order_debug;
-use common::order_warn;
 use common::OrderCommand;
 use common::OrderCommandType;
 use common::PriceCache;
 use common::Status;
+use common::order_debug;
+use common::order_warn;
 use hashbrown::HashMap;
 use std::sync::Arc;
 use vex_orderbook::OrderBook;

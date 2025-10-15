@@ -17,7 +17,7 @@ use std::{
 };
 use tracing::info;
 use vex_config::CoreNetworkingConfig;
-use vex_networking::server::GatewayPublications;
+use vex_networking::server::Publications;
 use vex_networking::server::VexCoreServer;
 
 /// Type alias for the order command producer
@@ -116,7 +116,7 @@ impl Default for CorePinning {
 /// ```
 pub struct CoreEngine {
     /// Gateway Publications for sending responses back to gateways
-    publications: Arc<GatewayPublications>,
+    publications: Arc<Publications>,
 }
 
 impl CoreEngine {
@@ -131,7 +131,7 @@ impl CoreEngine {
         symbol_specs: HashMap<u32, CoreMarketSpecification>,
         mut journaling_processor: JournalingProcessor,
         events_handler: impl EventsHandler,
-        publications: Arc<GatewayPublications>,
+        publications: Arc<Publications>,
         core_pinning: CorePinning,
     ) -> EngineResult<(Self, OrderProducer)> {
         let price_cache = Arc::new(PriceCache::new(symbol_specs.keys()));
@@ -328,7 +328,7 @@ impl CoreEngine {
     ///
     /// This can be used to send responses back to connected gateways
     #[must_use]
-    pub fn publications(&self) -> &Arc<GatewayPublications> {
+    pub fn publications(&self) -> &Arc<Publications> {
         &self.publications
     }
 }
@@ -367,7 +367,7 @@ pub mod test {
         symbol_specs: Option<HashMap<u32, CoreMarketSpecification>>,
         journaling_processor: Option<JournalingProcessor>,
         events_handler: Option<Box<dyn EventsHandler>>,
-        publications: Option<Arc<GatewayPublications>>,
+        publications: Option<Arc<Publications>>,
         core_pinning: TestCorePinning,
         test_handler: Option<Box<dyn FnMut(&mut OrderCommand, i64, bool) + Send + 'static>>,
         risk_engines: Option<RiskEngines>,
@@ -417,7 +417,7 @@ pub mod test {
 
         /// Sets the gateway publications for client communication
         #[must_use]
-        pub fn with_publications(mut self, publications: Arc<GatewayPublications>) -> Self {
+        pub fn with_publications(mut self, publications: Arc<Publications>) -> Self {
             self.publications = Some(publications);
             self
         }
@@ -482,7 +482,7 @@ pub mod test {
             symbol_specs: HashMap<u32, CoreMarketSpecification>,
             mut journaling_processor: JournalingProcessor,
             events_handler: Box<dyn EventsHandler>,
-            publications: Arc<GatewayPublications>,
+            publications: Arc<Publications>,
             test_handler: Option<Box<dyn FnMut(&mut OrderCommand, i64, bool) + Send + 'static>>,
             risk_engines: Option<RiskEngines>,
             core_pinning: TestCorePinning,

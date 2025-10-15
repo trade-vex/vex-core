@@ -15,3 +15,5 @@ serde_json = { workspace = true }
 
 rdkafka = { version = "0.36", features = ["tokio"] }
 vex-networking = { workspace = true }
+rusteron-archive = { workspace = true }
+

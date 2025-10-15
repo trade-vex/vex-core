@@ -1,11 +1,11 @@
 use crate::server::ServerError;
+use rand::Rng;
+use rand::thread_rng;
 use rusteron_archive::{
     Aeron, AeronAvailableImageCallback, AeronAvailableImageLogger, AeronCError, AeronPublication,
     AeronReservedValueSupplierLogger, AeronSubscription, AeronUnavailableImageCallback,
     AeronUnavailableImageLogger, Handler,
 };
-use rand::Rng;
-use rand::thread_rng;
 use std::thread;
 use std::{ffi::CString, time::Duration};
 use tracing::error;

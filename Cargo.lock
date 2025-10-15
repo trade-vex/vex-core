@@ -500,17 +500,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "dashmap"
-version = "6.1.0"
+name = "deranged"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
+checksum = "a41953f86f8a05768a6cda24def994fd2f424b04ec5c719cf89989779f199071"
 dependencies = [
- "cfg-if",
- "crossbeam-utils",
- "hashbrown 0.14.5",
- "lock_api",
- "once_cell",
- "parking_lot_core",
+ "powerfmt",
 ]
 
 [[package]]
@@ -1359,6 +1354,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "num-conv"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51d515d32fb182ee37cda2ccdcb92950d6a3c2893aa280e540671c2cd0f3b1d9"
+
+[[package]]
 name = "num-format"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1601,6 +1602,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "powerfmt"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
+
+[[package]]
 name = "ppv-lite86"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1644,6 +1651,7 @@ dependencies = [
  "common",
  "hashbrown 0.16.0",
  "rdkafka",
+ "rusteron-archive",
  "serde",
  "serde_json",
  "thiserror 2.0.16",
@@ -1858,10 +1866,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
 
 [[package]]
-name = "rusteron-client"
-version = "0.1.152"
+name = "rusteron-archive"
+version = "0.1.155"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "915305dd7627268ef67448e96ec2a193452a4899feca8d83a1ebb8d2bca55c25"
+checksum = "5eba53b3a8c09a7e7e8c0a2100a365268327dfb2c08bd943163158aa18a6efbd"
+dependencies = [
+ "bindgen",
+ "cmake",
+ "dunce",
+ "flate2",
+ "log",
+ "pkg-config",
+ "proc-macro2",
+ "regex",
+ "reqwest",
+ "rusteron-code-gen",
+ "tar",
+ "walkdir",
+]
+
+[[package]]
+name = "rusteron-client"
+version = "0.1.155"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c2c23c10a9a4b303d029aee7f8d411c6b2b66d8c537fffa37d0804504b7196a"
 dependencies = [
  "bindgen",
  "cmake",
@@ -1882,9 +1910,9 @@ dependencies = [
 
 [[package]]
 name = "rusteron-code-gen"
-version = "0.1.152"
+version = "0.1.155"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1392d074ba4533f513ac63e8a59030a71a6ff253a6ee0f7f1cc1b3223613e08"
+checksum = "e8cf11b948e5dc4703acd743f17f2ef89623f14f82b85f5a377b63dfa750d3de"
 dependencies = [
  "itertools 0.14.0",
  "log",
@@ -1896,9 +1924,9 @@ dependencies = [
 
 [[package]]
 name = "rusteron-media-driver"
-version = "0.1.152"
+version = "0.1.155"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed3213c0228555d9f10303795bdcc5cead9778fc906277079f9b5424bd2e8e96"
+checksum = "0363332f67a025f0117093fb2d7f0cabb42280f2175f7bb96406e758e2613c53"
 dependencies = [
  "bindgen",
  "cmake",
@@ -2384,6 +2412,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "time"
+version = "0.3.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91e7d9e3bb61134e77bde20dd4825b97c010155709965fedf0f49bb138e52a9d"
+dependencies = [
+ "deranged",
+ "itoa",
+ "num-conv",
+ "powerfmt",
+ "serde",
+ "time-core",
+ "time-macros",
+]
+
+[[package]]
+name = "time-core"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40868e7c1d2f0b8d73e4a8c7f0ff63af4f6d19be117e90bd73eb1d62cf831c6b"
+
+[[package]]
+name = "time-macros"
+version = "0.2.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30cfb0125f12d9c277f35663a0a33f8c30190f4e4574868a330595412d34ebf3"
+dependencies = [
+ "num-conv",
+ "time-core",
+]
+
+[[package]]
 name = "tiny-keccak"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2585,6 +2644,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-appender"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3566e8ce28cc0a3fe42519fc80e6b4c943cc4c8cef275620eb8dac2d3d4e06cf"
+dependencies = [
+ "crossbeam-channel",
+ "thiserror 1.0.69",
+ "time",
+ "tracing-subscriber 0.3.20",
+]
+
+[[package]]
 name = "tracing-attributes"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2741,10 +2812,9 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "common",
- "dashmap",
  "disruptor",
  "rand",
- "rusteron-client",
+ "rusteron-archive",
  "rusteron-media-driver",
  "test-log",
  "thiserror 2.0.16",
@@ -2776,6 +2846,7 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tracing",
+ "tracing-appender",
  "tracing-subscriber 0.1.6",
  "vex-config",
  "vex-networking",
