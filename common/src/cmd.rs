@@ -21,6 +21,10 @@ use serde::de::value::Error as SerdeError;
 // time_in_force: 1 byte
 pub const ORDERCOMMANDSIZE: usize = 64;
 
+/// This is the size of each frame sent or received via Aeron.
+/// It is a nearest multiple of 32 bytes that can hold an OrderCommand.
+pub const FRAMESIZE: i64 = 96;
+
 /// OrderCommand: OrderCommand Plays the central role throughout the processing of the Order.
 /// It is created in the Gateway, and processed in VexCore in different processors through the Disruptor
 #[derive(Debug, Clone)]
