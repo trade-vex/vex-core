@@ -12,7 +12,7 @@ use vex_networking::server::Publications;
 // Re-export for convenience
 pub use engine::EngineError;
 
-use crate::engine::CorePinning;
+use crate::engine::{CorePinning, ReplayContext};
 
 /// Running engine instance that manages server lifecycle
 ///
@@ -69,7 +69,18 @@ pub fn start(config: VexConfig) -> Result<RunningEngine, EngineError> {
     let (engine, producer) =
         init_internal(config.symbols.symbols.clone(), config.kafka_broker.clone())?;
 
-    let thread_handle = engine.run(producer, config.core_networking);
+    let thread_handle = engine.run(producer, None, config.core_networking);
+
+    Ok(RunningEngine {
+        thread: thread_handle,
+    })
+}
+
+pub fn start_with_replay(config: VexConfig) -> Result<RunningEngine, EngineError> {
+    let (engine, producer, replay_context) =
+        init_internal_with_replay(config.symbols.symbols.clone(), config.kafka_broker.clone())?;
+
+    let thread_handle = engine.run(producer, Some(replay_context), config.core_networking);
 
     Ok(RunningEngine {
         thread: thread_handle,
@@ -84,11 +95,28 @@ pub fn init_internal(
     symbol_specs: HashMap<u32, CoreMarketSpecification>,
     kafka_broker: String,
 ) -> EngineResult<(CoreEngine, OrderProducer)> {
-    let journaling_processor = JournalingProcessor::new();
     let publications = Arc::new(Publications::new());
+    let journaling_processor = JournalingProcessor::new(Arc::clone(&publications));
     let events_handler = KafkaEventsHandler::new(&kafka_broker, Arc::clone(&publications));
 
     CoreEngine::new(
+        symbol_specs,
+        journaling_processor,
+        events_handler,
+        publications,
+        CorePinning::default(),
+    )
+}
+
+pub fn init_internal_with_replay(
+    symbol_specs: HashMap<u32, CoreMarketSpecification>,
+    kafka_broker: String,
+) -> EngineResult<(CoreEngine, OrderProducer, ReplayContext)> {
+    let publications = Arc::new(Publications::new());
+    let journaling_processor = JournalingProcessor::new(Arc::clone(&publications));
+    let events_handler = KafkaEventsHandler::new(&kafka_broker, Arc::clone(&publications));
+
+    CoreEngine::new_with_replay(
         symbol_specs,
         journaling_processor,
         events_handler,
@@ -188,7 +216,7 @@ pub mod test {
 
         let (_engine, producer) = TestEngineBuilder::new()
             .with_symbol_specs(specs)
-            .with_journaling_processor(JournalingProcessor::new())
+            .with_journaling_processor(JournalingProcessor::new(Arc::clone(&publications)))
             .with_events_handler(KafkaEventsHandler::new(
                 "localhost:9092",
                 Arc::clone(&publications),

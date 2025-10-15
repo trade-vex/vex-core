@@ -40,14 +40,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     debug!(target: "server_main", action = "config_snapshot", config = ?config);
 
-    let engine = vex_server::start(config).map_err(|e| {
-        error!(
-            target: "server_main",
-            action = "engine_start_failed",
-            error = %e
-        );
-        e
-    })?;
+    let args: Vec<String> = std::env::args().collect();
+    let engine = if args.contains(&"--replay".to_string()) {
+        info!(target: "server_main", action = "starting_with_replay");
+        vex_server::start_with_replay(config).map_err(|e| {
+            error!(
+                target: "server_main",
+                action = "engine_start_with_replay_failed",
+                error = %e
+            );
+            e
+        })?
+    } else {
+        vex_server::start(config).map_err(|e| {
+            error!(
+                target: "server_main",
+                action = "engine_start_failed",
+                error = %e
+            );
+            e
+        })?
+    };
 
     info!(
         target: "server_main",
