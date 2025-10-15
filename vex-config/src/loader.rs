@@ -141,9 +141,6 @@ impl ConfigLoader {
 
             // Still apply environment variable overrides if configured
             if let Some(prefix) = &self.env_prefix {
-                // Apply environment variables to the default config
-                // This is a simplified approach - in a real implementation,
-                // you might want to use a more sophisticated merging strategy
                 default_config = self.apply_env_vars_to_config(default_config, prefix, &env)?;
             }
 

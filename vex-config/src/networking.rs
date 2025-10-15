@@ -67,7 +67,7 @@ impl CoreNetworkingConfig {
             retry_delay_ms: 1000,
             request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
             response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
-            recording_events_channel: "aeron:udp?endpoint=localhost:8012".to_string(),
+            recording_events_channel: "aeron:udp?endpoint=localhost:0".to_string(),
         }
     }
 
@@ -89,7 +89,7 @@ impl CoreNetworkingConfig {
             retry_delay_ms: 1000,
             request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
             response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
-            recording_events_channel: "aeron:udp?endpoint=localhost:9123".to_string(),
+            recording_events_channel: "aeron:udp?endpoint=localhost:0".to_string(),
         }
     }
 
