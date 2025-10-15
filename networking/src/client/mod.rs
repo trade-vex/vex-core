@@ -3,9 +3,9 @@ use crate::utils::{
     new_subscription_with_mdc_and_session,
 };
 use common::ORDERCOMMANDSIZE;
-use common::{order_debug, OrderCommand, encode_order_command};
+use common::{OrderCommand, encode_order_command, order_debug};
 use rand;
-use rusteron_client::{
+use rusteron_archive::{
     Aeron, AeronCError, AeronContext, AeronFragmentHandlerCallback, AeronHeader, AeronPublication,
     AeronReservedValueSupplierLogger, AeronSubscription, Handler,
 };
@@ -292,7 +292,7 @@ impl Publisher {
             gateway_id = self.gateway_id
         );
 
-        let mut message_buffer =  [0u8; ORDERCOMMANDSIZE];
+        let mut message_buffer = [0u8; ORDERCOMMANDSIZE];
 
         encode_order_command(&order_command, &mut message_buffer).map_err(|e| {
             GatewayError::ProtocolError(format!("Failed to encode OrderCommand: {e:?}"))
@@ -568,7 +568,7 @@ impl VexGateway {
     /// Waits for VEX Core response during handshake
     fn wait_for_core_response(
         &self,
-        subscription: &rusteron_client::AeronSubscription,
+        subscription: &AeronSubscription,
         session_id: i32,
     ) -> Result<CoreResponse, GatewayError> {
         let shared_response = Arc::new(Mutex::new(None));
@@ -599,7 +599,7 @@ impl VexGateway {
     /// Waits for publication connection with timeout
     fn wait_for_publication_connection(
         &self,
-        publication: &rusteron_client::AeronPublication,
+        publication: &AeronPublication,
         context: &str,
     ) -> Result<(), GatewayError> {
         let start = Instant::now();
@@ -617,8 +617,8 @@ impl VexGateway {
     /// Waits for both publication and subscription connections
     fn wait_for_channel_connections(
         &self,
-        publication: &rusteron_client::AeronPublication,
-        subscription: &rusteron_client::AeronSubscription,
+        publication: &AeronPublication,
+        subscription: &AeronSubscription,
     ) -> Result<(), GatewayError> {
         let start = Instant::now();
         while !publication.is_connected() || !subscription.is_connected() {
@@ -635,7 +635,7 @@ impl VexGateway {
     /// Sends a message with automatic retries
     fn send_message_with_retries(
         &mut self,
-        publication: &rusteron_client::AeronPublication,
+        publication: &AeronPublication,
         text: &str,
     ) -> Result<(), GatewayError> {
         debug!(

@@ -5,14 +5,13 @@ edition = "2024"
 
 [dependencies]
 common = { workspace = true }
-rusteron-client = { workspace = true }
 rusteron-media-driver = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 vex-config = { workspace = true }
 disruptor = { workspace = true }
+rusteron-archive = { workspace = true, features = ["extra-logging"] }
 rand = "0.8"
-dashmap = "6.1.0"
 arc-swap = "1.7.1"
 
 [dev-dependencies]
