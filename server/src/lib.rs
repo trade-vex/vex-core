@@ -4,7 +4,10 @@ mod utils;
 use common::CoreMarketSpecification;
 use engine::{CoreEngine, EngineResult, OrderProducer};
 use hashbrown::HashMap;
-use processors::{events::KafkaEventsHandler, journaling::JournalingProcessor};
+use processors::{
+    events::KafkaEventsHandler,
+    journaling::{JournalingProcessor, ReplayControl},
+};
 use std::{
     sync::{Arc, atomic::AtomicBool},
     thread::JoinHandle,
@@ -15,7 +18,7 @@ use vex_networking::server::Publications;
 // Re-export for convenience
 pub use engine::EngineError;
 
-use crate::engine::{CorePinning, ReplayContext};
+use crate::engine::CorePinning;
 
 pub struct RunningEngine {
     thread: JoinHandle<Result<(), EngineError>>,
@@ -71,24 +74,15 @@ impl RunningEngine {
 /// # Ok(())
 /// # }
 /// ```
-pub fn start(config: VexConfig) -> Result<RunningEngine, EngineError> {
-    let (engine, producer) =
-        init_internal(config.symbols.symbols.clone(), config.kafka_broker.clone())?;
-
-    let (thread_handle, shutdown_flag) = engine.run(producer, None, config.core_networking);
-
-    Ok(RunningEngine {
-        thread: thread_handle,
-        shutdown_flag,
-    })
-}
-
-pub fn start_with_replay(config: VexConfig) -> Result<RunningEngine, EngineError> {
-    let (engine, producer, replay_context) =
-        init_internal_with_replay(config.symbols.symbols.clone(), config.kafka_broker.clone())?;
+pub fn start(config: VexConfig, replay: bool) -> Result<RunningEngine, EngineError> {
+    let ((engine, producer), replay_control) = init_internal(
+        config.symbols.symbols.clone(),
+        config.kafka_broker.clone(),
+        replay,
+    )?;
 
     let (thread_handle, shutdown_flag) =
-        engine.run(producer, Some(replay_context), config.core_networking);
+        engine.run(producer, replay_control, config.core_networking);
 
     Ok(RunningEngine {
         thread: thread_handle,
@@ -103,48 +97,31 @@ pub fn start_with_replay(config: VexConfig) -> Result<RunningEngine, EngineError
 pub fn init_internal(
     symbol_specs: HashMap<u32, CoreMarketSpecification>,
     kafka_broker: String,
-) -> EngineResult<(CoreEngine, OrderProducer)> {
+    replay: bool,
+) -> EngineResult<((CoreEngine, OrderProducer), ReplayControl)> {
+    let replay_control = if replay {
+        ReplayControl::enabled()
+    } else {
+        ReplayControl::disabled()
+    };
     let publications = Arc::new(Publications::new());
-    let journaling_processor = JournalingProcessor::new(Arc::clone(&publications));
-    let events_handler = KafkaEventsHandler::new(&kafka_broker, Arc::clone(&publications));
+    let journaling_processor =
+        JournalingProcessor::new(Arc::clone(&publications), replay_control.clone());
+    let events_handler = KafkaEventsHandler::new(
+        &kafka_broker,
+        Arc::clone(&publications),
+        replay_control.clone(),
+    );
 
-    CoreEngine::new(
+    let engine = CoreEngine::new(
         symbol_specs,
         journaling_processor,
         events_handler,
         publications,
         CorePinning::default(),
-    )
-}
+    )?;
 
-pub fn init_internal_with_replay(
-    symbol_specs: HashMap<u32, CoreMarketSpecification>,
-    kafka_broker: String,
-) -> EngineResult<(CoreEngine, OrderProducer, ReplayContext)> {
-    let publications = Arc::new(Publications::new());
-    let journaling_processor = JournalingProcessor::new(Arc::clone(&publications));
-    let events_handler = KafkaEventsHandler::new(&kafka_broker, Arc::clone(&publications));
-
-    CoreEngine::new_with_replay(
-        symbol_specs,
-        journaling_processor,
-        events_handler,
-        publications,
-        CorePinning::default(),
-    )
-}
-
-/// Initializes the exchange for backward compatibility
-///
-/// # Deprecated
-///
-/// Use `start()` for production or `test::setup()` for testing instead.
-#[deprecated(since = "0.1.0", note = "Use `start()` or `test::setup()` instead")]
-pub fn init_exchange(
-    symbol_specs: HashMap<u32, CoreMarketSpecification>,
-) -> (CoreEngine, OrderProducer) {
-    init_internal(symbol_specs, "localhost:9092".to_string())
-        .expect("Failed to initialize exchange")
+    Ok((engine, replay_control))
 }
 
 /// Test utilities for vex-server
@@ -225,10 +202,14 @@ pub mod test {
 
         let (_engine, producer) = TestEngineBuilder::new()
             .with_symbol_specs(specs)
-            .with_journaling_processor(JournalingProcessor::new(Arc::clone(&publications)))
+            .with_journaling_processor(JournalingProcessor::new(
+                Arc::clone(&publications),
+                ReplayControl::disabled(),
+            ))
             .with_events_handler(KafkaEventsHandler::new(
                 "localhost:9092",
                 Arc::clone(&publications),
+                ReplayControl::disabled(),
             ))
             .with_publications(publications)
             .with_risk_engines(Arc::clone(&risk_engines))
