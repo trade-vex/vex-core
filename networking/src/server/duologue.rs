@@ -2,21 +2,21 @@ use crate::server::cmd_handler::FragmentHandler;
 use common::OrderCommand;
 use disruptor::{MultiProducer, SingleConsumerBarrier};
 use rusteron_archive::{
-    AeronAvailableImageCallback, AeronCError, AeronImage, AeronNotificationLogger,
+    AeronAvailableImageCallback, AeronCError, AeronImage, AeronNotificationCallback,
     AeronSubscription, AeronUnavailableImageCallback, Handler,
 };
-use std::sync::Arc;
+use std::sync::mpsc::Sender;
 use tracing::{error, info};
 
 pub const DUOLOGUE_STREAM_ID: i32 = 1002;
 
 pub struct Duologue {
-    fragment_handler: Handler<FragmentHandler>,
+    fragment_handler: Option<Handler<FragmentHandler>>,
     pub gateway_id: u8,
     subscription: AeronSubscription,
     pub is_closed: bool,
-    on_image_available_handler: Handler<DuologueImageAvailable>,
-    on_image_unavailable_handler: Handler<DuologueImageUnavailable>,
+    on_image_available_handler: Option<Handler<DuologueImageAvailable>>,
+    on_image_unavailable_handler: Option<Handler<DuologueImageUnavailable>>,
 }
 
 impl Duologue {
@@ -33,24 +33,47 @@ impl Duologue {
         };
 
         Self {
-            fragment_handler: Handler::leak(fragment_handler),
+            fragment_handler: Some(Handler::leak(fragment_handler)),
             gateway_id,
             is_closed: false,
             subscription,
-            on_image_available_handler,
-            on_image_unavailable_handler,
+            on_image_available_handler: Some(on_image_available_handler),
+            on_image_unavailable_handler: Some(on_image_unavailable_handler),
         }
     }
 
     pub fn poll(&self) -> Result<i32, AeronCError> {
-        self.subscription.poll(Some(&self.fragment_handler), 2048)
+        if let Some(handler) = &self.fragment_handler {
+            self.subscription.poll(Some(handler), 2048)
+        } else {
+            // should not reach here as the handler is only taken during close()
+            Ok(0)
+        }
     }
 
     pub fn close(&mut self) -> Result<(), AeronCError> {
-        self.subscription.close::<AeronNotificationLogger>(None)?;
-        self.fragment_handler.release();
-        self.on_image_available_handler.release();
-        self.on_image_unavailable_handler.release();
+        // taking ownership of the handlers to move into the close notification
+        // this is required because, the subsciption.close() is an async operation,
+        // hence it is unsafe to release the handlers immediately after calling close()
+        let fragment_handler = self.fragment_handler.take();
+        let on_image_available_handler = self.on_image_available_handler.take();
+        let on_image_unavailable_handler = self.on_image_unavailable_handler.take();
+
+        if let (Some(fh), Some(iah), Some(iuh)) =
+            (fragment_handler, on_image_available_handler, on_image_unavailable_handler)
+        {
+            let close_notification = DuologueCloseNotification {
+                gateway_id: self.gateway_id,
+                fragment_handler: fh,
+                on_image_available_handler: iah,
+                on_image_unavailable_handler: iuh,
+            };
+            self.subscription
+                .close(Some(&Handler::leak(close_notification)))?;
+        } else {
+            self.subscription.close::<DuologueCloseNotification>(None)?;
+        }
+
         self.is_closed = true;
         Ok(())
     }
@@ -121,7 +144,7 @@ impl AeronAvailableImageCallback for DuologueImageAvailable {
 pub struct DuologueImageUnavailable {
     pub session_id: i32,
     pub gateway_id: u8,
-    pub cleanup_callback: Option<Arc<dyn Fn(u8) + Send + Sync>>,
+    pub tx: Sender<u8>,
 }
 
 impl AeronUnavailableImageCallback for DuologueImageUnavailable {
@@ -137,8 +160,35 @@ impl AeronUnavailableImageCallback for DuologueImageUnavailable {
             session = format_args!("{:#x}", self.session_id)
         );
 
-        if let Some(ref callback) = self.cleanup_callback {
-            callback(self.gateway_id);
+        if let Err(e) = self.tx.send(self.gateway_id) {
+            error!(
+                target: "gateway_manager",
+                action = "core_publication_cleanup_request_failed",
+                gateway_id = self.gateway_id,
+                error = %e
+            );
         }
+    }
+}
+
+pub struct DuologueCloseNotification {
+    pub gateway_id: u8,
+    pub fragment_handler: Handler<FragmentHandler>,
+    pub on_image_available_handler: Handler<DuologueImageAvailable>,
+    pub on_image_unavailable_handler: Handler<DuologueImageUnavailable>,
+}
+
+impl AeronNotificationCallback for DuologueCloseNotification {
+    fn handle_aeron_notification(&mut self) {
+        // Only release handlers after the subscription is fully closed
+        self.fragment_handler.release();
+        self.on_image_available_handler.release();
+        self.on_image_unavailable_handler.release();
+
+        info!(
+            target: "gateway_session",
+            action = "subscription_closed_handlers_released",
+            gateway_id = self.gateway_id
+        );
     }
 }
