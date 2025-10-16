@@ -9,21 +9,21 @@ use vex_networking::server::Publications;
 pub struct JournalingProcessor {
     snowflake: Snowflake,
     publications: Arc<Publications>,
-    replay_enabled: Arc<AtomicBool>,
+    replay_enabled: ReplayControl,
 }
 
 impl JournalingProcessor {
-    pub fn new(publications: Arc<Publications>) -> Self {
+    pub fn new(publications: Arc<Publications>, replay_control: ReplayControl) -> Self {
         Self {
             snowflake: Snowflake::new(None).unwrap(),
             publications,
-            replay_enabled: Arc::new(AtomicBool::new(false)),
+            replay_enabled: replay_control,
         }
     }
 
     pub fn journal_command(&mut self, cmd: &mut OrderCommand) {
         // during replay, we do not re-assign order IDs, timestamps, re-journal to archive
-        if self.replay_enabled.load(Ordering::Relaxed) {
+        if self.replay_enabled.is_enabled() {
             order_debug!("replay_passthrough", cmd, stage = "journal");
             return;
         }
@@ -34,12 +34,6 @@ impl JournalingProcessor {
         cmd.timestamp = self.snowflake.timestamp();
         self.publications.publish_to_archive(cmd);
         order_info!("command_ingested", cmd, stage = "journal");
-    }
-
-    pub fn replay_control(&self) -> ReplayControl {
-        ReplayControl {
-            flag: Arc::clone(&self.replay_enabled),
-        }
     }
 
     pub fn journal_event(&self, cmd: &mut OrderCommand) {
@@ -68,6 +62,17 @@ pub struct ReplayControl {
 }
 
 impl ReplayControl {
+    pub fn enabled() -> Self {
+        Self {
+            flag: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    pub fn disabled() -> Self {
+        Self {
+            flag: Arc::new(AtomicBool::new(false)),
+        }
+    }
     // we want to make sure that when enabling replay mode
     // all subsequent reads of the flag see the updated value
     // similarly when disabling replay mode
