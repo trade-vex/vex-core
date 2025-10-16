@@ -3,6 +3,7 @@ use tikv_jemallocator::Jemalloc;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::fmt;
 use vex_config::{VexConfig, environment::Environment};
+use std::sync::atomic::Ordering;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -67,13 +68,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         action = "server_started"
     );
 
-    // Setup shutdown handler
-    ctrlc::set_handler(|| {
+    let shutdown_trigger = engine.shutdown_handle();
+
+    ctrlc::set_handler(move || {
         info!(
             target: "server_main",
             action = "shutdown_signal_received"
         );
-        std::process::exit(0);
+        shutdown_trigger.store(true, Ordering::Release);
     })?;
 
     engine.join()?;
