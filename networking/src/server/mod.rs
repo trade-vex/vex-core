@@ -117,8 +117,8 @@ impl VexCoreServer {
     pub fn new(
         config: CoreNetworkingConfig,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
-        replay_producer: Option<MultiProducer<OrderCommand, SingleConsumerBarrier>>,
         publications: Arc<Publications>,
+        replay: bool,
         shutdown: Arc<AtomicBool>,
     ) -> Result<Self, ServerError> {
         // Validate configuration
@@ -131,7 +131,11 @@ impl VexCoreServer {
         let archive = Self::initialize_archive(&config, &aeron)?;
 
         // Replay
-        let recording = Self::start_replay(&aeron, &archive, replay_producer)?;
+        let recording = if replay {
+            Self::start_replay(&aeron, &archive, producer.clone(), Arc::clone(&shutdown))?
+        } else {
+            None
+        };
 
         // Start recording
         let (subscription_id, channel) = Self::start_recording(&archive, recording)?;
@@ -360,123 +364,119 @@ impl VexCoreServer {
     fn start_replay(
         aeron: &Aeron,
         archive: &AeronArchive,
-        replay_producer: Option<MultiProducer<OrderCommand, SingleConsumerBarrier>>,
+        producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
+        shutdown: Arc<AtomicBool>,
     ) -> Result<Option<ExtendedRecordingDescriptor>, ServerError> {
-        if let Some(replay_producer) = replay_producer {
-            let mut reader = Handler::leak(RecorderDescriptorReader::new());
-            let last_recording_id = archive.list_recordings_for_uri(
-                0,
-                i32::MAX,
-                &RECORDING_CHANNEL.into_c_string(), // aeron control request channel
-                RECORDING_STREAM_ID,
-                Some(&reader),
-            )?;
+        let mut reader = Handler::leak(RecorderDescriptorReader::new());
+        let last_recording_id = archive.list_recordings_for_uri(
+            0,
+            i32::MAX,
+            &RECORDING_CHANNEL.into_c_string(), // aeron control request channel
+            RECORDING_STREAM_ID,
+            Some(&reader),
+        )?;
+        info!(
+            target: "replay",
+            action = "recordings_listed",
+            recording_id = last_recording_id
+        );
+        if let Some(record) = &reader.last_recording {
+            let session_id = record.session_id;
+            let recording_id = record.recording_id;
             info!(
                 target: "replay",
-                action = "recordings_listed",
-                recording_id = last_recording_id
+                action = "recording_selected",
+                recording_id,
+                session_id,
+                start_position = record.start_position,
+                stop_position = record.stop_position
             );
-            if let Some(record) = &reader.last_recording {
-                let session_id = record.session_id;
-                let recording_id = record.recording_id;
-                info!(
-                    target: "replay",
-                    action = "recording_selected",
-                    recording_id,
-                    session_id,
-                    start_position = record.start_position,
-                    stop_position = record.stop_position
-                );
-                let params = AeronArchiveReplayParams::new(
-                    0,
-                    i32::MAX,
-                    record.start_position,
-                    record.stop_position - record.start_position,
-                    0,
-                    0,
-                )?;
+            let params = AeronArchiveReplayParams::new(
+                0,
+                i32::MAX,
+                record.start_position,
+                record.stop_position - record.start_position,
+                0,
+                0,
+            )?;
+            debug!(
+                target: "replay",
+                action = "replay_params",
+                params = ?params
+            );
+            let replay_session_id = archive.start_replay(
+                recording_id,
+                &RECORDING_CHANNEL.into_c_string(),
+                REPLAY_STREAM_ID,
+                &params,
+            )? as i32;
+
+            let replay_channel_with_session =
+                format!("{}?session-id={}", &RECORDING_CHANNEL, replay_session_id);
+            info!(
+                target: "replay",
+                action = "subscription_created",
+                channel = %replay_channel_with_session
+            );
+
+            let mut h1 = Handler::leak(AeronAvailableImageLogger);
+            let mut h2 = Handler::leak(AeronUnavailableImageLogger);
+            let mut message_handler = Handler::leak(ReplayFragmentHandler {
+                producer,
+                gateway_id: 0,
+            });
+            let subscription = aeron.add_subscription(
+                &replay_channel_with_session.into_c_string(),
+                REPLAY_STREAM_ID,
+                Some(&h1),
+                Some(&h2),
+                Duration::from_secs(5),
+            )?;
+
+            while !subscription.is_connected() {
+                std::thread::sleep(Duration::from_millis(100));
                 debug!(
                     target: "replay",
-                    action = "replay_params",
-                    params = ?params
+                    action = "subscription_wait",
                 );
-                let replay_session_id = archive.start_replay(
-                    recording_id,
-                    &RECORDING_CHANNEL.into_c_string(),
-                    REPLAY_STREAM_ID,
-                    &params,
-                )? as i32;
-
-                let replay_channel_with_session =
-                    format!("{}?session-id={}", &RECORDING_CHANNEL, replay_session_id);
-                info!(
-                    target: "replay",
-                    action = "subscription_created",
-                    channel = %replay_channel_with_session
-                );
-
-                let mut h1 = Handler::leak(AeronAvailableImageLogger);
-                let mut h2 = Handler::leak(AeronUnavailableImageLogger);
-                let mut message_handler = Handler::leak(ReplayFragmentHandler {
-                    producer: replay_producer,
-                    gateway_id: 0,
-                });
-                let subscription = aeron.add_subscription(
-                    &replay_channel_with_session.into_c_string(),
-                    REPLAY_STREAM_ID,
-                    Some(&h1),
-                    Some(&h2),
-                    Duration::from_secs(5),
-                )?;
-
-                while !subscription.is_connected() {
-                    std::thread::sleep(Duration::from_millis(100));
-                    debug!(
-                        target: "replay",
-                        action = "subscription_wait",
-                    );
-                }
-
-                let mut position = record.start_position;
-                while let fragaments_read = subscription.poll(Some(&message_handler), 1)?
-                    && position < record.stop_position
-                {
-                    if fragaments_read == 0 {
-                        AeronIdleStrategy::yielding_idle(std::ptr::null_mut(), 0);
-                        continue;
-                    }
-                    position += FRAMESIZE;
-                    debug!(
-                        target: "replay",
-                        action = "position_advanced",
-                        position
-                    );
-                }
-                info!(
-                    target: "replay",
-                    action = "completed",
-                    recording_id,
-                    session_id
-                );
-                let extended_recording_descriptor = ExtendedRecordingDescriptor::new(
-                    record.initial_term_id,
-                    record.stop_position,
-                    record.term_buffer_length,
-                    recording_id,
-                )?;
-                h1.release();
-                h2.release();
-                message_handler.release();
-                reader.release();
-                subscription.close::<AeronNotificationLogger>(None)?;
-                return Ok(Some(extended_recording_descriptor));
-            } else {
-                info!(target: "replay", action = "no_recording_available");
-                return Ok(None);
             }
+
+            let mut position = record.start_position;
+            while let fragaments_read = subscription.poll(Some(&message_handler), 1)?
+                && position < record.stop_position && !shutdown.load(Ordering::Acquire)
+            {
+                if fragaments_read == 0 {
+                    AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
+                    continue;
+                }
+                position += FRAMESIZE;
+                debug!(
+                    target: "replay",
+                    action = "position_advanced",
+                    position
+                );
+            }
+            info!(
+                target: "replay",
+                action = "completed",
+                recording_id,
+                session_id
+            );
+            let extended_recording_descriptor = ExtendedRecordingDescriptor::new(
+                record.initial_term_id,
+                record.stop_position,
+                record.term_buffer_length,
+                recording_id,
+            )?;
+            h1.release();
+            h2.release();
+            message_handler.release();
+            reader.release();
+            subscription.close::<AeronNotificationLogger>(None)?;
+            return Ok(Some(extended_recording_descriptor));
         } else {
-            info!(target: "replay", action = "replay_producer_not_configured");
-            Ok(None)
+            info!(target: "replay", action = "no_recording_available");
+            return Ok(None);
         }
     }
 

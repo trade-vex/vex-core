@@ -13,7 +13,11 @@ use processors::{
     matching_engine::MatchingEngineRouter,
     risk_engine::RiskEngine,
 };
-use std::{sync::Arc, sync::atomic::AtomicBool, thread::{self, JoinHandle}};
+use std::{
+    sync::Arc,
+    sync::atomic::AtomicBool,
+    thread::{self, JoinHandle},
+};
 use tracing::info;
 use vex_config::CoreNetworkingConfig;
 use vex_networking::server::Publications;
@@ -139,7 +143,7 @@ impl CoreEngine {
         publications: Arc<Publications>,
         core_pinning: CorePinning,
     ) -> EngineResult<(Self, OrderProducer)> {
-        let (engine, producer, _) = Self::build_engine(
+        let (engine, producer) = Self::build_engine(
             symbol_specs,
             journaling_processor,
             events_handler,
@@ -149,38 +153,14 @@ impl CoreEngine {
         Ok((engine, producer))
     }
 
-    pub fn new_with_replay(
-        symbol_specs: HashMap<u32, CoreMarketSpecification>,
-        journaling_processor: JournalingProcessor,
-        events_handler: impl EventsHandler,
-        publications: Arc<Publications>,
-        core_pinning: CorePinning,
-    ) -> EngineResult<(Self, OrderProducer, ReplayContext)> {
-        let (engine, producer, replay_control) = Self::build_engine(
-            symbol_specs,
-            journaling_processor,
-            events_handler,
-            publications,
-            core_pinning,
-        )?;
-
-        let replay_context = ReplayContext {
-            producer: producer.clone(),
-            control: replay_control,
-        };
-
-        Ok((engine, producer, replay_context))
-    }
-
     fn build_engine(
         symbol_specs: HashMap<u32, CoreMarketSpecification>,
         mut journaling_processor: JournalingProcessor,
         events_handler: impl EventsHandler,
         publications: Arc<Publications>,
         core_pinning: CorePinning,
-    ) -> EngineResult<(Self, OrderProducer, ReplayControl)> {
+    ) -> EngineResult<(Self, OrderProducer)> {
         let price_cache = Arc::new(PriceCache::new(symbol_specs.keys()));
-        let replay_control = journaling_processor.replay_control();
 
         let order_factory = OrderCommand::default;
 
@@ -224,7 +204,7 @@ impl CoreEngine {
         );
 
         let engine = Self { publications };
-        Ok((engine, producer, replay_control))
+        Ok((engine, producer))
     }
 
     /// Initializes risk engines with specified sharding
@@ -349,7 +329,7 @@ impl CoreEngine {
     pub fn run(
         &self,
         producer: OrderProducer,
-        replay: Option<ReplayContext>,
+        replay_control: ReplayControl,
         networking_config: CoreNetworkingConfig,
     ) -> (JoinHandle<Result<(), EngineError>>, Arc<AtomicBool>) {
         let publications = Arc::clone(&self.publications);
@@ -359,28 +339,22 @@ impl CoreEngine {
         let handle = thread::Builder::new()
             .name("vex-core-server".into())
             .spawn(move || {
-                let replay_producer = replay.as_ref().map(|ctx| ctx.producer.clone());
-                if let Some(ctx) = replay.as_ref() {
-                    ctx.control.enable();
-                }
+                let replay = replay_control.is_enabled();
 
-                let server_result =
-                    VexCoreServer::new(
-                        networking_config,
-                        producer,
-                        replay_producer,
-                        publications,
-                        shutdown_for_thread,
-                    )
-                        .map_err(|e| {
-                            EngineError::ServerInitialization(format!(
-                                "Failed to create VexCoreServer: {e}"
-                            ))
-                        });
+                let server_result = VexCoreServer::new(
+                    networking_config,
+                    producer,
+                    publications,
+                    replay,
+                    shutdown_for_thread,
+                )
+                .map_err(|e| {
+                    EngineError::ServerInitialization(format!(
+                        "Failed to create VexCoreServer: {e}"
+                    ))
+                });
 
-                if let Some(ctx) = replay.as_ref() {
-                    ctx.control.disable();
-                }
+                replay_control.disable();
 
                 let mut core_server = server_result?;
 

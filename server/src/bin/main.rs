@@ -1,9 +1,9 @@
+use std::sync::atomic::Ordering;
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::fmt;
 use vex_config::{VexConfig, environment::Environment};
-use std::sync::atomic::Ordering;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let engine = if args.contains(&"--replay".to_string()) {
         info!(target: "server_main", action = "starting_with_replay");
-        vex_server::start_with_replay(config).map_err(|e| {
+        vex_server::start(config, true).map_err(|e| {
             error!(
                 target: "server_main",
                 action = "engine_start_with_replay_failed",
@@ -53,7 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             e
         })?
     } else {
-        vex_server::start(config).map_err(|e| {
+        vex_server::start(config, false).map_err(|e| {
             error!(
                 target: "server_main",
                 action = "engine_start_failed",
