@@ -1,7 +1,34 @@
 use rusteron_archive::{
     AeronArchiveRecordingDescriptor, AeronArchiveRecordingDescriptorConsumerFuncCallback,
+    AeronUriStringBuilder, IntoCString,
 };
 use tracing::debug;
+
+use crate::server::{RECORDING_CHANNEL, ServerError};
+
+pub struct ExtendedRecordingDescriptor {
+    pub recording_id: i64,
+    pub channel: String,
+}
+
+impl ExtendedRecordingDescriptor {
+    pub fn new(
+        initial_term_id: i32,
+        position: i64,
+        term_length: i32,
+        recording_id: i64,
+    ) -> Result<Self, ServerError> {
+        let uri_builder = AeronUriStringBuilder::default();
+        uri_builder.init_on_string(&RECORDING_CHANNEL.into_c_string())?;
+        uri_builder.set_initial_position(position, initial_term_id, term_length)?;
+        let channel = uri_builder.build(128)?;
+        uri_builder.close()?;
+        Ok(Self {
+            recording_id,
+            channel,
+        })
+    }
+}
 
 #[derive(Debug)]
 #[allow(unused)]
@@ -46,11 +73,14 @@ impl AeronArchiveRecordingDescriptorConsumerFuncCallback for RecorderDescriptorR
             && recording_descriptor.start_position < recording_descriptor.stop_position
         {
             debug!(
-                "Found a Recording: {}",
-                recording_descriptor.recording_id
+                target: "replay",
+                action = "recording_found",
+                recording_id = recording_descriptor.recording_id,
+                start_position = recording_descriptor.start_position,
+                stop_position = recording_descriptor.stop_position
             );
-            // performing a deep copy here,
-            // this is very important, without this, the last recording will point to a dangling reference, as memory is deallocated after the callback by aeronc.
+            // Performing a deep copy here is essential;
+            // the descriptor lifetime ends after the callback.
             let recording_info = RecordingInfo {
                 control_session_id: recording_descriptor.control_session_id,
                 correlation_id: recording_descriptor.correlation_id,
@@ -71,7 +101,13 @@ impl AeronArchiveRecordingDescriptorConsumerFuncCallback for RecorderDescriptorR
             };
             self.last_recording = Some(recording_info);
         } else {
-            debug!("skipping recording as the positions are invalid, start: {}, stop: {}", recording_descriptor.start_position, recording_descriptor.stop_position);
+            debug!(
+                target: "replay",
+                action = "recording_skipped",
+                start_position = recording_descriptor.start_position,
+                stop_position = recording_descriptor.stop_position,
+                "recording has invalid positions"
+            );
         }
     }
 }
