@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     debug!(target: "server_main", action = "config_snapshot", config = ?config);
 
-    let engine = vex_server::start(config).map_err(|e| {
+    let engine = vex_server::start(config, false).map_err(|e| {
         error!(
             target: "server_main",
             action = "engine_start_failed",
