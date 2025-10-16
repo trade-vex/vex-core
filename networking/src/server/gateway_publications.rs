@@ -101,7 +101,7 @@ impl Publications {
                     );
                 } else {
                     debug!(
-                        "gateway-{}: Successfully sent processed OrderCommand, client order_id: {}",
+                        "gateway-{}: successfully published to archive, client order_id: {}",
                         gateway_id, cmd.client_order_id
                     );
                 }
