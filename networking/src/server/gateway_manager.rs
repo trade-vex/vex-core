@@ -164,29 +164,6 @@ impl GatewayManager {
         }
     }
 
-    /// This callback will be invoked when DuologueImageUnavailable is triggered
-    fn create_cleanup_callback(&self) -> Arc<dyn Fn(u8) + Send + Sync> {
-        let tx = self.cleanup_tx.clone();
-
-        Arc::new(move |gateway_id: u8| {
-            debug!(
-                target: "gateway_manager",
-                action = "cleanup_requested",
-                gateway_id
-            );
-
-            // Send cleanup request through channel
-            if let Err(e) = tx.send(gateway_id) {
-                error!(
-                    target: "gateway_manager",
-                    action = "cleanup_channel_error",
-                    gateway_id,
-                    error = %e
-                );
-            }
-        })
-    }
-
     /// Processes pending cleanup requests from image unavailable callbacks
     fn process_cleanup_requests(&self) {
         loop {
@@ -453,13 +430,10 @@ impl GatewayManager {
             gateway_id,
         });
 
-        // This will be invoked when Aeron detects the image is unavailable (connection lost)
-        let cleanup_callback = Some(self.create_cleanup_callback());
-
         let on_image_unavailable_handler = Handler::leak(DuologueImageUnavailable {
             session_id: dedicated_session,
             gateway_id,
-            cleanup_callback,
+            tx: self.cleanup_tx.clone(),
         });
 
         let subscription = match new_subsciption_with_handlers_and_session(
