@@ -96,8 +96,8 @@ pub struct VexCoreServer {
     config: CoreNetworkingConfig,
     /// Gateway state management (lock-free)
     gateways: Arc<GatewayManager>,
-    /// shutdown flag
-    shutdown: AtomicBool,
+    /// Shared shutdown flag
+    shutdown: Arc<AtomicBool>,
     /// Image available handler
     image_available_handler: Handler<GatewayImageAvailableHandler>,
     /// Image unavailable handler
@@ -119,6 +119,7 @@ impl VexCoreServer {
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
         replay_producer: Option<MultiProducer<OrderCommand, SingleConsumerBarrier>>,
         publications: Arc<Publications>,
+        shutdown: Arc<AtomicBool>,
     ) -> Result<Self, ServerError> {
         // Validate configuration
         Self::validate_config(&config)?;
@@ -196,7 +197,7 @@ impl VexCoreServer {
             config,
             subscription,
             handshake_handler: Handler::leak(handshake_handler),
-            shutdown: AtomicBool::new(false),
+            shutdown,
             image_available_handler,
             image_unavailable_handler,
             subscription_id,
@@ -215,8 +216,11 @@ impl VexCoreServer {
         // Main Message Polling Loop
         // 1. Listens for new handhakes
         // 2. Listens for new orders
-        while !self.shutdown.load(Ordering::SeqCst) {
-            // incoming handshake messages
+        loop {
+            if self.shutdown.load(Ordering::Acquire) {
+                return self.shutdown();
+            }
+
             if let Err(e) = self.subscription.poll(Some(&self.handshake_handler), 10) {
                 error!(
                     target: "core_server",
@@ -226,7 +230,6 @@ impl VexCoreServer {
                 );
             }
 
-            // poll order command from gateways
             if let Err(e) = self.gateways.poll() {
                 error!(
                     target: "core_server",
@@ -238,12 +241,12 @@ impl VexCoreServer {
 
             AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
         }
-        Ok(())
     }
 
     /// Gracefully shuts down the core server
     ///
     /// Closes all active gateway connections and cleans up resources.
+    /// This method should only be called when the shutdown flag is already set.
     ///
     /// # Returns
     /// * `Result<(), ServerError>` - Success or shutdown error
@@ -253,15 +256,16 @@ impl VexCoreServer {
             action = "shutdown_requested",
             core_id = %self.config.core_id
         );
+
         self.gateways.shutdown_all_gateways()?;
-        self.shutdown.store(true, Ordering::SeqCst);
+        self.subscription.close::<AeronNotificationLogger>(None)?;
         self.image_available_handler.release();
         self.image_unavailable_handler.release();
         self.handshake_handler.release();
-        self.subscription.close::<AeronNotificationLogger>(None)?;
         self.archive
             .stop_recording_subscription(self.subscription_id)?;
         self.archive.close()?;
+
         info!(
             target: "core_server",
             action = "shutdown_complete",

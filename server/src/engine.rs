@@ -13,10 +13,7 @@ use processors::{
     matching_engine::MatchingEngineRouter,
     risk_engine::RiskEngine,
 };
-use std::{
-    sync::Arc,
-    thread::{self, JoinHandle},
-};
+use std::{sync::Arc, sync::atomic::AtomicBool, thread::{self, JoinHandle}};
 use tracing::info;
 use vex_config::CoreNetworkingConfig;
 use vex_networking::server::Publications;
@@ -354,10 +351,12 @@ impl CoreEngine {
         producer: OrderProducer,
         replay: Option<ReplayContext>,
         networking_config: CoreNetworkingConfig,
-    ) -> JoinHandle<Result<(), EngineError>> {
+    ) -> (JoinHandle<Result<(), EngineError>>, Arc<AtomicBool>) {
         let publications = Arc::clone(&self.publications);
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let shutdown_for_thread = Arc::clone(&shutdown_flag);
 
-        thread::Builder::new()
+        let handle = thread::Builder::new()
             .name("vex-core-server".into())
             .spawn(move || {
                 let replay_producer = replay.as_ref().map(|ctx| ctx.producer.clone());
@@ -366,7 +365,13 @@ impl CoreEngine {
                 }
 
                 let server_result =
-                    VexCoreServer::new(networking_config, producer, replay_producer, publications)
+                    VexCoreServer::new(
+                        networking_config,
+                        producer,
+                        replay_producer,
+                        publications,
+                        shutdown_for_thread,
+                    )
                         .map_err(|e| {
                             EngineError::ServerInitialization(format!(
                                 "Failed to create VexCoreServer: {e}"
@@ -383,7 +388,9 @@ impl CoreEngine {
                     .start()
                     .map_err(|e| EngineError::ServerRuntime(format!("Server error: {e}")))
             })
-            .expect("Failed to spawn server thread")
+            .expect("Failed to spawn server thread");
+
+        (handle, shutdown_flag)
     }
 
     /// Returns a reference to the gateway publications

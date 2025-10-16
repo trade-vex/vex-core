@@ -5,7 +5,10 @@ use common::CoreMarketSpecification;
 use engine::{CoreEngine, EngineResult, OrderProducer};
 use hashbrown::HashMap;
 use processors::{events::KafkaEventsHandler, journaling::JournalingProcessor};
-use std::{sync::Arc, thread::JoinHandle};
+use std::{
+    sync::{Arc, atomic::AtomicBool},
+    thread::JoinHandle,
+};
 use vex_config::VexConfig;
 use vex_networking::server::Publications;
 
@@ -14,11 +17,9 @@ pub use engine::EngineError;
 
 use crate::engine::{CorePinning, ReplayContext};
 
-/// Running engine instance that manages server lifecycle
-///
-/// When dropped, the server will be gracefully shut down.
 pub struct RunningEngine {
-    pub thread: JoinHandle<Result<(), EngineError>>,
+    thread: JoinHandle<Result<(), EngineError>>,
+    shutdown_flag: Arc<AtomicBool>,
 }
 
 impl RunningEngine {
@@ -30,6 +31,11 @@ impl RunningEngine {
                 e
             )))
         })
+    }
+
+    /// Returns a clone of the shutdown flag for external signalling
+    pub fn shutdown_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.shutdown_flag)
     }
 }
 
@@ -69,10 +75,11 @@ pub fn start(config: VexConfig) -> Result<RunningEngine, EngineError> {
     let (engine, producer) =
         init_internal(config.symbols.symbols.clone(), config.kafka_broker.clone())?;
 
-    let thread_handle = engine.run(producer, None, config.core_networking);
+    let (thread_handle, shutdown_flag) = engine.run(producer, None, config.core_networking);
 
     Ok(RunningEngine {
         thread: thread_handle,
+        shutdown_flag,
     })
 }
 
@@ -80,10 +87,12 @@ pub fn start_with_replay(config: VexConfig) -> Result<RunningEngine, EngineError
     let (engine, producer, replay_context) =
         init_internal_with_replay(config.symbols.symbols.clone(), config.kafka_broker.clone())?;
 
-    let thread_handle = engine.run(producer, Some(replay_context), config.core_networking);
+    let (thread_handle, shutdown_flag) =
+        engine.run(producer, Some(replay_context), config.core_networking);
 
     Ok(RunningEngine {
         thread: thread_handle,
+        shutdown_flag,
     })
 }
 

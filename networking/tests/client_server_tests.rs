@@ -3,7 +3,7 @@ use common::{OrderCommand, decode_order_command};
 use common::{Side, TimeInForce};
 use disruptor::{BusySpin, ProcessorSettings, build_multi_producer};
 use rusteron_archive::{AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port};
-use std::sync::Arc;
+use std::sync::{Arc, atomic::AtomicBool};
 use std::time::Duration;
 use std::{net::SocketAddr, thread};
 use tracing::{error, info};
@@ -120,7 +120,9 @@ fn test_client_server_communication() {
         })
         .build();
         let publications = Arc::new(Publications::new());
-        let mut server = VexCoreServer::new(server_config, producer, None, publications).unwrap();
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let mut server =
+            VexCoreServer::new(server_config, producer, None, publications, shutdown_flag).unwrap();
         match server.start() {
             Ok(()) => println!("Server run() completed successfully (unexpected)"),
             Err(e) => println!("Server run() error: {e}"),
