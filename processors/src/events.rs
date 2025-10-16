@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::thread;
 
+use crate::journaling::ReplayControl;
 use common::L2MarketData;
 use common::MatcherTradeEvent;
 use common::Order;
@@ -25,10 +26,15 @@ pub trait EventsHandler: Send + Sync + 'static {
 pub struct KafkaEventsHandler {
     producer: FutureProducer,
     publications: Arc<Publications>,
+    replay_control: ReplayControl,
 }
 
 impl KafkaEventsHandler {
-    pub fn new(brokers: &str, publications: Arc<Publications>) -> Self {
+    pub fn new(
+        brokers: &str,
+        publications: Arc<Publications>,
+        replay_control: ReplayControl,
+    ) -> Self {
         let producer: FutureProducer = ClientConfig::new()
             .set("bootstrap.servers", brokers)
             .set("message.timeout.ms", "5000")
@@ -47,6 +53,7 @@ impl KafkaEventsHandler {
         Self {
             producer,
             publications,
+            replay_control,
         }
     }
 
@@ -279,6 +286,16 @@ impl KafkaEventsHandler {
 
 impl EventsHandler for KafkaEventsHandler {
     fn handle_processed_command(&self, cmd: &mut OrderCommand) {
+        if self.replay_control.is_enabled() {
+            order_debug!(
+                "events_skip_replay",
+                cmd,
+                stage = "events",
+                handler = "kafka"
+            );
+            return;
+        }
+
         order_info!(
             "command_processed",
             cmd,
@@ -395,7 +412,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_kafka_events_handler_placed_order() {
-        let handler = KafkaEventsHandler::new("localhost:9092", Arc::new(Publications::new()));
+        let handler =
+            KafkaEventsHandler::new("localhost:9092", Arc::new(Publications::new()), ReplayControl::disabled());
 
         let mut cmd = OrderCommand::new(
             common::TimeInForce::Gtc,
@@ -417,7 +435,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_kafka_events_handler_cancelled_order() {
-        let handler = KafkaEventsHandler::new("localhost:9092", Arc::new(Publications::new()));
+        let handler =
+            KafkaEventsHandler::new("localhost:9092", Arc::new(Publications::new()), ReplayControl::disabled());
 
         let mut cmd = OrderCommand::new(
             common::TimeInForce::Gtc,
@@ -438,7 +457,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_kafka_events_handler_filled_order_with_trades() {
-        let handler = KafkaEventsHandler::new("localhost:9092", Arc::new(Publications::new()));
+        let handler =
+            KafkaEventsHandler::new("localhost:9092", Arc::new(Publications::new()), ReplayControl::disabled());
 
         // Create a processed command with Filled status and trade events
         let mut filled_cmd = OrderCommand::new(
