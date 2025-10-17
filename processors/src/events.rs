@@ -357,6 +357,7 @@ impl EventsHandler for KafkaEventsHandler {
                 }
                 // Publish balance event for the taker
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
+                self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
             Status::Processing => {
                 // this should ideally be unreachable

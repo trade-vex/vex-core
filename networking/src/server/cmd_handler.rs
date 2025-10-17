@@ -18,6 +18,8 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
                 // instead of adding a new field, we repurpose order_id here
                 if order_command.command != OrderCommandType::CancelOrder {
                     order_command.order_id = self.gateway_id as u64;
+                } else {
+                    order_command.user_id = self.gateway_id as u64;
                 }
                 info!(
                     target: "order_cammand",

@@ -1,5 +1,7 @@
 use arc_swap::ArcSwapOption;
-use common::{MAX_GATEWAYS, ORDERCOMMANDSIZE, OrderCommand, Snowflake, encode_order_command};
+use common::{
+    MAX_GATEWAYS, ORDERCOMMANDSIZE, OrderCommand, OrderCommandType, Snowflake, encode_order_command,
+};
 use rusteron_archive::{AeronPublication, AeronReservedValueSupplierLogger};
 use std::sync::Arc;
 use tracing::{debug, error};
@@ -36,7 +38,11 @@ impl Publications {
 
     // Publisher (event handler thread)
     pub fn publish_response(&self, cmd: &OrderCommand) {
-        let gateway_id = Snowflake::gateway_from_id(cmd.order_id());
+        let gateway_id = if cmd.command == OrderCommandType::CancelOrder {
+            cmd.user_id as u8
+        } else {
+            Snowflake::gateway_from_id(cmd.order_id())
+        };
         let ptr = self.get(gateway_id);
         let publication = ptr.as_ref();
         if publication.is_none() {
