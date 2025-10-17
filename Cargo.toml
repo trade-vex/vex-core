@@ -11,6 +11,14 @@ members = [
     "server", 
 ]
 
+[dependencies]
+vex-server = { workspace = true }
+vex-config = { workspace = true }
+ctrlc = { workspace = true }
+tracing-subscriber = { workspace =  true}
+tracing = { workspace = true}
+tikv-jemallocator = { workspace = true }
+
 [workspace.dependencies]
 common = { path = "./common"}
 vex-config = { path = "./vex-config" }
@@ -27,8 +35,9 @@ rusteron-archive = "0.1.143"
 disruptor = {git="https://github.com/esciiee/disruptor-rs.git" , rev="39e2f1d"}
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tracing = "0.1.41"
-tracing-subscriber = "0.3.20"
+tracing = "0.1"
+tracing-subscriber = "0.1"
+ctrlc = "3.4"
 parking_lot = "0.12"
 tikv-jemallocator = "0.6.1"
 
