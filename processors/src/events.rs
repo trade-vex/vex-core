@@ -412,17 +412,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_kafka_events_handler_placed_order() {
-        let handler =
-            KafkaEventsHandler::new("localhost:9092", Arc::new(Publications::new()), ReplayControl::disabled());
+        let handler = KafkaEventsHandler::new(
+            "localhost:9092",
+            Arc::new(Publications::new()),
+            ReplayControl::disabled(),
+        );
 
-        let mut cmd = OrderCommand::new(
+        let mut cmd = OrderCommand::place_order(
             common::TimeInForce::Gtc,
-            12345, // order_id
-            1001,  // user_id
-            1000,  // price
-            100,   // size
+            1001, // user_id
+            1000, // price
+            100,  // size
             Side::Bid,
             MARKET_ID,
+            12345, // order_id
         );
         cmd.set_status(Status::Placed);
         cmd.timestamp = 1000;
@@ -435,17 +438,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_kafka_events_handler_cancelled_order() {
-        let handler =
-            KafkaEventsHandler::new("localhost:9092", Arc::new(Publications::new()), ReplayControl::disabled());
+        let handler = KafkaEventsHandler::new(
+            "localhost:9092",
+            Arc::new(Publications::new()),
+            ReplayControl::disabled(),
+        );
 
-        let mut cmd = OrderCommand::new(
+        let mut cmd = OrderCommand::place_order(
             common::TimeInForce::Gtc,
-            12346, // order_id
-            1002,  // user_id
-            950,   // price
-            50,    // size
+            1002, // user_id
+            950,  // price
+            50,   // size
             Side::Ask,
             MARKET_ID,
+            12346, // order_id
         );
         cmd.set_status(Status::Cancelled);
         cmd.timestamp = 1001;
@@ -457,18 +463,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_kafka_events_handler_filled_order_with_trades() {
-        let handler =
-            KafkaEventsHandler::new("localhost:9092", Arc::new(Publications::new()), ReplayControl::disabled());
+        let handler = KafkaEventsHandler::new(
+            "localhost:9092",
+            Arc::new(Publications::new()),
+            ReplayControl::disabled(),
+        );
 
         // Create a processed command with Filled status and trade events
-        let mut filled_cmd = OrderCommand::new(
+        let mut filled_cmd = OrderCommand::place_order(
             common::TimeInForce::Gtc,
-            12348, // order_id
-            1004,  // user_id
-            1050,  // price
-            200,   // size
+            1004, // user_id
+            1050, // price
+            200,  // size
             Side::Bid,
             MARKET_ID,
+            12348, // order_id
         );
         filled_cmd.set_status(Status::Filled);
         filled_cmd.timestamp = 1003;

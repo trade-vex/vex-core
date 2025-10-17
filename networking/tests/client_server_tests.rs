@@ -102,7 +102,7 @@ fn test_client_server_communication() {
         info!("server_config: {:?}", server_config);
         let producer = build_multi_producer(
             1024,
-            || OrderCommand::new(TimeInForce::Gtc, 1, 23, 32, 100, Side::Ask, 10),
+            || OrderCommand::place_order(TimeInForce::Gtc, 1, 23, 32, Side::Ask, 1, 10),
             BusySpin,
         )
         .pin_at_core(1)
@@ -122,7 +122,7 @@ fn test_client_server_communication() {
         let publications = Arc::new(Publications::new());
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let mut server =
-            VexCoreServer::new(server_config, producer, None, publications, shutdown_flag).unwrap();
+            VexCoreServer::new(server_config, producer, publications, false, shutdown_flag).unwrap();
         match server.start() {
             Ok(()) => println!("Server run() completed successfully (unexpected)"),
             Err(e) => println!("Server run() error: {e}"),
