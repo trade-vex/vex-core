@@ -337,14 +337,14 @@ mod tests {
         let expected_locked_amount = order_price * order_size;
 
         producer.publish(|cmd: &mut OrderCommand| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                1,
                 user_id,
                 order_price,
                 order_size,
                 Side::Bid,
                 market_id,
+                1,
             );
             cmd.market_id = market_id;
         });
@@ -417,14 +417,14 @@ mod tests {
         // 4. Place Maker's ASK (sell) order
         let maker_order_id = 2;
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                maker_order_id,
                 maker_id,
                 order_price,
                 order_size,
                 Side::Ask,
                 market_id,
+                maker_order_id,
             );
             cmd.market_id = market_id;
         });
@@ -439,14 +439,14 @@ mod tests {
         // 6. Place Taker's BID (buy) order to trigger a trade
         let taker_order_id = 1;
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                taker_order_id,
                 taker_id,
                 order_price,
                 order_size,
                 Side::Bid,
                 market_id,
+                taker_order_id,
             );
             cmd.market_id = market_id;
         });
@@ -578,14 +578,14 @@ mod tests {
 
         for &(id, size, order_id) in &maker_orders {
             producer.publish(|cmd| {
-                *cmd = OrderCommand::new(
+                *cmd = OrderCommand::place_order(
                     TimeInForce::Gtc,
-                    order_id,
                     id,
                     order_price,
                     size,
                     Side::Ask,
                     market_id,
+                    order_id,
                 );
             });
             let placed_cmd = rx
@@ -611,14 +611,14 @@ mod tests {
         // 5. Place Taker's BID order to sweep the book
         let taker_order_id = 1;
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                taker_order_id,
                 taker_id,
                 order_price,
                 taker_trade_size,
                 Side::Bid,
                 market_id,
+                taker_order_id,
             );
         });
 
@@ -820,14 +820,14 @@ mod tests {
 
         // 3. Place Maker's resting ASK order
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                2,
                 maker_id,
                 maker_ask_price,
                 maker_ask_size,
                 Side::Ask,
                 market_id,
+                2,
             );
         });
         let maker_placed = rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -837,14 +837,14 @@ mod tests {
         // 4. Place Taker's IOC Market Buy order, larger than available liquidity
         let taker_order_size = 10_000;
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Ioc,
-                1,
                 taker_id,
                 u64::MAX, // Market order price
                 taker_order_size,
                 Side::Bid,
                 market_id,
+                1,
             );
         });
 
@@ -917,14 +917,14 @@ mod tests {
 
         // 3. Place Maker's resting ASK order
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                2,
                 maker_id,
                 50_000,
                 100,
                 Side::Ask,
                 market_id,
+                2,
             );
         });
         let maker_placed_cmd = rx.recv().unwrap(); // Consume maker's placed command
@@ -940,14 +940,14 @@ mod tests {
 
         // 4. Place Taker's FOK order that is too large
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Fok,
-                1,
                 taker_id,
                 50_000,
                 101,
                 Side::Bid,
                 market_id,
+                1,
             );
         });
 
@@ -968,28 +968,28 @@ mod tests {
         let maker2_id = 105; // Shard 1
         risk_engines[maker_shard].set_balance(maker2_id, base_asset_id, UserBalance::new(100, 0));
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                2,
                 maker2_id,
                 49_000,
                 100,
                 Side::Ask,
                 market_id,
+                2,
             );
         });
         rx.recv().unwrap(); // Consume maker2's placed command
 
         // 7. Place Taker's FOK order that can now be filled
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Fok,
-                2,
                 taker_id,
                 50_000,
                 150,
                 Side::Bid,
                 market_id,
+                2,
             );
         });
 
@@ -1084,14 +1084,14 @@ mod tests {
         // --- Phase 1: Build the Order Book ---
         // Maker A places GTC ASK for 10 BASE @ 1010
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                1,
                 maker_a_id,
                 1010,
                 10,
                 Side::Ask,
                 market_id,
+                1,
             );
         });
         let placed_a = rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -1116,14 +1116,14 @@ mod tests {
 
         // Maker B places GTC ASK for 15 BASE @ 1020
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                2,
                 maker_b_id,
                 1020,
                 15,
                 Side::Ask,
                 market_id,
+                2,
             );
         });
         let placed_b = rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -1148,14 +1148,14 @@ mod tests {
 
         // Maker C places GTC ASK for 20 BASE @ 1020 (after B)
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                3,
                 maker_c_id,
                 1020,
                 20,
                 Side::Ask,
                 market_id,
+                3,
             );
         });
         let placed_c = rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -1181,14 +1181,14 @@ mod tests {
         // --- Phase 2: Taker GTC order that partially fills and rests ---
         // Taker D places GTC BID for 30 BASE @ 1020
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                4,
                 taker_d_id,
                 1020,
                 30,
                 Side::Bid,
                 market_id,
+                4,
             );
         });
 
@@ -1255,7 +1255,7 @@ mod tests {
         // Maker C cancels their order of the remaining (20 - 5) BASE @ 1020
         let maker_c_order_id = placed_c.order_id; // Use the actual generated order ID
         producer.publish(|cmd| {
-            *cmd = OrderCommand::cancel(maker_c_order_id, Side::Ask, market_id);
+            *cmd = OrderCommand::cancel_order(maker_c_order_id, Side::Ask, market_id);
         });
         let cancelled_c = rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(cancelled_c.status, Status::Cancelled);
@@ -1267,14 +1267,14 @@ mod tests {
         // --- Phase 4: IOC Order ---
         // Taker E places IOC ASK for 10 BASE @ 1020. This should be cancelled as order book is empty now.
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Ioc,
-                5,
                 taker_e_id,
                 1020,
                 10,
                 Side::Ask,
                 market_id,
+                5,
             );
         });
 
@@ -1388,74 +1388,74 @@ mod tests {
         // --- Phase 1: Building the Order Books ---
         // Alice builds depth in BTC/USD
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                1,
                 alice_mm_id,
                 50000,
                 1000,
                 Side::Ask,
                 market_btc_usd,
+                1,
             )
         });
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                2,
                 alice_mm_id,
                 50100,
                 1500,
                 Side::Ask,
                 market_btc_usd,
+                2,
             )
         });
 
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                3,
                 alice_mm_id,
                 49900,
                 1000,
                 Side::Bid,
                 market_btc_usd,
+                3,
             )
         });
 
         // Alice builds depth in ETH/USD
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                4,
                 alice_mm_id,
                 3000,
                 20000,
                 Side::Ask,
                 market_eth_usd,
+                4,
             )
         });
 
         // David builds depth in SOL/BTC
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                5,
                 david_sol_mm_id,
                 30,
                 50000,
                 Side::Ask,
                 market_sol_btc,
+                5,
             )
         }); // Price: 30 BTC for 1 SOL
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                6,
                 david_sol_mm_id,
                 29,
                 50000,
                 Side::Bid,
                 market_sol_btc,
+                6,
             )
         });
         // Consume placement messages
@@ -1503,14 +1503,14 @@ mod tests {
         // --- Phase 2: IOC and Partial Fill ---
         // Charlie places an IOC buy for ETH that can only partially fill.
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Ioc,
-                1,
                 charlie_fok_ioc_id,
                 3000,
                 25000,
                 Side::Bid,
                 market_eth_usd,
+                1,
             )
         });
         let ioc_result = rx.recv().unwrap();
@@ -1563,14 +1563,14 @@ mod tests {
         // --- Phase 3: FOK Rejection and Success ---
         // Bob tries to buy 50001 SOL with BTC. David is only offering 50000. It must fail.
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Fok,
-                1,
                 bob_taker_id,
                 30,
                 50001,
                 Side::Bid,
                 market_sol_btc,
+                1,
             )
         });
         let fok_fail = rx.recv().unwrap();
@@ -1598,14 +1598,14 @@ mod tests {
 
         // Now Bob places a FOK that CAN be filled.
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Fok,
-                2,
                 bob_taker_id,
                 30,
                 40000,
                 Side::Bid,
                 market_sol_btc,
+                2,
             )
         });
         let fok_success = rx.recv().unwrap();
@@ -1657,14 +1657,14 @@ mod tests {
         // However, he will first place a smaller GTC order to lock up most of his funds.
         let bob_btc_before_ask = 5_000_000 - bob_btc_cost;
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                4,
                 bob_taker_id,
                 49901,
                 200,
                 Side::Ask,
                 market_btc_usd,
+                4,
             )
         });
         let gtc_ask = rx.recv().unwrap(); // this will sit on the book
@@ -1682,14 +1682,14 @@ mod tests {
         // NOW, he tries to buy 2000 BTC @ 50100. Estimated cost = 100,200,000 USD.
         // He has 10M USD, so this must be rejected by the risk engine.
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                4,
                 bob_taker_id,
                 50100,
                 2000,
                 Side::Bid,
                 market_btc_usd,
+                4,
             )
         });
         let rejected_bid = rx.recv().unwrap();
@@ -1717,7 +1717,7 @@ mod tests {
         // --- Phase 5: Final Clean-up and State Verification ---
         // Bob cancels his resting GTC ask on BTC/USD
         producer.publish(|cmd| {
-            *cmd = OrderCommand::cancel(bob_gtc_order_id, Side::Ask, market_btc_usd)
+            *cmd = OrderCommand::cancel_order(bob_gtc_order_id, Side::Ask, market_btc_usd)
         });
         let cancelled_bob = rx.recv().unwrap();
         assert_eq!(cancelled_bob.status, Status::Cancelled);
