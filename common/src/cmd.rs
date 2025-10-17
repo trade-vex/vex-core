@@ -44,7 +44,14 @@ pub struct OrderCommand {
     pub order_id: u64,
 
     /// The unique identifier of the user initiating the command.
-    /// Used for routing, risk checks, and authorization.
+    /// For 'PlaceOrder' : This is the actual user id
+    /// For 'CancelOrder': this is set to the gateway id inside the OrderCommand Field
+    /// This is required because, in the existing scenarior the gateway id(required to send
+    /// back the response to gateway with gateway_id in the events handler) not present in
+    /// the OrderCommand Field, so it is encoded in the order_id by the snowflake algorithm
+    /// Everything works correctly untill the order_id is itself wrong that is sent the gateway
+    /// and user_id is not essential for the CancelOrder hence it is the best choice to place
+    /// gateway id to send response correctly.
     pub user_id: u64,
 
     /// The identifier for the market this command targets.
