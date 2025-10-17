@@ -493,7 +493,7 @@ mod tests {
         assert!(!engine_shard1.user_id_for_this_handler(0));
         let symbol_spec = HashMap::new();
         let price_cache = Arc::new(PriceCache::new(symbol_spec.keys()));
-        let mut cmd = OrderCommand::new(TimeInForce::Gtc, 1, 1, 100, 10, Side::Bid, 1);
+        let mut cmd = OrderCommand::place_order(TimeInForce::Gtc, 1, 100, 10, Side::Bid, 1, 1);
 
         // shard 0 should not process user 1's command, will be skipped
         engine_shard0.pre_process_command(&mut cmd, price_cache.clone());
@@ -542,14 +542,14 @@ mod tests {
 
         engine.set_balance(user_id, quote_asset, UserBalance::new(required_quote, 0));
 
-        let mut cmd = OrderCommand::new(
+        let mut cmd = OrderCommand::place_order(
             TimeInForce::Gtc,
-            1,
             user_id,
             price,
             size,
             Side::Bid,
             market_id,
+            1,
         );
 
         let spec = get_spec(market_id);
@@ -583,14 +583,14 @@ mod tests {
 
         engine.set_balance(user_id, base_asset, UserBalance::new(size, 0));
 
-        let mut cmd = OrderCommand::new(
+        let mut cmd = OrderCommand::place_order(
             TimeInForce::Gtc,
-            1,
             user_id,
             price,
             size,
             Side::Ask,
             market_id,
+            1,
         );
 
         let spec = get_spec(market_id);
@@ -629,14 +629,14 @@ mod tests {
             UserBalance::new(required_quote - 1, 0),
         );
 
-        let mut cmd = OrderCommand::new(
+        let mut cmd = OrderCommand::place_order(
             TimeInForce::Gtc,
-            1,
             user_id,
             price,
             size,
             Side::Bid,
             market_id,
+            1,
         );
 
         let spec = get_spec(market_id);
@@ -684,28 +684,28 @@ mod tests {
 
         // --- Reserve funds ---
         // Taker places BID order to buy BTC
-        let mut taker_cmd = OrderCommand::new(
+        let mut taker_cmd = OrderCommand::place_order(
             TimeInForce::Gtc,
-            1,
             taker_id,
             price,
             size,
             Side::Bid,
             market_id,
+            1,
         );
         engine
             .reserve_funds_for_order(&mut taker_cmd, price_cache.clone())
             .unwrap();
 
         // Maker places ASK order to sell BTC
-        let mut maker_cmd = OrderCommand::new(
+        let mut maker_cmd = OrderCommand::place_order(
             TimeInForce::Gtc,
-            2,
             maker_id,
             price,
             size,
             Side::Ask,
             market_id,
+            2,
         );
         engine
             .reserve_funds_for_order(&mut maker_cmd, price_cache.clone())
@@ -776,14 +776,14 @@ mod tests {
         let size = 10; // size in base asset (BTC)
 
         // --- Test 1: Market Buy with no liquidity ---
-        let mut market_buy_cmd = OrderCommand::new(
+        let mut market_buy_cmd = OrderCommand::place_order(
             TimeInForce::Gtc,
-            1,
             user_id,
             u64::MAX,
             size,
             Side::Bid,
             market_id,
+            1,
         );
 
         let res = engine.reserve_funds_for_order(&mut market_buy_cmd, price_cache.clone());
@@ -827,7 +827,7 @@ mod tests {
         // Market sell doesn't depend on price cache, just locks `size` of base asset (BTC).
         engine.set_balance(user_id, btc_asset_id, UserBalance::new(size, 0));
         let mut market_sell_cmd =
-            OrderCommand::new(TimeInForce::Gtc, 2, user_id, 0, size, Side::Ask, market_id);
+            OrderCommand::place_order(TimeInForce::Gtc, user_id, 0, size, Side::Ask, market_id, 1);
 
         engine
             .reserve_funds_for_order(&mut market_sell_cmd, price_cache.clone())
@@ -870,14 +870,14 @@ mod tests {
         // Buy 1,000 BTC (base) for 50,000 USD (quote) each. Total cost: 50,000,000 USD
         let btc_price = 50_000;
         let btc_size = 1_000;
-        let mut btc_buy_cmd = OrderCommand::new(
+        let mut btc_buy_cmd = OrderCommand::place_order(
             TimeInForce::Gtc,
-            1,
             user_id,
             btc_price,
             btc_size,
             Side::Bid,
             market_id_btc_usd,
+            1,
         );
         engine
             .reserve_funds_for_order(&mut btc_buy_cmd, price_cache.clone())
@@ -899,14 +899,14 @@ mod tests {
         // Sell 2,000 ETH (base) for 3,000 USD (quote) each.
         let eth_price = 3_000;
         let eth_size = 2_000;
-        let mut eth_sell_cmd = OrderCommand::new(
+        let mut eth_sell_cmd = OrderCommand::place_order(
             TimeInForce::Gtc,
-            2,
             user_id,
             eth_price,
             eth_size,
             Side::Ask,
             market_id_eth_usd,
+            2,
         );
         engine
             .reserve_funds_for_order(&mut eth_sell_cmd, price_cache.clone())
