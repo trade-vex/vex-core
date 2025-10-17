@@ -37,18 +37,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Read configuration from environment variables provided by docker-compose
     // start logging
     tracing_subscriber::fmt::init();
-    let server_host = env::var("VEX_SERVER_HOST").unwrap_or("127.0.0.1".to_string());
-    let server_port: u16 = env::var("VEX_SERVER_PORT")?.parse()?;
-    // let sleep_duration = if args.rate > 0 { Duration::from_micros(1_000_000 / args.rate) } else { Duration::ZERO };
+    // let server_host = env::var("VEX_SERVER_HOST").unwrap_or("127.0.0.1".to_string());
+    // let server_port: u16 = env::var("VEX_SERVER_PORT")?.parse()?;
+    // // let sleep_duration = if args.rate > 0 { Duration::from_micros(1_000_000 / args.rate) } else { Duration::ZERO };
 
-    println!("Client starting. Attempting to connect to {server_host}:{server_port}");
+    // println!("Client starting. Attempting to connect to {server_host}:{server_port}");
 
     let mut client_config = GatewayNetworkingConfig::test_defaults(); // Use your test defaults
-    client_config.context_dir =
-        env::var("VEX_CONTEXT_DIR").unwrap_or("/dev/shm/aeron-test-client".to_string());
-    client_config.core_address = server_host;
-    client_config.core_port = server_port;
-    client_config.core_control_port = server_port + 1;
+    // client_config.context_dir =
+    //     env::var("VEX_CONTEXT_DIR").unwrap_or("/dev/shm/aeron-test-client".to_string());
+    // client_config.core_address = server_host;
+    // client_config.core_port = server_port;
+    // client_config.core_control_port = server_port + 1;
     client_config.gateway_id = args.client_id as u8;
 
     let mut client = VexGateway::new(client_config)?;
@@ -114,36 +114,34 @@ fn run_latency_test(
     client_id: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut histogram = Histogram::<u64>::new(3).unwrap();
+    let base_asset_id = 2;
+    let quote_asset_id = 1;
+    // Market ID: base asset in lower 16 bits, quote in upper 16
+    let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
 
     for i in 0..samples {
-        let order_id = client_id * 1_000_000 + i;
-        let mut command = OrderCommand {
-            client_order_id: order_id,
-            command: OrderCommandType::PlaceOrder,
-            user_id: 1,
-            size: 100,
-            time_in_force: TimeInForce::Gtc,
-            timestamp: 1,
-            side: Side::Ask,
-            order_id,
-            market_id: 3124,
-            price: 150,
-            status: common::Status::Processing,
-            balance: [UserBalance::default(); 2],
-            events: None,
-            l2_data: None,
-        };
-
+        let user_id = i + 1000;
+        let client_order_id = client_id * 1_000_000 + i;
+        let price = 150;
+        let size = 100;
+        let amount = price * size; // Assuming quote asset is in smallest units
+        let deposit_funds = OrderCommand::deposit_funds(user_id, amount, quote_asset_id);
+        client.send_order_command(&deposit_funds)?;
+        rx.recv_timeout(Duration::from_secs(5))?; // Wait for ack of deposit
+        let command = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            user_id,
+            150,
+            100,
+            Side::Bid,
+            market_id,
+            client_order_id,
+        );
         let start_time = Instant::now();
-        // The timestamp field is used to carry the start time as nanoseconds
-        command.timestamp = start_time.elapsed().as_nanos() as u64; // This is a placeholder for a real timestamping mechanism
-
         client.send_order_command(&command)?;
-
-        // --- Conceptual: Wait for the acknowledgment ---
         let ack = rx.recv_timeout(Duration::from_secs(5))?;
-        if ack.client_order_id == order_id {
-            println!("Client-{client_id} received ack for order_id: {order_id}");
+        if ack.client_order_id == client_order_id {
+            println!("Client-{client_id} received ack for order_id: {client_order_id}");
             let rtt = start_time.elapsed().as_micros() as u64;
             histogram.record(rtt).unwrap();
         }
