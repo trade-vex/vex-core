@@ -1,4 +1,4 @@
-.PHONY: all build clean aeron media-driver aeron-stat aeron-errors server test help
+.PHONY: all build clean aeron media-driver aeron-stat aeron-errors server test test-gtc test-ioc test-fok test-cancel test-balance help
 
 AERON_JAR := aeron-all-1.49.0.jar
 AERON_DIR := /dev/shm/aeron-test-server
@@ -25,7 +25,15 @@ help:
 	@echo "  aeron-stat    - Show Aeron statistics"
 	@echo "  aeron-errors  - Show Aeron error stats"
 	@echo "  server        - Start VEX server (logs to terminal)"
-	@echo "  test          - Run test suite"
+	@echo ""
+	@echo "Test suite (state-aware, single continuous test per suite):"
+	@echo "  test          - Run comprehensive integration test (all order types)"
+	@echo "  test-gtc      - Run GTC order tests (3 sections)"
+	@echo "  test-ioc      - Run IOC order tests (5 sections)"
+	@echo "  test-fok      - Run FOK order tests (6 sections)"
+	@echo "  test-cancel   - Run cancellation tests (8 sections)"
+	@echo "  test-balance  - Run balance management tests"
+	@echo ""
 	@echo "  clean         - Clean build artifacts"
 
 build:
@@ -59,7 +67,22 @@ aeron-errors: aeron
 server: build
 	@-killall -q vex-core 2>/dev/null || true
 	@sleep 1
-	cargo run --bin vex-core
+	RUST_LOG=info cargo run --bin vex-core
 
 test: build
-	cargo run --bin run_test_suite
+	cargo run --bin run_test_suite all
+
+test-gtc: build
+	cargo run --bin run_test_suite gtc
+
+test-ioc: build
+	cargo run --bin run_test_suite ioc
+
+test-fok: build
+	cargo run --bin run_test_suite fok
+
+test-cancel: build
+	cargo run --bin run_test_suite cancellation
+
+test-balance: build
+	cargo run --bin run_test_suite balance
