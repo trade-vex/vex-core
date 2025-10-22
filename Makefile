@@ -49,7 +49,7 @@ help:
 	@echo "  clean         - Clean build artifacts"
 
 build:
-	cargo build --workspace
+	cargo build --workspace --release
 
 clean:
 	cargo clean
@@ -115,19 +115,19 @@ test: build media-driver-gateway
 	cargo run -p xtask --bin run_test_suite all
 
 test-gtc: build media-driver-gateway
-	cargo run --bin run_test_suite gtc
+	cargo run -p xtask --bin run_test_suite gtc
 
 test-ioc: build media-driver-gateway
-	cargo run --bin run_test_suite ioc
+	cargo run -p xtask --bin run_test_suite ioc
 
 test-fok: build media-driver-gateway
-	cargo run --bin run_test_suite fok
+	cargo run -p xtask --bin run_test_suite fok
 
 test-cancel: build media-driver-gateway
-	cargo run --bin run_test_suite cancellation
+	cargo run -p xtask --bin run_test_suite ioc cancellation
 
 test-balance: build media-driver-gateway
-	cargo run --bin run_test_suite balance
+	cargo run -p xtask --bin run_test_suite ioc balance
 
 media-driver-gateway: aeron
 	@if [ -f "$(PID_FILE_GATEWAY)" ]; then \

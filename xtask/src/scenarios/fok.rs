@@ -178,6 +178,56 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     info!("");
 
     // ========================================================================
+    // SECTION 7: Market Buy FOK - All-or-nothing with PriceCache
+    // ========================================================================
+    info!("┌─────────────────────────────────────────┐");
+    info!("│ SECTION 7: Market Buy FOK                │");
+    info!("│ (All-or-nothing with slippage ceiling)  │");
+    info!("└─────────────────────────────────────────┘");
+
+    let section_start = std::time::Instant::now();
+
+    match test_market_buy_fok_section(ctx).await {
+        Ok(_) => {
+            let duration = section_start.elapsed();
+            info!("✓ SECTION 7 PASSED ({:?})", duration);
+            results.push(ScenarioResult::success("market_buy_fok".to_string(), duration));
+        }
+        Err(e) => {
+            let duration = section_start.elapsed();
+            warn!("✗ SECTION 7 FAILED ({:?}): {}", duration, e);
+            results.push(ScenarioResult::failure("market_buy_fok".to_string(), duration, e));
+            return Ok(results);
+        }
+    }
+    info!("");
+
+    // ========================================================================
+    // SECTION 8: Market Sell FOK - All-or-nothing against best bid
+    // ========================================================================
+    info!("┌─────────────────────────────────────────┐");
+    info!("│ SECTION 8: Market Sell FOK               │");
+    info!("│ (All-or-nothing against best bid)       │");
+    info!("└─────────────────────────────────────────┘");
+
+    let section_start = std::time::Instant::now();
+
+    match test_market_sell_fok_section(ctx).await {
+        Ok(_) => {
+            let duration = section_start.elapsed();
+            info!("✓ SECTION 8 PASSED ({:?})", duration);
+            results.push(ScenarioResult::success("market_sell_fok".to_string(), duration));
+        }
+        Err(e) => {
+            let duration = section_start.elapsed();
+            warn!("✗ SECTION 8 FAILED ({:?}): {}", duration, e);
+            results.push(ScenarioResult::failure("market_sell_fok".to_string(), duration, e));
+            return Ok(results);
+        }
+    }
+    info!("");
+
+    // ========================================================================
     // Final Summary
     // ========================================================================
     let total_duration = suite_start.elapsed();
@@ -598,5 +648,264 @@ async fn test_fok_multiple_levels_section(ctx: &mut TestContext) -> TestResult<(
         info!("  → Orderbook empty (all liquidity consumed)");
     }
 
+    Ok(())
+}
+
+/// SECTION 7: Test market buy FOK with PriceCache and slippage ceiling
+///
+/// Market buy FOK:
+/// - price = u64::MAX (sentinel)
+/// - R1 calculates conservative_price = best_ask + slippage
+/// - FOK must fill ENTIRE size at or below conservative_price, or reject
+async fn test_market_buy_fok_section(ctx: &mut TestContext) -> TestResult<()> {
+    info!("Section 6 left orderbook EMPTY");
+    info!("Setting up orderbook:");
+    info!("  - Charlie: 5 BTC @ 53,000 (best ask)");
+    info!("  - Bob: 5 BTC @ 54,000");
+    info!("");
+    info!("Test 1: Alice market buy FOK for 4 BTC → Should fill (within conservative price)");
+    info!("Test 2: Bob market buy FOK for 10 BTC → Should REJECT (exceeds available at ceiling)");
+
+    let market_id = ctx.market_id;
+    let best_ask_price = 53_000;
+    let second_ask_price = 54_000;
+
+    // Setup orderbook with asks (starting from empty)
+    let ask1 = OrderBuilder::place_limit()
+        .user(users::CHARLIE)
+        .price(best_ask_price)
+        .size(5)
+        .side(Side::Ask)
+        .market_id(market_id)
+        .build();
+    let ask1_response = ctx.execute_command(ask1)?;
+    info!("  → Ask 1 placed: {} BTC @ {}", 5, best_ask_price);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ask2 = OrderBuilder::place_limit()
+        .user(users::BOB)
+        .price(second_ask_price)
+        .size(5)
+        .side(Side::Ask)
+        .market_id(market_id)
+        .build();
+    ctx.execute_command(ask2)?;
+    info!("  → Ask 2 placed: {} BTC @ {}", 5, second_ask_price);
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Verify orderbook: 0 bids, 2 asks
+    {
+        let redis_timeout = ctx.config().redis_event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        orderbook_verifier.wait_and_assert_depth(market_id, 0, 2, redis_timeout).await?;
+        info!("  → Orderbook ready: 0 bids, 2 asks");
+    }
+    info!("");
+
+    // ========== TEST 1: Market buy FOK that FILLS ==========
+    info!("Test 1: Alice market buy FOK for 4 BTC (should fill)");
+
+    let buy_size_1 = 4;
+    let slippage_bps = 50;
+    let slippage = (best_ask_price * slippage_bps) / 10_000;
+    let conservative_price = best_ask_price + slippage;
+    info!("  → Conservative price: {} (best_ask={} + slippage={})", conservative_price, best_ask_price, slippage);
+
+    // Market buy FOK: use FOK builder with price = u64::MAX (market orders are IOC by default)
+    let market_buy1 = OrderBuilder::place_fok()
+        .user(users::ALICE)
+        .price(u64::MAX)  // Market buy sentinel
+        .size(buy_size_1)
+        .side(Side::Bid)
+        .market_id(market_id)
+        .build();
+
+    let response1 = ctx.execute_command(market_buy1)?;
+    ResponseVerifier::assert_filled(&response1)?;
+    info!("  → Alice's market buy FOK filled: {} BTC @ {}", buy_size_1, best_ask_price);
+
+    // Verify trade
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    {
+        let mut trade_verifier = TradeVerifier::new(&mut ctx.redis);
+        let criteria = TradeCriteria::new()
+            .market_id(market_id)
+            .maker_order_id(ask1_response.order_id)
+            .taker_order_id(response1.order_id)
+            .price(best_ask_price)
+            .size(buy_size_1);
+        trade_verifier.assert_trade_exists(market_id, &criteria).await?;
+        info!("  → Trade verified: {} BTC @ {}", buy_size_1, best_ask_price);
+    }
+
+    // Orderbook state: 1 BTC @ 53k, 5 BTC @ 54k = 0 bids, 2 asks
+    {
+        let redis_timeout = ctx.config().redis_event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        orderbook_verifier.wait_and_assert_depth(market_id, 0, 2, redis_timeout).await?;
+        orderbook_verifier.assert_level(market_id, Side::Ask, best_ask_price, 1).await?;
+        orderbook_verifier.assert_level(market_id, Side::Ask, second_ask_price, 5).await?;
+        info!("  → Orderbook after Test 1: 1 BTC @ {}, 5 BTC @ {}", best_ask_price, second_ask_price);
+    }
+    info!("");
+
+    // ========== TEST 2: Market buy FOK that REJECTS (insufficient liquidity at conservative price) ==========
+    info!("Test 2: Bob market buy FOK for 10 BTC (should REJECT - exceeds available)");
+    info!("  → Available: 1 BTC @ 53k, 5 BTC @ 54k = 6 BTC total < 10 BTC needed");
+
+    let buy_size_2 = 10;
+
+    // Market buy FOK: use FOK builder with price = u64::MAX
+    let market_buy2 = OrderBuilder::place_fok()
+        .user(users::BOB)
+        .price(u64::MAX)  // Market buy sentinel
+        .size(buy_size_2)
+        .side(Side::Bid)
+        .market_id(market_id)
+        .build();
+
+    let response2 = ctx.execute_command(market_buy2)?;
+    ResponseVerifier::assert_cancelled(&response2)?;
+    info!("  → Bob's market buy FOK rejected (insufficient liquidity)");
+
+    // Orderbook unchanged: 1 BTC @ 53k, 5 BTC @ 54k
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    {
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        orderbook_verifier.assert_level(market_id, Side::Ask, best_ask_price, 1).await?;
+        orderbook_verifier.assert_level(market_id, Side::Ask, second_ask_price, 5).await?;
+        info!("  → Orderbook unchanged: 1 BTC @ {}, 5 BTC @ {}", best_ask_price, second_ask_price);
+    }
+
+    info!("Section 7 ends with: 0 bids, 2 asks (1 BTC @ 53k, 5 BTC @ 54k)");
+    Ok(())
+}
+
+/// SECTION 8: Test market sell FOK against best bid
+///
+/// Market sell FOK:
+/// - price = 0 (sentinel)
+/// - FOK must fill ENTIRE size at best bid or reject
+async fn test_market_sell_fok_section(ctx: &mut TestContext) -> TestResult<()> {
+    info!("Section 7 left: 0 bids, 2 asks (1 BTC @ 53k, 5 BTC @ 54k)");
+    info!("Setting up bids:");
+    info!("  - Alice: 100 BTC bid @ 52,000 (best bid)");
+    info!("  - Bob: 100 BTC bid @ 51,000");
+    info!("");
+    info!("Test 1: Charlie market sell FOK for 10 BTC → Should fill");
+    info!("Test 2: Alice market sell FOK for 200 BTC → Should REJECT (exceeds available)");
+
+    let market_id = ctx.market_id;
+    let best_bid_price = 52_000;
+    let second_bid_price = 51_000;
+
+    // Setup bids
+    let bid1 = OrderBuilder::place_limit()
+        .user(users::ALICE)
+        .price(best_bid_price)
+        .size(100)
+        .side(Side::Bid)
+        .market_id(market_id)
+        .build();
+    let bid1_response = ctx.execute_command(bid1)?;
+    info!("  → Bid 1 placed: {} BTC @ {}", 100, best_bid_price);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let bid2 = OrderBuilder::place_limit()
+        .user(users::BOB)
+        .price(second_bid_price)
+        .size(100)
+        .side(Side::Bid)
+        .market_id(market_id)
+        .build();
+    ctx.execute_command(bid2)?;
+    info!("  → Bid 2 placed: {} BTC @ {}", 100, second_bid_price);
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Verify orderbook: 2 bids, 2 asks (from Section 7)
+    {
+        let redis_timeout = ctx.config().redis_event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        orderbook_verifier.wait_and_assert_depth(market_id, 2, 2, redis_timeout).await?;
+        info!("  → Orderbook ready: 2 bids, 2 asks");
+    }
+    info!("");
+
+    // ========== TEST 1: Market sell FOK that FILLS ==========
+    info!("Test 1: Charlie market sell FOK for 10 BTC (should fill)");
+
+    let sell_size_1 = 10;
+
+    // Market sell FOK: use FOK builder with price = 0
+    let market_sell1 = OrderBuilder::place_fok()
+        .user(users::CHARLIE)
+        .price(0)  // Market sell sentinel
+        .size(sell_size_1)
+        .side(Side::Ask)
+        .market_id(market_id)
+        .build();
+
+    let response1 = ctx.execute_command(market_sell1)?;
+    ResponseVerifier::assert_filled(&response1)?;
+    info!("  → Charlie's market sell FOK filled: {} BTC @ {}", sell_size_1, best_bid_price);
+
+    // Verify trade
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    {
+        let mut trade_verifier = TradeVerifier::new(&mut ctx.redis);
+        let criteria = TradeCriteria::new()
+            .market_id(market_id)
+            .maker_order_id(bid1_response.order_id)
+            .taker_order_id(response1.order_id)
+            .price(best_bid_price)
+            .size(sell_size_1);
+        trade_verifier.assert_trade_exists(market_id, &criteria).await?;
+        info!("  → Trade verified: {} BTC @ {}", sell_size_1, best_bid_price);
+    }
+
+    // Orderbook state: 90 BTC @ 52k, 100 BTC @ 51k, 2 asks
+    {
+        let redis_timeout = ctx.config().redis_event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        orderbook_verifier.wait_and_assert_depth(market_id, 2, 2, redis_timeout).await?;
+        orderbook_verifier.assert_level(market_id, Side::Bid, best_bid_price, 90).await?;
+        orderbook_verifier.assert_level(market_id, Side::Bid, second_bid_price, 100).await?;
+        info!("  → Orderbook after Test 1: 90 BTC @ {}, 100 BTC @ {} | 2 asks", best_bid_price, second_bid_price);
+    }
+    info!("");
+
+    // ========== TEST 2: Market sell FOK that REJECTS (insufficient liquidity) ==========
+    info!("Test 2: Alice market sell FOK for 200 BTC (should REJECT - exceeds available)");
+    info!("  → Available bids: 90 BTC @ 52k + 100 BTC @ 51k = 190 BTC < 200 BTC needed");
+
+    let sell_size_2 = 200;
+
+    // Market sell FOK: use FOK builder with price = 0
+    let market_sell2 = OrderBuilder::place_fok()
+        .user(users::ALICE)
+        .price(0)  // Market sell sentinel
+        .size(sell_size_2)
+        .side(Side::Ask)
+        .market_id(market_id)
+        .build();
+
+    let response2 = ctx.execute_command(market_sell2)?;
+    ResponseVerifier::assert_cancelled(&response2)?;
+    info!("  → Alice's market sell FOK rejected (insufficient liquidity)");
+
+    // Orderbook unchanged: 90 BTC @ 52k, 100 BTC @ 51k, 2 asks
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    {
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        orderbook_verifier.assert_level(market_id, Side::Bid, best_bid_price, 90).await?;
+        orderbook_verifier.assert_level(market_id, Side::Bid, second_bid_price, 100).await?;
+        info!("  → Orderbook unchanged: 90 BTC @ {}, 100 BTC @ {} | 2 asks", best_bid_price, second_bid_price);
+    }
+
+    info!("Section 8 ends with: 2 bids (90 @ 52k, 100 @ 51k), 2 asks (1 @ 53k, 5 @ 54k)");
     Ok(())
 }
