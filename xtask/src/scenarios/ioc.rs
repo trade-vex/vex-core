@@ -153,6 +153,56 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     info!("");
 
     // ========================================================================
+    // SECTION 6: Market Buy Order - Tests PriceCache + Slippage
+    // ========================================================================
+    info!("┌─────────────────────────────────────────┐");
+    info!("│ SECTION 6: Market Buy Order             │");
+    info!("│ (PriceCache + Slippage + Refund)        │");
+    info!("└─────────────────────────────────────────┘");
+
+    let section_start = std::time::Instant::now();
+
+    match test_market_buy_section(ctx).await {
+        Ok(_) => {
+            let duration = section_start.elapsed();
+            info!("✓ SECTION 6 PASSED ({:?})", duration);
+            results.push(ScenarioResult::success("market_buy".to_string(), duration));
+        }
+        Err(e) => {
+            let duration = section_start.elapsed();
+            warn!("✗ SECTION 6 FAILED ({:?}): {}", duration, e);
+            results.push(ScenarioResult::failure("market_buy".to_string(), duration, e));
+            return Ok(results);
+        }
+    }
+    info!("");
+
+    // ========================================================================
+    // SECTION 7: Market Sell Order - Tests Market Sell at Best Bid
+    // ========================================================================
+    info!("┌─────────────────────────────────────────┐");
+    info!("│ SECTION 7: Market Sell Order            │");
+    info!("│ (Executes against best bid)             │");
+    info!("└─────────────────────────────────────────┘");
+
+    let section_start = std::time::Instant::now();
+
+    match test_market_sell_section(ctx).await {
+        Ok(_) => {
+            let duration = section_start.elapsed();
+            info!("✓ SECTION 7 PASSED ({:?})", duration);
+            results.push(ScenarioResult::success("market_sell".to_string(), duration));
+        }
+        Err(e) => {
+            let duration = section_start.elapsed();
+            warn!("✗ SECTION 7 FAILED ({:?}): {}", duration, e);
+            results.push(ScenarioResult::failure("market_sell".to_string(), duration, e));
+            return Ok(results);
+        }
+    }
+    info!("");
+
+    // ========================================================================
     // Final Summary
     // ========================================================================
     let total_duration = suite_start.elapsed();
@@ -486,6 +536,339 @@ async fn test_ioc_multiple_levels_section(ctx: &mut TestContext) -> TestResult<(
         orderbook_verifier.wait_and_assert_depth(market_id, 0, 1, redis_timeout).await?;
         orderbook_verifier.assert_level(market_id, Side::Ask, level3_price, 3).await?;
         info!("  → Orderbook: 3 BTC remaining @ {}", level3_price);
+    }
+
+    Ok(())
+}
+
+/// SECTION 6: Test market buy order with PriceCache and slippage
+///
+/// Market buy orders:
+/// - Set price = u64::MAX (sentinel value)
+/// - Risk R1 calculates conservative_price = best_ask + slippage
+/// - Matching engine uses conservative_price as ceiling
+/// - Price improvement triggers refund in R2
+async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
+    info!("Setting up orderbook for market buy test:");
+    info!("  - First: Clear leftover ask @ 52k from Section 5");
+    info!("  - Charlie: 5 BTC @ 53,000 (best ask)");
+    info!("  - Bob: 5 BTC @ 54,000");
+    info!("Alice places market buy for 4 BTC");
+
+    let market_id = ctx.market_id;
+    let best_ask_price = 53_000;
+    let second_ask_price = 54_000;
+    let buy_size = 4;
+
+    // Clear the leftover 3 BTC @ 52k from Section 5 to get clean orderbook
+    let clear_order = OrderBuilder::place_limit()
+        .user(users::ALICE)
+        .price(52_000)
+        .size(3)
+        .side(Side::Bid)
+        .market_id(market_id)
+        .build();
+    ctx.execute_command(clear_order)?;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    info!("  → Cleared leftover 3 BTC @ 52k");
+
+    // Setup: Create orderbook with asks
+    // Charlie places ask @ 53,000 (best ask)
+    let ask1 = OrderBuilder::place_limit()
+        .user(users::CHARLIE)
+        .price(best_ask_price)
+        .size(5)
+        .side(Side::Ask)
+        .market_id(market_id)
+        .build();
+    let ask1_response = ctx.execute_command(ask1)?;
+    info!("  → Ask 1 placed: order_id={}", ask1_response.order_id);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Bob places ask @ 54,000
+    let ask2 = OrderBuilder::place_limit()
+        .user(users::BOB)
+        .price(second_ask_price)
+        .size(5)
+        .side(Side::Ask)
+        .market_id(market_id)
+        .build();
+    let ask2_response = ctx.execute_command(ask2)?;
+    info!("  → Ask 2 placed: order_id={}", ask2_response.order_id);
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Verify orderbook setup (cleared leftover, now just our 2 asks)
+    {
+        let redis_timeout = ctx.config().redis_event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        orderbook_verifier.wait_and_assert_depth(market_id, 0, 2, redis_timeout).await?;
+        info!("  → Orderbook ready: 0 bids, 2 asks (53k, 54k)");
+    }
+
+    // Record Alice's initial balance
+    let initial_usd_balance = {
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        balance_verifier.get_balance(users::ALICE, assets::USD).await?
+    };
+    let initial_btc_balance = {
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        balance_verifier.get_balance(users::ALICE, assets::BTC).await?
+    };
+    info!("  → Alice initial: {} USD, {} BTC", initial_usd_balance.available, initial_btc_balance.available);
+
+    // Calculate expected conservative price
+    // According to ARCHITECTURE.md:
+    // conservative_price = best_ask + (best_ask * slippage_bps / 10000)
+    // Assuming slippage = 50 bps (0.5%)
+    let slippage_bps = 50;
+    let slippage_adjustment = (best_ask_price * slippage_bps) / 10_000;
+    let expected_conservative_price = best_ask_price + slippage_adjustment;
+    info!("  → Expected conservative price: {} (best_ask={}, slippage={})",
+          expected_conservative_price, best_ask_price, slippage_adjustment);
+
+    // Alice places market buy order (price = u64::MAX)
+    let market_buy = OrderBuilder::place_market()
+        .user(users::ALICE)
+        .size(buy_size)
+        .side(Side::Bid)
+        .market_id(market_id)
+        .build();
+
+    let market_response = ctx.execute_command(market_buy)?;
+    ResponseVerifier::assert_filled(&market_response)?;
+    info!("  → Alice's market buy filled: order_id={}", market_response.order_id);
+
+    // Verify trade execution
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    {
+        let mut trade_verifier = TradeVerifier::new(&mut ctx.redis);
+
+        // Should execute against best ask (53,000)
+        let criteria = TradeCriteria::new()
+            .market_id(market_id)
+            .maker_order_id(ask1_response.order_id)
+            .taker_order_id(market_response.order_id)
+            .price(best_ask_price)  // Should execute at best ask, NOT conservative price
+            .size(buy_size);
+
+        trade_verifier.assert_trade_exists(market_id, &criteria).await?;
+        info!("  → Trade executed: {} BTC @ {} (at best ask, below conservative ceiling)",
+              buy_size, best_ask_price);
+    }
+
+    // Verify balances reflect trade + price improvement refund
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    {
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+
+        // Calculate expected costs
+        let actual_cost = best_ask_price * buy_size;  // Executed at best ask
+        let conservative_cost = expected_conservative_price * buy_size;  // Locked amount
+        let expected_refund = conservative_cost - actual_cost;  // Price improvement refund
+
+        // Taker fee (10 bps = 0.1%)
+        let taker_fee_bps = 10;
+        let taker_fee_btc = (buy_size * taker_fee_bps) / 10_000;
+
+        let final_usd_balance = balance_verifier.get_balance(users::ALICE, assets::USD).await?;
+        let final_btc_balance = balance_verifier.get_balance(users::ALICE, assets::BTC).await?;
+
+        // Verify BTC received (size - fee)
+        let expected_btc_received = buy_size - taker_fee_btc;
+        let actual_btc_received = final_btc_balance.available - initial_btc_balance.available;
+
+        if actual_btc_received != expected_btc_received {
+            return Err(TestError::Verification {
+                message: format!(
+                    "BTC received mismatch: expected={}, actual={}",
+                    expected_btc_received, actual_btc_received
+                ),
+            });
+        }
+
+        // Verify USD spent (should be actual_cost, not conservative_cost)
+        let usd_spent = initial_usd_balance.available - final_usd_balance.available;
+
+        if usd_spent != actual_cost {
+            return Err(TestError::Verification {
+                message: format!(
+                    "USD spent mismatch: expected={} (at best ask), actual={}. Price improvement refund expected={}",
+                    actual_cost, usd_spent, expected_refund
+                ),
+            });
+        }
+
+        info!("  → Price improvement: locked={}, spent={}, refund={}",
+              conservative_cost, actual_cost, expected_refund);
+        info!("  → Alice final: {} USD (spent {}), {} BTC (received {}, fee {})",
+              final_usd_balance.available, usd_spent,
+              final_btc_balance.available, expected_btc_received, taker_fee_btc);
+    }
+
+    // Verify orderbook state (ask1 partially filled, ask2 untouched)
+    {
+        let redis_timeout = ctx.config().redis_event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        orderbook_verifier.wait_and_assert_depth(market_id, 0, 2, redis_timeout).await?;
+        orderbook_verifier.assert_level(market_id, Side::Ask, best_ask_price, 1).await?;
+        orderbook_verifier.assert_level(market_id, Side::Ask, second_ask_price, 5).await?;
+        info!("  → Orderbook: 1 BTC @ {}, 5 BTC @ {}", best_ask_price, second_ask_price);
+    }
+
+    Ok(())
+}
+
+/// SECTION 7: Test market sell order
+///
+/// Market sell orders:
+/// - Set price = 0 (sentinel value)
+/// - Execute against best bid
+/// - Simpler than buy (no slippage locking needed, only lock base asset)
+async fn test_market_sell_section(ctx: &mut TestContext) -> TestResult<()> {
+    info!("Setting up orderbook for market sell test:");
+    info!("  - Alice: 100 BTC bid @ 52,000 (best bid)");
+    info!("  - Bob: 100 BTC bid @ 51,000");
+    info!("Charlie places market sell for 10 BTC");
+
+    let market_id = ctx.market_id;
+    let best_bid_price = 52_000;
+    let second_bid_price = 51_000;
+    let sell_size = 10;
+
+    // Setup: Create orderbook with bids
+    // Alice places bid @ 52,000 (best bid)
+    let bid1 = OrderBuilder::place_limit()
+        .user(users::ALICE)
+        .price(best_bid_price)
+        .size(100)
+        .side(Side::Bid)
+        .market_id(market_id)
+        .build();
+    let bid1_response = ctx.execute_command(bid1)?;
+    info!("  → Bid 1 placed: order_id={}", bid1_response.order_id);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Bob places bid @ 51,000
+    let bid2 = OrderBuilder::place_limit()
+        .user(users::BOB)
+        .price(second_bid_price)
+        .size(100)
+        .side(Side::Bid)
+        .market_id(market_id)
+        .build();
+    let bid2_response = ctx.execute_command(bid2)?;
+    info!("  → Bid 2 placed: order_id={}", bid2_response.order_id);
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Verify orderbook setup (Section 6 left 2 asks, we added 2 bids)
+    {
+        let redis_timeout = ctx.config().redis_event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        orderbook_verifier.wait_and_assert_depth(market_id, 2, 2, redis_timeout).await?;
+        info!("  → Orderbook ready: 2 bids (new), 2 asks (from Section 6)");
+    }
+
+    // Record Charlie's initial balance
+    let initial_usd_balance = {
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        balance_verifier.get_balance(users::CHARLIE, assets::USD).await?
+    };
+    let initial_btc_balance = {
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        balance_verifier.get_balance(users::CHARLIE, assets::BTC).await?
+    };
+    info!("  → Charlie initial: {} USD, {} BTC", initial_usd_balance.available, initial_btc_balance.available);
+
+    // Charlie places market sell order (price = 0)
+    let market_sell = OrderBuilder::place_market()
+        .user(users::CHARLIE)
+        .size(sell_size)
+        .side(Side::Ask)
+        .market_id(market_id)
+        .build();
+
+    let market_response = ctx.execute_command(market_sell)?;
+    ResponseVerifier::assert_filled(&market_response)?;
+    info!("  → Charlie's market sell filled: order_id={}", market_response.order_id);
+
+    // Verify trade execution
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    {
+        let mut trade_verifier = TradeVerifier::new(&mut ctx.redis);
+
+        // Should execute against best bid (52,000)
+        let criteria = TradeCriteria::new()
+            .market_id(market_id)
+            .maker_order_id(bid1_response.order_id)
+            .taker_order_id(market_response.order_id)
+            .price(best_bid_price)  // Should execute at best bid
+            .size(sell_size);
+
+        trade_verifier.assert_trade_exists(market_id, &criteria).await?;
+        info!("  → Trade executed: {} BTC @ {} (at best bid)", sell_size, best_bid_price);
+    }
+
+    // Verify balances reflect trade
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    {
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+
+        // Calculate expected revenue
+        let gross_revenue = best_bid_price * sell_size;
+
+        // Taker fee (10 bps = 0.1%) is taken from BTC, not USD
+        // For sell_size = 10: fee_btc = (10 * 10) / 10000 = 0 (rounds down)
+        // in real scenario all amt, balances must be scaled, to avoid this.
+        let taker_fee_bps = 10;
+        let taker_fee_btc = (sell_size * taker_fee_bps) / 10_000;
+
+        let final_usd_balance = balance_verifier.get_balance(users::CHARLIE, assets::USD).await?;
+        let final_btc_balance = balance_verifier.get_balance(users::CHARLIE, assets::BTC).await?;
+
+        // Verify BTC sold (including fee if non-zero)
+        let btc_sold = initial_btc_balance.available - final_btc_balance.available;
+        let expected_btc_total = sell_size + taker_fee_btc;
+        if btc_sold != expected_btc_total {
+            return Err(TestError::Verification {
+                message: format!(
+                    "BTC sold mismatch: expected={} (size={} + fee={}), actual={}",
+                    expected_btc_total, sell_size, taker_fee_btc, btc_sold
+                ),
+            });
+        }
+
+        // Verify USD received (full gross - fee is NOT deducted from USD)
+        let usd_received = final_usd_balance.available - initial_usd_balance.available;
+        if usd_received != gross_revenue {
+            return Err(TestError::Verification {
+                message: format!(
+                    "USD received mismatch: expected={} (full gross), actual={}. Fee is in BTC, not USD.",
+                    gross_revenue, usd_received
+                ),
+            });
+        }
+
+        info!("  → Charlie final: {} USD (received full gross), {} BTC (sold {} + fee {})",
+              final_usd_balance.available,
+              final_btc_balance.available, sell_size, taker_fee_btc);
+    }
+
+    // Verify orderbook state (bid1 partially filled, bid2 untouched, 2 asks remain)
+    {
+        let redis_timeout = ctx.config().redis_event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        orderbook_verifier.wait_and_assert_depth(market_id, 2, 2, redis_timeout).await?;
+        orderbook_verifier.assert_level(market_id, Side::Bid, best_bid_price, 90).await?;
+        orderbook_verifier.assert_level(market_id, Side::Bid, second_bid_price, 100).await?;
+        info!("  → Orderbook: Bids: 90 BTC @ {}, 100 BTC @ {} | 2 asks remain", best_bid_price, second_bid_price);
     }
 
     Ok(())
