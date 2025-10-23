@@ -30,6 +30,7 @@ impl Duologue {
         let fragment_handler = FragmentHandler {
             gateway_id,
             producer,
+            message_counter: 0,
         };
 
         Self {
