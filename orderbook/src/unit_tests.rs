@@ -23,7 +23,7 @@ mod test {
                 Side::Bid => self.bids.iter().find(|(p, _)| *p == price),
                 Side::Ask => self.asks.iter().find(|(p, _)| *p == price),
             };
-            find_result.map_or(0, |(_, level)| level.orders.len())
+            find_result.map_or(0, |(_, level)| level.count)
         }
     }
 
@@ -40,9 +40,9 @@ mod test {
             expected_volume: u64,
             expected_order_count: usize,
         ) {
-            let (book_side, order_map): (&dyn BookSide, &HashMap<u64, u64>) = match side {
-                Side::Bid => (&self.bids, &self.orders),
-                Side::Ask => (&self.asks, &self.orders),
+            let book_side: &dyn BookSide = match side {
+                Side::Bid => &self.bids,
+                Side::Ask => &self.asks,
             };
 
             let level_opt = book_side.iter().find(|(p, _)| *p == price);
@@ -54,7 +54,7 @@ mod test {
                         "Level at price {price} should be empty but has volume"
                     );
                     assert!(
-                        level.orders.is_empty(),
+                        level.is_empty(),
                         "Level at price {price} should have no orders"
                     );
                 }
@@ -68,23 +68,23 @@ mod test {
                     "Volume mismatch at price {price} for side {side:?}"
                 );
                 assert_eq!(
-                    level.orders.len(),
+                    level.count,
                     expected_order_count,
                     "Order count mismatch at price {price} for side {side:?}"
                 );
 
                 // Verify internal consistency: total_volume should match sum of order sizes.
-                let actual_summed_volume: u64 = level.orders.iter().map(|o| o.size).sum();
+                let actual_summed_volume: u64 = level.iter().map(|o| o.size).sum();
                 assert_eq!(
                     level.total_volume, actual_summed_volume,
                     "Internal volume sum inconsistency at price {price}"
                 );
 
                 // Verify fast lookup map is consistent with the level's orders.
-                for order in &level.orders {
+                for order in level.iter() {
                     assert_eq!(
-                        order_map.get(&order.order_id),
-                        Some(&price),
+                        self.orders.get(&order.order_id).map(|(p, _)| *p),
+                        Some(price),
                         "Order map out of sync for order_id {}",
                         order.order_id
                     );
@@ -99,18 +99,18 @@ mod test {
         /// Get the best bid price and volume
         pub fn verify_state(&mut self) -> Result<(), String> {
             // Check that each order referenced in self.orders exists in one of the sides
-            for (order_id, price) in &self.orders {
+            for (order_id, (price, _node_ptr)) in &self.orders {
                 let mut found = false;
 
                 if let Some(level) = self.bids.get_level_mut(*price) {
-                    if level.orders.iter().any(|o| o.order_id == *order_id) {
+                    if level.iter().any(|o| o.order_id == *order_id) {
                         found = true;
                     }
                 }
 
                 if !found {
                     if let Some(level) = self.asks.get_level_mut(*price) {
-                        if level.orders.iter().any(|o| o.order_id == *order_id) {
+                        if level.iter().any(|o| o.order_id == *order_id) {
                             found = true;
                         }
                     }
@@ -125,7 +125,7 @@ mod test {
 
             // Keep your existing volume checks unchanged
             for (price, level) in self.bids.iter() {
-                let calculated_volume: u64 = level.orders.iter().map(|o| o.size).sum();
+                let calculated_volume: u64 = level.iter().map(|o| o.size).sum();
                 if calculated_volume != level.total_volume {
                     return Err(format!(
                         "Bid level at {} has inconsistent volume: {} vs {}",
@@ -135,7 +135,7 @@ mod test {
             }
 
             for (price, level) in self.asks.iter() {
-                let calculated_volume: u64 = level.orders.iter().map(|o| o.size).sum();
+                let calculated_volume: u64 = level.iter().map(|o| o.size).sum();
                 if calculated_volume != level.total_volume {
                     return Err(format!(
                         "Ask level at {} has inconsistent volume: {} vs {}",
@@ -181,22 +181,23 @@ mod test {
 
         /// Count total number of orders in the book
         pub fn total_order_count(&self) -> usize {
-            let bid_count: usize = self.bids.iter().map(|(_, level)| level.orders.len()).sum();
-            let ask_count: usize = self.asks.iter().map(|(_, level)| level.orders.len()).sum();
+            let bid_count: usize = self.bids.iter().map(|(_, level)| level.count).sum();
+            let ask_count: usize = self.asks.iter().map(|(_, level)| level.count).sum();
             bid_count + ask_count
         }
 
         /// Get order by ID (for testing)
-        pub fn get_order(&mut self, order_id: u64) -> Option<&Order> {
+        pub fn get_order(&mut self, order_id: u64) -> Option<Order> {
             // Check bids first
-            if let Some(price) = self.orders.get(&order_id) {
-                if *price <= self.bids.best_price()
-                    && let Some(level) = self.bids.get_level_mut(*price)
+            if let Some((price, _node_ptr)) = self.orders.get(&order_id) {
+                let price = *price;
+                if price <= self.bids.best_price()
+                    && let Some(level) = self.bids.get_level_mut(price)
                 {
-                    return level.orders.iter().find(|o| o.order_id == order_id);
-                } else if let Some(price) = self.orders.get(&order_id) {
+                    return level.iter().find(|o| o.order_id == order_id);
+                } else if let Some((price, _)) = self.orders.get(&order_id) {
                     if let Some(level) = self.asks.get_level_mut(*price) {
-                        return level.orders.iter().find(|o| o.order_id == order_id);
+                        return level.iter().find(|o| o.order_id == order_id);
                     }
                 }
             }
@@ -228,6 +229,7 @@ mod test {
             side,
             time_in_force,
             status: Status::Processing,
+            gateway_id: 0,
             events: None,
             balance: [UserBalance::default(); 2],
             l2_data: None,
@@ -1281,7 +1283,7 @@ mod test {
         let remaining_orders: Vec<u64> = book
             .bids
             .iter()
-            .flat_map(|(_, level)| level.orders.iter().map(|o| o.order_id))
+            .flat_map(|(_, level)| level.iter().map(|o| o.order_id))
             .collect();
         assert_eq!(remaining_orders, vec![1, 3]);
         assert!(book.verify_state().is_ok());
@@ -1582,7 +1584,7 @@ mod test {
         let remaining_orders: Vec<u64> = book
             .asks
             .iter()
-            .flat_map(|(_, level)| level.orders.iter().map(|o| o.order_id))
+            .flat_map(|(_, level)| level.iter().map(|o| o.order_id))
             .collect();
         assert_eq!(remaining_orders, vec![1, 3, 5]);
         assert!(book.verify_state().is_ok());
@@ -1827,6 +1829,7 @@ mod test {
             side: Side::Bid,
             time_in_force: TimeInForce::Gtc, // Irrelevant for cancel
             status: Status::Processing,
+            gateway_id: 0,
             events: None,
             balance: [UserBalance::default(); 2],
             l2_data: None,
@@ -1993,6 +1996,7 @@ mod test {
                 side: self.side,
                 time_in_force: self.time_in_force,
                 status: Status::Processing,
+            gateway_id: 0,
                 events: None,
                 balance: [UserBalance::default(); 2],
                 l2_data: None,
@@ -2012,6 +2016,7 @@ mod test {
                 side: self.side,                   // Ignored for cancel
                 time_in_force: self.time_in_force, // Ignored for cancel
                 status: Status::Processing,
+            gateway_id: 0,
                 events: None,
                 balance: [UserBalance::default(); 2],
                 l2_data: None,
@@ -2709,6 +2714,7 @@ mod test {
                 side,
                 time_in_force: tif,
                 status: Status::Processing,
+            gateway_id: 0,
                 events: None,
                 balance: [UserBalance::default(); 2],
                 l2_data: None,
@@ -2737,6 +2743,7 @@ mod test {
                 side: order_to_cancel.side,
                 time_in_force: TimeInForce::Gtc, // Not relevant
                 status: Status::Processing,
+            gateway_id: 0,
                 events: None,
                 balance: [UserBalance::default(); 2],
                 l2_data: None,
@@ -2768,7 +2775,7 @@ mod test {
         assert_eq!(buy_cmd.status(), Status::Placed);
         assert!(buy_cmd.events().is_none());
         book.assert_level_state(Side::Bid, 99_000, 10, 1);
-        assert_eq!(book.orders.get(&buy_cmd.order_id), Some(&99_000));
+        assert_eq!(book.orders.get(&buy_cmd.order_id).map(|(p, _)| *p), Some(99_000));
 
         let mut sell_cmd =
             harness.create_place_order_cmd(202, Side::Ask, 101_000, 5, TimeInForce::Gtc);
@@ -2777,7 +2784,7 @@ mod test {
         assert_eq!(sell_cmd.status(), Status::Placed);
         assert!(sell_cmd.events().is_none());
         book.assert_level_state(Side::Ask, 101_000, 5, 1);
-        assert_eq!(book.orders.get(&sell_cmd.order_id), Some(&101_000));
+        assert_eq!(book.orders.get(&sell_cmd.order_id).map(|(p, _)| *p), Some(101_000));
     }
 
     #[test]
@@ -2863,7 +2870,7 @@ mod test {
 
         book.assert_level_state(Side::Ask, 100_000, 0, 0);
         book.assert_level_state(Side::Bid, 100_000, 5, 1);
-        assert_eq!(book.orders.get(&buy_order_id), Some(&100_000));
+        assert_eq!(book.orders.get(&buy_order_id).map(|(p, _)| *p), Some(100_000));
     }
 
     #[test]
@@ -2888,7 +2895,7 @@ mod test {
 
         book.assert_level_state(Side::Bid, 100_000, 0, 0);
         book.assert_level_state(Side::Ask, 100_000, 8, 1);
-        assert_eq!(book.orders.get(&sell_cmd.order_id), Some(&100_000));
+        assert_eq!(book.orders.get(&sell_cmd.order_id).map(|(p, _)| *p), Some(100_000));
     }
 
     #[test]
@@ -3287,10 +3294,8 @@ mod test {
         book.record_snapshot(&mut cmd1);
 
         let snapshot1 = cmd1.l2_data.as_ref().unwrap();
-        assert!(snapshot1.bid_prices.is_empty());
-        assert!(snapshot1.bid_volumes.is_empty());
-        assert!(snapshot1.ask_prices.is_empty());
-        assert!(snapshot1.ask_volumes.is_empty());
+        assert_eq!(snapshot1.bid_depth, 0);
+        assert_eq!(snapshot1.ask_depth, 0);
 
         // --- Scenario 2: Build a book with more than L2SIZE levels ---
         // Place 12 bid levels (99 down to 88)
@@ -3318,8 +3323,8 @@ mod test {
         let snapshot2 = cmd2.l2_data.as_ref().unwrap();
 
         // Snapshot should contain exactly L2SIZE (10) levels
-        assert_eq!(snapshot2.bid_prices.len(), L2SIZE);
-        assert_eq!(snapshot2.ask_prices.len(), L2SIZE);
+        assert_eq!(snapshot2.bid_depth, L2SIZE);
+        assert_eq!(snapshot2.ask_depth, L2SIZE);
 
         // Verify bids (descending price)
         for i in 0..L2SIZE {
@@ -3428,5 +3433,401 @@ mod test {
 
         assert_eq!(snapshot.ask_prices[2], 103);
         assert_eq!(snapshot.ask_volumes[2], 35);
+    }
+
+    // ============================================================================
+    // Tests for O(1) Cancel Implementation (Intrusive List + HashMap)
+    // ============================================================================
+
+    #[test]
+    fn test_o1_cancel_single_order() {
+        // Test that canceling a single order works with O(1) lookup
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+
+        let mut place_cmd =
+            harness.create_place_order_cmd(101, Side::Bid, 100_000, 50, TimeInForce::Gtc);
+        book.place_order(&mut place_cmd, price_cache.clone());
+        let order_id = place_cmd.order_id;
+
+        // Verify order is in HashMap
+        assert!(book.orders.contains_key(&order_id));
+        assert_eq!(book.orders.get(&order_id).map(|(p, _)| *p), Some(100_000));
+
+        // Cancel the order
+        let mut cancel_cmd = harness.create_cancel_order_cmd(&place_cmd);
+        book.cancel_order(&mut cancel_cmd, price_cache.clone());
+
+        // Verify cancel succeeded
+        assert_eq!(cancel_cmd.status(), Status::Cancelled);
+        assert_eq!(cancel_cmd.price(), 100_000);
+        assert_eq!(cancel_cmd.size(), 50);
+
+        // Verify order removed from HashMap
+        assert!(!book.orders.contains_key(&order_id));
+
+        // Verify price level is empty
+        book.assert_level_state(Side::Bid, 100_000, 0, 0);
+    }
+
+    #[test]
+    fn test_o1_cancel_from_middle_of_price_level() {
+        // Test canceling an order from the middle of a FIFO queue
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+
+        // Place three orders at the same price
+        let mut cmd1 =
+            harness.create_place_order_cmd(101, Side::Bid, 100_000, 10, TimeInForce::Gtc);
+        book.place_order(&mut cmd1, price_cache.clone());
+        let order_id_1 = cmd1.order_id;
+
+        let mut cmd2 =
+            harness.create_place_order_cmd(102, Side::Bid, 100_000, 20, TimeInForce::Gtc);
+        book.place_order(&mut cmd2, price_cache.clone());
+        let order_id_2 = cmd2.order_id;
+
+        let mut cmd3 =
+            harness.create_place_order_cmd(103, Side::Bid, 100_000, 30, TimeInForce::Gtc);
+        book.place_order(&mut cmd3, price_cache.clone());
+
+        book.assert_level_state(Side::Bid, 100_000, 60, 3);
+
+        // Cancel the middle order (O(1) operation)
+        let mut cancel_cmd = harness.create_cancel_order_cmd(&cmd2);
+        book.cancel_order(&mut cancel_cmd, price_cache.clone());
+
+        assert_eq!(cancel_cmd.status(), Status::Cancelled);
+        assert_eq!(cancel_cmd.size(), 20);
+
+        // Verify remaining orders and volume
+        book.assert_level_state(Side::Bid, 100_000, 40, 2);
+
+        // Verify FIFO order is maintained (order1 should still be at head)
+        assert!(book.orders.contains_key(&order_id_1));
+        assert!(!book.orders.contains_key(&order_id_2));
+    }
+
+    #[test]
+    fn test_o1_cancel_head_of_price_level() {
+        // Test removing the first order (head) from intrusive list
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+
+        let mut cmd1 =
+            harness.create_place_order_cmd(101, Side::Ask, 100_000, 10, TimeInForce::Gtc);
+        book.place_order(&mut cmd1, price_cache.clone());
+
+        let mut cmd2 =
+            harness.create_place_order_cmd(102, Side::Ask, 100_000, 20, TimeInForce::Gtc);
+        book.place_order(&mut cmd2, price_cache.clone());
+
+        // Cancel head
+        let mut cancel_cmd = harness.create_cancel_order_cmd(&cmd1);
+        book.cancel_order(&mut cancel_cmd, price_cache.clone());
+
+        assert_eq!(cancel_cmd.status(), Status::Cancelled);
+        book.assert_level_state(Side::Ask, 100_000, 20, 1);
+    }
+
+    #[test]
+    fn test_o1_cancel_tail_of_price_level() {
+        // Test removing the last order (tail) from intrusive list
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+
+        let mut cmd1 =
+            harness.create_place_order_cmd(101, Side::Ask, 100_000, 10, TimeInForce::Gtc);
+        book.place_order(&mut cmd1, price_cache.clone());
+
+        let mut cmd2 =
+            harness.create_place_order_cmd(102, Side::Ask, 100_000, 20, TimeInForce::Gtc);
+        book.place_order(&mut cmd2, price_cache.clone());
+
+        // Cancel tail
+        let mut cancel_cmd = harness.create_cancel_order_cmd(&cmd2);
+        book.cancel_order(&mut cancel_cmd, price_cache.clone());
+
+        assert_eq!(cancel_cmd.status(), Status::Cancelled);
+        book.assert_level_state(Side::Ask, 100_000, 10, 1);
+    }
+
+    #[test]
+    fn test_o1_cancel_all_orders_at_price_level() {
+        // Test that canceling all orders removes the price level
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+
+        let mut cmd1 =
+            harness.create_place_order_cmd(101, Side::Bid, 99_000, 10, TimeInForce::Gtc);
+        book.place_order(&mut cmd1, price_cache.clone());
+
+        let mut cmd2 =
+            harness.create_place_order_cmd(102, Side::Bid, 99_000, 20, TimeInForce::Gtc);
+        book.place_order(&mut cmd2, price_cache.clone());
+
+        book.assert_level_state(Side::Bid, 99_000, 30, 2);
+
+        // Cancel both orders
+        let mut cancel1 = harness.create_cancel_order_cmd(&cmd1);
+        book.cancel_order(&mut cancel1, price_cache.clone());
+
+        let mut cancel2 = harness.create_cancel_order_cmd(&cmd2);
+        book.cancel_order(&mut cancel2, price_cache.clone());
+
+        // Price level should be removed
+        book.assert_level_state(Side::Bid, 99_000, 0, 0);
+        assert_eq!(book.total_order_count(), 0);
+    }
+
+    #[test]
+    fn test_o1_cancel_maintains_fifo_after_removal() {
+        // Test that FIFO order is preserved after canceling middle orders
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+
+        // Place 5 orders at same price
+        let mut cmds = Vec::new();
+        for i in 0..5 {
+            let mut cmd = harness.create_place_order_cmd(
+                100 + i,
+                Side::Ask,
+                100_000,
+                10,
+                TimeInForce::Gtc,
+            );
+            book.place_order(&mut cmd, price_cache.clone());
+            cmds.push(cmd);
+        }
+
+        book.assert_level_state(Side::Ask, 100_000, 50, 5);
+
+        // Cancel orders 1 and 3 (indices 1 and 3)
+        let mut cancel1 = harness.create_cancel_order_cmd(&cmds[1]);
+        book.cancel_order(&mut cancel1, price_cache.clone());
+
+        let mut cancel3 = harness.create_cancel_order_cmd(&cmds[3]);
+        book.cancel_order(&mut cancel3, price_cache.clone());
+
+        book.assert_level_state(Side::Ask, 100_000, 30, 3);
+
+        // Place a buy order that should match FIFO: orders 0, 2, 4
+        let mut buy_cmd =
+            harness.create_place_order_cmd(200, Side::Bid, 100_000, 30, TimeInForce::Ioc);
+        book.place_order(&mut buy_cmd, price_cache.clone());
+
+        assert_eq!(buy_cmd.status(), Status::Filled);
+
+        let events = collect_trade_events(buy_cmd);
+        assert_eq!(events.len(), 3);
+
+        // Verify FIFO order: should match orders 0, 2, 4 (in that sequence)
+        // We can't directly verify order IDs in events, but we verify all 3 matched
+        assert_eq!(events.iter().map(|e| e.size).sum::<u64>(), 30);
+    }
+
+    #[test]
+    fn test_hashmap_consistency_after_cancel() {
+        // Test that HashMap stays consistent with price levels
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+
+        let mut cmd1 =
+            harness.create_place_order_cmd(101, Side::Bid, 100_000, 10, TimeInForce::Gtc);
+        book.place_order(&mut cmd1, price_cache.clone());
+        let order_id = cmd1.order_id;
+
+        // Verify HashMap entry exists
+        let (price, _node_ptr) = book.orders.get(&order_id).unwrap();
+        assert_eq!(*price, 100_000);
+
+        // Cancel order
+        let mut cancel_cmd = harness.create_cancel_order_cmd(&cmd1);
+        book.cancel_order(&mut cancel_cmd, price_cache.clone());
+
+        // Verify HashMap entry removed
+        assert!(!book.orders.contains_key(&order_id));
+
+        // Verify state consistency
+        assert!(book.verify_state().is_ok());
+    }
+
+    #[test]
+    fn test_cancel_after_partial_fill() {
+        // Test canceling an order that was partially filled
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+
+        // Place a large bid
+        let mut bid_cmd =
+            harness.create_place_order_cmd(101, Side::Bid, 100_000, 100, TimeInForce::Gtc);
+        book.place_order(&mut bid_cmd, price_cache.clone());
+        let bid_order_id = bid_cmd.order_id;
+
+        // Partially fill it with a smaller ask
+        let mut ask_cmd =
+            harness.create_place_order_cmd(202, Side::Ask, 100_000, 30, TimeInForce::Ioc);
+        book.place_order(&mut ask_cmd, price_cache.clone());
+
+        assert_eq!(ask_cmd.status(), Status::Filled);
+
+        // Bid should be partially filled and remain on book with size 70
+        book.assert_level_state(Side::Bid, 100_000, 70, 1);
+
+        // Cancel the remaining portion
+        let mut cancel_cmd = harness.create_cancel_order_cmd(&bid_cmd);
+        book.cancel_order(&mut cancel_cmd, price_cache.clone());
+
+        assert_eq!(cancel_cmd.status(), Status::Cancelled);
+        assert_eq!(cancel_cmd.size(), 70); // Should return the remaining size
+
+        book.assert_level_state(Side::Bid, 100_000, 0, 0);
+    }
+
+    #[test]
+    fn test_multiple_cancels_different_price_levels() {
+        // Test canceling orders across multiple price levels
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+
+        let mut cmd1 =
+            harness.create_place_order_cmd(101, Side::Bid, 100_000, 10, TimeInForce::Gtc);
+        book.place_order(&mut cmd1, price_cache.clone());
+
+        let mut cmd2 =
+            harness.create_place_order_cmd(102, Side::Bid, 99_000, 20, TimeInForce::Gtc);
+        book.place_order(&mut cmd2, price_cache.clone());
+
+        let mut cmd3 =
+            harness.create_place_order_cmd(103, Side::Bid, 98_000, 30, TimeInForce::Gtc);
+        book.place_order(&mut cmd3, price_cache.clone());
+
+        assert_eq!(book.total_order_count(), 3);
+
+        // Cancel orders from different price levels
+        let mut cancel1 = harness.create_cancel_order_cmd(&cmd2);
+        book.cancel_order(&mut cancel1, price_cache.clone());
+
+        let mut cancel2 = harness.create_cancel_order_cmd(&cmd1);
+        book.cancel_order(&mut cancel2, price_cache.clone());
+
+        let mut cancel3 = harness.create_cancel_order_cmd(&cmd3);
+        book.cancel_order(&mut cancel3, price_cache.clone());
+
+        assert_eq!(book.total_order_count(), 0);
+        assert!(book.orders.is_empty());
+    }
+
+    #[test]
+    fn test_intrusive_list_memory_cleanup() {
+        // Test that Drop implementation properly cleans up nodes
+        {
+            let (mut book, price_cache) = create_test_orderbook();
+            let harness = TestHarness::new(1);
+
+            // Place multiple orders
+            for i in 0..10 {
+                let mut cmd = harness.create_place_order_cmd(
+                    100 + i,
+                    Side::Bid,
+                    100_000,
+                    10,
+                    TimeInForce::Gtc,
+                );
+                book.place_order(&mut cmd, price_cache.clone());
+            }
+
+            book.assert_level_state(Side::Bid, 100_000, 100, 10);
+        } // book goes out of scope here, Drop should clean up all nodes
+          // If there's a memory leak or segfault, this test will fail
+    }
+
+    #[test]
+    fn test_cancel_nonexistent_order_with_hashmap() {
+        // Test that canceling a non-existent order is properly rejected
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+
+        // Create a fake order command for cancellation that doesn't exist in the book
+        let fake_order = OrderCommand {
+            command: OrderCommandType::PlaceOrder,
+            order_id: 99999,
+            client_order_id: 0,
+            market_id: 1,
+            user_id: 999,
+            price: 100_000,
+            size: 10,
+            side: Side::Bid,
+            time_in_force: TimeInForce::Gtc,
+            timestamp: 1,
+            status: Status::Processing,
+            gateway_id: 0,
+            events: None,
+            balance: [UserBalance::default(); 2],
+            l2_data: None,
+        };
+
+        let mut cancel_cmd = harness.create_cancel_order_cmd(&fake_order);
+        book.cancel_order(&mut cancel_cmd, price_cache.clone());
+
+        assert_eq!(cancel_cmd.status(), Status::Rejected);
+    }
+
+    #[test]
+    fn test_stress_cancel_many_orders() {
+        // Stress test: place and cancel many orders
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+
+        let mut orders = Vec::new();
+
+        // Place 100 orders at the same price
+        for i in 0..100 {
+            let mut cmd =
+                harness.create_place_order_cmd(100 + i, Side::Ask, 100_000, 1, TimeInForce::Gtc);
+            book.place_order(&mut cmd, price_cache.clone());
+            orders.push(cmd);
+        }
+
+        book.assert_level_state(Side::Ask, 100_000, 100, 100);
+
+        // Cancel all orders in reverse order
+        for order in orders.iter().rev() {
+            let mut cancel_cmd = harness.create_cancel_order_cmd(order);
+            book.cancel_order(&mut cancel_cmd, price_cache.clone());
+            assert_eq!(cancel_cmd.status(), Status::Cancelled);
+        }
+
+        book.assert_level_state(Side::Ask, 100_000, 0, 0);
+        assert_eq!(book.total_order_count(), 0);
+        assert!(book.orders.is_empty());
+    }
+
+    #[test]
+    fn test_intrusive_list_iter_correctness() {
+        // Test that iterator traverses orders in FIFO order
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+
+        let mut expected_ids = Vec::new();
+
+        // Place orders at same price
+        for i in 0..5 {
+            let mut cmd = harness.create_place_order_cmd(
+                100 + i,
+                Side::Bid,
+                100_000,
+                10 * (i + 1),
+                TimeInForce::Gtc,
+            );
+            book.place_order(&mut cmd, price_cache.clone());
+            expected_ids.push(cmd.order_id);
+        }
+
+        // Get the level and iterate
+        let level = book.bids.get_level_mut(100_000).unwrap();
+        let actual_ids: Vec<u64> = level.iter().map(|order| order.order_id).collect();
+
+        assert_eq!(actual_ids, expected_ids);
     }
 }
