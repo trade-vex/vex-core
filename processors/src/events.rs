@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::thread;
 
 use crate::journaling::ReplayControl;
 use common::L2MarketData;
@@ -60,37 +59,19 @@ impl KafkaEventsHandler {
     fn publish_event<T: Serialize>(&self, topic_name: &str, message_key: &str, payload: &T) {
         match serde_json::to_string(payload) {
             Ok(json_payload) => {
-                let producer = self.producer.clone();
-                let message_key = message_key.to_string();
-                let topic_name = topic_name.to_string();
+                let record = FutureRecord::to(topic_name)
+                    .payload(&json_payload)
+                    .key(message_key);
 
-                // Spawn async task to send to Kafka
-                thread::spawn(move || {
-                    let record = FutureRecord::to(&topic_name)
-                        .payload(&json_payload)
-                        .key(&message_key);
-
-                    match producer.send_result(record) {
-                        Ok(_) => {
-                            debug!(
-                                target: "events",
-                                component = "kafka_handler",
-                                action = "event_sent",
-                                topic = %topic_name,
-                                key = %message_key
-                            );
-                        }
-                        Err((e, _)) => {
-                            error!(
-                                target: "events",
-                                component = "kafka_handler",
-                                action = "event_failed",
-                                topic = %topic_name,
-                                error = ?e
-                            );
-                        }
-                    }
-                });
+                if let Err((e, _)) = self.producer.send_result(record) {
+                    error!(
+                        target: "events",
+                        component = "kafka_handler",
+                        action = "event_failed",
+                        topic = %topic_name,
+                        error = ?e
+                    );
+                }
             }
             Err(e) => error!(
                 target: "events",
