@@ -40,7 +40,7 @@ use crate::server::gateway_handler::{
 use crate::server::gateway_manager::GatewayManager;
 use crate::server::replay::{ExtendedRecordingDescriptor, RecorderDescriptorReader};
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
-use common::{FRAMESIZE, OrderCommand};
+use common::OrderCommand;
 use disruptor::{MultiProducer, SingleConsumerBarrier};
 use rusteron_archive::{
     Aeron, AeronArchiveAsyncConnect, AeronArchiveReplayParams, AeronAvailableImageLogger,
@@ -243,7 +243,18 @@ impl VexCoreServer {
                 );
             }
 
-            AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
+            self.idle();
+        }
+    }
+
+    /// Execute the configured idle strategy
+    #[inline]
+    fn idle(&self) {
+        use vex_config::IdleStrategy;
+        match self.config.idle_strategy {
+            IdleStrategy::Busy => AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0),
+            IdleStrategy::Yield => std::thread::yield_now(),
+            IdleStrategy::Sleep => std::thread::sleep(Duration::from_micros(50)),
         }
     }
 
@@ -424,6 +435,7 @@ impl VexCoreServer {
             let mut message_handler = Handler::leak(ReplayFragmentHandler {
                 producer,
                 gateway_id: 0,
+                bytes_consumed: 0,
             });
             let subscription = aeron.add_subscription(
                 &replay_channel_with_session.into_c_string(),
@@ -449,12 +461,15 @@ impl VexCoreServer {
                     AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
                     continue;
                 }
-                position += FRAMESIZE;
+                let start_bytes = message_handler.bytes_consumed;
+                position += start_bytes;
                 debug!(
                     target: "replay",
                     action = "position_advanced",
-                    position
+                    position,
+                    bytes_consumed = start_bytes
                 );
+                message_handler.bytes_consumed = 0; // reset for next batch
             }
             info!(
                 target: "replay",

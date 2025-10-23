@@ -40,46 +40,98 @@ use common::{
     TimeInForce, UserBalance,
 };
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
+    ptr::NonNull,
     sync::Arc,
 };
 
 pub mod tree;
 mod unit_tests;
 
-#[derive(Debug, Clone)]
+/// Intrusive doubly-linked list node for O(1) order removal
+struct OrderNode {
+    order: Order,
+    prev: Option<NonNull<OrderNode>>,
+    next: Option<NonNull<OrderNode>>,
+}
+
+impl OrderNode {
+    fn new(order: Order) -> Box<Self> {
+        Box::new(Self {
+            order,
+            prev: None,
+            next: None,
+        })
+    }
+}
+
+#[derive(Debug)]
 pub struct PriceLevel {
     total_volume: u64,
-    orders: VecDeque<Order>,
+    head: Option<NonNull<OrderNode>>,
+    tail: Option<NonNull<OrderNode>>,
+    count: usize,
 }
 
 impl PriceLevel {
     fn new() -> Self {
         Self {
             total_volume: 0,
-            orders: VecDeque::new(),
+            head: None,
+            tail: None,
+            count: 0,
         }
     }
 
     #[inline]
-    fn add_order(&mut self, order: Order) {
+    fn add_order(&mut self, order: Order) -> NonNull<OrderNode> {
         self.total_volume += order.size;
-        self.orders.push_back(order);
+        let mut new_node = OrderNode::new(order);
+        let new_node_ptr = NonNull::from(&mut *new_node);
+
+        unsafe {
+            if let Some(mut tail_ptr) = self.tail {
+                // Link the new node at the tail
+                tail_ptr.as_mut().next = Some(new_node_ptr);
+                new_node.prev = Some(tail_ptr);
+                self.tail = Some(new_node_ptr);
+            } else {
+                // First node
+                self.head = Some(new_node_ptr);
+                self.tail = Some(new_node_ptr);
+            }
+        }
+
+        Box::leak(new_node); // Keep the node alive
+        self.count += 1;
+        new_node_ptr
     }
 
+    /// Remove a specific order node by pointer (O(1))
     #[inline]
-    fn remove_order(&mut self, order_id: u64, cmd: &mut OrderCommand) {
-        if let Ok(pos) = self
-            .orders
-            .binary_search_by_key(&order_id, |order| order.order_id)
-            && let Some(removed_order) = self.orders.remove(pos)
-        {
-            self.total_volume -= removed_order.size;
-            cmd.set_price(removed_order.price);
-            cmd.set_size(removed_order.size);
-            cmd.set_status(Status::Cancelled);
-        } else {
-            cmd.set_status(Status::Rejected);
+    fn remove_order_node(&mut self, node_ptr: NonNull<OrderNode>) -> Order {
+        unsafe {
+            let node = Box::from_raw(node_ptr.as_ptr());
+
+            // Update prev node's next pointer
+            if let Some(mut prev_ptr) = node.prev {
+                prev_ptr.as_mut().next = node.next;
+            } else {
+                // Removing head
+                self.head = node.next;
+            }
+
+            // Update next node's prev pointer
+            if let Some(mut next_ptr) = node.next {
+                next_ptr.as_mut().prev = node.prev;
+            } else {
+                // Removing tail
+                self.tail = node.prev;
+            }
+
+            self.count -= 1;
+            self.total_volume = self.total_volume.saturating_sub(node.order.size);
+            node.order
         }
     }
 
@@ -90,7 +142,49 @@ impl PriceLevel {
 
     /// Get the number of orders at this price level
     pub fn get_order_count(&self) -> u64 {
-        self.orders.len() as u64
+        self.count as u64
+    }
+
+    /// Check if the price level is empty
+    fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// Iterator over orders in FIFO order
+    pub fn iter(&self) -> PriceLevelIterator {
+        PriceLevelIterator {
+            current: self.head,
+        }
+    }
+}
+
+/// Iterator for traversing orders in a price level
+pub struct PriceLevelIterator {
+    current: Option<NonNull<OrderNode>>,
+}
+
+impl Iterator for PriceLevelIterator {
+    type Item = Order;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.current.map(|node_ptr| unsafe {
+            let node = node_ptr.as_ref();
+            self.current = node.next;
+            node.order.clone()
+        })
+    }
+}
+
+impl Drop for PriceLevel {
+    fn drop(&mut self) {
+        // Clean up all nodes in the list
+        let mut current = self.head;
+        while let Some(node_ptr) = current {
+            unsafe {
+                let node = Box::from_raw(node_ptr.as_ptr());
+                current = node.next;
+            }
+        }
     }
 }
 
@@ -101,8 +195,8 @@ pub struct OrderBook<Ask: BookSide, Bid: BookSide> {
     bids: Bid,
     /// Asks are stored in a BTreeMap sorted from low to high price.
     asks: Ask,
-    /// Orders for fast lookups in case of cancellations
-    orders: HashMap<u64, u64>,
+    /// Order ID -> (price, node pointer) for O(1) cancellations
+    orders: HashMap<u64, (u64, NonNull<OrderNode>)>,
     /// Market ID for this order book
     market_id: u32,
 }
@@ -145,51 +239,65 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 break;
             }
 
-            let mut orders_to_remove = Vec::new();
-            // Iterate through orders at this price level (FIFO).
-            for (idx, maker_order) in level.orders.iter_mut().enumerate() {
+            let mut nodes_to_remove = Vec::new();
+
+            // Iterate through orders at this price level (FIFO via intrusive list)
+            let mut current_node = level.head;
+            while let Some(node_ptr) = current_node {
                 if remaining_size == 0 {
                     break;
                 }
 
-                if maker_order.user_id == cmd.user_id {
-                    continue;
-                }
+                unsafe {
+                    let node = node_ptr.as_ref();
+                    let maker_order = &node.order;
 
-                let trade_size = remaining_size.min(maker_order.size);
+                    if maker_order.user_id == cmd.user_id {
+                        current_node = node.next;
+                        continue;
+                    }
 
-                // Update sizes
-                remaining_size -= trade_size;
-                maker_order.size -= trade_size;
-                level.total_volume -= trade_size;
+                    let trade_size = remaining_size.min(maker_order.size);
 
-                let maker_order_completed = maker_order.size == 0;
+                    // Update sizes
+                    remaining_size -= trade_size;
+                    let new_maker_size = maker_order.size - trade_size;
 
-                // Create and attach the trade event
-                let event = MatcherTradeEvent {
-                    active_order_completed: remaining_size == 0,
-                    matched_order_id: maker_order.order_id,
-                    maker_user_id: maker_order.user_id,
-                    matched_order_completed: maker_order_completed,
-                    price,
-                    size: trade_size,
-                    next_event: None,
-                    maker_balance: [UserBalance::default(); 2], // filled by risk engine
-                };
-                cmd.attatch_event(Box::new(event));
+                    let maker_order_completed = new_maker_size == 0;
 
-                if maker_order_completed {
-                    orders_to_remove.push(idx);
-                    self.orders.remove(&maker_order.order_id);
+                    // Create and attach the trade event
+                    let event = MatcherTradeEvent {
+                        active_order_completed: remaining_size == 0,
+                        matched_order_id: maker_order.order_id,
+                        maker_user_id: maker_order.user_id,
+                        matched_order_completed: maker_order_completed,
+                        price,
+                        size: trade_size,
+                        next_event: None,
+                        maker_balance: [UserBalance::default(); 2], // filled by risk engine
+                    };
+                    cmd.attatch_event(Box::new(event));
+
+                    if maker_order_completed {
+                        nodes_to_remove.push((maker_order.order_id, node_ptr));
+                        current_node = node.next;
+                    } else {
+                        // Partial fill - update the order size and volume in place
+                        let node_mut = node_ptr.as_ptr();
+                        (*node_mut).order.size = new_maker_size;
+                        level.total_volume -= trade_size;
+                        current_node = node.next;
+                    }
                 }
             }
 
-            // Remove filled orders from the queue.
-            for idx in orders_to_remove.iter().rev() {
-                level.orders.remove(*idx).unwrap();
+            // Remove filled orders from the list and hashmap
+            for (order_id, node_ptr) in nodes_to_remove {
+                level.remove_order_node(node_ptr);
+                self.orders.remove(&order_id);
             }
 
-            if level.orders.is_empty() {
+            if level.is_empty() {
                 filled_price_levels.push(price);
             }
         }
@@ -225,6 +333,11 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     ///    All the contraints are NOT checked in the ORDERBOOK, must be guaranteed by upstream systems
     ///    They are not included here to avoid redundant checks that are already made
     pub fn place_order(&mut self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) {
+        // If the command is already rejected (e.g., by upstream validation), skip processing
+        if cmd.status == Status::Rejected {
+            return;
+        }
+
         match cmd.time_in_force {
             TimeInForce::Gtc => {
                 // Handle GTC (Good 'Til Canceled) orders
@@ -264,8 +377,10 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 cmd.set_size(remaining);
             }
         }
-        self.record_snapshot(cmd);
-        self.update_price_cache(price_cache);
+        if cmd.status != Status::Rejected {
+            self.record_snapshot(cmd);
+            self.update_price_cache(price_cache);
+        }
     }
 
     /// Cancel Order
@@ -295,13 +410,20 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
         if cmd.status == Status::Rejected {
             return;
         }
-        if let Some(price) = self.orders.remove(&cmd.order_id) {
+        // O(1) lookup via HashMap: order_id -> (price, node_ptr)
+        if let Some((price, node_ptr)) = self.orders.remove(&cmd.order_id) {
             if let Some(level) = self.bids.get_level_mut(price) {
-                level.remove_order(cmd.order_id, cmd);
+                let removed_order = level.remove_order_node(node_ptr);
+                cmd.set_price(removed_order.price);
+                cmd.set_size(removed_order.size);
+                cmd.set_status(Status::Cancelled);
                 self.bids.remove_level_if_empty(price);
                 self.record_snapshot(cmd);
             } else if let Some(level) = self.asks.get_level_mut(price) {
-                level.remove_order(cmd.order_id, cmd);
+                let removed_order = level.remove_order_node(node_ptr);
+                cmd.set_price(removed_order.price);
+                cmd.set_size(removed_order.size);
+                cmd.set_status(Status::Cancelled);
                 self.asks.remove_level_if_empty(price);
                 self.record_snapshot(cmd);
             } else {
@@ -311,7 +433,9 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
         } else {
             cmd.set_status(Status::Rejected);
         }
-        self.update_price_cache(price_cache);
+        if cmd.status != Status::Rejected {
+            self.update_price_cache(price_cache);
+        }
     }
 
     fn update_price_cache(&self, price_cache: Arc<PriceCache>) {
@@ -336,8 +460,8 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             Side::Bid => self.bids.get_or_create_level(cmd.price),
             Side::Ask => self.asks.get_or_create_level(cmd.price),
         };
-        level.add_order(order);
-        self.orders.insert(cmd.order_id, cmd.price);
+        let node_ptr = level.add_order(order);
+        self.orders.insert(cmd.order_id, (cmd.price, node_ptr));
     }
 
     /// Check if an order can be filled completely
@@ -398,16 +522,22 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
         let mut l2_data = L2MarketData::new();
 
         // Fill bid levels (highest price first)
+        let mut bid_idx = 0;
         for (price, level) in self.get_bids().take(L2SIZE) {
-            l2_data.bid_prices.push(price);
-            l2_data.bid_volumes.push(level.get_total_volume());
+            l2_data.bid_prices[bid_idx] = price;
+            l2_data.bid_volumes[bid_idx] = level.get_total_volume();
+            bid_idx += 1;
         }
+        l2_data.bid_depth = bid_idx;
 
         // Fill ask levels (lowest price first)
+        let mut ask_idx = 0;
         for (price, level) in self.get_asks().take(L2SIZE) {
-            l2_data.ask_prices.push(price);
-            l2_data.ask_volumes.push(level.get_total_volume());
+            l2_data.ask_prices[ask_idx] = price;
+            l2_data.ask_volumes[ask_idx] = level.get_total_volume();
+            ask_idx += 1;
         }
+        l2_data.ask_depth = ask_idx;
 
         // Set timestamp
         l2_data.timestamp = std::time::SystemTime::now()

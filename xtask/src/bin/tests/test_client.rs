@@ -95,6 +95,7 @@ fn run_correctness_test(
             market_id,
             price: 150,
             status: common::Status::Processing,
+            gateway_id: 0,
             events: None,
             balance: [UserBalance::default(); 2],
             l2_data: None,

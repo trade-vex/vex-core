@@ -262,6 +262,7 @@
 //     assert!(!events.is_empty(), "Expected to receive trade events");
 
 //     // Check for specific trade events
+            gateway_id: 0,
 //     let trade_events: Vec<_> = events
 //         .iter()
 //         .filter(|event| event.event_type == common::model::enums::MatcherEventType::Trade)

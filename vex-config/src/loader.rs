@@ -148,16 +148,18 @@ impl ConfigLoader {
             return Ok(default_config);
         }
 
-        // Add environment-specific variables
+        // Add environment variables with proper precedence order:
+        // 1. General prefix (e.g., VEX__)
+        // 2. Environment-specific prefix (e.g., VEX_DEV__) - higher precedence
         if let Some(prefix) = &self.env_prefix {
-            let env_prefix = format!("{}_{}", prefix, env.env_key());
+            // Add general environment variables
             builder = builder.add_source(
-                config::Environment::with_prefix(&env_prefix)
+                config::Environment::with_prefix(prefix)
                     .try_parsing(true)
                     .separator("__"),
             );
 
-            // Add environment-specific prefix (higher precedence)
+            // Add environment-specific variables (higher precedence)
             let env_specific_prefix = format!("{}_{}", prefix, env.env_key());
             builder = builder.add_source(
                 config::Environment::with_prefix(&env_specific_prefix)

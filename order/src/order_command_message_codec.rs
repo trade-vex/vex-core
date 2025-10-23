@@ -7,7 +7,7 @@ pub use crate::SBE_SCHEMA_ID;
 pub use crate::SBE_SCHEMA_VERSION;
 pub use crate::SBE_SEMANTIC_VERSION;
 
-pub const SBE_BLOCK_LENGTH: u16 = 64;
+pub const SBE_BLOCK_LENGTH: u16 = 56;
 pub const SBE_TEMPLATE_ID: u16 = 1;
 
 pub mod encoder {
@@ -198,6 +198,21 @@ pub mod encoder {
             self.get_buf_mut().put_u8_at(offset, value as u8)
         }
 
+        /// primitive field 'gateway_id'
+        /// - min value: 0
+        /// - max value: 254
+        /// - null value: 0xff
+        /// - characterEncoding: null
+        /// - semanticType: null
+        /// - encodedOffset: 56
+        /// - encodedLength: 1
+        /// - version: 0
+        #[inline]
+        pub fn gateway_id(&mut self, value: u8) {
+            let offset = self.offset + 56;
+            self.get_buf_mut().put_u8_at(offset, value);
+        }
+
     }
 
 } // end encoder
@@ -342,6 +357,12 @@ pub mod decoder {
         #[inline]
         pub fn status(&self) -> status::Status {
             self.get_buf().get_u8_at(self.offset + 55).into()
+        }
+
+        /// primitive field - 'OPTIONAL'
+        #[inline]
+        pub fn gateway_id(&self) -> u8 {
+            self.get_buf().get_u8_at(self.offset + 56)
         }
 
     }
