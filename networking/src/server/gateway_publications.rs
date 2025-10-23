@@ -38,8 +38,9 @@ impl Publications {
 
     // Publisher (event handler thread)
     pub fn publish_response(&self, cmd: &OrderCommand) {
-        let gateway_id = if cmd.command == OrderCommandType::CancelOrder {
-            cmd.user_id as u8
+        // Prefer gateway_id field if set, otherwise fallback to Snowflake extraction
+        let gateway_id = if cmd.gateway_id != 0 {
+            cmd.gateway_id
         } else {
             Snowflake::gateway_from_id(cmd.order_id())
         };
