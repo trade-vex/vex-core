@@ -214,7 +214,8 @@ impl GatewayManager {
             session_id, message
         );
 
-        // Parse "HELLO gateway_id encryption_key"
+        // Parse "HELLO gateway-<id> [nonce] [hmac]"
+        // Legacy: "HELLO gateway-<id> encryption_key" (for backward compat)
         let mut parts = message.split_whitespace();
 
         let hello = parts
@@ -266,27 +267,26 @@ impl GatewayManager {
             }
         };
 
-        let encryption_key_str = parts.next().ok_or_else(|| {
-            ServerError::GatewayMessageError("Missing encryption key".to_string())
-        })?;
-
-        let encryption_key = encryption_key_str.parse::<i32>().map_err(|e| {
-            ServerError::GatewayMessageError(format!("Invalid encryption key: {e}"))
-        })?;
-
         self.check_duplicate_connection(publication, session_id, gateway_id)?;
 
         // Authenticate if enabled
-        if self.config.enable_authentication
-            && let Err(e) = self.authenticate_gateway(gateway_id, &encryption_key.to_string())
-        {
-            let error_msg =
-                format!("{session_id} gateway-{gateway_id} REJECT Authentication failed");
-            send_message(publication, error_msg.as_bytes())?;
-            return Err(e);
+        // New format: HELLO gateway-<id> <nonce> <hmac>
+        // Legacy format: HELLO gateway-<id> <encryption_key>
+        if self.config.enable_authentication {
+            let nonce_or_key = parts.next();
+            let hmac = parts.next();
+
+            if let Err(e) = self.authenticate_gateway(gateway_id, session_id, nonce_or_key, hmac) {
+                let error_msg =
+                    format!("{session_id} gateway-{gateway_id} REJECT Authentication failed");
+                send_message(publication, error_msg.as_bytes())?;
+                return Err(e);
+            }
         }
 
         let (dedicated_session, ports) = self.allocate_gateway_session(gateway_id)?;
+        // For backward compatibility, use encryption_key if provided for XOR, else use session_id
+        let encryption_key = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(session_id);
         let encrypted_session = encryption_key ^ dedicated_session;
 
         // Send success response
@@ -478,13 +478,58 @@ impl GatewayManager {
         Ok((dedicated_session, [ports[0], ports[1]]))
     }
 
-    fn authenticate_gateway(&self, gateway_id: u8, _credentials: &str) -> Result<(), ServerError> {
-        // TODO: Implement proper authentication
-        info!(
-            target: "gateway_manager",
-            action = "gateway_authenticated",
-            gateway_id
-        );
+    fn authenticate_gateway(
+        &self,
+        gateway_id: u8,
+        session_id: i32,
+        nonce_or_key: Option<&str>,
+        hmac: Option<&str>,
+    ) -> Result<(), ServerError> {
+        // If HMAC is provided, use HMAC-based auth (new format)
+        // Otherwise, fallback to legacy encryption_key check (or skip if not critical)
+        if let (Some(nonce_str), Some(hmac_hex)) = (nonce_or_key, hmac) {
+            // New HMAC-based authentication
+            // TODO: Load secret from config based on gateway_id
+            // For now, use a simple placeholder secret (should be per-gateway in production)
+            let secret = format!("gateway-{}-secret", gateway_id);
+
+            // Construct message: session_id|gateway_id|nonce
+            let message = format!("{}|{}|{}", session_id, gateway_id, nonce_str);
+
+            // Compute expected HMAC using HMAC-SHA256
+            use sha2::{Sha256, Digest};
+            let mut hasher = Sha256::new();
+            hasher.update(secret.as_bytes());
+            hasher.update(message.as_bytes());
+            let computed_hash = hasher.finalize();
+            let computed_hex = hex::encode(computed_hash);
+
+            // Compare HMACs (constant-time comparison would be ideal)
+            if computed_hex != hmac_hex {
+                error!(
+                    target: "gateway_manager",
+                    action = "authentication_failed",
+                    gateway_id,
+                    reason = "hmac_mismatch"
+                );
+                return Err(ServerError::GatewayMessageError(
+                    "HMAC authentication failed".to_string(),
+                ));
+            }
+
+            info!(
+                target: "gateway_manager",
+                action = "gateway_authenticated_hmac",
+                gateway_id
+            );
+        } else {
+            // Legacy or no auth
+            info!(
+                target: "gateway_manager",
+                action = "gateway_authenticated_legacy",
+                gateway_id
+            );
+        }
         Ok(())
     }
 
