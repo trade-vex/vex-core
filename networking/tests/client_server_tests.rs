@@ -82,6 +82,7 @@ fn test_client_server_communication() {
             price: 150,
             time_in_force: TimeInForce::Gtc,
             status: common::Status::Processing,
+            gateway_id: 0,
             events: None,
             balance: [common::UserBalance::default(); 2],
             client_order_id: 0,
