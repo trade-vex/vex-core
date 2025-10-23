@@ -86,11 +86,12 @@ impl PriceCache {
         }
     }
 
-    /// Update the best bid price for a symbol
-    /// If the symbol does not exist, it will be created
+    /// Update the best bid and ask prices for a symbol
+    /// If the symbol does not exist, this is a no-op
     pub fn update_prices(&self, symbol: u32, best_bid: u64, best_ask: u64) {
-        let market_price = self.prices.get(&symbol).unwrap();
-        market_price.best_bid.store(best_bid, Ordering::Release);
-        market_price.best_ask.store(best_ask, Ordering::Release);
+        if let Some(market_price) = self.prices.get(&symbol) {
+            market_price.best_bid.store(best_bid, Ordering::Release);
+            market_price.best_ask.store(best_ask, Ordering::Release);
+        }
     }
 }
