@@ -4,6 +4,18 @@ use crate::{ConfigError, Environment, Result};
 use common::{MAX_GATEWAYS, ORDERCOMMANDSIZE};
 use serde::{Deserialize, Serialize};
 
+/// Aeron idle strategy for controlling CPU usage vs latency tradeoff
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum IdleStrategy {
+    /// Busy-spin for lowest latency (highest CPU usage)
+    Busy,
+    /// Yield to other threads (moderate CPU usage, slightly higher latency)
+    Yield,
+    /// Sleep for microseconds (lowest CPU usage, higher latency)
+    Sleep,
+}
+
 /// Core networking configuration for VEX Core server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreNetworkingConfig {
@@ -37,6 +49,8 @@ pub struct CoreNetworkingConfig {
     pub request_control_channel: String,
     pub response_control_channel: String,
     pub recording_events_channel: String,
+    /// Idle strategy for Aeron polling loops
+    pub idle_strategy: IdleStrategy,
 }
 
 impl CoreNetworkingConfig {
@@ -68,6 +82,7 @@ impl CoreNetworkingConfig {
             request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
             response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
             recording_events_channel: "aeron:udp?endpoint=localhost:0".to_string(),
+            idle_strategy: IdleStrategy::Yield, // Lower CPU usage for dev
         }
     }
 
@@ -90,6 +105,7 @@ impl CoreNetworkingConfig {
             request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
             response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
             recording_events_channel: "aeron:udp?endpoint=localhost:0".to_string(),
+            idle_strategy: IdleStrategy::Yield, // Lower CPU usage for tests
         }
     }
 
@@ -112,6 +128,7 @@ impl CoreNetworkingConfig {
             request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
             response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
             recording_events_channel: "aeron:udp?endpoint=localhost:8012".to_string(),
+            idle_strategy: IdleStrategy::Busy, // Lowest latency for prod
         }
     }
 

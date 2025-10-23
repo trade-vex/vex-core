@@ -15,7 +15,7 @@ pub use environment::Environment;
 pub use error::{ConfigError, Result};
 pub use loader::ConfigLoader;
 pub use logging::LoggingConfig;
-pub use networking::{CoreNetworkingConfig, GatewayNetworkingConfig};
+pub use networking::{CoreNetworkingConfig, GatewayNetworkingConfig, IdleStrategy};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 pub use symbols::SymbolSpecificationConfig;
