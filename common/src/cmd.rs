@@ -83,6 +83,10 @@ pub struct OrderCommand {
     /// Status of the order
     pub status: Status,
 
+    /// Gateway ID for response routing (replaces user_id overloading for cancel)
+    /// 0 means not set; fallback to Snowflake extraction from order_id
+    pub gateway_id: u8,
+
     /// Passive order linked list
     pub events: Option<Box<MatcherTradeEvent>>,
 
@@ -98,6 +102,7 @@ pub struct OrderCommand {
 impl Default for OrderCommand {
     fn default() -> Self {
         Self {
+            gateway_id: 0,
             order_id: 0,
             market_id: 0,
             user_id: 0,
@@ -137,6 +142,7 @@ impl OrderCommand {
             timestamp: 0,
             status: Status::Processing,
             client_order_id,
+            gateway_id: 0,
             events: None,
             balance: [UserBalance::default(); 2],
             l2_data: None,
@@ -157,6 +163,7 @@ impl OrderCommand {
             status: Status::Processing,
             balance: [UserBalance::default(); 2],
             client_order_id: 0,
+            gateway_id: 0,
             events: None,
             l2_data: None,
         }
@@ -172,6 +179,7 @@ impl OrderCommand {
             size: amount,
             side: Side::Ask,
             time_in_force: TimeInForce::Gtc,
+            gateway_id: 0,
             timestamp: 0,
             status: Status::Processing,
             balance: [UserBalance::default(); 2],
@@ -340,6 +348,7 @@ pub fn encode_order_command(order_command: &OrderCommand, buf: &mut [u8]) -> Sbe
     encoder.time_in_force(order_command.time_in_force.into());
     encoder.timestamp(order_command.timestamp);
     encoder.status(order_command.status.into());
+    encoder.gateway_id(order_command.gateway_id);
     Ok(())
 }
 
@@ -359,7 +368,8 @@ pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
         side: decoder.side().try_into()?,
         time_in_force: decoder.time_in_force().try_into()?,
         timestamp: decoder.timestamp(),
-        status: decoder.status().try_into()?, // Default status since decoder doesn't have status method
+        status: decoder.status().try_into()?,
+        gateway_id: decoder.gateway_id(),
         events: None,
         balance: [UserBalance::default(); 2],
         l2_data: None,
