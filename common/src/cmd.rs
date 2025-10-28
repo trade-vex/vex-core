@@ -181,6 +181,25 @@ impl OrderCommand {
         }
     }
 
+    pub fn withdraw_funds(user_id: u64, amount: u64, asset: u16) -> Self {
+        Self {
+            command: OrderCommandType::WithdrawFunds,
+            order_id: 0,
+            market_id: asset as u32,
+            user_id,
+            price: 0,
+            size: amount,
+            side: Side::Ask,
+            time_in_force: TimeInForce::Gtc,
+            timestamp: 0,
+            status: Status::Processing,
+            balance: [UserBalance::default(); 2],
+            client_order_id: 0,
+            events: None,
+            l2_data: None,
+        }
+    }
+
     pub fn status(&self) -> Status {
         self.status
     }

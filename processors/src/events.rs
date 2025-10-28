@@ -6,10 +6,11 @@ use common::L2MarketData;
 use common::MatcherTradeEvent;
 use common::Order;
 use common::OrderCommand;
+use common::OrderCommandType;
 use common::Status;
 use common::UserBalance;
 use common::{
-    BalanceEvent, CancelOrderEvent, OrderEvent, OrderbookEvent, OrderbookLevel, TradeEvent,
+    BalanceEvent, CancelOrderEvent, DepositEvent, OrderEvent, OrderbookEvent, OrderbookLevel, TradeEvent, WithdrawEvent,
 };
 use common::{base_asset, order_debug, order_info, quote_asset};
 use rdkafka::config::ClientConfig;
@@ -279,6 +280,48 @@ impl KafkaEventsHandler {
         }
     }
 
+    fn publish_deposit_event(&self, cmd: &OrderCommand) {
+        let deposit_event = DepositEvent {
+            user_id: cmd.user_id(),
+            asset_id: cmd.market_id() as u16,
+            amount: cmd.size(),
+            timestamp: cmd.timestamp(),
+        };
+
+        let topic_name = format!("asset-{}-deposits", cmd.market_id());
+        self.publish_event(&topic_name, &cmd.user_id().to_string(), &deposit_event);
+        debug!(
+            target: "events",
+            component = "kafka_handler",
+            action = "deposit_event_published",
+            user_id = cmd.user_id(),
+            asset_id = cmd.market_id(),
+            amount = cmd.size(),
+            topic = %topic_name
+        );
+    }
+
+    fn publish_withdraw_event(&self, cmd: &OrderCommand) {
+        let withdraw_event = WithdrawEvent {
+            user_id: cmd.user_id(),
+            asset_id: cmd.market_id() as u16,
+            amount: cmd.size(),
+            timestamp: cmd.timestamp(),
+        };
+
+        let topic_name = format!("asset-{}-withdrawals", cmd.market_id());
+        self.publish_event(&topic_name, &cmd.user_id().to_string(), &withdraw_event);
+        debug!(
+            target: "events",
+            component = "kafka_handler",
+            action = "withdraw_event_published",
+            user_id = cmd.user_id(),
+            asset_id = cmd.market_id(),
+            amount = cmd.size(),
+            topic = %topic_name
+        );
+    }
+
     fn publish_response(&self, cmd: &OrderCommand) {
         self.publications.publish_response(cmd);
     }
@@ -302,6 +345,41 @@ impl EventsHandler for KafkaEventsHandler {
             stage = "events",
             handler = "kafka"
         );
+
+        // Handle deposit and withdraw commands separately
+        match cmd.command {
+            OrderCommandType::DepositFunds => {
+                if cmd.status() == Status::Processed {
+                    order_debug!(
+                        "events_publish_deposit",
+                        cmd,
+                        stage = "events",
+                        handler = "kafka"
+                    );
+                    self.publish_deposit_event(cmd);
+                    self.publish_deposit_withdrwal_event(cmd);
+                }
+                self.publish_response(cmd);
+                return;
+            }
+            OrderCommandType::WithdrawFunds => {
+                if cmd.status() == Status::Processed {
+                    order_debug!(
+                        "events_publish_withdraw",
+                        cmd,
+                        stage = "events",
+                        handler = "kafka"
+                    );
+                    self.publish_withdraw_event(cmd);
+                    self.publish_deposit_withdrwal_event(cmd);
+                }
+                self.publish_response(cmd);
+                return;
+            }
+            _ => {
+                // Continue with existing order book command handling
+            }
+        }
 
         let market_id = cmd.market_id();
         let taker_id = cmd.user_id();
@@ -509,6 +587,48 @@ mod tests {
         filled_cmd.attatch_event(Box::new(trade1));
 
         handler.handle_processed_command(&mut filled_cmd);
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    }
+
+    #[tokio::test]
+    async fn test_kafka_events_handler_deposit_funds() {
+        let handler = KafkaEventsHandler::new(
+            "localhost:9092",
+            Arc::new(Publications::new()),
+            ReplayControl::disabled(),
+        );
+
+        let mut cmd = OrderCommand::deposit_funds(
+            1005, // user_id
+            1000, // amount
+            1,    // asset_id
+        );
+        cmd.set_status(Status::Processed);
+        cmd.timestamp = 1004;
+
+        handler.handle_processed_command(&mut cmd);
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    }
+
+    #[tokio::test]
+    async fn test_kafka_events_handler_withdraw_funds() {
+        let handler = KafkaEventsHandler::new(
+            "localhost:9092",
+            Arc::new(Publications::new()),
+            ReplayControl::disabled(),
+        );
+
+        let mut cmd = OrderCommand::withdraw_funds(
+            1006, // user_id
+            500,  // amount
+            1,    // asset_id
+        );
+        cmd.set_status(Status::Processed);
+        cmd.timestamp = 1005;
+
+        handler.handle_processed_command(&mut cmd);
 
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
