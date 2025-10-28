@@ -50,3 +50,19 @@ pub struct OrderbookLevel {
     pub price: u64,
     pub size: u64,
 }
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DepositEvent {
+    pub user_id: u64,
+    pub asset_id: u16,
+    pub amount: u64,
+    pub timestamp: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct WithdrawEvent {
+    pub user_id: u64,
+    pub asset_id: u16,
+    pub amount: u64,
+    pub timestamp: u64,
+}
