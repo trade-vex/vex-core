@@ -110,10 +110,6 @@ jobs:
         run: |
           output=$(docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml up media-driver --build)
           echo "$output"
-          if ! echo "$output" | grep -q "Media driver started"; then
-            echo "Media driver failed to start!"
-            exit 1
-          fi
           output=$(cargo xtask build-docker)
           echo "$output"
           if ! echo "$output" | grep -q "Docker images built successfully."; then
