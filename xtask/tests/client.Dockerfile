@@ -1,23 +1,43 @@
-# ---- Builder Stage ----
-FROM rust:1.88 AS builder
+# ---- Chef Planner Stage ----
+FROM --platform=$BUILDPLATFORM rust:1.88 AS chef
+RUN cargo install cargo-chef
 WORKDIR /usr/src/app
+
+# ---- Chef Recipe Stage ----
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ---- Builder Stage ----
+FROM chef AS builder
+WORKDIR /usr/src/app
+
+# Install system dependencies + mold linker for faster linking
 RUN apt-get update && apt-get install -y wget iproute2 build-essential clang pkg-config git libbsd-dev \
-    && wget https://github.com/Kitware/CMake/releases/download/v3.30.0/cmake-3.30.0-linux-x86_64.tar.gz \
-    && tar -xzvf cmake-3.30.0-linux-x86_64.tar.gz --strip-components=1 -C /usr/local \
-    && rm cmake-3.30.0-linux-x86_64.tar.gz && rm -rf /var/lib/apt/lists/*
+    && ARCH=$(uname -m) && if [ "$ARCH" = "aarch64" ]; then ARCH="aarch64"; else ARCH="x86_64"; fi \
+    && wget https://github.com/Kitware/CMake/releases/download/v3.30.0/cmake-3.30.0-linux-${ARCH}.tar.gz \
+    && tar -xzf cmake-3.30.0-linux-${ARCH}.tar.gz --strip-components=1 -C /usr/local \
+    && rm cmake-3.30.0-linux-${ARCH}.tar.gz \
+    && wget https://github.com/rui314/mold/releases/download/v2.35.1/mold-2.35.1-${ARCH}-linux.tar.gz \
+    && tar -xzf mold-2.35.1-${ARCH}-linux.tar.gz -C /usr/local --strip-components=1 \
+    && rm mold-2.35.1-${ARCH}-linux.tar.gz \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN rustup component add rustfmt
 
-# Cache deps
-COPY ./xtask/tests/.docker-cache-layer/ ./
-RUN cargo build --release
+# Configure mold as default linker
+ENV RUSTFLAGS="-C link-arg=-fuse-ld=mold"
 
+# Build dependencies - this layer is cached unless dependencies change
+COPY --from=planner /usr/src/app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Build application
 COPY . .
-# Build the dedicated 'test_server' binary
 RUN cargo build --release --bin test_client --package xtask
 
 # ---- Final Stage ----
-FROM debian:bookworm-slim
+FROM --platform=$BUILDPLATFORM debian:bookworm-slim
 RUN apt-get update && apt-get install -y iproute2
 # Copy the built test client binary
 COPY --from=builder /usr/src/app/target/release/test_client /usr/local/bin/test_client
