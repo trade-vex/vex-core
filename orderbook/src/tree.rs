@@ -63,10 +63,8 @@ impl BookSide for BTreeAskSide {
     }
 
     fn remove_level_if_empty(&mut self, price: u64) {
-        if let Some(level) = self.tree.get(&price) {
-            if level.orders.is_empty() {
-                self.tree.remove(&price);
-            }
+        if let Some(level) = self.tree.get(&price) && level.orders.is_empty() {
+            self.tree.remove(&price);
         }
     }
 
@@ -114,10 +112,8 @@ impl BookSide for BTreeBidSide {
     }
 
     fn remove_level_if_empty(&mut self, price: u64) {
-        if let Some(level) = self.tree.get(&Reverse(price)) {
-            if level.orders.is_empty() {
-                self.tree.remove(&Reverse(price));
-            }
+        if let Some(level) = self.tree.get(&Reverse(price)) && level.orders.is_empty(){
+            self.tree.remove(&Reverse(price));
         }
     }
 
