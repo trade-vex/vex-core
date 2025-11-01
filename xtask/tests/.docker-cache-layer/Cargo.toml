@@ -1,0 +1,33 @@
+[package]
+name = "cache-deps"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = "0.1"
+blart = "0.3.0"
+borsh = { version = "1.5.7", default-features = false, features = ["hashbrown", "derive", "de_strict_order"] }
+clap = { version = "4.5", features = ["derive"] }
+config = "0.14"
+crossbeam = "0.8.4"
+dashmap = "6.1.0"
+disruptor = "3.4.0"
+duct = "0.13" 
+hashbrown = "0.15.4"
+hashlink = "0.10.0"
+hdrhistogram = "7.5"
+num_enum = "0.7.2"
+rand = "0.8.5"
+rusteron-client = "0.1.143"
+rusteron-media-driver = "0.1.143"
+serde_json = "1.0"
+serde = { version = "1.0.203", features = ["derive"] }
+serde_yaml = "0.9"
+slab = "0.4"
+tempfile = "3.12"
+test-log = { version = "0.2.15", features = ["trace"] }
+thiserror = "2.0.12"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = "0.3"
