@@ -192,10 +192,10 @@ mod test {
                     && let Some(level) = self.bids.get_level_mut(*price)
                 {
                     return level.orders.iter().find(|o| o.order_id == order_id);
-                } else if let Some(price) = self.orders.get(&order_id) {
-                    if let Some(level) = self.asks.get_level_mut(*price) {
-                        return level.orders.iter().find(|o| o.order_id == order_id);
-                    }
+                } else if let Some(price) = self.orders.get(&order_id)
+                    && let Some(level) = self.asks.get_level_mut(*price)
+                {
+                    return level.orders.iter().find(|o| o.order_id == order_id);
                 }
             }
             None

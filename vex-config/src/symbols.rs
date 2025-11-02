@@ -213,8 +213,10 @@ mod tests {
     #[test]
     fn test_validation_market_id_mismatch() {
         let mut symbols = HashMap::new();
-        let mut spec = CoreMarketSpecification::default();
-        spec.market_id = 123;
+        let spec = CoreMarketSpecification {
+            market_id: 123,
+            ..Default::default()
+        };
         symbols.insert(456, spec); // Mismatch: key 456 != spec.market_id 123
 
         let config = SymbolSpecificationConfig { symbols };
@@ -224,9 +226,11 @@ mod tests {
     #[test]
     fn test_validation_zero_scale() {
         let mut symbols = HashMap::new();
-        let mut spec = CoreMarketSpecification::default();
-        spec.market_id = 123;
-        spec.base_scale_k = 0; // Invalid: zero scale
+        let spec = CoreMarketSpecification {
+            market_id: 123,
+            base_scale_k: 0, // Invalid: base_scale_k = 0
+            ..Default::default()
+        };
         symbols.insert(123, spec);
 
         let config = SymbolSpecificationConfig { symbols };
@@ -236,12 +240,14 @@ mod tests {
     #[test]
     fn test_validation_taker_fee_less_than_maker() {
         let mut symbols = HashMap::new();
-        let mut spec = CoreMarketSpecification::default();
-        spec.market_id = 123;
-        spec.base_scale_k = 1;
-        spec.quote_scale_k = 1;
-        spec.taker_fee = 100;
-        spec.maker_fee = 200; // Invalid: taker < maker
+        let spec = CoreMarketSpecification {
+            market_id: 123,
+            base_scale_k: 1,
+            quote_scale_k: 1,
+            taker_fee: 100,
+            maker_fee: 200, // Invalid: taker < maker
+            ..Default::default()
+        };
         symbols.insert(123, spec);
 
         let config = SymbolSpecificationConfig { symbols };
