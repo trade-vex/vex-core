@@ -1,4 +1,4 @@
-use common::OrderCommand;
+use common::cmd::OrderCommand;
 use disruptor::{BusySpin, ProcessorSettings, build_multi_producer};
 use std::io::Write;
 use std::{

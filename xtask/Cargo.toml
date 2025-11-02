@@ -14,7 +14,7 @@ path = "src/bin/tests/test_server.rs"
 [dependencies]
 duct = "0.13" 
 hdrhistogram = "7.5"
-tracing-subscriber = { workspace = true }
+tracing-subscriber = "0.3.19"
 clap = { version = "4.5", features = ["derive"] }
 thiserror = { workspace = true }
 common = { workspace = true }

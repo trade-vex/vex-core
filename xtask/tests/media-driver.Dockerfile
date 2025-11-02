@@ -1,5 +1,5 @@
 # Dockerfile for Aeron C Media Driver
-FROM ubuntu:22.04 as builder
+FROM --platform=$BUILDPLATFORM ubuntu:22.04 AS builder
 
 # Avoid prompts from apt
 ENV DEBIAN_FRONTEND=noninteractive
@@ -16,17 +16,19 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /build
 
-# Clone Aeron repository
-RUN git clone https://github.com/aeron-io/aeron.git
+# Pin Aeron version for cache stability and clone with shallow history
+ARG AERON_VERSION=1.49.0
+RUN git clone --depth 1 --branch ${AERON_VERSION} https://github.com/real-logic/aeron.git
 
 # Change to aeron directory
 WORKDIR /build/aeron
 
-# Build Aeron C++ components including C Media Driver
-RUN ./cppbuild/cppbuild --no-tests
+# Build Aeron C++ components including C Media Driver with parallel jobs
+# The cppbuild script uses CMAKE_BUILD_PARALLEL_LEVEL env variable
+RUN CMAKE_BUILD_PARALLEL_LEVEL=$(nproc) ./cppbuild/cppbuild --no-tests
 
 # Create runtime image
-FROM rust:1.79 as runtime
+FROM rust:1.79 AS runtime
 
 # Install runtime dependencies
 # RUN apt-get update && apt-get install -y \
