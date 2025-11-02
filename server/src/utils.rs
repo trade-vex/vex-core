@@ -18,7 +18,7 @@ macro_rules! create_risk_handler {
 }
 
 /// Macro to generate risk engine R2 handlers (sharded by user_id)
-/// Each handler only processes events for users that belong to its shard
+/// Each handler processes events for users that belong to its shard (both maker and taker)
 #[macro_export]
 macro_rules! create_risk_r2_handler {
     ($shard_id:expr, $risk_engines:expr) => {{
@@ -29,43 +29,33 @@ macro_rules! create_risk_r2_handler {
                 let num_shards = risk_engines_clone.len() as u64;
                 let shard_mask = num_shards - 1;
 
-                // Get market_id and side from the processed command
                 let market_id = processed_cmd.market_id();
-                let taker_side = processed_cmd.side();
+                let taker_id = processed_cmd.taker_id();
 
-                // Route to risk engine shard for maker user
+                // Route to risk engine shard for both maker and taker users
                 let maker_user_id = event.maker_user_id;
                 let maker_shard = (maker_user_id & shard_mask) as usize;
+                let taker_shard = (taker_id & shard_mask) as usize;
 
-                // Only process if this event belongs to our shard
-                if maker_shard == $shard_id {
+                // Process if either maker OR taker belongs to our shard
+                if maker_shard == $shard_id || taker_shard == $shard_id {
                     if let Some(risk_engine_mutex) = risk_engines_clone.get($shard_id) {
                         let mut risk_engine = risk_engine_mutex.lock();
-                        risk_engine.handle_event(
-                            event,
-                            market_id,
-                            taker_side,
-                            processed_cmd.taker_id(),
-                        );
+                        risk_engine.handle_event(event, market_id, taker_id);
                     }
                 }
 
-                // Process next event in chain if it exists
+                // Process chained events if they exist
                 let mut current_event = event.next_event.as_ref();
                 while let Some(next_event) = current_event {
                     let next_maker_user_id = next_event.maker_user_id;
                     let next_maker_shard = (next_maker_user_id & shard_mask) as usize;
 
-                    // Only process if this event belongs to our shard
-                    if next_maker_shard == $shard_id {
+                    // Process chained events if maker OR taker belongs to our shard
+                    if next_maker_shard == $shard_id || taker_shard == $shard_id {
                         if let Some(risk_engine_mutex) = risk_engines_clone.get($shard_id) {
                             let mut risk_engine = risk_engine_mutex.lock();
-                            risk_engine.handle_event(
-                                next_event,
-                                market_id,
-                                taker_side,
-                                processed_cmd.taker_id(),
-                            );
+                            risk_engine.handle_event(next_event, market_id, taker_id);
                         }
                     }
                     current_event = next_event.next_event.as_ref();

@@ -51,6 +51,7 @@ impl MatchingEngineRouter {
     ///   - Market 1, 5, 9, 13... → Shard 1 (1 & 3 = 1)
     ///   - Market 2, 6, 10, 14... → Shard 2 (2 & 3 = 2)
     ///   - Market 3, 7, 11, 15... → Shard 3 (3 & 3 = 3)
+    #[inline]
     pub fn market_for_this_handler(&self, market_id: u64) -> bool {
         (self.shard_mask == 0) || ((market_id & self.shard_mask) == self.shard_id as u64)
     }
