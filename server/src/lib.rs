@@ -25,7 +25,7 @@ pub fn init_exchange(
     // Create the Exchange Core with sharded risk engines and matching engines
     // Symbols are automatically added to matching engines during initialization
     let (core_engine, producer) =
-        CoreEngine::new(symbol_specs.clone(), journaling_processor, events_handler);
+        CoreEngine::new(symbol_specs, journaling_processor, events_handler);
 
     (core_engine, producer)
 }
