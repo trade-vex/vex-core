@@ -145,55 +145,51 @@ impl RiskEngine {
         };
 
         // Process maker settlement (consume locked funds and apply maker fee)
-        if self.user_id_for_this_handler(event.maker_user_id) {
-            if let Some(maker_profile) = self.user_balances.get_mut(&event.maker_user_id) {
-                let trade_amount = event.price * event.size;
-                let maker_fee = spec.maker_fee * event.size;
-                let total_maker_amount = trade_amount + maker_fee;
+        if self.user_id_for_this_handler(event.maker_user_id)
+            && let Some(maker_profile) = self.user_balances.get_mut(&event.maker_user_id)
+        {
+            let trade_amount = event.price * event.size;
+            let maker_fee = spec.maker_fee * event.size;
+            let total_maker_amount = trade_amount + maker_fee;
 
-                // Consume the locked funds for the maker (they pay the trade amount + maker fees)
-                match maker_profile.consume_locked(
-                    event.maker_user_id,
-                    market_id,
-                    total_maker_amount,
-                ) {
-                    Ok(()) => {
-                        info!(
-                            "[RiskEngine_{}] Successfully consumed locked funds for maker {}: amount={}",
-                            self.shard_id, event.maker_user_id, total_maker_amount
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            "[RiskEngine_{}] Failed to consume locked funds for maker {}: {:?}",
-                            self.shard_id, event.maker_user_id, e
-                        );
-                    }
+            // Consume the locked funds for the maker (they pay the trade amount + maker fees)
+            match maker_profile.consume_locked(event.maker_user_id, market_id, total_maker_amount) {
+                Ok(()) => {
+                    info!(
+                        "[RiskEngine_{}] Successfully consumed locked funds for maker {}: amount={}",
+                        self.shard_id, event.maker_user_id, total_maker_amount
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "[RiskEngine_{}] Failed to consume locked funds for maker {}: {:?}",
+                        self.shard_id, event.maker_user_id, e
+                    );
                 }
             }
         }
 
         // Process taker settlement (consume locked funds for the trade)
-        if self.user_id_for_this_handler(taker_id) {
-            if let Some(taker_profile) = self.user_balances.get_mut(&taker_id) {
-                let total_trade_amount = event.price * event.size;
-                let taker_fee = spec.taker_fee * event.size;
-                let total_required = total_trade_amount + taker_fee;
+        if self.user_id_for_this_handler(taker_id)
+            && let Some(taker_profile) = self.user_balances.get_mut(&taker_id)
+        {
+            let total_trade_amount = event.price * event.size;
+            let taker_fee = spec.taker_fee * event.size;
+            let total_required = total_trade_amount + taker_fee;
 
-                // Consume the locked funds for the taker (they pay the full amount + fees)
-                match taker_profile.consume_locked(taker_id, market_id, total_required) {
-                    Ok(()) => {
-                        info!(
-                            "[RiskEngine_{}] Successfully consumed locked funds for taker {}: amount={}",
-                            self.shard_id, taker_id, total_required
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            "[RiskEngine_{}] Failed to consume locked funds for taker {}: {:?}",
-                            self.shard_id, taker_id, e
-                        );
-                    }
+            // Consume the locked funds for the taker (they pay the full amount + fees)
+            match taker_profile.consume_locked(taker_id, market_id, total_required) {
+                Ok(()) => {
+                    info!(
+                        "[RiskEngine_{}] Successfully consumed locked funds for taker {}: amount={}",
+                        self.shard_id, taker_id, total_required
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "[RiskEngine_{}] Failed to consume locked funds for taker {}: {:?}",
+                        self.shard_id, taker_id, e
+                    );
                 }
             }
         }
