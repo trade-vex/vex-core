@@ -229,6 +229,9 @@ impl PortAllocator {
         })?;
 
         let port_range = port_base..=port_hi;
+        let mut ports_free: Vec<u16> = port_range.clone().collect();
+
+        let port_range = port_base..=port_hi;
 
         Ok(Self {
             port_range,

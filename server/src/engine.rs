@@ -1,8 +1,9 @@
 use crate::{
     create_event_handler, create_matching_handler, create_risk_handler, create_risk_r2_handler,
 };
-use common::cmd::{MatcherTradeEvent, OrderCommand};
-use common::model::symbol_specification::CoreSymbolSpecification;
+use common::cmd::{OrderCommand, ProcessedOrderCommand, Status};
+use common::model::market_specification::CoreMarketSpecification;
+use common::Side;
 use disruptor::{
     BusySpin, MultiConsumerBarrier, MultiProducer, ProcessorSettings, build_multi_producer,
 };
@@ -18,7 +19,7 @@ use vex_config::CoreNetworkingConfig;
 use vex_networking::server::VexCoreServer;
 
 pub type OrderProducer = MultiProducer<OrderCommand, MultiConsumerBarrier>;
-pub type ProcessedOrderProducer = MultiProducer<MatcherTradeEvent, MultiConsumerBarrier>;
+pub type ProcessedOrderProducer = MultiProducer<ProcessedOrderCommand, MultiConsumerBarrier>;
 
 /// This follows the exact same architecture as the  ExchangeCore:
 /// 1. Multiple parallel Risk Engines (R1) for risk hold/pre-processing
@@ -48,12 +49,12 @@ impl CoreEngine {
     /// [Event Handlers] (market data, notifications, etc.)
     /// ```
     pub fn new(
-        symbol_specs: HashMap<u32, CoreSymbolSpecification>,
+        symbol_specs: HashMap<u32, CoreMarketSpecification>,
         journaling_processor: JournalingProcessor,
         events_handler: Arc<dyn EventsHandler>,
     ) -> (Self, OrderProducer) {
         let order_factory = || OrderCommand::default();
-        let matcher_event_factory = || MatcherTradeEvent::default();
+        let matcher_event_factory = || ProcessedOrderCommand::new(Status::Rejected, 0, 0, Side::Ask);
         let buffer_size = 1024; // Power of 2 for disruptor efficiency
 
         // Using Arc to share stateful processors with the main thread and the consumer threads.
@@ -73,7 +74,30 @@ impl CoreEngine {
         let mut risk_engines = Vec::new();
 
         for shard_id in 0..num_risk_engines {
-            let risk_engine = RiskEngine::new(symbol_specs.clone(), shard_id, num_risk_engines);
+            let mut risk_engine = RiskEngine::new(symbol_specs.clone(), shard_id, num_risk_engines);
+            
+            // Add initial user profiles to this shard with funded accounts
+            for user_id in [100, 101] {
+                let user_id = user_id as u64;
+                let shard_mask = (num_risk_engines - 1) as u64;
+                
+                // Only add users that belong to this shard
+                if (user_id & shard_mask) == shard_id as u64 {
+                    let mut user_profile = common::model::user_profile::UserProfile::new(
+                        user_id, 
+                        common::model::user_profile::UserStatus::Active
+                    );
+                    
+                    // Fund the user with initial balances
+                    user_profile.accounts.insert(1, 1000000); // 1M base currency
+                    user_profile.accounts.insert(2, 1000000); // 1M quote currency
+                    
+                    risk_engine.user_profiles.insert(user_id, user_profile);
+                    
+                    info!("Added user {} to RiskEngine shard {} with initial balances", user_id, shard_id);
+                }
+            }
+            
             risk_engines.push(risk_engine);
         }
 
@@ -91,17 +115,14 @@ impl CoreEngine {
         }
 
         // Add all symbols to the appropriate matching engine shards
-        for (&symbol_id, spec) in &symbol_specs {
+        for &symbol_id in symbol_specs.keys() {
             let shard_mask = (num_matching_engines - 1) as u64;
             let owner_shard_id = (symbol_id as u64) & shard_mask;
             let router_index = owner_shard_id as usize;
 
             if let Some(router) = matching_engine_routers.get(router_index) {
                 let mut matching_engine = router.lock();
-                matching_engine.add_symbol(
-                    symbol_id,
-                    spec.clone(),
-                );
+                matching_engine.add_market(symbol_id);
 
                 info!(
                     "Added symbol_id {} to MatchingEngine shard {} during initialization",
@@ -110,6 +131,8 @@ impl CoreEngine {
             }
         }
 
+
+
         // Build the second ring buffer first (the producer of this is required as an input in matching_engine_royter handler)
         let matcher_event_producer =
             build_multi_producer(buffer_size, matcher_event_factory, BusySpin)
@@ -117,8 +140,8 @@ impl CoreEngine {
                 .pin_at_core(10)
                 .handle_events_with({
                     let journaling_clone = journaling_arc.clone();
-                    move |event: &MatcherTradeEvent, _sequence: i64, _end_of_batch: bool| {
-                        journaling_clone.journal_event(event);
+                    move |processed_cmd: &ProcessedOrderCommand, _sequence: i64, _end_of_batch: bool| {
+                        journaling_clone.journal_event(processed_cmd);
                     }
                 })
                 // Stage 2: Risk Engine R2 - 4 parallel handlers
@@ -157,29 +180,13 @@ impl CoreEngine {
             // Stage 3: Matching Engine - 4 parallel handlers
             // Each handler processes ALL events but filters internally based on symbol_id ID
             .pin_at_core(6)
-            .handle_events_with(create_matching_handler!(
-                0,
-                matching_engine_routers,
-                matcher_event_producer
-            ))
+            .handle_events_with(create_matching_handler!(0, matching_engine_routers, matcher_event_producer))
             .pin_at_core(7)
-            .handle_events_with(create_matching_handler!(
-                1,
-                matching_engine_routers,
-                matcher_event_producer
-            ))
+            .handle_events_with(create_matching_handler!(1, matching_engine_routers, matcher_event_producer))
             .pin_at_core(8)
-            .handle_events_with(create_matching_handler!(
-                2,
-                matching_engine_routers,
-                matcher_event_producer
-            ))
+            .handle_events_with(create_matching_handler!(2, matching_engine_routers, matcher_event_producer))
             .pin_at_core(9)
-            .handle_events_with(create_matching_handler!(
-                3,
-                matching_engine_routers,
-                matcher_event_producer
-            ))
+            .handle_events_with(create_matching_handler!(3, matching_engine_routers, matcher_event_producer))
             .build();
 
         let engine = Self {};
