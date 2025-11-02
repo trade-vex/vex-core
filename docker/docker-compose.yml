@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  # Aeron Media Driver - built from source
+  media-driver:
+    build:
+      context: ./media-driver
+      dockerfile: Dockerfile
+      cache_from:
+        - ubuntu:22.04
+    container_name: vex-media-driver
+    shm_size: "512m"            # 🆕 Set shm-size like docker run
+    ipc: "shareable"            # 🆕 Enable shared IPC namespace
+    restart: unless-stopped
+    volumes:
+      - /dev/shm:/opt
+
+  # SBE Code Generator - generates Rust code from ordercmd.xml
+  sbe-generator:
+    build:
+      context: ./sbe
+      dockerfile: Dockerfile
+    container_name: vex-sbe-generator
+    volumes:
+      - ../target/generated:/output
+    # This service runs once to generate code, then exits
+    restart: "no"
+
+  # Exchange Core - built from source
+  vex-core:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+    container_name: vex-core
+    depends_on:
+      media-driver:
+        condition: service_healthy
+      sbe-generator:
+        condition: service_completed_successfully
+    environment:
+      - RUST_LOG=info
+      - AERON_DIR=/tmp/aeron
+    volumes:
+      - aeron-ipc:/tmp/aeron
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "vex-core"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  aeron-ipc:
+    driver: local
