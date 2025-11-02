@@ -45,7 +45,7 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
                 }
 
                 // Serialize and send back the processed command
-                let mut response_buffer = vec![0u8; ORDERCOMMANDSIZE];
+                let mut response_buffer = vec![0u8; 67];
                 match encode_order_command(order_command, &mut response_buffer) {
                     Ok(_) => {
                         // Send the processed command back

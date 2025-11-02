@@ -15,7 +15,7 @@ use tracing::{error, info};
 pub const DUOLOGUE_STREAM_ID: i32 = 1002;
 
 pub struct Duologue {
-    fragment_handler: Handler<FragmentHandler>,
+    pub fragment_handler: Handler<FragmentHandler>,
     pub session_id: i32,
     pub gateway_id: String,
     subscription: AeronSubscription,
@@ -109,9 +109,6 @@ impl Duologue {
     pub fn close(&mut self) -> Result<(), AeronCError> {
         self.subscription.close::<AeronNotificationLogger>(None)?;
         self.fragment_handler.release();
-        self.on_image_available_handler.release();
-        self.on_image_unavailable_handler.release();
-        self.is_closed = true;
         Ok(())
     }
 }

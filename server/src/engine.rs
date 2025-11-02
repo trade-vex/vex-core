@@ -1,6 +1,7 @@
-use crate::events::EventsHandler;
-use crate::{create_matching_handler, create_risk_handler, create_risk_r2_handler, create_event_handler};
-use common::cmd::{OrderCommand, MatcherTradeEvent};
+use crate::{
+    create_event_handler, create_matching_handler, create_risk_handler, create_risk_r2_handler,
+};
+use common::cmd::{MatcherTradeEvent, OrderCommand};
 use common::model::symbol_specification::CoreSymbolSpecification;
 use disruptor::{
     BusySpin, MultiConsumerBarrier, MultiProducer, ProcessorSettings, build_multi_producer,
@@ -8,7 +9,7 @@ use disruptor::{
 use hashbrown::HashMap;
 use parking_lot::Mutex;
 use processors::{
-    journaling::JournalingProcessor, matching_engine::MatchingEngineRouter, risk_engine::RiskEngine,
+    journaling::JournalingProcessor, matching_engine::MatchingEngineRouter, risk_engine::RiskEngine, events::EventsHandler
 };
 use std::sync::Arc;
 use std::thread;
@@ -100,7 +101,6 @@ impl CoreEngine {
                 matching_engine.add_symbol(
                     symbol_id,
                     spec.clone(),
-                    orderbook::OrderBookImplType::Naive,
                 );
 
                 info!(
@@ -110,34 +110,31 @@ impl CoreEngine {
             }
         }
 
-
-
         // Build the second ring buffer first (the producer of this is required as an input in matching_engine_royter handler)
-        let matcher_event_producer = build_multi_producer(buffer_size, matcher_event_factory, BusySpin)
-            // Stage 1: Journaling for raw events
-            .pin_at_core(10)
-            .handle_events_with({
-                let journaling_clone = journaling_arc.clone();
-                move |event: &MatcherTradeEvent, _sequence: i64, _end_of_batch: bool| {
-                    journaling_clone.journal_event(event);
-                }
-            })
-            // Stage 2: Risk Engine R2 - 4 parallel handlers
-            .pin_at_core(11)
-            .handle_events_with(create_risk_r2_handler!(0, risk_engines_arc))
-            .pin_at_core(12)
-            .handle_events_with(create_risk_r2_handler!(1, risk_engines_arc))
-            .pin_at_core(13)
-            .handle_events_with(create_risk_r2_handler!(2, risk_engines_arc))
-            .pin_at_core(14)
-            .handle_events_with(create_risk_r2_handler!(3, risk_engines_arc))
-            .and_then() // Creates dependency: event handlers wait for risk engines
-            // Stage 3: Event Handlers
-            .pin_at_core(15)
-            .handle_events_with(create_event_handler!(events_handler_arc))
-            .build();
-
-
+        let matcher_event_producer =
+            build_multi_producer(buffer_size, matcher_event_factory, BusySpin)
+                // Stage 1: Journaling for raw events
+                .pin_at_core(10)
+                .handle_events_with({
+                    let journaling_clone = journaling_arc.clone();
+                    move |event: &MatcherTradeEvent, _sequence: i64, _end_of_batch: bool| {
+                        journaling_clone.journal_event(event);
+                    }
+                })
+                // Stage 2: Risk Engine R2 - 4 parallel handlers
+                .pin_at_core(11)
+                .handle_events_with(create_risk_r2_handler!(0, risk_engines_arc))
+                .pin_at_core(12)
+                .handle_events_with(create_risk_r2_handler!(1, risk_engines_arc))
+                .pin_at_core(13)
+                .handle_events_with(create_risk_r2_handler!(2, risk_engines_arc))
+                .pin_at_core(14)
+                .handle_events_with(create_risk_r2_handler!(3, risk_engines_arc))
+                .and_then() // Creates dependency: event handlers wait for risk engines
+                // Stage 3: Event Handlers
+                .pin_at_core(15)
+                .handle_events_with(create_event_handler!(events_handler_arc))
+                .build();
 
         // Build the disruptor pipeline
         // This creates the same dependency graph and parallelism as exchangeCore
@@ -160,13 +157,29 @@ impl CoreEngine {
             // Stage 3: Matching Engine - 4 parallel handlers
             // Each handler processes ALL events but filters internally based on symbol_id ID
             .pin_at_core(6)
-            .handle_events_with(create_matching_handler!(0, matching_engine_routers, matcher_event_producer))
+            .handle_events_with(create_matching_handler!(
+                0,
+                matching_engine_routers,
+                matcher_event_producer
+            ))
             .pin_at_core(7)
-            .handle_events_with(create_matching_handler!(1, matching_engine_routers, matcher_event_producer))
+            .handle_events_with(create_matching_handler!(
+                1,
+                matching_engine_routers,
+                matcher_event_producer
+            ))
             .pin_at_core(8)
-            .handle_events_with(create_matching_handler!(2, matching_engine_routers, matcher_event_producer))
+            .handle_events_with(create_matching_handler!(
+                2,
+                matching_engine_routers,
+                matcher_event_producer
+            ))
             .pin_at_core(9)
-            .handle_events_with(create_matching_handler!(3, matching_engine_routers, matcher_event_producer))
+            .handle_events_with(create_matching_handler!(
+                3,
+                matching_engine_routers,
+                matcher_event_producer
+            ))
             .build();
 
         let engine = Self {};

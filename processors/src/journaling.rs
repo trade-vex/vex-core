@@ -1,8 +1,7 @@
 use common::cmd::MatcherTradeEvent;
 use common::cmd::OrderCommand;
 use tracing::info;
-/// Responsible for writing all commands and events to a persistent log for durability.
-/// This is the Rust equivalent of `JournalingProcessor.java`.
+
 pub struct JournalingProcessor;
 
 impl JournalingProcessor {

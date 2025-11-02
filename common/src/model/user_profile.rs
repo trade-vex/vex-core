@@ -1,125 +1,206 @@
-use crate::model::symbol_position_record::SymbolPositionRecord;
-use borsh::{BorshDeserialize, BorshSerialize};
-use hashbrown::HashMap;
+use ahash::AHashMap;
+use thiserror::Error;
 
-use crate::model::enums::Side;
-use crate::model::symbol_specification::CoreSymbolSpecification;
-// TODO ...
-// positions: IntObjectHashMap<SymbolPositionRecord>
-// accounts: IntLongHashMap
+type UserId = u64;
+type MarketId = u32;
 
-#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
-pub struct UserProfile {
-    pub uid: u64,
-    pub adjustments_counter: u64,
-    pub user_status: UserStatus,
-    pub positions: HashMap<u32, SymbolPositionRecord>,
-    pub accounts: HashMap<u32, u64>,
+#[derive(Debug, Clone, Copy)]
+pub struct UserBalance {
+    available: u64,
+    locked: u64,
 }
 
-impl UserProfile {
-    pub fn new(uid: u64, user_status: UserStatus) -> Self {
+impl Default for UserBalance {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl UserBalance {
+    pub fn new() -> Self {
         Self {
-            uid,
-            adjustments_counter: 0,
-            user_status,
-            positions: HashMap::new(),
-            accounts: HashMap::new(),
+            available: 0,
+            locked: 0,
         }
     }
 
-    /// Puts funds on hold for a new order.
-    /// Returns true if successful, false if insufficient funds.
-    pub fn hold_funds(
-        &mut self,
-        spec: &CoreSymbolSpecification,
-        amount: u64,
-        action: Side,
-    ) -> bool {
-        let position = self.positions.entry(spec.symbol_id).or_insert_with(|| {
-            SymbolPositionRecord::new(
-                self.uid,
-                spec.symbol_id,
-                spec.base_currency,
-                spec.quote_currency,
-            )
-        });
+    pub fn total(&self) -> u64 {
+        self.available + self.locked
+    }
+}
 
-        let currency = if action == Side::Bid {
-            position.quote_currency
-        } else {
-            position.base_currency
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BalanceKey {
+    user_id: UserId,
+    market_id: MarketId,
+}
+
+pub struct BalanceStore {
+    balances: AHashMap<BalanceKey, UserBalance>,
+}
+
+impl Default for BalanceStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BalanceStore {
+    pub fn new() -> Self {
+        Self {
+            balances: AHashMap::new(),
+        }
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            balances: AHashMap::with_capacity(capacity),
+        }
+    }
+
+    pub fn get_balance(
+        &self,
+        user_id: UserId,
+        market_id: MarketId,
+    ) -> Result<UserBalance, BalanceError> {
+        let key = BalanceKey { user_id, market_id };
+        match self.balances.get(&key) {
+            Some(balance) => Ok(*balance),
+            None => Err(BalanceError::UserNotFound { user_id, market_id }),
+        }
+    }
+
+    pub fn set_balance(&mut self, user_id: UserId, market_id: MarketId, balance: UserBalance) {
+        let key = BalanceKey { user_id, market_id };
+        self.balances.insert(key, balance);
+    }
+
+    pub fn update_available(
+        &mut self,
+        user_id: UserId,
+        market_id: MarketId,
+        amount: u64,
+    ) -> Result<(), BalanceError> {
+        let key = BalanceKey { user_id, market_id };
+        match self.balances.get_mut(&key) {
+            Some(balance) => balance.available = amount,
+            None => return Err(BalanceError::UserNotFound { user_id, market_id }),
+        };
+        Ok(())
+    }
+
+    pub fn update_locked(
+        &mut self,
+        user_id: UserId,
+        market_id: MarketId,
+        amount: u64,
+    ) -> Result<(), BalanceError> {
+        let key = BalanceKey { user_id, market_id };
+        match self.balances.get_mut(&key) {
+            Some(balance) => balance.locked = amount,
+            None => return Err(BalanceError::UserNotFound { user_id, market_id }),
+        };
+        Ok(())
+    }
+
+    // Lock funds (move from available to locked)
+    pub fn lock_funds(
+        &mut self,
+        user_id: UserId,
+        market_id: MarketId,
+        amount: u64,
+    ) -> Result<(), BalanceError> {
+        let key = BalanceKey { user_id, market_id };
+        let balance = match self.balances.get_mut(&key) {
+            Some(balance) => balance,
+            None => return Err(BalanceError::UserNotFound { user_id, market_id }),
         };
 
-        let account_balance = self.accounts.entry(currency).or_insert(0);
-
-        if *account_balance >= amount {
-            *account_balance -= amount;
-            position.hold(amount, action);
-            true
+        if balance.available >= amount {
+            balance.available -= amount;
+            balance.locked += amount;
+            Ok(())
         } else {
-            false
+            Err(BalanceError::InsufficientAvailableFunds {
+                available: balance.available,
+                needed: amount,
+            })
         }
     }
 
-    /// Releases previously held funds after an order is cancelled or reduced.
-    pub fn release_funds(&mut self, symbol: u32, amount: u64, action: Side) {
-        if let Some(position) = self.positions.get_mut(&symbol) {
-            position.release(amount, action);
-            let currency = if action == Side::Bid {
-                position.quote_currency
-            } else {
-                position.base_currency
-            };
-            if let Some(balance) = self.accounts.get_mut(&currency) {
-                *balance += amount;
-            }
-        }
-    }
-
-    /// Settles a trade, adjusting balances and positions.
-    pub fn settle_trade(
+    // Unlock funds (move from locked to available)
+    pub fn unlock_funds(
         &mut self,
-        spec: &CoreSymbolSpecification,
-        price: u64,
-        size: u64,
-        action: Side,
-    ) {
-        let base_currency = spec.base_currency;
-        let quote_currency = spec.quote_currency;
-        let trade_amount = price * size;
+        user_id: UserId,
+        market_id: MarketId,
+        amount: u64,
+    ) -> Result<(), BalanceError> {
+        let key = BalanceKey { user_id, market_id };
+        let balance = match self.balances.get_mut(&key) {
+            Some(balance) => balance,
+            None => return Err(BalanceError::UserNotFound { user_id, market_id }),
+        };
 
-        match action {
-            Side::Bid => {
-                // User is a BUYER
-                // The quote currency was already debited by `hold_funds`.
-                // We only need to credit the base currency they received.
-                *self.accounts.entry(base_currency).or_insert(0) += size;
-            }
-            Side::Ask => {
-                // User is a SELLER
-                // Credit the quote currency account for the sale.
-                *self.accounts.entry(quote_currency).or_insert(0) += trade_amount;
-                // The base currency was already debited by `hold_funds`.
-            }
+        if balance.locked >= amount {
+            balance.locked -= amount;
+            balance.available += amount;
+            Ok(())
+        } else {
+            Err(BalanceError::InsufficientLockedFunds {
+                locked: balance.locked,
+                needed: amount,
+            })
         }
+    }
 
-        // Finally, update the position to clear the held funds for this trade.
-        if let Some(position) = self.positions.get_mut(&spec.symbol_id) {
-            // Pass the correct amount to settle based on the action.
-            // For a BID, the held amount was the trade value (quote currency).
-            // For an ASK, the held amount was the trade size (base currency).
-            let amount_to_settle = match action {
-                Side::Bid => trade_amount,
-                Side::Ask => size,
-            };
-            position.settle(amount_to_settle, action);
+    // Consume locked funds (remove from locked, e.g., after trade execution)
+    pub fn consume_locked(
+        &mut self,
+        user_id: UserId,
+        market_id: MarketId,
+        amount: u64,
+    ) -> Result<(), BalanceError> {
+        let key = BalanceKey { user_id, market_id };
+        let balance = match self.balances.get_mut(&key) {
+            Some(balance) => balance,
+            None => return Err(BalanceError::UserNotFound { user_id, market_id }),
+        };
+
+        if balance.locked >= amount {
+            balance.locked -= amount;
+            Ok(())
+        } else {
+            Err(BalanceError::InsufficientLockedFunds {
+                locked: balance.locked,
+                needed: amount,
+            })
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub enum UserStatus {
-    Active,
-    Suspended,
+/// Represents an error related to balance operations.
+#[derive(Error, Debug, PartialEq, Eq)]
+pub enum BalanceError {
+    /// Occurs when there are not enough available funds to perform an operation.
+    #[error("insufficient available funds: needed {needed}, but have {available}")]
+    InsufficientAvailableFunds { available: u64, needed: u64 },
+
+    /// Occurs when there are not enough locked funds to perform an operation.
+    #[error("insufficient locked funds: needed {needed}, but have {locked}")]
+    InsufficientLockedFunds { locked: u64, needed: u64 },
+
+    /// Occurs when an operation would cause an overflow
+    #[error("operation would cause overflow")]
+    Overflow,
+
+    /// Occurs when an operation would cause an underflow
+    #[error("operation would cause underflow")]
+    Underflow,
+
+    /// Occurs when user is not found
+    #[error("user not found")]
+    UserNotFound {
+        user_id: UserId,
+        market_id: MarketId,
+    },
 }

@@ -32,6 +32,7 @@ pub enum MarketType {
     Option = 2,
 }
 
+
 impl MarketType {
     pub fn code(&self) -> u8 {
         *self as u8

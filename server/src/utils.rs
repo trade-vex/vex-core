@@ -30,7 +30,7 @@ macro_rules! create_risk_r2_handler {
             // Route to risk engine shard for active order user
             let active_order_user_id = event.active_order_user_id;
             let active_order_shard = (active_order_user_id & shard_mask) as usize;
-            
+
             // Only process if this event belongs to our shard
             if active_order_shard == $shard_id {
                 if let Some(risk_engine_mutex) = risk_engines_clone.get($shard_id) {
@@ -43,7 +43,7 @@ macro_rules! create_risk_r2_handler {
             let maker_user_id = event.maker_user_id;
             if maker_user_id != active_order_user_id {
                 let maker_shard = (maker_user_id & shard_mask) as usize;
-                
+
                 // Only process if this event belongs to our shard
                 if maker_shard == $shard_id {
                     if let Some(risk_engine_mutex) = risk_engines_clone.get($shard_id) {
@@ -77,32 +77,18 @@ macro_rules! create_matching_handler {
 
         move |cmd: &OrderCommand, _sequence: i64, _end_of_batch: bool| {
             // Only lock during order processing
-            let events = {
+            let processed_order_cmd = {
                 let mut router_guard = router.lock();
                 // remove this lock eventually by some minor optimsations in orderbook and matching engine router
                 let mut order_cmd = cmd.clone();
-                router_guard.process_order(&mut order_cmd);
-                order_cmd.matcher_event.take()
+                let processed_order_cmd = router_guard.process_order(&mut order_cmd);
+                processed_order_cmd
             };  // Lock is released here - router is free for next order
 
             // Publish raw events directly
-            if let Some(mut event_box) = events {
-                loop {
-                    let mut event = *event_box;
-                    let next_event = event.next_event.take();
-                    
-                    // Publish raw event directly
-                    let _ = matcher_event_producer.publish(|published_event| {
-                        *published_event = event;
-                    });
-                    
-                    // Move to next event or break
-                    match next_event {
-                        Some(next) => event_box = next,
-                        None => break,
-                    }
-                }
-            }
+            let _ = matcher_event_producer.publish(|published_event| {
+                *published_event = processed_order_cmd;
+            });
         }
     }};
 }

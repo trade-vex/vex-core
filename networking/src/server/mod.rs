@@ -41,8 +41,8 @@ use crossbeam::utils::CachePadded;
 use disruptor::{MultiConsumerBarrier, MultiProducer};
 use rusteron_client::{Aeron, AeronCError, AeronContext, Handler};
 use rusteron_media_driver::AeronIdleStrategy;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{error, info, instrument};
@@ -84,13 +84,9 @@ pub struct VexCoreServer {
     /// Gateway state management (lock-free)
     gateways: Arc<GatewayManager>,
     /// Last cleanup timestamp (atomic)
-    last_cleanup: Instant,
+    last_cleanup_nanos: CachePadded<AtomicU64>,
     /// shutdown flag
     shutdown: AtomicBool,
-    /// Image available handler
-    image_available_handler: Option<Handler<GatewayImageAvailableHandler>>,
-    /// Image unavailable handler
-    image_unavailable_handler: Option<Handler<GatewayImageUnavailableHandler>>,
 }
 
 impl VexCoreServer {
@@ -115,10 +111,8 @@ impl VexCoreServer {
             #[allow(clippy::arc_with_non_send_sync)]
             gateways: Arc::new(GatewayManager::new(config.clone(), aeron, producer)?),
             config,
-            last_cleanup: Instant::now(),
+            last_cleanup_nanos: CachePadded::new(AtomicU64::new(now_nanos)),
             shutdown: AtomicBool::new(false),
-            image_available_handler: None,
-            image_unavailable_handler: None,
         })
     }
 
@@ -126,19 +120,7 @@ impl VexCoreServer {
     #[instrument(skip(self))]
     pub fn start(&mut self) -> Result<(), ServerError> {
         // Create publication for sending responses to gateways
-        // Create image handlers
-        let image_available_handler = Handler::leak(GatewayImageAvailableHandler::new(Arc::clone(
-            &self.gateways,
-        )));
-        let image_unavailable_handler = Handler::leak(GatewayImageUnavailableHandler::new(
-            Arc::clone(&self.gateways),
-        ));
-
-        let (subscription, handshake_handler) =
-            self.setup_networking(&image_available_handler, &image_unavailable_handler)?;
-
-        self.image_available_handler = Some(image_available_handler);
-        self.image_unavailable_handler = Some(image_unavailable_handler);
+        let (subscription, handshake_handler) = self.setup_networking()?;
 
         info!("VEX Core '{}' started successfully", self.config.core_id);
 
@@ -200,12 +182,6 @@ impl VexCoreServer {
         info!("Shutting down VEX Core '{}'", self.config.core_id);
         self.gateways.shutdown_all_gateways()?;
         self.shutdown.store(true, Ordering::SeqCst);
-        if let Some(mut handler) = self.image_available_handler.take() {
-            handler.release();
-        }
-        if let Some(mut handler) = self.image_unavailable_handler.take() {
-            handler.release();
-        }
         info!("VEX Core '{}' shut down successfully", self.config.core_id);
         Ok(())
     }
@@ -275,5 +251,15 @@ impl VexCoreServer {
             HandshakeMessageHandler::new(Arc::clone(&self.gateways), publication);
 
         Ok((subscription, handshake_handler))
+    }
+
+    /// Number of connected gateways
+    pub fn connected_gateway_count(&self) -> usize {
+        self.gateways.active_gateways_count()
+    }
+
+    /// Checks if there are no connected gateways
+    pub fn is_empty(&self) -> bool {
+        self.gateways.is_empty()
     }
 }

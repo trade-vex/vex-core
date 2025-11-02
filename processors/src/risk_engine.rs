@@ -9,10 +9,10 @@ use hashbrown::HashMap;
 use orderbook::OrderBookError;
 use tracing::{info, warn};
 
+/// Manages all user profiles and performs risk checks as well as settlements
 pub struct RiskEngine {
     pub user_profiles: HashMap<u64, UserProfile>,
     pub symbol_specs: HashMap<u32, CoreSymbolSpecification>,
-    // Sharding configuration
     shard_id: u32,
     shard_mask: u64,
 }
@@ -35,12 +35,12 @@ impl RiskEngine {
     }
 
     /// Checks if a user ID is handled by this risk engine instance.
+    #[inline]
     fn user_id_for_this_handler(&self, user_id: u64) -> bool {
         (user_id & self.shard_mask) == self.shard_id as u64
     }
 
-    /// Pre-processes a command to validate it(DONE) and hold funds(TODOs).
-    /// This is the first stage(excali-5a, excali-5b) of processing for any command that can affect a user.
+    /// Pre-processes a command to validate it(DONE) and hold funds(TODOs)
     pub fn pre_process_command(&mut self, cmd: &OrderCommand) -> Result<(), OrderBookError> {
         // Process only if the command is for a user managed by this shard
         if !self.user_id_for_this_handler(cmd.user_id) {
@@ -111,8 +111,7 @@ impl RiskEngine {
         Ok(())
     }
 
-    /// Handles events coming from the matching engine to settle funds.
-    /// This is a final stage(excali-8a) in the pipeline for events that have financial impact.
+    /// Handles events coming from the matching engine to settle funds
     pub fn handle_event(&mut self, event: &MatcherTradeEvent) {
         // Process only if the event is for a user managed by this shard
         if !self.user_id_for_this_handler(event.active_order_user_id)

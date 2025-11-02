@@ -1,7 +1,6 @@
 use crate::server::duologue::Duologue;
 use crate::utils::{PortAllocator, SessionAllocator, send_message, send_message_with_retries};
 use common::cmd::OrderCommand;
-use crossbeam::queue::SegQueue;
 use dashmap::DashMap;
 use disruptor::{MultiConsumerBarrier, MultiProducer};
 use rusteron_client::{Aeron, AeronPublication};
@@ -42,13 +41,6 @@ impl GatewayManager {
         aeron: Rc<Aeron>,
         producer: MultiProducer<OrderCommand, MultiConsumerBarrier>,
     ) -> Result<Self, ServerError> {
-        let buffer_pool = SegQueue::new();
-
-        // Pre-populate buffer pool
-        for _ in 0..16 {
-            buffer_pool.push(vec![0u8; 2048]);
-        }
-
         Ok(Self {
             gateway_session_addresses: DashMap::new(),
             gateway_sessions: DashMap::new(),
@@ -166,15 +158,8 @@ impl GatewayManager {
             "{} {} ACCEPT {} {} {}",
             session_id, gateway_id, ports[0], ports[1], encrypted_session
         );
-        match send_message_with_retries(publication, accept_msg.as_bytes()) {
-            Ok(_) => (),
-            Err(e) => {
-                self.remove_gateway_session(session_id)?;
-                return Err(ServerError::GatewayMessageError(format!(
-                    "Failed to send ACCEPT message: {e}"
-                )));
-            }
-        }
+        send_message_with_retries(publication, accept_msg.as_bytes())?;
+
         info!(
             "Gateway '{}' connected successfully. Session: 0x{:x}, ports: {}, {}",
             gateway_id, dedicated_session, ports[0], ports[1]
