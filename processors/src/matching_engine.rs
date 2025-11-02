@@ -5,14 +5,6 @@ use tracing::{info, warn};
 use vex_orderbook::OrderBook;
 use vex_orderbook::tree::{BTreeAskSide, BTreeBidSide};
 
-/// Custom error type for routing failures.
-#[derive(Debug)]
-pub enum RoutingError {
-    OrderBookNotFound,
-    ProcessingFailed(OrderBookError),
-}
-
-use tracing::{info, warn};
 /// Owns all order books and routes commands to the correct one.
 pub struct MatchingEngineRouter {
     pub order_books: HashMap<u32, Box<OrderBook<BTreeAskSide, BTreeBidSide>>>,
@@ -37,6 +29,8 @@ impl MatchingEngineRouter {
 
         Self {
             order_books: HashMap::new(),
+            shard_id,
+            shard_mask: num_shards - 1, // Creates mask : shardMask = numShards - 1
         }
     }
 
@@ -95,6 +89,6 @@ impl MatchingEngineRouter {
 
 impl Default for MatchingEngineRouter {
     fn default() -> Self {
-        Self::new()
+        Self::new(0, 1)
     }
 }

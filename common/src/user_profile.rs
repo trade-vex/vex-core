@@ -27,6 +27,14 @@ impl UserBalance {
     pub fn total(&self) -> u64 {
         self.available + self.locked
     }
+
+    pub fn available(&self) -> u64 {
+        self.available
+    }
+
+    pub fn locked(&self) -> u64 {
+        self.locked
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

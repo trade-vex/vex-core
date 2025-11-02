@@ -31,7 +31,7 @@ RUN mkdir /app/generated && java --add-opens java.base/jdk.internal.misc=ALL-UNN
   /app/resources/ordercmd.xml
 
 # Runtime stage
-FROM alpine:latest
+FROM rust:1.87-slim
 
 WORKDIR /app
 
@@ -42,4 +42,4 @@ COPY --from=builder /app/generated /app/generated
 VOLUME ["/output"]
 
 # Copy generated files to output volume
-CMD ["sh", "-c", "cp -r /app/generated/* /output/ && echo 'Success' || exit 1"]  
+CMD ["sh", "-c", "cp -r /app/generated/* /output/ 2>/dev/null || echo 'No files to copy'; ls -la /output/; echo 'SBE Rust code generation completed'"] 

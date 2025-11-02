@@ -59,7 +59,6 @@ impl CoreEngine {
             || ProcessedOrderCommand::new(Status::Rejected, 0, 0, 0, Side::Ask);
         let buffer_size = 1024; // Power of 2 for disruptor efficiency
 
-        // Using Arc to share stateful processors with the main thread and the consumer threads.
         let journaling_arc = Arc::new(journaling_processor);
         // Create journaling handler for audit trail and recovery
         let journaling_handler = {
@@ -76,30 +75,7 @@ impl CoreEngine {
         let mut risk_engines = Vec::new();
 
         for shard_id in 0..num_risk_engines {
-            let mut risk_engine = RiskEngine::new(symbol_specs.clone(), shard_id, num_risk_engines);
-            
-            // Add initial user profiles to this shard with funded accounts
-            for user_id in [100, 101] {
-                let user_id = user_id as u64;
-                let shard_mask = (num_risk_engines - 1) as u64;
-                
-                // Only add users that belong to this shard
-                if (user_id & shard_mask) == shard_id as u64 {
-                    let mut user_profile = common::model::user_profile::UserProfile::new(
-                        user_id, 
-                        common::model::user_profile::UserStatus::Active
-                    );
-                    
-                    // Fund the user with initial balances
-                    user_profile.accounts.insert(1, 1000000); // 1M base currency
-                    user_profile.accounts.insert(2, 1000000); // 1M quote currency
-                    
-                    risk_engine.user_profiles.insert(user_id, user_profile);
-                    
-                    info!("Added user {} to RiskEngine shard {} with initial balances", user_id, shard_id);
-                }
-            }
-            
+            let risk_engine = RiskEngine::new(symbol_specs.clone(), shard_id, num_risk_engines);
             risk_engines.push(risk_engine);
         }
 
@@ -132,8 +108,6 @@ impl CoreEngine {
                 );
             }
         }
-
-
 
         // Build the second ring buffer first (the producer of this is required as an input in matching_engine_royter handler)
         let matcher_event_producer =
@@ -168,10 +142,9 @@ impl CoreEngine {
         let producer = build_multi_producer(buffer_size, order_factory, BusySpin)
             // Stage 1: Journaling
             .pin_at_core(1)
-            .handle_events_with(move |cmd: &OrderCommand, _, _| {
-                journaling_arc_stage1.journal_command(cmd);
-            })
-            // Stage 2: Risk Engine on core 2
+            .handle_events_with(journaling_handler)
+            // Stage 2: Risk Engine R1 - 4 parallel handlers (equivalent to riskEngines.forEach)
+            // Each handler processes ALL events but filters internally based on user ID
             .pin_at_core(2)
             .handle_events_with(create_risk_handler!(0, risk_engines_arc))
             .pin_at_core(3)
@@ -184,13 +157,29 @@ impl CoreEngine {
             // Stage 3: Matching Engine - 4 parallel handlers
             // Each handler processes ALL events but filters internally based on symbol_id ID
             .pin_at_core(6)
-            .handle_events_with(create_matching_handler!(0, matching_engine_routers, matcher_event_producer))
+            .handle_events_with(create_matching_handler!(
+                0,
+                matching_engine_routers,
+                matcher_event_producer
+            ))
             .pin_at_core(7)
-            .handle_events_with(create_matching_handler!(1, matching_engine_routers, matcher_event_producer))
+            .handle_events_with(create_matching_handler!(
+                1,
+                matching_engine_routers,
+                matcher_event_producer
+            ))
             .pin_at_core(8)
-            .handle_events_with(create_matching_handler!(2, matching_engine_routers, matcher_event_producer))
+            .handle_events_with(create_matching_handler!(
+                2,
+                matching_engine_routers,
+                matcher_event_producer
+            ))
             .pin_at_core(9)
-            .handle_events_with(create_matching_handler!(3, matching_engine_routers, matcher_event_producer))
+            .handle_events_with(create_matching_handler!(
+                3,
+                matching_engine_routers,
+                matcher_event_producer
+            ))
             .build();
 
         let engine = Self {};

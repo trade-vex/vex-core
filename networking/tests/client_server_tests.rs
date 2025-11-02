@@ -86,7 +86,7 @@ fn test_client_server_communication() {
         };
         for i in 0..10 {
             order_command.order_id = i;
-            client.send_order_command(order_command.clone())?;
+            client.send_order_command(&order_command)?;
             std::thread::sleep(Duration::from_millis(10));
         }
         Ok(())
