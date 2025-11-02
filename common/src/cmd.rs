@@ -114,7 +114,13 @@ pub struct ProcessedOrderCommand {
 }
 
 impl ProcessedOrderCommand {
-    pub fn new(status: Status, order_id: u64, taker_id: u64 ,market_id: u32, taker_side: Side) -> Self {
+    pub fn new(
+        status: Status,
+        order_id: u64,
+        taker_id: u64,
+        market_id: u32,
+        taker_side: Side,
+    ) -> Self {
         Self {
             status,
             order_id,
@@ -181,8 +187,7 @@ pub enum Status {
     Filled,
 }
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct MatcherTradeEvent {
     pub active_order_completed: bool,
     pub matched_order_id: u64,
@@ -204,7 +209,6 @@ impl MatcherTradeEvent {
         size
     }
 }
-
 
 pub fn encode_order_command(order_command: OrderCommand, buf: &mut [u8]) -> SbeResult<()> {
     let write_buf = WriteBuf::new(buf);

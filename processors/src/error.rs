@@ -20,10 +20,10 @@ pub enum RiskEngineError {
 
     /// Insufficient funds to place the order
     #[error("insufficient funds: user_id {user_id}, required {required}, available {available}")]
-    InsufficientFunds { 
-        user_id: u64, 
-        required: u64, 
-        available: u64 
+    InsufficientFunds {
+        user_id: u64,
+        required: u64,
+        available: u64,
     },
 
     /// Order command not supported by this risk engine

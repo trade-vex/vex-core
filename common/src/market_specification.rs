@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::MarketType;
+use serde::{Deserialize, Serialize};
 
 /// Core symbol specification that defines trading parameters for a symbol.
 /// This mirrors the Java CoreMarketSpecification class exactly.

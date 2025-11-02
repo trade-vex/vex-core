@@ -41,7 +41,12 @@ macro_rules! create_risk_r2_handler {
                 if maker_shard == $shard_id {
                     if let Some(risk_engine_mutex) = risk_engines_clone.get($shard_id) {
                         let mut risk_engine = risk_engine_mutex.lock();
-                        risk_engine.handle_event(event, market_id, taker_side, processed_cmd.taker_id());
+                        risk_engine.handle_event(
+                            event,
+                            market_id,
+                            taker_side,
+                            processed_cmd.taker_id(),
+                        );
                     }
                 }
 
@@ -55,7 +60,12 @@ macro_rules! create_risk_r2_handler {
                     if next_maker_shard == $shard_id {
                         if let Some(risk_engine_mutex) = risk_engines_clone.get($shard_id) {
                             let mut risk_engine = risk_engine_mutex.lock();
-                            risk_engine.handle_event(next_event, market_id, taker_side, processed_cmd.taker_id());
+                            risk_engine.handle_event(
+                                next_event,
+                                market_id,
+                                taker_side,
+                                processed_cmd.taker_id(),
+                            );
                         }
                     }
                     current_event = next_event.next_event.as_ref();
@@ -73,7 +83,7 @@ macro_rules! create_event_handler {
             // Handle the main event if it exists
             if let Some(event) = processed_cmd.events() {
                 events_handler.handle_event(event.clone());
-                
+
                 // Handle all chained events
                 let mut current_event = event.next_event.as_ref();
                 while let Some(next_event) = current_event {
