@@ -127,8 +127,10 @@ impl RiskEngine {
     /// Handles a single trade event from the matching engine to settle funds
     /// This is called by the R2 handler for each individual event in the linked list
     pub fn handle_event(&mut self, event: &MatcherTradeEvent, market_id: u32, taker_id: u64) {
-        info!("[RiskEngine_{}] Processing single trade event: price={}, size={}, maker={}, taker={}", 
-              self.shard_id, event.price, event.size, event.maker_user_id, taker_id);
+        info!(
+            "[RiskEngine_{}] Processing single trade event: price={}, size={}, maker={}, taker={}",
+            self.shard_id, event.price, event.size, event.maker_user_id, taker_id
+        );
 
         // Get market specification for fee calculations
         let spec = match self.symbol_specs.get(&market_id) {
@@ -148,16 +150,24 @@ impl RiskEngine {
                 let trade_amount = event.price * event.size;
                 let maker_fee = spec.maker_fee * event.size;
                 let total_maker_amount = trade_amount + maker_fee;
-                
+
                 // Consume the locked funds for the maker (they pay the trade amount + maker fees)
-                match maker_profile.consume_locked(event.maker_user_id, market_id, total_maker_amount) {
+                match maker_profile.consume_locked(
+                    event.maker_user_id,
+                    market_id,
+                    total_maker_amount,
+                ) {
                     Ok(()) => {
-                        info!("[RiskEngine_{}] Successfully consumed locked funds for maker {}: amount={}", 
-                              self.shard_id, event.maker_user_id, total_maker_amount);
+                        info!(
+                            "[RiskEngine_{}] Successfully consumed locked funds for maker {}: amount={}",
+                            self.shard_id, event.maker_user_id, total_maker_amount
+                        );
                     }
                     Err(e) => {
-                        warn!("[RiskEngine_{}] Failed to consume locked funds for maker {}: {:?}", 
-                              self.shard_id, event.maker_user_id, e);
+                        warn!(
+                            "[RiskEngine_{}] Failed to consume locked funds for maker {}: {:?}",
+                            self.shard_id, event.maker_user_id, e
+                        );
                     }
                 }
             }
@@ -169,16 +179,20 @@ impl RiskEngine {
                 let total_trade_amount = event.price * event.size;
                 let taker_fee = spec.taker_fee * event.size;
                 let total_required = total_trade_amount + taker_fee;
-                
+
                 // Consume the locked funds for the taker (they pay the full amount + fees)
                 match taker_profile.consume_locked(taker_id, market_id, total_required) {
                     Ok(()) => {
-                        info!("[RiskEngine_{}] Successfully consumed locked funds for taker {}: amount={}", 
-                              self.shard_id, taker_id, total_required);
+                        info!(
+                            "[RiskEngine_{}] Successfully consumed locked funds for taker {}: amount={}",
+                            self.shard_id, taker_id, total_required
+                        );
                     }
                     Err(e) => {
-                        warn!("[RiskEngine_{}] Failed to consume locked funds for taker {}: {:?}", 
-                              self.shard_id, taker_id, e);
+                        warn!(
+                            "[RiskEngine_{}] Failed to consume locked funds for taker {}: {:?}",
+                            self.shard_id, taker_id, e
+                        );
                     }
                 }
             }
