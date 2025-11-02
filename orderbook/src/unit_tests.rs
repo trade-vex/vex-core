@@ -4,7 +4,7 @@ mod test {
 
     use crate::tree::{BTreeAskSide, BTreeBidSide};
     use crate::*;
-    use common::cmd::{OrderCommand, ProcessedOrderCommand};
+    use common::{OrderCommand, ProcessedOrderCommand};
     use common::{OrderCommandType, Side};
 
     /// Helper functions to inspect the internal state of the `OrderBook`.

@@ -1,7 +1,7 @@
-use common::cmd::MatcherTradeEvent;
+use common::MatcherTradeEvent;
 use std::sync::{Arc, Mutex};
 use tracing::info;
-// #[async_trait]
+
 pub trait EventsHandler: Send + Sync {
     fn handle_event(&self, event: MatcherTradeEvent);
 }
@@ -17,19 +17,12 @@ impl SimpleEventsHandler {
     }
 }
 
-// #[async_trait]
 impl EventsHandler for SimpleEventsHandler {
     fn handle_event(&self, event: MatcherTradeEvent) {
-        let mut events = match self.events.lock() {
-            Ok(events) => events,
-            Err(poisoned) => {
-                tracing::warn!("Events mutex was poisoned, recovering data");
-                poisoned.into_inner()
-            }
-        };
+        let mut events = self.events.lock().unwrap();
         info!(
-            "[SimpleEventsHandler] Received final event: {:?}",
-            event.event_type
+            "[SimpleEventsHandler] Received final event: Price {}, Size {}, Matched Order ID {}",
+            event.price, event.size, event.matched_order_id
         );
         events.push(event);
     }

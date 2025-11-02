@@ -1,107 +1,80 @@
-use server::engine::CoreEngine;
-use server::events::SimpleEventsHandler;
+use server::init_exchange;
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
+use tracing::{error, info, warn};
+use tracing_subscriber::fmt;
+use vex_config::{Environment, VexConfig};
 
-use common::cmd::OrderCommand;
-use common::model::{
-    // enums::{OrderAction, OrderType},
-    user_profile::{UserProfile, UserStatus},
-};
-use disruptor::Producer;
-use orderbook::OrderBookImplType;
-use processors::{
-    journaling::JournalingProcessor, matching_engine::MatchingEngineRouter, risk_engine::RiskEngine,
-};
-use std::sync::Arc;
-use tracing::info;
-// Sets up the entire Exchange Core application with all processors.
-pub fn init_exchange() -> (
-    CoreEngine,
-    disruptor::SingleProducer<OrderCommand, disruptor::MultiConsumerBarrier>,
-    Arc<SimpleEventsHandler>,
-) {
-    // Initialize the matching engine router with a default order book.
-    let mut matching_engine_router = MatchingEngineRouter::new();
-    matching_engine_router.add_symbol(0, OrderBookImplType::Naive);
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
-    // Create a risk engine with a user profile(say 100 here)
-    let mut risk_engine = RiskEngine::new();
-    risk_engine
-        .user_profiles
-        .insert(100, UserProfile::new(100, UserStatus::Active));
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize tracing subscriber for logging
+    fmt::init();
 
-    // Initialize the journaling processor to log commands and events.
-    let journaling_processor = JournalingProcessor::new();
-
-    // Create a events handler to collect and process events.
-    let events_handler = Arc::new(SimpleEventsHandler::new()); // shared with core
-
-    // Create the Exchange Core with all components wired together.
-    let (core_engine, producer) = CoreEngine::new(
-        risk_engine,
-        matching_engine_router,
-        journaling_processor,
-        events_handler.clone(),
-    );
-
-    // Return core_engine, producer, and handler directly
-    (core_engine, producer, events_handler)
-}
-
-// Simulates a gateway receiving a message from a client over the network (will be from Aeron later).
-
-#[tokio::main]
-async fn main() {
-    tracing_subscriber::fmt::init();
-
-    info!("--- Running Full Disruptor Core Test ---");
-
-    // 1. Set up the entire exchange core with its pipeline.
-    let (mut core, mut producer, handler) = init_exchange();
-
-    // 2. Spawn the core engine to run in the background.
-    let core_handle = tokio::spawn(async move {
-        core.run().await;
-    });
-
-    // 3. Directly publish a command to the disruptor
-    let cmd = OrderCommand {
-        order_id: 1,
-        uid: 100,
-        symbol: 0,
-        size: 10,
-        price: 9629,
-        ..Default::default()
+    // Load configuration with auto-detected environment
+    let config = match VexConfig::load_auto() {
+        Ok(config) => {
+            info!(
+                "Loaded configuration for environment: {}",
+                config.environment
+            );
+            config
+        }
+        Err(e) => {
+            warn!("Failed to load configuration from files: {}", e);
+            info!("Using default Development configuration");
+            VexConfig::new(Environment::Development)
+        }
     };
 
-    producer.publish(|e| {
-        *e = cmd.clone();
-    });
+    // Validate configuration
+    if let Err(e) = config.validate() {
+        error!("Configuration validation failed: {}", e);
+        return Err(e.into());
+    }
 
-    // Give the engine a moment to process the command sequentially.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    // 4. ASSERT: Check that the correct final event was produced and handled.
-    info!("\n--- Asserting final event received by handler ---");
-    let received_events = handler.events.lock().unwrap();
-    assert_eq!(
-        received_events.len(),
-        1,
-        "Should have received exactly one event"
-    );
-
-    let event = &received_events[0];
-    assert_eq!(
-        event.event_type,
-        common::model::enums::MatcherEventType::Reduce
-    );
-    assert!(!event.matched_order_completed);
-    assert_eq!(event.matched_order_id, 1);
-    assert_eq!(event.matched_order_uid, 100);
-    assert_eq!(event.price, 9629);
-    assert_eq!(event.size, 10);
+    info!("Configuration validated successfully");
+    info!("Core ID: {}", config.core_networking.core_id);
+    info!("Network port: {}", config.core_networking.initial_port);
+    info!("Max gateways: {}", config.core_networking.max_gateways);
     info!(
-        "\n--- Test Passed: Full pipeline executed and correct PlaceOrder event was received. ---"
+        "Authentication enabled: {}",
+        config.core_networking.enable_authentication
     );
 
-    drop(core_handle);
+    // Initialize the exchange core with symbol specifications from config
+    info!("Initializing exchange core...");
+    let symbol_specs = config.symbols.symbols.clone();
+    info!("Loading {} symbols from configuration", symbol_specs.len());
+
+    let (mut core_engine, producer, _events_handler) = init_exchange(symbol_specs.clone());
+
+    info!("Exchange core initialized successfully");
+    for symbol_id in symbol_specs.keys() {
+        info!(
+            "Added symbol {} with Naive order book implementation",
+            symbol_id
+        );
+    }
+
+    // Start the core engine with networking
+    info!("Starting core engine with networking...");
+    core_engine.run(producer, config.core_networking);
+
+    // The run() method spawns a thread and starts the server loop
+    // The main thread will continue here, so we should keep it alive
+    info!("Core engine started. Press Ctrl+C to shutdown.");
+
+    // Wait for shutdown signal
+    ctrlc::set_handler(|| {
+        info!("Shutdown signal received. Terminating...");
+        std::process::exit(0);
+    })?;
+
+    // Keep the main thread alive
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
 }

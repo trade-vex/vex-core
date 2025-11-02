@@ -97,7 +97,6 @@ pub struct LoggingConfig {
     /// Whether to include span information
     pub include_spans: bool,
     /// Custom fields to include in structured logs
-    #[serde(default)]
     pub custom_fields: HashMap<String, String>,
     /// Whether to enable async logging
     pub async_logging: bool,
@@ -177,6 +176,7 @@ impl LoggingConfig {
         let mut module_levels = HashMap::new();
         module_levels.insert("vex_core".to_string(), LogLevel::Info);
         module_levels.insert("networking".to_string(), LogLevel::Warn);
+        module_levels.insert("security".to_string(), LogLevel::Debug);
 
         Self {
             level: LogLevel::Info,

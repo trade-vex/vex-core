@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// Core symbol specification that defines trading parameters for a symbol.
 /// This mirrors the Java CoreMarketSpecification class exactly.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct CoreMarketSpecification {
     pub market_id: u32,
     pub market_type: MarketType,

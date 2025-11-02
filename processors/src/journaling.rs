@@ -1,8 +1,7 @@
-use common::cmd::MatcherTradeEvent;
-use common::cmd::OrderCommand;
+use common::OrderCommand;
+use common::ProcessedOrderCommand;
 use tracing::info;
-/// Responsible for writing all commands and events to a persistent log for durability.
-/// This is the Rust equivalent of `JournalingProcessor.java`.
+
 pub struct JournalingProcessor;
 
 impl JournalingProcessor {
@@ -15,11 +14,20 @@ impl JournalingProcessor {
         info!("[Journal] Writing command to disk: ID {}", cmd.order_id);
     }
 
-    pub fn journal_event(&self, event: &MatcherTradeEvent) {
+    pub fn journal_event(&self, processed_cmd: &ProcessedOrderCommand) {
         info!(
-            "[Journal] Writing event to disk: Type {:?}",
-            event.event_type
+            "[Journal] Writing processed command to disk: Order ID {}, Status {:?}",
+            processed_cmd.order_id(),
+            processed_cmd.status()
         );
+
+        // Also journal any trade events if they exist
+        if let Some(event) = processed_cmd.events() {
+            info!(
+                "[Journal] Writing trade event to disk: Price {}, Size {}",
+                event.price, event.size
+            );
+        }
     }
 }
 

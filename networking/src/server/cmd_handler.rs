@@ -1,4 +1,4 @@
-use common::cmd::{ORDERCOMMANDSIZE, OrderCommand, decode_order_command, encode_order_command};
+use common::{OrderCommand, decode_order_command, encode_order_command};
 use disruptor::{MultiConsumerBarrier, MultiProducer, Producer};
 use rusteron_client::{
     AeronFragmentHandlerCallback, AeronHeader, AeronPublication, AeronReservedValueSupplierLogger,
@@ -14,16 +14,7 @@ pub struct FragmentHandler {
 impl AeronFragmentHandlerCallback for FragmentHandler {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) {
         // is executor thread
-        let session_id = match header.get_values() {
-            Ok(values) => values.frame.session_id,
-            Err(_) => {
-                error!(
-                    "Gateway '{}': Missing session ID in Aeron header",
-                    self.gateway_id
-                );
-                return;
-            }
-        };
+        let session_id = header.get_values().unwrap().frame.session_id;
 
         // Deserialize OrderCommand
         match decode_order_command(buffer) {
@@ -34,18 +25,12 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
                 );
 
                 // Process the order command (placeholder function)
-                if let Err(e) = self.producer.try_publish(|cmd| {
+                self.producer.publish(|cmd| {
                     *cmd = order_command.clone();
-                }) {
-                    error!(
-                        "[{}] Gateway '{}': Failed to publish OrderCommand to ring buffer: {}",
-                        session_id, self.gateway_id, e
-                    );
-                    return;
-                }
+                });
 
                 // Serialize and send back the processed command
-                let mut response_buffer = vec![0u8; ORDERCOMMANDSIZE];
+                let mut response_buffer = vec![0u8; 67];
                 match encode_order_command(order_command, &mut response_buffer) {
                     Ok(_) => {
                         // Send the processed command back

@@ -6,19 +6,6 @@ use sbe_order::order_command_message_codec::{
 use sbe_order::{ReadBuf, SbeResult, WriteBuf};
 use serde::de::value::Error as SerdeError;
 
-// Size of the serialized OrderCommand in bytes
-// Header: 8 bytes
-// command: 1 byte
-// order_id: 8 bytes
-// timestamp: 8 bytes
-// user_id: 8 bytes
-// market_id: 4 bytes
-// price: 8 bytes
-// size: 8 bytes
-// side: 1 byte
-// time_in_force: 1 byte
-pub const ORDERCOMMANDSIZE: usize = 59;
-
 /// OrderCommand: OrderCommand Plays the central role throughout the processing of the Order.
 /// It is created in the Gateway, and processed in VexCore in different processors through the Disruptor
 #[derive(Debug, Clone)]
@@ -121,16 +108,24 @@ pub struct ProcessedOrderCommand {
     status: Status,
     order_id: u64,
     market_id: u32,
+    taker_id: u64,
     side: Side,
     events: Option<Box<MatcherTradeEvent>>,
 }
 
 impl ProcessedOrderCommand {
-    pub fn new(status: Status, order_id: u64, market_id: u32, taker_side: Side) -> Self {
+    pub fn new(
+        status: Status,
+        order_id: u64,
+        taker_id: u64,
+        market_id: u32,
+        taker_side: Side,
+    ) -> Self {
         Self {
             status,
             order_id,
             market_id,
+            taker_id,
             side: taker_side,
             events: None,
         }
@@ -142,6 +137,10 @@ impl ProcessedOrderCommand {
 
     pub fn order_id(&self) -> u64 {
         self.order_id
+    }
+
+    pub fn taker_id(&self) -> u64 {
+        self.taker_id
     }
 
     pub fn market_id(&self) -> u32 {

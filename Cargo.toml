@@ -1,20 +1,14 @@
-[package]
-name = "vex-core"
-version = "0.1.0"
-edition = "2021"
-
 [workspace]
 resolver = "2"
 members = [
     "common", 
-    "networking",
-    "orderbook", 
-    # "processors", 
-    # "server",
     "vex-config",
+    "networking",
+    "processors",
     "order",
     "xtask",
-    "orderbook"
+    "orderbook" ,
+    "server", 
 ]
 
 [workspace.dependencies]
@@ -23,12 +17,41 @@ vex-config = { path = "./vex-config" }
 sbe_order = { path = "./order" }
 vex-networking = { path = "./networking" }
 vex-orderbook = { path = "./orderbook" }
+processors = { path = "./processors" }
 borsh = { version = "1.5.7", default-features = false, features = ["hashbrown", "derive", "de_strict_order"] }
-hashbrown = "0.15.4"
+hashbrown = { version = "0.16.0", features = ["serde"]}
 thiserror = "2.0.12"
 rusteron-client = "0.1.143"
 rusteron-media-driver = "0.1.143"
 disruptor = "3.4.0"
-serde = { version = "1.0.203", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tracing = "0.1"
+tracing = "0.1.41"
+tracing-subscriber = "0.3.20"
+parking_lot = "0.12"
+tikv-jemallocator = "0.6.1"
+
+[profile.release]
+# Link Time Optimization - enables cross-crate inlining and optimization
+# "fat" performs LTO across the entire dependency graph for maximum performance
+lto = "fat"
+
+# Use single codegen unit to maximize optimization opportunities
+# Trades longer compile time for better runtime performance and smaller binaries
+codegen-units = 1
+
+# Maximum optimization level - enables all LLVM optimizations
+# Includes aggressive inlining, loop unrolling, and vectorization
+opt-level = 3
+
+# Remove debug symbols from the final binary
+# Significantly reduces binary size for production deployments
+strip = true
+
+# Disable debug information generation
+# Works in conjunction with strip=true to ensure no debug overhead
+debug = false
+
+# Apply maximum optimization to all dependencies
+[profile.release.package."*"]
+opt-level = 3
