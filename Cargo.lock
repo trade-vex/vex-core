@@ -1663,7 +1663,7 @@ name = "processors"
 version = "0.1.0"
 dependencies = [
  "common",
- "hashbrown 0.15.5",
+ "hashbrown 0.16.0",
  "rdkafka",
  "serde",
  "serde_json",

@@ -207,8 +207,5 @@ pub enum BalanceError {
 
     /// Occurs when user is not found
     #[error("user not found")]
-    UserNotFound {
-        user_id: UserId,
-        asset_id: MarketId,
-    },
+    UserNotFound { user_id: UserId, asset_id: MarketId },
 }

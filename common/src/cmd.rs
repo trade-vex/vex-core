@@ -117,7 +117,17 @@ pub struct ProcessedOrderCommand {
 }
 
 impl ProcessedOrderCommand {
-    pub fn new(status: Status, order_id: u64, taker_id: u64 ,market_id: u32, price: u64 , size: u64, timestamp: u64 , taker_side: Side) -> Self {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        status: Status,
+        order_id: u64,
+        taker_id: u64,
+        market_id: u32,
+        price: u64,
+        size: u64,
+        timestamp: u64,
+        taker_side: Side,
+    ) -> Self {
         Self {
             status,
             order_id,
