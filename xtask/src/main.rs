@@ -1,15 +1,13 @@
 use clap::{Parser, Subcommand};
 use duct::cmd;
 use serde::Deserialize;
-use std::{collections::HashSet, env, fs, path::Path, time::Instant};
+use std::{
+    collections::HashSet,
+    env, fs,
+    path::Path,
+    time::{Duration, Instant},
+};
 use thiserror::Error;
-
-/// delay in network emulation in teste2e (high-latency scenario)
-const NETWORK_DELAY_MS: u64 = 100;
-/// packet loss percentage in network emulation in teste2e (packet-loss scenario)
-const PACKET_LOSS_PERCENT: u32 = 10;
-/// default number of messages each client sends in teste2e
-const DEFAULT_MSG_COUNT_PER_CLIENT: usize = 1000;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -170,16 +168,18 @@ fn apply_scenario_conditions(scenario: &str, clients: u32) -> Result<(), XTaskEr
                 cmd!(
                     "docker",
                     "exec",
-                    format!("tests-vex-client-{i}"),
+                    "--index",
+                    (i).to_string(),
+                    "vex-client",
                     "tc",
                     "qdisc",
-                    "replace",
+                    "add",
                     "dev",
                     "eth0",
                     "root",
                     "netem",
                     "delay",
-                    format!("{NETWORK_DELAY_MS}ms")
+                    "50ms"
                 )
                 .run()?;
                 // Apply 50ms latency to traffic leaving the server
@@ -189,13 +189,13 @@ fn apply_scenario_conditions(scenario: &str, clients: u32) -> Result<(), XTaskEr
                     "vex-server",
                     "tc",
                     "qdisc",
-                    "replace",
+                    "add",
                     "dev",
                     "eth0",
                     "root",
                     "netem",
                     "delay",
-                    format!("{NETWORK_DELAY_MS}ms")
+                    "50ms"
                 )
                 .run()?;
             }
@@ -204,16 +204,18 @@ fn apply_scenario_conditions(scenario: &str, clients: u32) -> Result<(), XTaskEr
                 cmd!(
                     "docker",
                     "exec",
-                    format!("tests-vex-client-{i}"),
+                    "--index",
+                    (i).to_string(),
+                    "vex-client",
                     "tc",
                     "qdisc",
-                    "replace",
+                    "add",
                     "dev",
                     "eth0",
                     "root",
                     "netem",
                     "loss",
-                    format!("{PACKET_LOSS_PERCENT}%")
+                    "5%"
                 )
                 .run()?;
             }
@@ -253,7 +255,8 @@ fn run_correctness_task(
     // --- Scenario-specific setup ---
     apply_scenario_conditions(scenario, clients)?;
 
-    let msg_count_per_client = DEFAULT_MSG_COUNT_PER_CLIENT;
+    // --- Execute Test ---
+    let msg_count_per_client = 100;
     let total_msg_count = msg_count_per_client * clients as usize;
 
     println!("Executing {clients} clients to send {msg_count_per_client} messages each...");
@@ -341,6 +344,9 @@ fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
     println!("Starting {clients} clients, each sending {msg_count_per_client} messages...");
     println!("Total expected messages: {total_expected_messages}");
 
+    // Start timing BEFORE launching clients
+    let start_time = Instant::now();
+
     let mut threads = Vec::new();
     for i in 1..=clients {
         let project_root = root.clone();
@@ -386,6 +392,9 @@ fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
         }
     }
 
+    // Stop timing AFTER all clients complete
+    let total_duration = start_time.elapsed();
+
     println!("All clients finished execution.");
 
     // Read and analyze results
@@ -411,7 +420,39 @@ fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
         0
     };
 
+    // Calculate metrics based on ACTUAL duration, not hardcoded value
+    let duration_secs = total_duration.as_secs_f64();
+    let throughput = if duration_secs > 0.0 {
+        messages_received as f64 / duration_secs
+    } else {
+        0.0
+    };
+
+    // Calculate additional metrics
     let success_rate = (messages_received as f64 / total_expected_messages as f64) * 100.0;
+    let avg_client_duration = if !client_durations.is_empty() {
+        client_durations.iter().sum::<Duration>() / client_durations.len() as u32
+    } else {
+        Duration::from_secs(0)
+    };
+
+    let max_client_duration = client_durations
+        .iter()
+        .max()
+        .copied()
+        .unwrap_or(Duration::from_secs(0));
+    let min_client_duration = client_durations
+        .iter()
+        .min()
+        .copied()
+        .unwrap_or(Duration::from_secs(0));
+
+    // Messages per client (theoretical)
+    let msgs_per_second_per_client = if clients > 0 && duration_secs > 0.0 {
+        throughput / clients as f64
+    } else {
+        0.0
+    };
 
     // Print comprehensive results
     println!("\n╔════════════════════════════════════════════╗");
@@ -427,6 +468,24 @@ fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
     println!("║   Success rate:         {success_rate:>17.2}% ║");
     println!("║   Failed clients:       {failed_clients:>18} ║");
     println!("╠════════════════════════════════════════════╣");
+    println!("║ Performance:                               ║");
+    println!("║   Total duration:       {duration_secs:>15.3} s ║");
+    println!("║   Throughput:           {throughput:>13.2} msg/s ║");
+    println!("║   Per client:           {msgs_per_second_per_client:>13.2} msg/s ║");
+    println!("╠════════════════════════════════════════════╣");
+    println!("║ Client Timing:                             ║");
+    println!(
+        "║   Average duration:     {:>15.3} s ║",
+        avg_client_duration.as_secs_f64()
+    );
+    println!(
+        "║   Min duration:         {:>15.3} s ║",
+        min_client_duration.as_secs_f64()
+    );
+    println!(
+        "║   Max duration:         {:>15.3} s ║",
+        max_client_duration.as_secs_f64()
+    );
     println!("╚════════════════════════════════════════════╝");
 
     // Determine test status

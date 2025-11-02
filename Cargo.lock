@@ -3214,7 +3214,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.16",
  "tracing",
- "tracing-subscriber 0.3.20",
+ "tracing-subscriber 0.1.6",
  "vex-config",
  "vex-networking",
 ]
