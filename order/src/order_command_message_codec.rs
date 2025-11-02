@@ -7,7 +7,7 @@ pub use crate::SBE_SCHEMA_ID;
 pub use crate::SBE_SCHEMA_VERSION;
 pub use crate::SBE_SEMANTIC_VERSION;
 
-pub const SBE_BLOCK_LENGTH: u16 = 59;
+pub const SBE_BLOCK_LENGTH: u16 = 47;
 pub const SBE_TEMPLATE_ID: u16 = 1;
 
 pub mod encoder {
@@ -73,122 +73,107 @@ pub mod encoder {
         }
 
         /// primitive field 'order_id'
-        /// - min value: -9223372036854775807
-        /// - max value: 9223372036854775807
-        /// - null value: -9223372036854775808_i64
+        /// - min value: 0
+        /// - max value: -2
+        /// - null value: 0xffffffffffffffff_u64
         /// - characterEncoding: null
         /// - semanticType: null
         /// - encodedOffset: 1
         /// - encodedLength: 8
         /// - version: 0
         #[inline]
-        pub fn order_id(&mut self, value: i64) {
+        pub fn order_id(&mut self, value: u64) {
             let offset = self.offset + 1;
-            self.get_buf_mut().put_i64_at(offset, value);
+            self.get_buf_mut().put_u64_at(offset, value);
         }
 
-        /// primitive field 'symbol_id'
-        /// - min value: -2147483647
-        /// - max value: 2147483647
-        /// - null value: -2147483648_i32
+        /// primitive field 'market_id'
+        /// - min value: 0
+        /// - max value: 4294967294
+        /// - null value: 0xffffffff_u32
         /// - characterEncoding: null
         /// - semanticType: null
         /// - encodedOffset: 9
         /// - encodedLength: 4
         /// - version: 0
         #[inline]
-        pub fn symbol_id(&mut self, value: i32) {
+        pub fn market_id(&mut self, value: u32) {
             let offset = self.offset + 9;
-            self.get_buf_mut().put_i32_at(offset, value);
+            self.get_buf_mut().put_u32_at(offset, value);
         }
 
         /// primitive field 'user_id'
-        /// - min value: -9223372036854775807
-        /// - max value: 9223372036854775807
-        /// - null value: -9223372036854775808_i64
+        /// - min value: 0
+        /// - max value: -2
+        /// - null value: 0xffffffffffffffff_u64
         /// - characterEncoding: null
         /// - semanticType: null
         /// - encodedOffset: 13
         /// - encodedLength: 8
         /// - version: 0
         #[inline]
-        pub fn user_id(&mut self, value: i64) {
+        pub fn user_id(&mut self, value: u64) {
             let offset = self.offset + 13;
-            self.get_buf_mut().put_i64_at(offset, value);
+            self.get_buf_mut().put_u64_at(offset, value);
         }
 
         /// primitive field 'price'
-        /// - min value: -9223372036854775807
-        /// - max value: 9223372036854775807
-        /// - null value: -9223372036854775808_i64
+        /// - min value: 0
+        /// - max value: -2
+        /// - null value: 0xffffffffffffffff_u64
         /// - characterEncoding: null
         /// - semanticType: null
         /// - encodedOffset: 21
         /// - encodedLength: 8
         /// - version: 0
         #[inline]
-        pub fn price(&mut self, value: i64) {
+        pub fn price(&mut self, value: u64) {
             let offset = self.offset + 21;
-            self.get_buf_mut().put_i64_at(offset, value);
+            self.get_buf_mut().put_u64_at(offset, value);
         }
 
-        /// primitive field 'reserve_bid_price'
-        /// - min value: -9223372036854775807
-        /// - max value: 9223372036854775807
-        /// - null value: -9223372036854775808_i64
+        /// primitive field 'size'
+        /// - min value: 0
+        /// - max value: -2
+        /// - null value: 0xffffffffffffffff_u64
         /// - characterEncoding: null
         /// - semanticType: null
         /// - encodedOffset: 29
         /// - encodedLength: 8
         /// - version: 0
         #[inline]
-        pub fn reserve_bid_price(&mut self, value: i64) {
+        pub fn size(&mut self, value: u64) {
             let offset = self.offset + 29;
-            self.get_buf_mut().put_i64_at(offset, value);
-        }
-
-        /// primitive field 'size'
-        /// - min value: -9223372036854775807
-        /// - max value: 9223372036854775807
-        /// - null value: -9223372036854775808_i64
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 37
-        /// - encodedLength: 8
-        /// - version: 0
-        #[inline]
-        pub fn size(&mut self, value: i64) {
-            let offset = self.offset + 37;
-            self.get_buf_mut().put_i64_at(offset, value);
+            self.get_buf_mut().put_u64_at(offset, value);
         }
 
         /// REQUIRED enum
         #[inline]
         pub fn side(&mut self, value: side::Side) {
-            let offset = self.offset + 45;
+            let offset = self.offset + 37;
             self.get_buf_mut().put_u8_at(offset, value as u8)
         }
 
         /// REQUIRED enum
         #[inline]
-        pub fn order_type(&mut self, value: order_type::OrderType) {
-            let offset = self.offset + 46;
+        pub fn time_in_force(&mut self, value: time_in_force::TimeInForce) {
+            let offset = self.offset + 38;
             self.get_buf_mut().put_u8_at(offset, value as u8)
         }
 
         /// primitive field 'timestamp'
-        /// - min value: -9223372036854775807
-        /// - max value: 9223372036854775807
-        /// - null value: -9223372036854775808_i64
+        /// - min value: 0
+        /// - max value: -2
+        /// - null value: 0xffffffffffffffff_u64
         /// - characterEncoding: null
         /// - semanticType: null
-        /// - encodedOffset: 47
+        /// - encodedOffset: 39
         /// - encodedLength: 8
         /// - version: 0
         #[inline]
-        pub fn timestamp(&mut self, value: i64) {
-            let offset = self.offset + 47;
-            self.get_buf_mut().put_i64_at(offset, value);
+        pub fn timestamp(&mut self, value: u64) {
+            let offset = self.offset + 39;
+            self.get_buf_mut().put_u64_at(offset, value);
         }
     }
 } // end encoder
@@ -277,56 +262,50 @@ pub mod decoder {
 
         /// primitive field - 'REQUIRED'
         #[inline]
-        pub fn order_id(&self) -> i64 {
-            self.get_buf().get_i64_at(self.offset + 1)
+        pub fn order_id(&self) -> u64 {
+            self.get_buf().get_u64_at(self.offset + 1)
         }
 
         /// primitive field - 'REQUIRED'
         #[inline]
-        pub fn symbol_id(&self) -> i32 {
-            self.get_buf().get_i32_at(self.offset + 9)
+        pub fn market_id(&self) -> u32 {
+            self.get_buf().get_u32_at(self.offset + 9)
         }
 
         /// primitive field - 'REQUIRED'
         #[inline]
-        pub fn user_id(&self) -> i64 {
-            self.get_buf().get_i64_at(self.offset + 13)
+        pub fn user_id(&self) -> u64 {
+            self.get_buf().get_u64_at(self.offset + 13)
         }
 
         /// primitive field - 'REQUIRED'
         #[inline]
-        pub fn price(&self) -> i64 {
-            self.get_buf().get_i64_at(self.offset + 21)
+        pub fn price(&self) -> u64 {
+            self.get_buf().get_u64_at(self.offset + 21)
         }
 
         /// primitive field - 'REQUIRED'
         #[inline]
-        pub fn reserve_bid_price(&self) -> i64 {
-            self.get_buf().get_i64_at(self.offset + 29)
-        }
-
-        /// primitive field - 'REQUIRED'
-        #[inline]
-        pub fn size(&self) -> i64 {
-            self.get_buf().get_i64_at(self.offset + 37)
+        pub fn size(&self) -> u64 {
+            self.get_buf().get_u64_at(self.offset + 29)
         }
 
         /// REQUIRED enum
         #[inline]
         pub fn side(&self) -> side::Side {
-            self.get_buf().get_u8_at(self.offset + 45).into()
+            self.get_buf().get_u8_at(self.offset + 37).into()
         }
 
         /// REQUIRED enum
         #[inline]
-        pub fn order_type(&self) -> order_type::OrderType {
-            self.get_buf().get_u8_at(self.offset + 46).into()
+        pub fn time_in_force(&self) -> time_in_force::TimeInForce {
+            self.get_buf().get_u8_at(self.offset + 38).into()
         }
 
         /// primitive field - 'REQUIRED'
         #[inline]
-        pub fn timestamp(&self) -> i64 {
-            self.get_buf().get_i64_at(self.offset + 47)
+        pub fn timestamp(&self) -> u64 {
+            self.get_buf().get_u64_at(self.offset + 39)
         }
     }
 } // end decoder

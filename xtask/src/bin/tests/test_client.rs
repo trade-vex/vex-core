@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
-use common::cmd::{OrderCommand, OrderCommandType};
-use common::model::enums::{OrderAction, OrderType};
+use common::cmd::OrderCommand;
+use common::{OrderCommandType, Side, TimeInForce};
 use hdrhistogram::Histogram;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
@@ -34,6 +34,8 @@ enum Mode {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Cli::parse();
+    // Read configuration from environment variables provided by docker-compose
+    // start logging
     tracing_subscriber::fmt::init();
     let server_host = env::var("VEX_SERVER_HOST").unwrap_or("127.0.0.1".to_string());
     let server_port: u16 = env::var("VEX_SERVER_PORT")?.parse()?;
@@ -83,17 +85,14 @@ fn run_correctness_test(
     for i in 0..count {
         let order_command = OrderCommand {
             command: OrderCommandType::PlaceOrder,
-            uid: 1,
+            user_id: 1,
             size: 100,
+            time_in_force: TimeInForce::Gtc,
             timestamp: 1,
-            matcher_event: None,
-            action: OrderAction::Ask,
-            order_id: (client_id * 1_000_000 + i) as i64,
-            symbol: 3124,
+            side: Side::Ask,
+            order_id: client_id * 1_000_000 + i,
+            market_id: 3124,
             price: 150,
-            reserve_bid_price: 50,
-            order_type: OrderType::Gtc,
-            user_cookie: 40,
         };
         client.send_order_command(order_command)?;
     }
@@ -114,26 +113,25 @@ fn run_latency_test(
         let order_id = client_id * 1_000_000 + i;
         let mut command = OrderCommand {
             command: OrderCommandType::PlaceOrder,
-            uid: 1,
+            user_id: 1,
             size: 100,
+            time_in_force: TimeInForce::Gtc,
             timestamp: 1,
-            matcher_event: None,
-            action: OrderAction::Ask,
-            order_id: order_id as i64,
-            symbol: 3124,
+            side: Side::Ask,
+            order_id,
+            market_id: 3124,
             price: 150,
-            reserve_bid_price: 50,
-            order_type: OrderType::Gtc,
-            user_cookie: 40,
         };
 
         let start_time = Instant::now();
-        command.timestamp = start_time.elapsed().as_nanos() as i64; // This is a placeholder for a real timestamping mechanism
+        // The timestamp field is used to carry the start time as nanoseconds
+        command.timestamp = start_time.elapsed().as_nanos() as u64; // This is a placeholder for a real timestamping mechanism
 
         client.send_order_command(command)?;
 
+        // --- Conceptual: Wait for the acknowledgment ---
         let ack = rx.recv_timeout(Duration::from_secs(5))?;
-        if ack.order_id == order_id as i64 {
+        if ack.order_id == order_id {
             println!("Client-{client_id} received ack for order_id: {order_id}");
             let rtt = start_time.elapsed().as_micros() as u64;
             histogram.record(rtt).unwrap();
