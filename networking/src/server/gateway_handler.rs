@@ -2,14 +2,14 @@ use rusteron_client::{
     AeronAvailableImageCallback, AeronFragmentHandlerCallback, AeronHeader, AeronImage,
     AeronPublication, AeronSubscription, AeronUnavailableImageCallback,
 };
-use std::sync::Arc;
+use std::rc::Rc;
 use tracing::{debug, error};
 
 use super::gateway_manager::GatewayManager;
 
 /// Handles initial handshake messages from gateways
 pub struct HandshakeMessageHandler {
-    gateways: Arc<GatewayManager>,
+    gateways: Rc<GatewayManager>,
     publication: AeronPublication,
 }
 
@@ -19,7 +19,7 @@ impl HandshakeMessageHandler {
     /// # Arguments
     /// * `gateways` - Shared gateway manager instance
     /// * `publication` - Aeron publication for sending responses
-    pub fn new(gateways: Arc<GatewayManager>, publication: AeronPublication) -> Self {
+    pub fn new(gateways: Rc<GatewayManager>, publication: AeronPublication) -> Self {
         Self {
             gateways,
             publication,
@@ -52,7 +52,7 @@ impl AeronFragmentHandlerCallback for HandshakeMessageHandler {
 
 /// Handles gateway image availability events
 pub struct GatewayImageAvailableHandler {
-    gateways: Arc<GatewayManager>,
+    gateways: Rc<GatewayManager>,
 }
 
 impl GatewayImageAvailableHandler {
@@ -60,7 +60,7 @@ impl GatewayImageAvailableHandler {
     ///
     /// # Arguments
     /// * `gateways` - Shared gateway manager instance
-    pub fn new(gateways: Arc<GatewayManager>) -> Self {
+    pub fn new(gateways: Rc<GatewayManager>) -> Self {
         Self { gateways }
     }
 }
@@ -71,13 +71,7 @@ impl AeronAvailableImageCallback for GatewayImageAvailableHandler {
         _subscription: AeronSubscription,
         image: AeronImage,
     ) {
-        let session_id = match image.get_constants() {
-            Ok(b) => b.session_id,
-            Err(e) => {
-                error!("Failed to get image constants: {}", e);
-                return;
-            }
-        };
+        let session_id = image.get_constants().unwrap().session_id;
         let binding = image.get_constants().unwrap();
         let address = binding.source_identity();
 
@@ -93,7 +87,7 @@ impl AeronAvailableImageCallback for GatewayImageAvailableHandler {
 
 /// Handles gateway image unavailability events
 pub struct GatewayImageUnavailableHandler {
-    gateways: Arc<GatewayManager>,
+    gateways: Rc<GatewayManager>,
 }
 
 impl GatewayImageUnavailableHandler {
@@ -101,7 +95,7 @@ impl GatewayImageUnavailableHandler {
     ///
     /// # Arguments
     /// * `gateways` - Shared gateway manager instance
-    pub fn new(gateways: Arc<GatewayManager>) -> Self {
+    pub fn new(gateways: Rc<GatewayManager>) -> Self {
         Self { gateways }
     }
 }
@@ -112,13 +106,8 @@ impl AeronUnavailableImageCallback for GatewayImageUnavailableHandler {
         _subscription: AeronSubscription,
         image: AeronImage,
     ) {
-        let (session_id, binding) = match image.get_constants() {
-            Ok(b) => (b.session_id, b),
-            Err(e) => {
-                error!("Failed to get image constants: {}", e);
-                return;
-            }
-        };
+        let session_id = image.get_constants().unwrap().session_id;
+        let binding = image.get_constants().unwrap();
         let address = binding.source_identity();
 
         debug!(

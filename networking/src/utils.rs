@@ -20,8 +20,7 @@ pub fn new_publication(
     stream_id: i32,
 ) -> Result<AeronPublication, AeronCError> {
     let endpoint = format!("{address}:{port}");
-    let uri =
-        CString::new(format!("aeron:udp?endpoint={endpoint}")).expect("Creation of CString failed");
+    let uri = CString::new(format!("aeron:udp?endpoint={endpoint}")).unwrap();
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -231,7 +230,9 @@ impl PortAllocator {
         let port_range = port_base..=port_hi;
         let mut ports_free: Vec<u16> = port_range.clone().collect();
 
-        let port_range = port_base..=port_hi;
+        // Shuffle the ports for random allocation
+        let mut rng = rand::thread_rng();
+        ports_free.shuffle(&mut rng);
 
         Ok(Self {
             port_range,
@@ -278,17 +279,6 @@ impl PortAllocator {
     /// # Errors
     /// Returns `ResourceAllocationError` if there are fewer than `count` ports available to allocate
     pub fn allocate(&self, mut count: usize) -> Result<Vec<u16>, ServerError> {
-        if count == 0 {
-            return Ok(Vec::new());
-        }
-        let total = self.total_ports();
-        let used = self.ports_used.len();
-        if count > total.saturating_sub(used) {
-            return Err(ServerError::ResourceAllocationError(format!(
-                "Requested {count} ports, but only {} available",
-                total - used
-            )));
-        }
         let mut result = Vec::with_capacity(count);
         let mut rng = rand::thread_rng();
         while count != 0 {

@@ -2,7 +2,7 @@ use crate::utils::{
     new_publication, new_publication_with_session, new_subscription_with_mdc,
     new_subscription_with_mdc_and_session,
 };
-use common::cmd::{OrderCommand, encode_order_command};
+use common::{OrderCommand, encode_order_command};
 use rand;
 use rusteron_client::{
     Aeron, AeronCError, AeronContext, AeronFragmentHandlerCallback, AeronHeader, AeronPublication,
@@ -448,7 +448,6 @@ impl VexGateway {
         while start.elapsed() < CONNECT_TIMEOUT {
             subscription.poll(Some(&handler), 10)?;
             if let Some(response) = shared_response.lock().unwrap().take() {
-                handler.release();
                 return Ok(response);
             }
             // Sleeping breifly here. Larfer sleep as latency is not critical during handshake
@@ -550,7 +549,7 @@ impl VexGateway {
     }
 
     /// Gracefully shuts down the gateway
-    pub fn shutdown(&mut self) -> Result<(), GatewayError> {
+    pub async fn shutdown(&mut self) -> Result<(), GatewayError> {
         info!("Shutting down VEX Gateway '{}'", self.config.gateway_id);
 
         // Update state
@@ -567,7 +566,7 @@ impl VexGateway {
     }
 
     /// Sends an OrderCommand to the core
-    pub fn send_order_command(&mut self, order_command: OrderCommand) -> Result<(), GatewayError> {
+    pub fn send_order_command(&mut self, order_command: &OrderCommand) -> Result<(), GatewayError> {
         // Check if we're connected
         if !self.is_connected() {
             return Err(GatewayError::NotConnected);
@@ -580,16 +579,15 @@ impl VexGateway {
 
         // Serialize OrderCommand
         let mut buffer = vec![0u8; self.config.max_message_size];
+        encode_order_command(order_command.clone(), &mut buffer).map_err(|e| {
+            GatewayError::ProtocolError(format!("Failed to encode OrderCommand: {e:?}"))
+        })?;
 
         // Send the binary message directly
         debug!(
             "Gateway '{}': Sending OrderCommand: {:?}",
             self.config.gateway_id, order_command
         );
-
-        encode_order_command(order_command, &mut buffer).map_err(|e| {
-            GatewayError::ProtocolError(format!("Failed to encode OrderCommand: {e:?}"))
-        })?;
 
         // // Calculate actual encoded size (you may need to adjust this based on your encoding)
         // let encoded_size = std::cmp::min(buffer.len(), self.config.max_message_size);

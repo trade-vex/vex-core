@@ -1,6 +1,6 @@
-use common::cmd::{OrderCommand, decode_order_command};
 use common::OrderCommandType;
-use common::{TimeInForce, Side};
+use common::{OrderCommand, decode_order_command};
+use common::{Side, TimeInForce};
 use disruptor::{BusySpin, ProcessorSettings, build_multi_producer};
 use rusteron_client::{AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port};
 use std::time::Duration;
@@ -86,7 +86,7 @@ fn test_client_server_communication() {
         };
         for i in 0..10 {
             order_command.order_id = i;
-            client.send_order_command(order_command.clone())?;
+            client.send_order_command(&order_command)?;
             std::thread::sleep(Duration::from_millis(10));
         }
         Ok(())

@@ -1,18 +1,10 @@
 use common::OrderCommandType;
-use common::cmd::{OrderCommand, ProcessedOrderCommand, Status};
+use common::{OrderCommand, ProcessedOrderCommand, Status};
 use hashbrown::HashMap;
 use tracing::{info, warn};
 use vex_orderbook::OrderBook;
 use vex_orderbook::tree::{BTreeAskSide, BTreeBidSide};
 
-/// Custom error type for routing failures.
-#[derive(Debug)]
-pub enum RoutingError {
-    OrderBookNotFound,
-    ProcessingFailed(OrderBookError),
-}
-
-use tracing::{info, warn};
 /// Owns all order books and routes commands to the correct one.
 pub struct MatchingEngineRouter {
     pub order_books: HashMap<u32, Box<OrderBook<BTreeAskSide, BTreeBidSide>>>,
@@ -37,6 +29,8 @@ impl MatchingEngineRouter {
 
         Self {
             order_books: HashMap::new(),
+            shard_id,
+            shard_mask: num_shards - 1, // Creates mask : shardMask = numShards - 1
         }
     }
 
@@ -63,8 +57,13 @@ impl MatchingEngineRouter {
 
     /// Main entry point for processing orders
     pub fn process_order(&mut self, cmd: &mut OrderCommand) -> ProcessedOrderCommand {
-        let res =
-            ProcessedOrderCommand::new(Status::Rejected, cmd.order_id, cmd.user_id , cmd.market_id, cmd.side);
+        let res = ProcessedOrderCommand::new(
+            Status::Rejected,
+            cmd.order_id,
+            cmd.user_id,
+            cmd.market_id,
+            cmd.side,
+        );
         if self.market_for_this_handler(cmd.market_id as u64) {
             if let Some(order_book) = self.order_books.get_mut(&cmd.market_id) {
                 info!(
@@ -90,6 +89,6 @@ impl MatchingEngineRouter {
 
 impl Default for MatchingEngineRouter {
     fn default() -> Self {
-        Self::new()
+        Self::new(0, 1)
     }
 }

@@ -103,7 +103,7 @@ impl ConfigLoader {
 
         // Add configuration files in order of precedence
         let mut files_found = false;
-        for path in search_paths.iter().rev() {
+        for path in &search_paths {
             let config_path = Path::new(path);
             if config_path.exists() {
                 files_found = true;
@@ -136,7 +136,7 @@ impl ConfigLoader {
             return Ok(default_config);
         }
 
-        // Add environment variables
+        // Add environment-specific variables
         if let Some(prefix) = &self.env_prefix {
             let env_prefix = format!("{}_{}", prefix, env.env_prefix());
             builder = builder.add_source(
