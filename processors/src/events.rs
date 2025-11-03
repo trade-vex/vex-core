@@ -117,7 +117,7 @@ impl KafkaEventsHandler {
                 timestamp: cmd.timestamp(),
             };
 
-            let topic_name = format!("asset-{}-balances", asset_id);
+            let topic_name = "balances";
             self.publish_event(&topic_name, &user_id.to_string(), &balance_event);
             debug!(
                 target: "events",
@@ -143,7 +143,7 @@ impl KafkaEventsHandler {
             timestamp: cmd.timestamp(),
         };
 
-        let topic_name = format!("asset-{}-balances", cmd.market_id);
+        let topic_name = "balances";
         self.publish_event(&topic_name, &cmd.user_id.to_string(), &balance_event);
         debug!(
             target: "events",
@@ -171,7 +171,7 @@ impl KafkaEventsHandler {
             market_id: cmd.market_id(),
         };
 
-        let topic_name = format!("market-{}-orders", cmd.market_id());
+        let topic_name = "orders";
         self.publish_event(&topic_name, &cmd.order_id().to_string(), &order_event);
         debug!(
             target: "events",
@@ -202,7 +202,7 @@ impl KafkaEventsHandler {
             timestamp: cmd.timestamp(),
         };
 
-        let topic_name = format!("market-{market_id}-trades");
+        let topic_name = "trades";
         let trade_key = format!("{}:{}", taker_order_id, event.matched_order_id);
         self.publish_event(&topic_name, &trade_key, &trade_event);
         debug!(
@@ -225,7 +225,7 @@ impl KafkaEventsHandler {
             timestamp: cmd.timestamp(),
         };
 
-        let topic_name = format!("market-{}-cancels", cmd.market_id());
+        let topic_name = "cancels";
         self.publish_event(&topic_name, &cmd.order_id().to_string(), &cancel_event);
         debug!(
             target: "events",
@@ -267,7 +267,7 @@ impl KafkaEventsHandler {
                 timestamp: snapshot.timestamp,
             };
 
-            let topic_name = format!("market-{market_id}-orderbook");
+            let topic_name = "orderbook";
             self.publish_event(&topic_name, &market_id.to_string(), &orderbook_event);
 
             debug!(
@@ -288,7 +288,7 @@ impl KafkaEventsHandler {
             timestamp: cmd.timestamp(),
         };
 
-        let topic_name = format!("asset-{}-deposits", cmd.market_id());
+        let topic_name = "deposits";
         self.publish_event(&topic_name, &cmd.user_id().to_string(), &deposit_event);
         debug!(
             target: "events",
@@ -309,7 +309,7 @@ impl KafkaEventsHandler {
             timestamp: cmd.timestamp(),
         };
 
-        let topic_name = format!("asset-{}-withdrawals", cmd.market_id());
+        let topic_name = "withdrawals";
         self.publish_event(&topic_name, &cmd.user_id().to_string(), &withdraw_event);
         debug!(
             target: "events",
