@@ -109,16 +109,23 @@ pub struct ProcessedOrderCommand {
     order_id: u64,
     market_id: u32,
     taker_id: u64,
+    price: u64,
+    size: u64,
     side: Side,
+    timestamp: u64,
     events: Option<Box<MatcherTradeEvent>>,
 }
 
 impl ProcessedOrderCommand {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         status: Status,
         order_id: u64,
         taker_id: u64,
         market_id: u32,
+        price: u64,
+        size: u64,
+        timestamp: u64,
         taker_side: Side,
     ) -> Self {
         Self {
@@ -126,7 +133,10 @@ impl ProcessedOrderCommand {
             order_id,
             market_id,
             taker_id,
+            price,
+            size,
             side: taker_side,
+            timestamp,
             events: None,
         }
     }
@@ -145,6 +155,18 @@ impl ProcessedOrderCommand {
 
     pub fn market_id(&self) -> u32 {
         self.market_id
+    }
+
+    pub fn price(&self) -> u64 {
+        self.price
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub fn timestamp(&self) -> u64 {
+        self.timestamp
     }
 
     pub fn side(&self) -> Side {

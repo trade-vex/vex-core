@@ -1,3 +1,4 @@
+use common::L2MarketData;
 use common::OrderCommandType;
 use common::{OrderCommand, ProcessedOrderCommand, Status};
 use hashbrown::HashMap;
@@ -63,6 +64,9 @@ impl MatchingEngineRouter {
             cmd.order_id,
             cmd.user_id,
             cmd.market_id,
+            cmd.price,
+            cmd.size,
+            cmd.timestamp,
             cmd.side,
         );
         if self.market_for_this_handler(cmd.market_id as u64) {
@@ -85,6 +89,23 @@ impl MatchingEngineRouter {
             }
         }
         res
+    }
+
+    /// Get a reference to the orderbook for a specific market_id
+    pub fn get_orderbook(&self, market_id: u32) -> Option<&OrderBook<BTreeAskSide, BTreeBidSide>> {
+        self.order_books
+            .get(&market_id)
+            .map(|boxed_book| boxed_book.as_ref())
+    }
+
+    /// Create a snapshot of the orderbook for a specific market_id with specified depth
+    pub fn create_orderbook_snapshot(
+        &self,
+        market_id: u32,
+        depth: usize,
+    ) -> Option<L2MarketData<50>> {
+        self.get_orderbook(market_id)
+            .map(|orderbook| orderbook.create_snapshot_with_depth(depth))
     }
 }
 

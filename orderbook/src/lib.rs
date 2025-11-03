@@ -36,7 +36,8 @@
 //!         processors (risk engines and event handlers) to consume.
 use crate::tree::BookSide;
 use common::{
-    MatcherTradeEvent, Order, OrderCommand, ProcessedOrderCommand, Side, Status, TimeInForce,
+    L2MarketData, MatcherTradeEvent, Order, OrderCommand, ProcessedOrderCommand, Side, Status,
+    TimeInForce,
 };
 use std::collections::{HashMap, VecDeque};
 
@@ -73,6 +74,16 @@ impl PriceLevel {
             self.total_volume -= removed_order.size;
             processed.set_status(Status::Cancelled);
         }
+    }
+
+    /// Get the total volume at this price level
+    pub fn get_total_volume(&self) -> u64 {
+        self.total_volume
+    }
+
+    /// Get the number of orders at this price level
+    pub fn get_order_count(&self) -> u64 {
+        self.orders.len() as u64
     }
 }
 
@@ -204,6 +215,9 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             cmd.order_id,
             cmd.user_id,
             cmd.market_id,
+            cmd.price,
+            cmd.size,
+            cmd.timestamp,
             cmd.side,
         );
         match cmd.time_in_force {
@@ -274,6 +288,9 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             cmd.order_id,
             cmd.user_id,
             cmd.market_id,
+            cmd.price,
+            cmd.size,
+            cmd.timestamp,
             cmd.side,
         );
         if let Some(price) = self.orders.remove(&cmd.order_id) {
@@ -351,5 +368,50 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     fn is_market_order(cmd: &OrderCommand) -> bool {
         (cmd.price == 0 && cmd.side == Side::Ask)
             || (cmd.price == u64::MAX && cmd.side == Side::Bid)
+    }
+
+    /// Get iterator over bid levels (highest price first)
+    pub fn get_bids(&self) -> Box<dyn Iterator<Item = (u64, &PriceLevel)> + '_> {
+        self.bids.iter()
+    }
+
+    /// Get iterator over ask levels (lowest price first)
+    pub fn get_asks(&self) -> Box<dyn Iterator<Item = (u64, &PriceLevel)> + '_> {
+        self.asks.iter()
+    }
+
+    /// Create a snapshot of the orderbook data with specified depth
+    pub fn create_snapshot_with_depth(&self, depth: usize) -> L2MarketData<50> {
+        let mut l2_data = L2MarketData::<50>::new();
+
+        // Fill bid levels (highest price first)
+        let mut bid_index = 0;
+        for (price, level) in self.get_bids().take(depth) {
+            if bid_index < 50 {
+                l2_data.bid_prices[bid_index] = price;
+                l2_data.bid_volumes[bid_index] = level.get_total_volume();
+                l2_data.bid_orders[bid_index] = level.get_order_count();
+                bid_index += 1;
+            }
+        }
+
+        // Fill ask levels (lowest price first)
+        let mut ask_index = 0;
+        for (price, level) in self.get_asks().take(depth) {
+            if ask_index < 50 {
+                l2_data.ask_prices[ask_index] = price;
+                l2_data.ask_volumes[ask_index] = level.get_total_volume();
+                l2_data.ask_orders[ask_index] = level.get_order_count();
+                ask_index += 1;
+            }
+        }
+
+        // Set timestamp
+        l2_data.timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        l2_data
     }
 }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use common::CoreMarketSpecification;
 use hashbrown::HashMap;
-use processors::events::SimpleEventsHandler;
+use processors::events::KafkaEventsHandler;
 use processors::journaling::JournalingProcessor;
 
 use crate::engine::{CoreEngine, OrderProducer};
@@ -20,12 +20,12 @@ pub fn init_exchange(
     let journaling_processor = JournalingProcessor::new();
 
     // Create events handler for trade events
-    let events_handler = Arc::new(SimpleEventsHandler::new());
+    let events_handler = Arc::new(KafkaEventsHandler::new("localhost:9093"));
 
     // Create the Exchange Core with sharded risk engines and matching engines
     // Symbols are automatically added to matching engines during initialization
     let (core_engine, producer) =
-        CoreEngine::new(symbol_specs, journaling_processor, events_handler);
+        CoreEngine::new(symbol_specs.clone(), journaling_processor, events_handler);
 
     (core_engine, producer)
 }
