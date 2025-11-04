@@ -38,7 +38,7 @@ use crate::server::gateway_handler::{
     GatewayImageAvailableHandler, GatewayImageUnavailableHandler, HandshakeMessageHandler,
 };
 use crate::server::gateway_manager::GatewayManager;
-use crate::server::replay::{ExtendedRecordingDescriptor, RecorderDescriptorReader};
+use crate::server::replay::{ActiveRecordingReader, ExtendedRecordingDescriptor, RecorderDescriptorReader};
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
 use common::{FRAMESIZE, OrderCommand};
 use disruptor::{MultiProducer, SingleConsumerBarrier};
@@ -347,15 +347,102 @@ impl VexCoreServer {
                 )?,
                 channel,
             )),
-            None => Ok((
-                archive.start_recording(
+            None => {
+                // Check for existing active recordings before starting a new one
+                let mut active_reader = Handler::leak(ActiveRecordingReader::new());
+                let _ = archive.list_recordings_for_uri(
+                    0,
+                    i32::MAX,
                     &RECORDING_CHANNEL.into_c_string(),
                     RECORDING_STREAM_ID,
-                    SourceLocation::AERON_ARCHIVE_SOURCE_LOCATION_LOCAL,
-                    false,
-                )?,
-                RECORDING_CHANNEL.to_string(),
-            )),
+                    Some(&active_reader),
+                )?;
+                
+                if let Some(active_record) = &active_reader.active_recording {
+                    info!(
+                        target: "recording",
+                        action = "found_active_recording",
+                        recording_id = active_record.recording_id,
+                        start_position = active_record.start_position
+                    );
+                    // For active recordings, we can't extend them, but we can get the subscription_id
+                    // by querying the archive. Since the recording is already active, we return
+                    // a dummy subscription_id (0) and the channel. The publication will connect to
+                    // the existing recording.
+                    active_reader.release();
+                    Ok((0, RECORDING_CHANNEL.to_string()))
+                } else {
+                    active_reader.release();
+                    info!(
+                        target: "recording",
+                        action = "starting_new_recording"
+                    );
+                    // Try to start recording, and if it fails with "recording exists",
+                    // find the last recording and extend it
+                    match archive.start_recording(
+                        &RECORDING_CHANNEL.into_c_string(),
+                        RECORDING_STREAM_ID,
+                        SourceLocation::AERON_ARCHIVE_SOURCE_LOCATION_LOCAL,
+                        false,
+                    ) {
+                        Ok(subscription_id) => Ok((subscription_id, RECORDING_CHANNEL.to_string())),
+                        Err(e) => {
+                            // Check if error is "recording exists"
+                            let error_msg = format!("{}", e);
+                            if error_msg.contains("recording exists") {
+                                info!(
+                                    target: "recording",
+                                    action = "recording_exists_fallback",
+                                    error = %error_msg
+                                );
+                                // Find the last recording and extend it
+                                let mut reader = Handler::leak(RecorderDescriptorReader::new());
+                                let _ = archive.list_recordings_for_uri(
+                                    0,
+                                    i32::MAX,
+                                    &RECORDING_CHANNEL.into_c_string(),
+                                    RECORDING_STREAM_ID,
+                                    Some(&reader),
+                                )?;
+                                
+                                if let Some(last_record) = &reader.last_recording {
+                                    info!(
+                                        target: "recording",
+                                        action = "extending_existing_recording",
+                                        recording_id = last_record.recording_id,
+                                        start_position = last_record.start_position,
+                                        stop_position = last_record.stop_position
+                                    );
+                                    let extended_recording = ExtendedRecordingDescriptor::new(
+                                        last_record.initial_term_id,
+                                        last_record.start_position,
+                                        last_record.term_buffer_length,
+                                        last_record.recording_id,
+                                    )?;
+                                    reader.release();
+                                    Ok((
+                                        archive.extend_recording(
+                                            extended_recording.recording_id,
+                                            &extended_recording.channel.clone().into_c_string(),
+                                            RECORDING_STREAM_ID,
+                                            SourceLocation::AERON_ARCHIVE_SOURCE_LOCATION_LOCAL,
+                                            false,
+                                        )?,
+                                        extended_recording.channel,
+                                    ))
+                                } else {
+                                    reader.release();
+                                    // If we can't find the recording, return the original error
+                                    Err(ServerError::AeronConnectionError(e))
+                                }
+                            } else {
+                                // Some other error, return it
+                                Err(ServerError::AeronConnectionError(e))
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.core_networking.context_dir = "/dev/shm/aeron".to_string();
     config.kafka_broker = std::env::var("KAFKA_BROKER")
     .unwrap_or_else(|_| "localhost:9092".to_string());
-    info!("CORE CONFIG 22: {:?}", config);
+    info!("CORE CONFIG 223: {:?}", config);
 
     info!(
         "Loaded configuration for environment: {}",
