@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fmt::init();
 
     // Load configuration with auto-detected environment
-    let config = match VexConfig::load_auto() {
+    let mut config = match VexConfig::load_auto() {
         Ok(config) => {
             info!(
                 "Loaded configuration for environment: {}",
@@ -43,6 +43,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Authentication enabled: {}",
         config.core_networking.enable_authentication
     );
+
+    config.core_networking.local_address = "0.0.0.0".to_string();
+    config.core_networking.context_dir = "/dev/shm/aeron".to_string();
+    info!("CORE CONFIG: {:?}", config);
 
     // Initialize the exchange core with symbol specifications from config
     info!("Initializing exchange core...");

@@ -127,41 +127,41 @@ impl CoreEngine {
         // This creates the same dependency graph and parallelism as exchangeCore
         let producer = build_multi_producer(buffer_size, order_factory, BusySpin)
             // Stage 1: Journaling
-            .pin_at_core(1)
+            // .pin_at_core(1)
             .handle_events_with(journaling_handler)
             // Stage 2: Risk Engine R1 - 4 parallel handlers (equivalent to riskEngines.forEach)
             // Each handler processes ALL events but filters internally based on user ID
-            .pin_at_core(2)
+            // .pin_at_core(2)
             .handle_events_with(create_risk_handler!(0, risk_engines_arc, price_cache))
-            .pin_at_core(3)
+            // .pin_at_core(3)
             .handle_events_with(create_risk_handler!(1, risk_engines_arc, price_cache))
-            .pin_at_core(4)
+            // .pin_at_core(4)
             .handle_events_with(create_risk_handler!(2, risk_engines_arc, price_cache))
-            .pin_at_core(5)
+            // .pin_at_core(5)
             .handle_events_with(create_risk_handler!(3, risk_engines_arc, price_cache))
             .and_then() // Creates dependency: matching engines wait for risk engines
             // Stage 3: Matching Engine - 4 parallel handlers
             // Each handler processes ALL events but filters internally based on symbol_id ID
-            .pin_at_core(6)
+            // .pin_at_core(6)
             .handle_events_with(router_handlers_iter.next().unwrap())
-            .pin_at_core(7)
+            // .pin_at_core(7)
             .handle_events_with(router_handlers_iter.next().unwrap())
-            .pin_at_core(8)
+            // .pin_at_core(8)
             .handle_events_with(router_handlers_iter.next().unwrap())
-            .pin_at_core(9)
+            // .pin_at_core(9)
             .handle_events_with(router_handlers_iter.next().unwrap())
             .and_then()
-            .pin_at_core(10)
+            // .pin_at_core(10)
             .handle_events_with(create_risk_r2_handler!(0, risk_engines_arc))
-            .pin_at_core(11)
+            // .pin_at_core(11)
             .handle_events_with(create_risk_r2_handler!(1, risk_engines_arc))
-            .pin_at_core(12)
+            // .pin_at_core(12)
             .handle_events_with(create_risk_r2_handler!(2, risk_engines_arc))
-            .pin_at_core(13)
+            // .pin_at_core(13)
             .handle_events_with(create_risk_r2_handler!(3, risk_engines_arc))
             .and_then() // Creates dependency: event handlers wait for risk engines
             // Stage 3: Event Handlers
-            .pin_at_core(14)
+            // .pin_at_core(14)
             .handle_events_with(create_event_handler!(events_handler_arc));
 
         // Optional test handler for unit tests

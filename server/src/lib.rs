@@ -3,6 +3,7 @@ pub mod utils;
 
 use processors::risk_engine::RiskEngine;
 use std::sync::Arc;
+use std::env;
 
 use common::CoreMarketSpecification;
 use hashbrown::HashMap;
@@ -24,8 +25,11 @@ pub fn init_exchange(
     let publications = Arc::new(GatewayPublications::new());
 
     // Create events handler for trade events
+    let kafka_broker = env::var("KAFKA_BROKER")
+        .unwrap_or_else(|_| "localhost:9092".to_string());
+    
     let events_handler = Arc::new(KafkaEventsHandler::new(
-        "localhost:9092",
+        &kafka_broker,
         publications.clone(),
     ));
 
