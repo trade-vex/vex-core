@@ -1,7 +1,7 @@
 use super::Order;
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BalanceEvent {
     pub user_id: u64,
     pub asset_id: u16,
@@ -11,13 +11,13 @@ pub struct BalanceEvent {
     pub timestamp: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct OrderEvent {
     pub order: Order,
     pub market_id: u32,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TradeEvent {
     pub maker_user_id: u64,
     pub taker_user_id: u64,
@@ -29,7 +29,7 @@ pub struct TradeEvent {
     pub timestamp: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CancelOrderEvent {
     pub order_id: u64,
     pub market_id: u32,
@@ -37,7 +37,7 @@ pub struct CancelOrderEvent {
     pub timestamp: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct OrderbookEvent {
     pub market_id: u32,
     pub bids: Vec<OrderbookLevel>,
@@ -45,13 +45,13 @@ pub struct OrderbookEvent {
     pub timestamp: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct OrderbookLevel {
     pub price: u64,
     pub size: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DepositEvent {
     pub user_id: u64,
     pub asset_id: u16,
@@ -59,7 +59,7 @@ pub struct DepositEvent {
     pub timestamp: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WithdrawEvent {
     pub user_id: u64,
     pub asset_id: u16,
