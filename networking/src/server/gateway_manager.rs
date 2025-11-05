@@ -289,6 +289,21 @@ impl GatewayManager {
         let (dedicated_session, ports) = self.allocate_gateway_session(gateway_id)?;
         let encrypted_session = encryption_key ^ dedicated_session;
 
+        // Wait for publication to be connected before sending ACCEPT message
+        // This avoids transient errors during connection establishment
+        let mut attempts = 0;
+        const MAX_CONNECTION_WAIT_ATTEMPTS: usize = 50; // 5 seconds max wait
+        while !publication.is_connected() && attempts < MAX_CONNECTION_WAIT_ATTEMPTS {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            attempts += 1;
+        }
+        if !publication.is_connected() {
+            self.remove_gateway_session(gateway_id)?;
+            return Err(ServerError::GatewayMessageError(
+                "Publication not connected after waiting".to_string(),
+            ));
+        }
+
         // Send success response
         let accept_msg = format!(
             "{} gateway-{} ACCEPT {} {} {}",
