@@ -397,37 +397,59 @@ impl VexCoreServer {
                                 );
                                 // First check for active recordings (stop_position == 0)
                                 let mut active_reader = Handler::leak(ActiveRecordingReader::new());
-                                let _ = archive.list_recordings_for_uri(
+                                let active_recordings_found = archive.list_recordings_for_uri(
                                     0,
                                     i32::MAX,
                                     &RECORDING_CHANNEL.into_c_string(),
                                     RECORDING_STREAM_ID,
                                     Some(&active_reader),
-                                )?;
-                                
-                                if let Some(active_record) = &active_reader.active_recording {
-                                    info!(
+                                ).map_err(|list_err| {
+                                    error!(
                                         target: "recording",
-                                        action = "found_active_recording_in_fallback",
-                                        recording_id = active_record.recording_id,
-                                        start_position = active_record.start_position
+                                        action = "list_recordings_for_active_failed",
+                                        error = %list_err
                                     );
-                                    // For active recordings, we can't extend them, but we can use them
-                                    // Return a dummy subscription_id (0) and the channel
-                                    active_reader.release();
-                                    Ok((0, RECORDING_CHANNEL.to_string()))
-                                } else {
-                                    active_reader.release();
-                                    // No active recording, check for completed recordings
-                                    let mut reader = Handler::leak(RecorderDescriptorReader::new());
-                                    let _ = archive.list_recordings_for_uri(
-                                        0,
-                                        i32::MAX,
-                                        &RECORDING_CHANNEL.into_c_string(),
-                                        RECORDING_STREAM_ID,
-                                        Some(&reader),
-                                    )?;
-                                    
+                                    list_err
+                                });
+                                
+                                if let Ok(_) = active_recordings_found {
+                                    if let Some(active_record) = &active_reader.active_recording {
+                                        info!(
+                                            target: "recording",
+                                            action = "found_active_recording_in_fallback",
+                                            recording_id = active_record.recording_id,
+                                            start_position = active_record.start_position
+                                        );
+                                        // For active recordings, we can't extend them, but we can use them
+                                        // Return a dummy subscription_id (0) and the channel
+                                        active_reader.release();
+                                        return Ok((0, RECORDING_CHANNEL.to_string()));
+                                    }
+                                }
+                                active_reader.release();
+                                
+                                // No active recording found, check for completed recordings
+                                info!(
+                                    target: "recording",
+                                    action = "checking_completed_recordings"
+                                );
+                                let mut reader = Handler::leak(RecorderDescriptorReader::new());
+                                let completed_recordings_found = archive.list_recordings_for_uri(
+                                    0,
+                                    i32::MAX,
+                                    &RECORDING_CHANNEL.into_c_string(),
+                                    RECORDING_STREAM_ID,
+                                    Some(&reader),
+                                ).map_err(|list_err| {
+                                    error!(
+                                        target: "recording",
+                                        action = "list_recordings_for_completed_failed",
+                                        error = %list_err
+                                    );
+                                    list_err
+                                });
+                                
+                                if let Ok(_) = completed_recordings_found {
                                     if let Some(last_record) = &reader.last_recording {
                                         info!(
                                             target: "recording",
@@ -443,7 +465,7 @@ impl VexCoreServer {
                                             last_record.recording_id,
                                         )?;
                                         reader.release();
-                                        Ok((
+                                        return Ok((
                                             archive.extend_recording(
                                                 extended_recording.recording_id,
                                                 &extended_recording.channel.clone().into_c_string(),
@@ -452,13 +474,18 @@ impl VexCoreServer {
                                                 false,
                                             )?,
                                             extended_recording.channel,
-                                        ))
-                                    } else {
-                                        reader.release();
-                                        // If we can't find any recording, return the original error
-                                        Err(ServerError::AeronConnectionError(e))
+                                        ));
                                     }
                                 }
+                                reader.release();
+                                
+                                // If we can't find any recording, log and return the original error
+                                error!(
+                                    target: "recording",
+                                    action = "no_recordings_found_in_fallback",
+                                    "Failed to find active or completed recordings"
+                                );
+                                Err(ServerError::AeronConnectionError(e))
                             } else {
                                 // Some other error, return it
                                 Err(ServerError::AeronConnectionError(e))
