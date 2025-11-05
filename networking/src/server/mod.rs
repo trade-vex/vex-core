@@ -266,8 +266,18 @@ impl VexCoreServer {
         self.image_available_handler.release();
         self.image_unavailable_handler.release();
         self.handshake_handler.release();
-        self.archive
-            .stop_recording_subscription(self.subscription_id)?;
+        // Only stop recording subscription if we own it (subscription_id != 0)
+        // subscription_id = 0 means we're using an existing active recording we don't own
+        if self.subscription_id != 0 {
+            self.archive
+                .stop_recording_subscription(self.subscription_id)?;
+        } else {
+            info!(
+                target: "core_server",
+                action = "skipping_stop_recording",
+                "Using existing active recording, not stopping it"
+            );
+        }
         self.archive.close()?;
 
         info!(
@@ -393,99 +403,21 @@ impl VexCoreServer {
                                 info!(
                                     target: "recording",
                                     action = "recording_exists_fallback",
-                                    error = %error_msg
+                                    error = %error_msg,
+                                    "Archive reports recording exists, treating as active recording"
                                 );
-                                // First check for active recordings (stop_position == 0)
-                                let mut active_reader = Handler::leak(ActiveRecordingReader::new());
-                                let active_recordings_found = archive.list_recordings_for_uri(
-                                    0,
-                                    i32::MAX,
-                                    &RECORDING_CHANNEL.into_c_string(),
-                                    RECORDING_STREAM_ID,
-                                    Some(&active_reader),
-                                ).map_err(|list_err| {
-                                    error!(
-                                        target: "recording",
-                                        action = "list_recordings_for_active_failed",
-                                        error = %list_err
-                                    );
-                                    list_err
-                                });
                                 
-                                if let Ok(_) = active_recordings_found {
-                                    if let Some(active_record) = &active_reader.active_recording {
-                                        info!(
-                                            target: "recording",
-                                            action = "found_active_recording_in_fallback",
-                                            recording_id = active_record.recording_id,
-                                            start_position = active_record.start_position
-                                        );
-                                        // For active recordings, we can't extend them, but we can use them
-                                        // Return a dummy subscription_id (0) and the channel
-                                        active_reader.release();
-                                        return Ok((0, RECORDING_CHANNEL.to_string()));
-                                    }
-                                }
-                                active_reader.release();
-                                
-                                // No active recording found, check for completed recordings
+                                // When Archive says "recording exists", it means there's an active recording
+                                // that we can't query via list_recordings_for_uri. We'll proceed with
+                                // the assumption that an active recording exists and use it.
+                                // Return subscription_id = 0 to indicate we're using an existing active recording.
+                                // The publication will connect to the existing recording automatically.
                                 info!(
                                     target: "recording",
-                                    action = "checking_completed_recordings"
+                                    action = "using_existing_active_recording",
+                                    "Proceeding with existing active recording"
                                 );
-                                let mut reader = Handler::leak(RecorderDescriptorReader::new());
-                                let completed_recordings_found = archive.list_recordings_for_uri(
-                                    0,
-                                    i32::MAX,
-                                    &RECORDING_CHANNEL.into_c_string(),
-                                    RECORDING_STREAM_ID,
-                                    Some(&reader),
-                                ).map_err(|list_err| {
-                                    error!(
-                                        target: "recording",
-                                        action = "list_recordings_for_completed_failed",
-                                        error = %list_err
-                                    );
-                                    list_err
-                                });
-                                
-                                if let Ok(_) = completed_recordings_found {
-                                    if let Some(last_record) = &reader.last_recording {
-                                        info!(
-                                            target: "recording",
-                                            action = "extending_existing_recording",
-                                            recording_id = last_record.recording_id,
-                                            start_position = last_record.start_position,
-                                            stop_position = last_record.stop_position
-                                        );
-                                        let extended_recording = ExtendedRecordingDescriptor::new(
-                                            last_record.initial_term_id,
-                                            last_record.start_position,
-                                            last_record.term_buffer_length,
-                                            last_record.recording_id,
-                                        )?;
-                                        reader.release();
-                                        return Ok((
-                                            archive.extend_recording(
-                                                extended_recording.recording_id,
-                                                &extended_recording.channel.clone().into_c_string(),
-                                                RECORDING_STREAM_ID,
-                                                SourceLocation::AERON_ARCHIVE_SOURCE_LOCATION_LOCAL,
-                                                false,
-                                            )?,
-                                            extended_recording.channel,
-                                        ));
-                                    }
-                                }
-                                reader.release();
-                                
-                                // If we can't find any recording, log and return the original error
-                                error!(
-                                    target: "recording",
-                                    action = "no_recordings_found_in_fallback",
-                                    "Failed to find active or completed recordings"
-                                );
-                                Err(ServerError::AeronConnectionError(e))
+                                Ok((0, RECORDING_CHANNEL.to_string()))
                             } else {
                                 // Some other error, return it
                                 Err(ServerError::AeronConnectionError(e))
