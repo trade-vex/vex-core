@@ -111,3 +111,56 @@ impl AeronArchiveRecordingDescriptorConsumerFuncCallback for RecorderDescriptorR
         }
     }
 }
+
+/// Reader that captures active recordings (where stop_position == 0)
+#[derive(Debug)]
+pub struct ActiveRecordingReader {
+    pub active_recording: Option<RecordingInfo>,
+}
+
+impl ActiveRecordingReader {
+    pub fn new() -> Self {
+        Self {
+            active_recording: None,
+        }
+    }
+}
+
+impl AeronArchiveRecordingDescriptorConsumerFuncCallback for ActiveRecordingReader {
+    fn handle_aeron_archive_recording_descriptor_consumer_func(
+        &mut self,
+        recording_descriptor: AeronArchiveRecordingDescriptor,
+    ) {
+        // Active recordings have stop_position == 0
+        if recording_descriptor.stop_position == 0 {
+            debug!(
+                target: "recording",
+                action = "active_recording_found",
+                recording_id = recording_descriptor.recording_id,
+                start_position = recording_descriptor.start_position,
+                stop_position = recording_descriptor.stop_position
+            );
+            // Performing a deep copy here is essential;
+            // the descriptor lifetime ends after the callback.
+            let recording_info = RecordingInfo {
+                control_session_id: recording_descriptor.control_session_id,
+                correlation_id: recording_descriptor.correlation_id,
+                recording_id: recording_descriptor.recording_id,
+                start_timestamp: recording_descriptor.start_timestamp,
+                stop_timestamp: recording_descriptor.stop_timestamp,
+                start_position: recording_descriptor.start_position,
+                stop_position: recording_descriptor.stop_position,
+                initial_term_id: recording_descriptor.initial_term_id,
+                segment_file_length: recording_descriptor.segment_file_length,
+                term_buffer_length: recording_descriptor.term_buffer_length,
+                mtu_length: recording_descriptor.mtu_length,
+                session_id: recording_descriptor.session_id,
+                stream_id: recording_descriptor.stream_id,
+                stripped_channel_length: recording_descriptor.stripped_channel_length,
+                original_channel_length: recording_descriptor.original_channel_length,
+                source_identity_length: recording_descriptor.source_identity_length,
+            };
+            self.active_recording = Some(recording_info);
+        }
+    }
+}

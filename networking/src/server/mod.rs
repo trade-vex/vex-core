@@ -38,7 +38,7 @@ use crate::server::gateway_handler::{
     GatewayImageAvailableHandler, GatewayImageUnavailableHandler, HandshakeMessageHandler,
 };
 use crate::server::gateway_manager::GatewayManager;
-use crate::server::replay::{ExtendedRecordingDescriptor, RecorderDescriptorReader};
+use crate::server::replay::{ActiveRecordingReader, ExtendedRecordingDescriptor, RecorderDescriptorReader};
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
 use common::{FRAMESIZE, OrderCommand};
 use disruptor::{MultiProducer, SingleConsumerBarrier};
@@ -266,8 +266,18 @@ impl VexCoreServer {
         self.image_available_handler.release();
         self.image_unavailable_handler.release();
         self.handshake_handler.release();
-        self.archive
-            .stop_recording_subscription(self.subscription_id)?;
+        // Only stop recording subscription if we own it (subscription_id != 0)
+        // subscription_id = 0 means we're using an existing active recording we don't own
+        if self.subscription_id != 0 {
+            self.archive
+                .stop_recording_subscription(self.subscription_id)?;
+        } else {
+            info!(
+                target: "core_server",
+                action = "skipping_stop_recording",
+                "Using existing active recording, not stopping it"
+            );
+        }
         self.archive.close()?;
 
         info!(
@@ -347,15 +357,75 @@ impl VexCoreServer {
                 )?,
                 channel,
             )),
-            None => Ok((
-                archive.start_recording(
+            None => {
+                // Check for existing active recordings before starting a new one
+                let mut active_reader = Handler::leak(ActiveRecordingReader::new());
+                let _ = archive.list_recordings_for_uri(
+                    0,
+                    i32::MAX,
                     &RECORDING_CHANNEL.into_c_string(),
                     RECORDING_STREAM_ID,
-                    SourceLocation::AERON_ARCHIVE_SOURCE_LOCATION_LOCAL,
-                    false,
-                )?,
-                RECORDING_CHANNEL.to_string(),
-            )),
+                    Some(&active_reader),
+                )?;
+                
+                if let Some(active_record) = &active_reader.active_recording {
+                    info!(
+                        target: "recording",
+                        action = "found_active_recording",
+                        recording_id = active_record.recording_id,
+                        start_position = active_record.start_position
+                    );
+                    // For active recordings, we can't extend them, but we can get the subscription_id
+                    // by querying the archive. Since the recording is already active, we return
+                    // a dummy subscription_id (0) and the channel. The publication will connect to
+                    // the existing recording.
+                    active_reader.release();
+                    Ok((0, RECORDING_CHANNEL.to_string()))
+                } else {
+                    active_reader.release();
+                    info!(
+                        target: "recording",
+                        action = "starting_new_recording"
+                    );
+                    // Try to start recording, and if it fails with "recording exists",
+                    // find the last recording and extend it
+                    match archive.start_recording(
+                        &RECORDING_CHANNEL.into_c_string(),
+                        RECORDING_STREAM_ID,
+                        SourceLocation::AERON_ARCHIVE_SOURCE_LOCATION_LOCAL,
+                        false,
+                    ) {
+                        Ok(subscription_id) => Ok((subscription_id, RECORDING_CHANNEL.to_string())),
+                        Err(e) => {
+                            // Check if error is "recording exists"
+                            let error_msg = format!("{}", e);
+                            if error_msg.contains("recording exists") {
+                                info!(
+                                    target: "recording",
+                                    action = "recording_exists_fallback",
+                                    error = %error_msg,
+                                    "Archive reports recording exists, treating as active recording"
+                                );
+                                
+                                // When Archive says "recording exists", it means there's an active recording
+                                // that we can't query via list_recordings_for_uri. We'll proceed with
+                                // the assumption that an active recording exists and use it.
+                                // Return subscription_id = 0 to indicate we're using an existing active recording.
+                                // The publication will connect to the existing recording automatically.
+                                info!(
+                                    target: "recording",
+                                    action = "using_existing_active_recording",
+                                    "Proceeding with existing active recording"
+                                );
+                                Ok((0, RECORDING_CHANNEL.to_string()))
+                            } else {
+                                // Some other error, return it
+                                Err(ServerError::AeronConnectionError(e))
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
