@@ -6,6 +6,8 @@ edition = "2024"
 [features]
 # Test configuration with smaller buffer sizes for faster testing
 test-config = []
+# Balance preload for test/local environments
+balance-preload = ["vex-config/balance-preload"]
 
 [dependencies]
 # Workspace crates containing our data models and order book logic

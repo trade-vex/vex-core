@@ -11,3 +11,6 @@
 # aeron & other binaries
 *.jar
 **/aeron-archive
+
+*.json
+*.yaml

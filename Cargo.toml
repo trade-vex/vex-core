@@ -3,6 +3,9 @@ name = "vex-core"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+balance-preload = ["vex-config/balance-preload", "vex-server/balance-preload"]
+
 [workspace]
 resolver = "2"
 members = [
