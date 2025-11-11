@@ -7,13 +7,46 @@ use crate::{ConfigError, Environment, Result};
 use common::CoreMarketSpecification;
 use common::MarketType;
 use hashbrown::HashMap;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Configuration for trading symbols
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolSpecificationConfig {
     /// Map of market_id to symbol specification
+    #[serde(
+        serialize_with = "serialize_symbols",
+        deserialize_with = "deserialize_symbols"
+    )]
     pub symbols: HashMap<u32, CoreMarketSpecification>,
+}
+
+fn serialize_symbols<S>(
+    symbols: &HashMap<u32, CoreMarketSpecification>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let mut new_symbols = HashMap::new();
+    for (key, value) in symbols {
+        new_symbols.insert(key.to_string(), value.clone());
+    }
+    new_symbols.serialize(serializer)
+}
+
+fn deserialize_symbols<'de, D>(
+    deserializer: D,
+) -> std::result::Result<HashMap<u32, CoreMarketSpecification>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let new_symbols = HashMap::<String, CoreMarketSpecification>::deserialize(deserializer)?;
+    let mut symbols = HashMap::new();
+    for (key, value) in new_symbols {
+        let key = key.parse::<u32>().map_err(serde::de::Error::custom)?;
+        symbols.insert(key, value);
+    }
+    Ok(symbols)
 }
 
 impl SymbolSpecificationConfig {
@@ -30,33 +63,43 @@ impl SymbolSpecificationConfig {
     fn development_defaults() -> Self {
         let mut symbols = HashMap::new();
 
-        // ETH/XBT currency exchange pair
+        let usdt_asset_id = 1;
+        let btc_asset_id = 2;
+        let eth_asset_id = 3;
+
+        // BTC/USDT currency exchange pair
+        let btc_usdt_market_id = ((usdt_asset_id as u32) << 16) | (btc_asset_id as u32);
+        let eth_usdt_market_id = ((usdt_asset_id as u32) << 16) | (eth_asset_id as u32);
+
+        // ETH/USDT currency exchange pair
         symbols.insert(
-            9269,
+            eth_usdt_market_id,
             CoreMarketSpecification {
-                market_id: 9269,
-                market_type: MarketType::CurrencyExchangePair,
-                base_currency: 3928,   // ETH (szabo)
-                quote_currency: 3762,  // XBT (satoshi)
-                base_scale_k: 100_000, // 1 lot = 100K szabo (0.1 ETH)
-                quote_scale_k: 10,     // 1 step = 10 satoshi
+                market_id: eth_usdt_market_id,
+                market_type: MarketType::Spot,
+                base_asset: eth_asset_id,
+                quote_asset: usdt_asset_id,
+                base_scale_k: 100_000,
+                quote_scale_k: 10,
                 taker_fee: 0,
                 maker_fee: 0,
+                slippage: 150, // 1.5%
             },
         );
 
-        // EUR/USD futures contract
+        // BTC/USDT futures contract
         symbols.insert(
-            5991,
+            btc_usdt_market_id,
             CoreMarketSpecification {
-                market_id: 5991,
+                market_id: btc_usdt_market_id,
                 market_type: MarketType::FuturesContract,
-                base_currency: 978,  // EUR
-                quote_currency: 840, // USD
+                base_asset: btc_asset_id,
+                quote_asset: usdt_asset_id,
                 base_scale_k: 1,
                 quote_scale_k: 1,
                 taker_fee: 0,
                 maker_fee: 0,
+                slippage: 150, // 1.5%
             },
         );
 
@@ -67,24 +110,45 @@ impl SymbolSpecificationConfig {
     fn test_defaults() -> Self {
         let mut symbols = HashMap::new();
 
-        // XBT/LTC currency exchange pair with fees
+        let usdt_asset_id = 1;
+        let btc_asset_id = 2;
+        let eth_asset_id = 3;
+
+        // BTC/USDT currency exchange pair
+        let btc_usdt_market_id = ((usdt_asset_id as u32) << 16) | (btc_asset_id as u32);
+        let eth_usdt_market_id = ((usdt_asset_id as u32) << 16) | (eth_asset_id as u32);
+
+        // ETH/USDT currency exchange pair
         symbols.insert(
-            9340,
+            eth_usdt_market_id,
             CoreMarketSpecification {
-                market_id: 9340,
-                market_type: MarketType::CurrencyExchangePair,
-                base_currency: 3762,     // XBT (satoshi)
-                quote_currency: 1005,    // LTC (litoshi)
-                base_scale_k: 1_000_000, // 1 lot = 1M satoshi (0.01 BTC)
-                quote_scale_k: 10_000,   // 1 step = 10K litoshi
-                taker_fee: 1900,         // taker fee 1900 litoshi per 1 lot
-                maker_fee: 700,          // maker fee 700 litoshi per 1 lot
+                market_id: eth_usdt_market_id,
+                market_type: MarketType::Spot,
+                base_asset: eth_asset_id,
+                quote_asset: usdt_asset_id,
+                base_scale_k: 100_000,
+                quote_scale_k: 10,
+                taker_fee: 0,
+                maker_fee: 0,
+                slippage: 150, // 1.5%
             },
         );
 
-        // Include development symbols as well for testing
-        let dev_config = Self::development_defaults();
-        symbols.extend(dev_config.symbols);
+        // BTC/USDT futures contract
+        symbols.insert(
+            btc_usdt_market_id,
+            CoreMarketSpecification {
+                market_id: btc_usdt_market_id,
+                market_type: MarketType::FuturesContract,
+                base_asset: btc_asset_id,
+                quote_asset: usdt_asset_id,
+                base_scale_k: 1,
+                quote_scale_k: 1,
+                taker_fee: 0,
+                maker_fee: 0,
+                slippage: 150, // 1.5%
+            },
+        );
 
         Self { symbols }
     }
@@ -99,6 +163,15 @@ impl SymbolSpecificationConfig {
     /// Validate the symbol configuration
     pub fn validate(&self) -> Result<()> {
         for (market_id, spec) in &self.symbols {
+            // market id must be quote_asset << 16 | base_asset
+            // this is absolutely necessary for the matching engine to work correctly
+            if (spec.quote_asset as u32) << 16 | (spec.base_asset as u32) != *market_id {
+                return Err(ConfigError::ValidationError(format!(
+                    "Symbol ID {market_id} does not match quote_asset << 16 | base_asset = {}",
+                    ((spec.quote_asset as u32) << 16) | spec.base_asset as u32
+                )));
+            }
+
             // Validate market_id matches the key
             if *market_id != spec.market_id {
                 return Err(ConfigError::ValidationError(format!(
@@ -110,15 +183,13 @@ impl SymbolSpecificationConfig {
             // Validate scale factors are non-zero
             if spec.base_scale_k == 0 {
                 return Err(ConfigError::ValidationError(format!(
-                    "Symbol {}: base_scale_k cannot be zero",
-                    market_id
+                    "Symbol {market_id}: base_scale_k cannot be zero"
                 )));
             }
 
             if spec.quote_scale_k == 0 {
                 return Err(ConfigError::ValidationError(format!(
-                    "Symbol {}: quote_scale_k cannot be zero",
-                    market_id
+                    "Symbol {market_id}: quote_scale_k cannot be zero"
                 )));
             }
 
@@ -214,7 +285,7 @@ mod tests {
     fn test_validation_market_id_mismatch() {
         let mut symbols = HashMap::new();
         let spec = CoreMarketSpecification {
-            market_id: 123,
+            market_id: 0,
             ..Default::default()
         };
         symbols.insert(456, spec); // Mismatch: key 456 != spec.market_id 123
@@ -228,9 +299,9 @@ mod tests {
         let mut symbols = HashMap::new();
         let spec = CoreMarketSpecification {
             market_id: 123,
-            base_scale_k: 0, // Invalid: base_scale_k = 0
+            base_scale_k: 0,
             ..Default::default()
-        };
+        }; // Invalid: base_scale_k = 0
         symbols.insert(123, spec);
 
         let config = SymbolSpecificationConfig { symbols };
@@ -245,9 +316,9 @@ mod tests {
             base_scale_k: 1,
             quote_scale_k: 1,
             taker_fee: 100,
-            maker_fee: 200, // Invalid: taker < maker
+            maker_fee: 200,
             ..Default::default()
-        };
+        }; // Invalid: taker < maker
         symbols.insert(123, spec);
 
         let config = SymbolSpecificationConfig { symbols };

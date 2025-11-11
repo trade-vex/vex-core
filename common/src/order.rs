@@ -1,10 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use hashbrown::{
-    hash_map::{Keys},
-    HashMap,
-};
+use hashbrown::{HashMap, hash_map::Keys};
 use serde::{Deserialize, Serialize};
 
 use crate::{CoreMarketSpecification, Side};

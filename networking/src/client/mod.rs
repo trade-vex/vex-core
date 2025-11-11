@@ -2,9 +2,10 @@ use crate::utils::{
     new_publication, new_publication_with_session, new_subscription_with_mdc,
     new_subscription_with_mdc_and_session,
 };
-use common::{OrderCommand, encode_order_command};
+use common::ORDERCOMMANDSIZE;
+use common::{OrderCommand, encode_order_command, order_debug};
 use rand;
-use rusteron_client::{
+use rusteron_archive::{
     Aeron, AeronCError, AeronContext, AeronFragmentHandlerCallback, AeronHeader, AeronPublication,
     AeronReservedValueSupplierLogger, AeronSubscription, Handler,
 };
@@ -39,7 +40,7 @@ pub enum CoreResponse {
         dedicated_port: u16,
         dedicated_control_port: u16,
         encrypted_session: i32,
-        gateway_id: String,
+        gateway_id: u8,
     },
     /// Core rejected the gateway connection
     Reject { reason: String },
@@ -62,13 +63,18 @@ pub enum GatewayState {
 fn parse_core_response(
     message: &str,
     expected_session: i32,
-    expected_gateway_id: &str,
+    expected_gateway_id: u8,
 ) -> CoreResponse {
     let clean_message = message.trim_matches('\0').trim();
     let parts: Vec<&str> = clean_message.split_whitespace().collect();
 
     if parts.len() < 3 {
-        warn!("Malformed core response: insufficient parts");
+        warn!(
+            target: "gateway_client",
+            action = "core_response_invalid",
+            reason = "insufficient_parts",
+            raw_message = %clean_message
+        );
         return CoreResponse::Ignore;
     }
 
@@ -76,25 +82,63 @@ fn parse_core_response(
     let session_id = match parts[0].parse::<i32>() {
         Ok(id) => id,
         Err(_) => {
-            warn!("Invalid session ID in core response: {}", parts[0]);
+            warn!(
+                target: "gateway_client",
+                action = "core_response_invalid",
+                reason = "invalid_session_id",
+                raw_session = %parts[0],
+                raw_message = %clean_message
+            );
             return CoreResponse::Ignore;
         }
     };
 
     if session_id != expected_session {
         warn!(
-            "Session ID mismatch for expected gateway: {}. Expected: {}, Got: {}, Ignoring Because this is for Gateway: {}",
-            expected_session, expected_gateway_id, session_id, parts[1]
+            target: "gateway_client",
+            action = "core_response_mismatch",
+            field = "session_id",
+            expected_value = expected_session,
+            actual_value = session_id,
+            raw_gateway = %parts[1]
         );
         return CoreResponse::Ignore;
     }
 
     // Parse gateway ID
     let gateway_id = parts[1];
+    let gateway_id = match gateway_id.strip_prefix("gateway-") {
+        Some(id_str) => match id_str.parse::<u8>() {
+            Ok(id) => id,
+            Err(_) => {
+                warn!(
+                    target: "gateway_client",
+                    action = "core_response_invalid",
+                    reason = "invalid_gateway_id_format",
+                    raw_gateway = %gateway_id,
+                    raw_message = %clean_message
+                );
+                return CoreResponse::Ignore;
+            }
+        },
+        None => {
+            warn!(
+                target: "gateway_client",
+                action = "core_response_invalid",
+                reason = "invalid_gateway_prefix",
+                raw_gateway = %gateway_id,
+                raw_message = %clean_message
+            );
+            return CoreResponse::Ignore;
+        }
+    };
     if gateway_id != expected_gateway_id {
         warn!(
-            "Gateway ID mismatch. Expected: {}, Got: {}",
-            expected_gateway_id, gateway_id
+            target: "gateway_client",
+            action = "core_response_mismatch",
+            field = "gateway_id",
+            expected_value = expected_gateway_id,
+            actual_value = gateway_id
         );
         return CoreResponse::Ignore;
     }
@@ -111,10 +155,16 @@ fn parse_core_response(
                     dedicated_port: port,
                     dedicated_control_port: control_port,
                     encrypted_session,
-                    gateway_id: gateway_id.to_string(),
+                    gateway_id,
                 },
                 _ => {
-                    error!("Malformed ACCEPT message: invalid parameters");
+                    error!(
+                        target: "gateway_client",
+                        action = "core_response_invalid",
+                        command = "ACCEPT",
+                        reason = "invalid_parameters",
+                        raw_message = %clean_message
+                    );
                     CoreResponse::Ignore
                 }
             }
@@ -130,7 +180,13 @@ fn parse_core_response(
             _ => CoreResponse::Ignore,
         },
         _ => {
-            warn!("Unknown or malformed core response command: {}", parts[2]);
+            warn!(
+                target: "gateway_client",
+                action = "core_response_invalid",
+                reason = "unknown_command",
+                command = %parts[2],
+                raw_message = %clean_message
+            );
             CoreResponse::Ignore
         }
     }
@@ -143,22 +199,26 @@ type SharedCoreResponse = Arc<Mutex<Option<CoreResponse>>>;
 struct HandshakeResponseHandler {
     response: SharedCoreResponse,
     expected_session: i32,
-    expected_gateway_id: String,
+    expected_gateway_id: u8,
 }
 
 impl AeronFragmentHandlerCallback for HandshakeResponseHandler {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], _header: AeronHeader) {
         let message = String::from_utf8_lossy(buffer);
         debug!(
-            "Received handshake response from core: {} (length: {})",
-            message,
-            buffer.len()
+            target: "gateway_client",
+            action = "handshake_response_received",
+            length = buffer.len(),
+            message = %message
         );
 
-        let parsed =
-            parse_core_response(&message, self.expected_session, &self.expected_gateway_id);
+        let parsed = parse_core_response(&message, self.expected_session, self.expected_gateway_id);
         if parsed != CoreResponse::Ignore {
-            info!("Valid core response received: {:?}", parsed);
+            info!(
+                target: "gateway_client",
+                action = "core_response_parsed",
+                response = ?parsed
+            );
             *self.response.lock().unwrap() = Some(parsed);
         }
     }
@@ -207,15 +267,58 @@ pub struct VexGateway {
     shutdown: Arc<AtomicBool>,
 }
 
+pub struct Publisher {
+    pub publication: AeronPublication,
+    pub gateway_id: u8,
+}
+
+impl Publisher {
+    fn new(publication: AeronPublication, gateway_id: u8) -> Self {
+        Self {
+            publication,
+            gateway_id,
+        }
+    }
+
+    /// Sends an OrderCommand to the core
+    pub fn send_order_command(&self, order_command: &OrderCommand) -> Result<(), GatewayError> {
+        // Send the binary message directly
+        order_debug!(
+            "gateway_send_attempt",
+            order_command,
+            gateway_id = self.gateway_id
+        );
+
+        let mut message_buffer = [0u8; ORDERCOMMANDSIZE];
+
+        encode_order_command(&order_command, &mut message_buffer).map_err(|e| {
+            GatewayError::ProtocolError(format!("Failed to encode OrderCommand: {e:?}"))
+        })?;
+
+        // Send using the buffer directly
+        for attempt in 0..MESSAGE_RETRY_COUNT {
+            let result = self
+                .publication
+                .offer::<AeronReservedValueSupplierLogger>(&message_buffer, None);
+
+            if result >= 0 {
+                return Ok(());
+            }
+
+            // Wait before retrying with exponential backoff
+            let delay = MESSAGE_RETRY_DELAY * (2_u32.pow(attempt as u32));
+            std::thread::sleep(delay);
+        }
+
+        Err(GatewayError::SendError(format!(
+            "Failed to send OrderCommand after {MESSAGE_RETRY_COUNT} attempts",
+        )))
+    }
+}
+
 impl VexGateway {
     /// Creates a new VEX Gateway instance
     pub fn new(config: GatewayNetworkingConfig) -> Result<Self, GatewayError> {
-        // Validate configuration
-        if config.gateway_id.is_empty() {
-            return Err(GatewayError::ConfigError(
-                "Gateway ID cannot be empty".to_string(),
-            ));
-        }
         if config.max_message_size == 0 {
             return Err(GatewayError::ConfigError(
                 "Max message size must be greater than 0".to_string(),
@@ -233,8 +336,9 @@ impl VexGateway {
         aeron.start()?;
 
         info!(
-            "VEX Gateway '{}' initialized successfully",
-            config.gateway_id
+            target: "gateway_client",
+            action = "gateway_initialized",
+            gateway_id = config.gateway_id
         );
 
         Ok(Self {
@@ -251,12 +355,16 @@ impl VexGateway {
     /// Starts the gateway and establishes connection to VEX Core
     pub fn start<AeronFragmentHandlerHandlerImpl>(
         &mut self,
-        handler: AeronFragmentHandlerHandlerImpl,
-    ) -> Result<(), GatewayError>
+        handler: AeronFragmentHandlerImpl,
+    ) -> Result<Publisher, GatewayError>
     where
         AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback + Send + 'static,
     {
-        info!("Starting VEX Gateway '{}'", self.config.gateway_id);
+        info!(
+            target: "gateway_client",
+            action = "start_requested",
+            gateway_id = self.config.gateway_id
+        );
 
         // Update state to connecting
         *self.state.write().unwrap() = GatewayState::Connecting;
@@ -264,27 +372,34 @@ impl VexGateway {
         // Phase 1: Perform handshake with VEX Core
         let (dedicated_port, dedicated_control_port, session_id) = self.perform_handshake()?;
 
-        info!(
-            "Gateway '{}': Handshake successful. Port: {}, Control Port: {}, Session ID: {}",
-            self.config.gateway_id, dedicated_port, dedicated_control_port, session_id
+        debug!(
+            target: "gateway_client",
+            action = "handshake_success",
+            gateway_id = self.config.gateway_id,
+            data_port = dedicated_port,
+            control_port = dedicated_control_port,
+            session = session_id
         );
 
         // Phase 2: Establish dedicated communication channel
-        self.establish_dedicated_channel(
+        let publication = self.establish_dedicated_channel(
             dedicated_port,
             dedicated_control_port,
             session_id,
             handler,
         )?;
 
+        let publisher = Publisher::new(publication, self.config.gateway_id);
+
         // Update state to Connected
         *self.state.write().unwrap() = GatewayState::Connected;
 
         info!(
-            "VEX Gateway '{}' successfully connected and authenticated",
-            self.config.gateway_id
+            target: "gateway_client",
+            action = "connected",
+            gateway_id = self.config.gateway_id
         );
-        Ok(())
+        Ok(publisher)
     }
 
     /// Performs initial handshake with VEX Core
@@ -314,13 +429,18 @@ impl VexGateway {
         let encryption_key = rand::random::<i32>();
         self.encryption_key = Some(encryption_key);
 
-        info!(
-            "Gateway '{}': Connected to handshake channel with session ID: {}",
-            self.config.gateway_id, session_id
+        debug!(
+            target: "gateway_client",
+            action = "handshake_channel_ready",
+            gateway_id = self.config.gateway_id,
+            session = session_id
         );
 
         // Send HELLO message with gateway identification
-        let hello_msg = format!("HELLO {} {}", self.config.gateway_id, encryption_key);
+        let hello_msg = format!(
+            "HELLO gateway-{} {}",
+            self.config.gateway_id, encryption_key
+        );
         self.send_message_with_retries(&publication, &hello_msg)?;
 
         // Wait for VEX Core response
@@ -358,12 +478,12 @@ impl VexGateway {
         control_port: u16,
         session_id: i32,
         handler: AeronFragmentHandlerHandlerImpl,
-    ) -> Result<(), GatewayError>
+    ) -> Result<AeronPublication, GatewayError>
     where
         AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback + Send + 'static,
     {
         info!(
-            "Gateway '{}': Establishing dedicated channel with session ID: {}",
+            "gateway-{}: Establishing dedicated channel with session ID: {}",
             self.config.gateway_id, session_id
         );
 
@@ -391,13 +511,16 @@ impl VexGateway {
         // Wait for connections
         self.wait_for_channel_connections(&publication, &subscription)?;
 
-        info!(
-            "Gateway '{}': Successfully established dedicated channel",
-            self.config.gateway_id
+        debug!(
+            target: "gateway_client",
+            action = "dedicated_channel_ready",
+            gateway_id = self.config.gateway_id
         );
 
         // Start polling for messages in a separate thread
-        self.start_message_polling(subscription, handler)
+        self.start_message_polling(subscription, handler)?;
+
+        Ok(publication)
     }
 
     /// Starts polling for incoming messages in a separate thread
@@ -410,15 +533,24 @@ impl VexGateway {
         AeronFragmentHandlerHandlerImpl: AeronFragmentHandlerCallback + Send + 'static,
     {
         // Start polling thread
-        let gateway_id = self.config.gateway_id.clone();
+        let gateway_id = self.config.gateway_id;
         let shutdown = self.shutdown.clone();
         std::thread::spawn(move || {
             let mut handler = Handler::leak(handler);
 
-            info!("Gateway '{}': Started message polling thread", gateway_id);
+            debug!(
+                target: "gateway_client",
+                action = "polling_thread_started",
+                gateway_id
+            );
             while !shutdown.load(Ordering::SeqCst) {
                 if let Err(e) = subscription.poll(Some(&handler), 10) {
-                    error!("Gateway '{}': Error polling messages: {}", gateway_id, e);
+                    error!(
+                        target: "gateway_client",
+                        action = "polling_failed",
+                        gateway_id,
+                        error = %e
+                    );
                     break;
                 }
                 AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
@@ -432,14 +564,14 @@ impl VexGateway {
     /// Waits for VEX Core response during handshake
     fn wait_for_core_response(
         &self,
-        subscription: &rusteron_client::AeronSubscription,
+        subscription: &AeronSubscription,
         session_id: i32,
     ) -> Result<CoreResponse, GatewayError> {
         let shared_response = Arc::new(Mutex::new(None));
         let fragment_handler = HandshakeResponseHandler {
             response: shared_response.clone(),
             expected_session: session_id,
-            expected_gateway_id: self.config.gateway_id.clone(),
+            expected_gateway_id: self.config.gateway_id,
         };
 
         let mut handler = Handler::leak(fragment_handler);
@@ -462,7 +594,7 @@ impl VexGateway {
     /// Waits for publication connection with timeout
     fn wait_for_publication_connection(
         &self,
-        publication: &rusteron_client::AeronPublication,
+        publication: &AeronPublication,
         context: &str,
     ) -> Result<(), GatewayError> {
         let start = Instant::now();
@@ -480,8 +612,8 @@ impl VexGateway {
     /// Waits for both publication and subscription connections
     fn wait_for_channel_connections(
         &self,
-        publication: &rusteron_client::AeronPublication,
-        subscription: &rusteron_client::AeronSubscription,
+        publication: &AeronPublication,
+        subscription: &AeronSubscription,
     ) -> Result<(), GatewayError> {
         let start = Instant::now();
         while !publication.is_connected() || !subscription.is_connected() {
@@ -498,12 +630,14 @@ impl VexGateway {
     /// Sends a message with automatic retries
     fn send_message_with_retries(
         &mut self,
-        publication: &rusteron_client::AeronPublication,
+        publication: &AeronPublication,
         text: &str,
     ) -> Result<(), GatewayError> {
         debug!(
-            "Gateway '{}': Sending message: {}",
-            self.config.gateway_id, text
+            target: "gateway_client",
+            action = "send_message",
+            gateway_id = self.config.gateway_id,
+            payload = %text
         );
 
         let value = text.as_bytes();
@@ -549,8 +683,12 @@ impl VexGateway {
     }
 
     /// Gracefully shuts down the gateway
-    pub async fn shutdown(&mut self) -> Result<(), GatewayError> {
-        info!("Shutting down VEX Gateway '{}'", self.config.gateway_id);
+    pub fn shutdown(&mut self) -> Result<(), GatewayError> {
+        info!(
+            target: "gateway_client",
+            action = "shutdown_requested",
+            gateway_id = self.config.gateway_id
+        );
 
         // Update state
         *self.state.write().unwrap() = GatewayState::Disconnected;
@@ -559,60 +697,16 @@ impl VexGateway {
         self.shutdown.store(true, Ordering::SeqCst);
 
         info!(
-            "VEX Gateway '{}' shut down successfully",
-            self.config.gateway_id
+            target: "gateway_client",
+            action = "shutdown_complete",
+            gateway_id = self.config.gateway_id
         );
         Ok(())
     }
 
-    /// Sends an OrderCommand to the core
-    pub fn send_order_command(&mut self, order_command: &OrderCommand) -> Result<(), GatewayError> {
-        // Check if we're connected
-        if !self.is_connected() {
-            return Err(GatewayError::NotConnected);
-        }
-
-        let publication = self
-            .core_publication
-            .as_ref()
-            .ok_or(GatewayError::VexCoreNotStarted)?;
-
-        // Serialize OrderCommand
-        let mut buffer = vec![0u8; self.config.max_message_size];
-        encode_order_command(order_command.clone(), &mut buffer).map_err(|e| {
-            GatewayError::ProtocolError(format!("Failed to encode OrderCommand: {e:?}"))
-        })?;
-
-        // Send the binary message directly
-        debug!(
-            "Gateway '{}': Sending OrderCommand: {:?}",
-            self.config.gateway_id, order_command
-        );
-
-        // // Calculate actual encoded size (you may need to adjust this based on your encoding)
-        // let encoded_size = std::cmp::min(buffer.len(), self.config.max_message_size);
-
-        // Send using the buffer directly
-        for attempt in 0..MESSAGE_RETRY_COUNT {
-            let result = publication.offer::<AeronReservedValueSupplierLogger>(&buffer, None);
-
-            if result >= 0 {
-                return Ok(());
-            }
-
-            // Wait before retrying with exponential backoff
-            let delay = MESSAGE_RETRY_DELAY * (2_u32.pow(attempt as u32));
-            std::thread::sleep(delay);
-        }
-
-        Err(GatewayError::SendError(format!(
-            "Failed to send OrderCommand after {MESSAGE_RETRY_COUNT} attempts",
-        )))
-    }
-
     /// get gateway ID
-    pub fn gateway_id(&self) -> &str {
-        &self.config.gateway_id
+    pub fn gateway_id(&self) -> u8 {
+        self.config.gateway_id
     }
 }
 
@@ -622,29 +716,21 @@ mod tests {
 
     #[test]
     fn test_parse_core_response_accept() {
-        let response = parse_core_response(
-            "12345 gateway-1 ACCEPT 40003 40004 98765",
-            12345,
-            "gateway-1",
-        );
+        let response = parse_core_response("12345 gateway-1 ACCEPT 40003 40004 98765", 12345, 1);
         assert_eq!(
             response,
             CoreResponse::Accept {
                 dedicated_port: 40003,
                 dedicated_control_port: 40004,
                 encrypted_session: 98765,
-                gateway_id: "gateway-1".to_string(),
+                gateway_id: 1,
             }
         );
     }
 
     #[test]
     fn test_parse_core_response_reject() {
-        let response = parse_core_response(
-            "12345 gateway-1 REJECT Invalid credentials",
-            12345,
-            "gateway-1",
-        );
+        let response = parse_core_response("12345 gateway-1 REJECT Invalid credentials", 12345, 1);
         assert_eq!(
             response,
             CoreResponse::Reject {
@@ -655,11 +741,7 @@ mod tests {
 
     #[test]
     fn test_parse_core_response_ignore_wrong_session() {
-        let response = parse_core_response(
-            "99999 gateway-1 ACCEPT 40003 40004 98765",
-            12345,
-            "gateway-1",
-        );
+        let response = parse_core_response("99999 gateway-1 ACCEPT 40003 40004 98765", 12345, 1);
         assert_eq!(response, CoreResponse::Ignore);
     }
 }

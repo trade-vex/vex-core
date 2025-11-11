@@ -1,10 +1,7 @@
 use ahash::AHashMap;
 use thiserror::Error;
 
-type UserId = u64;
-type MarketId = u32;
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UserBalance {
     available: u64,
     locked: u64,
@@ -80,35 +77,7 @@ impl BalanceStore {
 
     pub fn set_balance(&mut self, user_id: UserId, asset_id: MarketId, balance: UserBalance) {
         let key = BalanceKey { user_id, asset_id };
-        self.balances.insert(key, balance);
-    }
-
-    pub fn update_available(
-        &mut self,
-        user_id: UserId,
-        asset_id: MarketId,
-        amount: u64,
-    ) -> Result<(), BalanceError> {
-        let key = BalanceKey { user_id, asset_id };
-        match self.balances.get_mut(&key) {
-            Some(balance) => balance.available = amount,
-            None => return Err(BalanceError::UserNotFound { user_id, asset_id }),
-        };
-        Ok(())
-    }
-
-    pub fn update_locked(
-        &mut self,
-        user_id: UserId,
-        asset_id: MarketId,
-        amount: u64,
-    ) -> Result<(), BalanceError> {
-        let key = BalanceKey { user_id, asset_id };
-        match self.balances.get_mut(&key) {
-            Some(balance) => balance.locked = amount,
-            None => return Err(BalanceError::UserNotFound { user_id, asset_id }),
-        };
-        Ok(())
+        self.balances.entry(key).or_default()
     }
 
     // Lock funds (move from available to locked)
@@ -161,22 +130,51 @@ impl BalanceStore {
         }
     }
 
-    // Consume locked funds (remove from locked, e.g., after trade execution)
-    pub fn consume_locked(
+    // Add Funds
+    pub fn add_funds(
         &mut self,
-        user_id: UserId,
-        asset_id: MarketId,
+        user_id: u64,
+        asset_id: u16,
         amount: u64,
-    ) -> Result<(), BalanceError> {
-        let key = BalanceKey { user_id, asset_id };
-        let balance = match self.balances.get_mut(&key) {
-            Some(balance) => balance,
-            None => return Err(BalanceError::UserNotFound { user_id, asset_id }),
-        };
+    ) -> Result<UserBalance, BalanceError> {
+        let balance = self.get_balance_mut(user_id, asset_id);
+        balance.available = balance
+            .available
+            .checked_add(amount)
+            .ok_or(BalanceError::Overflow)?;
+        Ok(*balance)
+    }
 
+    // Subract from available funds
+    pub fn subtract_funds(
+        &mut self,
+        user_id: u64,
+        asset_id: u16,
+        amount: u64,
+    ) -> Result<UserBalance, BalanceError> {
+        let balance = self.get_balance_mut(user_id, asset_id);
+        if balance.available >= amount {
+            balance.available -= amount;
+            Ok(*balance)
+        } else {
+            Err(BalanceError::InsufficientAvailableFunds {
+                available: balance.available,
+                needed: amount,
+            })
+        }
+    }
+
+    // Subtract from locked funds
+    pub fn subtract_locked_funds(
+        &mut self,
+        user_id: u64,
+        asset_id: u16,
+        amount: u64,
+    ) -> Result<UserBalance, BalanceError> {
+        let balance = self.get_balance_mut(user_id, asset_id);
         if balance.locked >= amount {
             balance.locked -= amount;
-            Ok(())
+            Ok(*balance)
         } else {
             Err(BalanceError::InsufficientLockedFunds {
                 locked: balance.locked,
