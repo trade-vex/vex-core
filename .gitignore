@@ -7,3 +7,7 @@
 **/build
 **/tests/bin
 **/test-results
+
+# aeron & other binaries
+*.jar
+**/aeron-archive

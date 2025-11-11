@@ -1,118 +1,79 @@
-use std::time::{Duration, SystemTime};
-
 use crate::server::cmd_handler::FragmentHandler;
-use crate::utils::{
-    new_publication_with_mdc_and_session, new_subsciption_with_handlers_and_session,
-};
 use common::OrderCommand;
 use disruptor::{MultiProducer, SingleConsumerBarrier};
-use rusteron_client::{
-    Aeron, AeronAvailableImageCallback, AeronCError, AeronImage, AeronNotificationLogger,
-    AeronPublication, AeronSubscription, AeronUnavailableImageCallback, Handler,
+use rusteron_archive::{
+    AeronAvailableImageCallback, AeronCError, AeronImage, AeronNotificationCallback,
+    AeronSubscription, AeronUnavailableImageCallback, Handler,
 };
+use std::sync::mpsc::Sender;
 use tracing::{error, info};
 
 pub const DUOLOGUE_STREAM_ID: i32 = 1002;
 
 pub struct Duologue {
-    fragment_handler: Handler<FragmentHandler>,
-    pub session_id: i32,
+    fragment_handler: Option<Handler<FragmentHandler>>,
     pub gateway_id: u8,
     subscription: AeronSubscription,
-    pub port_data: u16,
-    pub port_control: u16,
-    pub expire_time: u64,
     pub is_closed: bool,
-    on_image_available_handler: Handler<DuologueImageAvailable>,
-    on_image_unavailable_handler: Handler<DuologueImageUnavailable>,
+    on_image_available_handler: Option<Handler<DuologueImageAvailable>>,
+    on_image_unavailable_handler: Option<Handler<DuologueImageUnavailable>>,
 }
 
-#[allow(clippy::too_many_arguments)]
 impl Duologue {
     pub fn new(
-        aeron: &Aeron,
-        gateway_expiry_duration: u64,
-        local: &str,
+        subscription: AeronSubscription,
+        on_image_available_handler: Handler<DuologueImageAvailable>,
+        on_image_unavailable_handler: Handler<DuologueImageUnavailable>,
         gateway_id: u8,
-        owner: &str,
-        port_data: u16,
-        port_control: u16,
-        session_id: i32,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
-    ) -> Result<(Self, AeronPublication), AeronCError> {
-        let expire_time = (SystemTime::now() + Duration::from_secs(gateway_expiry_duration))
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        let publication = new_publication_with_mdc_and_session(
-            aeron,
-            local,
-            port_control,
-            DUOLOGUE_STREAM_ID,
-            session_id,
-        )?;
-
-        let on_image_available_handler = Handler::leak(DuologueImageAvailable {
-            owner: owner.to_string(),
-        });
-        let on_image_unavailable_handler = Handler::leak(DuologueImageUnavailable {
-            owner: owner.to_string(),
-        });
-
-        let subscription = new_subsciption_with_handlers_and_session(
-            aeron,
-            local,
-            port_data,
-            DUOLOGUE_STREAM_ID,
-            session_id,
-            Some(&on_image_available_handler),
-            Some(&on_image_unavailable_handler),
-        )?;
-
+    ) -> Self {
         let fragment_handler = FragmentHandler {
             gateway_id,
             producer,
         };
 
-        Ok((
-            Self {
-                fragment_handler: Handler::leak(fragment_handler),
-                gateway_id,
-                port_data,
-                port_control,
-                is_closed: false,
-                expire_time,
-                session_id,
-                subscription,
-                on_image_available_handler,
-                on_image_unavailable_handler,
-            },
-            publication,
-        ))
+        Self {
+            fragment_handler: Some(Handler::leak(fragment_handler)),
+            gateway_id,
+            is_closed: false,
+            subscription,
+            on_image_available_handler: Some(on_image_available_handler),
+            on_image_unavailable_handler: Some(on_image_unavailable_handler),
+        }
     }
 
-    pub fn poll(&mut self) -> Result<i32, AeronCError> {
-        self.subscription.poll(Some(&self.fragment_handler), 2048)
-    }
-
-    pub fn is_expired(&self) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        now > self.expire_time
-    }
-
-    pub fn is_closed(&self) -> bool {
-        self.is_closed
+    pub fn poll(&self) -> Result<i32, AeronCError> {
+        if let Some(handler) = &self.fragment_handler {
+            self.subscription.poll(Some(handler), 2048)
+        } else {
+            // should not reach here as the handler is only taken during close()
+            Ok(0)
+        }
     }
 
     pub fn close(&mut self) -> Result<(), AeronCError> {
-        self.subscription.close::<AeronNotificationLogger>(None)?;
-        self.fragment_handler.release();
-        self.on_image_available_handler.release();
-        self.on_image_unavailable_handler.release();
+        // taking ownership of the handlers to move into the close notification
+        // this is required because, the subsciption.close() is an async operation,
+        // hence it is unsafe to release the handlers immediately after calling close()
+        let fragment_handler = self.fragment_handler.take();
+        let on_image_available_handler = self.on_image_available_handler.take();
+        let on_image_unavailable_handler = self.on_image_unavailable_handler.take();
+
+        if let (Some(fh), Some(iah), Some(iuh)) =
+            (fragment_handler, on_image_available_handler, on_image_unavailable_handler)
+        {
+            let close_notification = DuologueCloseNotification {
+                gateway_id: self.gateway_id,
+                fragment_handler: fh,
+                on_image_available_handler: iah,
+                on_image_unavailable_handler: iuh,
+            };
+            self.subscription
+                .close(Some(&Handler::leak(close_notification)))?;
+        } else {
+            self.subscription.close::<DuologueCloseNotification>(None)?;
+        }
+
         self.is_closed = true;
         Ok(())
     }
@@ -123,13 +84,19 @@ impl Drop for Duologue {
         if !self.is_closed
             && let Err(e) = self.close()
         {
-            error!("Failed to close Duologue during drop: {:?}", e);
+            error!(
+                target: "gateway_session",
+                action = "close_failed_on_drop",
+                gateway_id = self.gateway_id,
+                error = ?e
+            );
         }
     }
 }
 
 pub struct DuologueImageAvailable {
-    pub owner: String,
+    pub expected_session_id: i32,
+    pub gateway_id: u8,
 }
 
 impl AeronAvailableImageCallback for DuologueImageAvailable {
@@ -142,58 +109,86 @@ impl AeronAvailableImageCallback for DuologueImageAvailable {
             Ok(b) => b,
             Err(e) => {
                 error!(
-                    "Failed to get image constants for gateway {}: {:?}",
-                    self.owner, e
+                    target: "gateway_session",
+                    action = "image_constants_failed",
+                    gateway_id = self.gateway_id,
+                    expected_session = format_args!("{:#x}", self.expected_session_id),
+                    error = ?e
                 );
                 return;
             }
         };
-        let remote_addr = binding.source_identity();
+        let address = binding.source_identity();
         let session_id = binding.session_id;
 
-        let expected_address = self.owner.split(':').next().unwrap_or("");
-        let actual_address = remote_addr.split(':').next().unwrap_or("");
-
-        if actual_address != expected_address {
+        if self.expected_session_id != session_id {
             error!(
-                "Client Connecting with the wrong address, expected: {}, got: {}",
-                expected_address, actual_address
+                target: "gateway_session",
+                action = "session_mismatch",
+                gateway_id = self.gateway_id,
+                expected_session = format_args!("{:#x}", self.expected_session_id),
+                actual_session = format_args!("{:#x}", session_id)
             );
         } else {
             info!(
-                "[{}] Client Connected, address: {}",
-                session_id, actual_address
+                target: "gateway_session",
+                action = "image_connected",
+                gateway_id = self.gateway_id,
+                session = format_args!("{:#x}", session_id),
+                address = %address
             );
         }
     }
 }
 
 pub struct DuologueImageUnavailable {
-    pub owner: String,
+    pub session_id: i32,
+    pub gateway_id: u8,
+    pub tx: Sender<u8>,
 }
 
 impl AeronUnavailableImageCallback for DuologueImageUnavailable {
     fn handle_aeron_on_unavailable_image(
         &mut self,
         _subscription: AeronSubscription,
-        image: AeronImage,
+        _image: AeronImage,
     ) {
-        let binding = match image.get_constants() {
-            Ok(b) => b,
-            Err(e) => {
-                error!(
-                    "Failed to get image constants for gateway {}: {:?}",
-                    self.owner, e
-                );
-                return;
-            }
-        };
-        let remote_addr = binding.source_identity();
-        let session_id = binding.session_id;
-        // check image_count and close?
         info!(
-            "[{}] Client Disconnected, address: {}, gateway: {}",
-            session_id, remote_addr, self.owner
+            target: "gateway_session",
+            action = "image_disconnected",
+            gateway_id = self.gateway_id,
+            session = format_args!("{:#x}", self.session_id)
+        );
+
+        if let Err(e) = self.tx.send(self.gateway_id) {
+            error!(
+                target: "gateway_manager",
+                action = "core_publication_cleanup_request_failed",
+                gateway_id = self.gateway_id,
+                error = %e
+            );
+        }
+    }
+}
+
+pub struct DuologueCloseNotification {
+    pub gateway_id: u8,
+    pub fragment_handler: Handler<FragmentHandler>,
+    pub on_image_available_handler: Handler<DuologueImageAvailable>,
+    pub on_image_unavailable_handler: Handler<DuologueImageUnavailable>,
+}
+
+impl AeronNotificationCallback for DuologueCloseNotification {
+    fn handle_aeron_notification(&mut self) {
+        // Only release handlers after the subscription is fully closed
+        self.fragment_handler.release();
+        self.on_image_available_handler.release();
+        self.on_image_unavailable_handler.release();
+
+        info!(
+            target: "gateway_session",
+            action = "subscription_closed_handlers_released",
+            gateway_id = self.gateway_id
         );
     }
 }
