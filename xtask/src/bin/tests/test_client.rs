@@ -2,7 +2,6 @@ use clap::{Parser, Subcommand};
 use common::{OrderCommand, UserBalance};
 use common::{OrderCommandType, Side, TimeInForce};
 use hdrhistogram::Histogram;
-use std::env;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 use vex_config::GatewayNetworkingConfig;
