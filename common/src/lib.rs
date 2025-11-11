@@ -1,15 +1,15 @@
 mod cmd;
 mod core_arithmetic;
 mod events;
-mod logging;
 mod l2_market_data;
+mod logging;
 mod market_specification;
 mod order;
 mod snowflake;
 mod user_profile;
 
 pub use cmd::{
-    MatcherTradeEvent, ORDERCOMMANDSIZE, OrderCommand, Status, decode_order_command,
+    FRAMESIZE, MatcherTradeEvent, ORDERCOMMANDSIZE, OrderCommand, Status, decode_order_command,
     encode_order_command,
 };
 pub use core_arithmetic::CoreArithmetic;

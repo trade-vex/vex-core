@@ -1,4 +1,4 @@
-use rusteron_client::{
+use rusteron_archive::{
     AeronAvailableImageCallback, AeronFragmentHandlerCallback, AeronHeader, AeronImage,
     AeronPublication, AeronSubscription, AeronUnavailableImageCallback,
 };

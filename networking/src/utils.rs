@@ -1,7 +1,7 @@
 use crate::server::ServerError;
 use rand::Rng;
 use rand::thread_rng;
-use rusteron_client::{
+use rusteron_archive::{
     Aeron, AeronAvailableImageCallback, AeronAvailableImageLogger, AeronCError, AeronPublication,
     AeronReservedValueSupplierLogger, AeronSubscription, AeronUnavailableImageCallback,
     AeronUnavailableImageLogger, Handler,
@@ -287,7 +287,9 @@ impl PortAllocator {
             if attempts >= max_attempts {
                 return Err(ServerError::ResourceAllocationError(format!(
                     "Failed to allocate {} ports after {} attempts ({} already allocated)",
-                    count, max_attempts, result.len()
+                    count,
+                    max_attempts,
+                    result.len()
                 )));
             }
 
