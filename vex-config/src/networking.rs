@@ -1,6 +1,7 @@
 //! Networking configuration modules for VEX Core
 
 use crate::{ConfigError, Environment, Result};
+use common::{MAX_GATEWAYS, ORDERCOMMANDSIZE};
 use serde::{Deserialize, Serialize};
 
 /// Core networking configuration for VEX Core server
@@ -18,18 +19,12 @@ pub struct CoreNetworkingConfig {
     pub base_gateway_port: u16,
     /// The maximum number of gateways to support
     pub max_gateways: u16,
-    /// The maximum number of connections per address
-    pub max_connections_per_address: u16,
     /// Reserved session id lower bound
     pub reserved_session_id_low: i32,
     /// Reserved session id upper bound
     pub reserved_session_id_high: i32,
     /// Enable authentication for gateways
     pub enable_authentication: bool,
-    /// Enable heartbeat monitoring
-    pub enable_heartbeat: bool,
-    /// Gateway timeout in seconds
-    pub gateway_timeout_seconds: u64,
     /// Core identifier
     pub core_id: String,
     /// Buffer size for network operations (bytes)
@@ -38,6 +33,10 @@ pub struct CoreNetworkingConfig {
     pub retry_attempts: u32,
     /// Connection retry delay in milliseconds
     pub retry_delay_ms: u64,
+    /// Control Response Channel for Aeron Archive
+    pub request_control_channel: String,
+    pub response_control_channel: String,
+    pub recording_events_channel: String,
 }
 
 impl CoreNetworkingConfig {
@@ -55,20 +54,20 @@ impl CoreNetworkingConfig {
         Self {
             context_dir: "/dev/shm/aeron-test-server".to_string(),
             local_address: "127.0.0.1".to_string(),
-            initial_port: 40001,
-            initial_control_port: 40002,
+            initial_port: 3521,
+            initial_control_port: 3522,
             base_gateway_port: 50000,
-            max_gateways: 10,
-            max_connections_per_address: 5,
+            max_gateways: 15,
             reserved_session_id_low: 1000,
             reserved_session_id_high: 9999,
             enable_authentication: false,
-            enable_heartbeat: true,
-            gateway_timeout_seconds: 60,
             core_id: "vex-core-dev".to_string(),
-            buffer_size: 1024 * 1024, // 1MB
+            buffer_size: 1024 * 1024,
             retry_attempts: 3,
             retry_delay_ms: 1000,
+            request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
+            response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
+            recording_events_channel: "aeron:udp?endpoint=localhost:0".to_string(),
         }
     }
 
@@ -77,20 +76,20 @@ impl CoreNetworkingConfig {
         Self {
             context_dir: "/dev/shm/aeron-test-server".to_string(),
             local_address: "127.0.0.1".to_string(),
-            initial_port: 41001,
-            initial_control_port: 41002,
-            base_gateway_port: 40350,
-            max_gateways: 5,
-            max_connections_per_address: 2,
-            reserved_session_id_low: 0,
-            reserved_session_id_high: 2147483647,
+            initial_port: 3521,
+            initial_control_port: 3522,
+            base_gateway_port: 50000,
+            max_gateways: 15,
+            reserved_session_id_low: 1000,
+            reserved_session_id_high: 9999,
             enable_authentication: true,
-            enable_heartbeat: true,
-            gateway_timeout_seconds: 30,
             core_id: "vex-core-test".to_string(),
-            buffer_size: 512 * 1024, // 512KB
-            retry_attempts: 2,
-            retry_delay_ms: 500,
+            buffer_size: 1024 * 1024,
+            retry_attempts: 3,
+            retry_delay_ms: 1000,
+            request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
+            response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
+            recording_events_channel: "aeron:udp?endpoint=localhost:0".to_string(),
         }
     }
 
@@ -99,20 +98,20 @@ impl CoreNetworkingConfig {
         Self {
             context_dir: "/var/lib/vex/aeron-core".to_string(),
             local_address: "127.0.0.1".to_string(), // Bind to all interfaces
-            initial_port: 40001,
-            initial_control_port: 40002,
+            initial_port: 3521,
+            initial_control_port: 3522,
             base_gateway_port: 50000,
             max_gateways: 1000,
-            max_connections_per_address: 50,
             reserved_session_id_low: 1000,
             reserved_session_id_high: 9999,
             enable_authentication: true,
-            enable_heartbeat: true,
-            gateway_timeout_seconds: 15,
             core_id: "vex-core-prod".to_string(),
             buffer_size: 4 * 1024 * 1024, // 4MB
             retry_attempts: 5,
             retry_delay_ms: 2000,
+            request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
+            response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
+            recording_events_channel: "aeron:udp?endpoint=localhost:8012".to_string(),
         }
     }
 
@@ -136,21 +135,9 @@ impl CoreNetworkingConfig {
             return Err(ConfigError::network("Max gateways must be greater than 0"));
         }
 
-        if self.max_connections_per_address == 0 {
-            return Err(ConfigError::network(
-                "Max connections per address must be greater than 0",
-            ));
-        }
-
         if self.reserved_session_id_low >= self.reserved_session_id_high {
             return Err(ConfigError::network(
                 "Reserved session ID low must be less than high",
-            ));
-        }
-
-        if self.gateway_timeout_seconds == 0 {
-            return Err(ConfigError::network(
-                "Gateway timeout must be greater than 0",
             ));
         }
 
@@ -192,8 +179,8 @@ pub struct GatewayNetworkingConfig {
     /// VEX Core control port for receiving messages
     pub core_control_port: u16,
     /// Gateway identifier for this instance
-    pub gateway_id: String,
-    /// Maximum message size in bytes, 67 for OrderCommand
+    pub gateway_id: u8,
+    /// Maximum message size in bytes, 64 for OrderCommand
     pub max_message_size: usize,
     /// Enable heartbeat mechanism
     pub enable_heartbeat: bool,
@@ -225,10 +212,10 @@ impl GatewayNetworkingConfig {
             context_dir: "/tmp/aeron-test-client".to_string(),
             local_address: "127.0.0.1".to_string(),
             core_address: "127.0.0.1".to_string(),
-            core_port: 40001,
-            core_control_port: 40002,
-            gateway_id: "gateway-dev-1".to_string(),
-            max_message_size: 67,
+            core_port: 3521,
+            core_control_port: 3522,
+            gateway_id: 1,
+            max_message_size: ORDERCOMMANDSIZE,
             enable_heartbeat: true,
             heartbeat_interval_seconds: 10,
             connection_timeout_seconds: 60,
@@ -244,10 +231,10 @@ impl GatewayNetworkingConfig {
             context_dir: "/dev/shm/aeron-test-client".to_string(),
             local_address: "127.0.0.1".to_string(),
             core_address: "127.0.0.1".to_string(),
-            core_port: 41001,
-            core_control_port: 41002,
-            gateway_id: "gateway-test-1".to_string(),
-            max_message_size: 67,
+            core_port: 3521,
+            core_control_port: 3522,
+            gateway_id: 1,
+            max_message_size: ORDERCOMMANDSIZE,
             enable_heartbeat: true,
             heartbeat_interval_seconds: 5,
             connection_timeout_seconds: 30,
@@ -263,10 +250,10 @@ impl GatewayNetworkingConfig {
             context_dir: "/var/lib/vex/aeron-gateway".to_string(),
             local_address: "127.0.0.1".to_string(),
             core_address: "127.0.0.1".to_string(), // Example production IP
-            core_port: 40001,
-            core_control_port: 40002,
-            gateway_id: "gateway-prod".to_string(),
-            max_message_size: 67,
+            core_port: 3521,
+            core_control_port: 3522,
+            gateway_id: 1,
+            max_message_size: ORDERCOMMANDSIZE,
             enable_heartbeat: true,
             heartbeat_interval_seconds: 5,
             connection_timeout_seconds: 15,
@@ -292,8 +279,11 @@ impl GatewayNetworkingConfig {
             ));
         }
 
-        if self.gateway_id.is_empty() {
-            return Err(ConfigError::network("Gateway ID cannot be empty"));
+        if self.gateway_id > MAX_GATEWAYS as u8 {
+            return Err(ConfigError::network(format!(
+                "Gateway ID must be between 0 and {}",
+                MAX_GATEWAYS
+            )));
         }
 
         if self.max_message_size == 0 {
@@ -359,10 +349,10 @@ mod tests {
         let mut config = GatewayNetworkingConfig::development_defaults();
         assert!(config.validate().is_ok());
 
-        config.gateway_id = String::new();
+        config.gateway_id = 20;
         assert!(config.validate().is_err());
 
-        config.gateway_id = "test".to_string();
+        config.gateway_id = 16;
         config.max_message_size = 0;
         assert!(config.validate().is_err());
     }
@@ -377,8 +367,8 @@ mod tests {
         assert!(test_config.enable_authentication);
         assert!(prod_config.enable_authentication);
 
-        assert_eq!(dev_config.initial_port, 40001);
-        assert_eq!(test_config.initial_port, 41001);
-        assert_eq!(prod_config.initial_port, 40001);
+        assert_eq!(dev_config.initial_port, 3521);
+        assert_eq!(test_config.initial_port, 3521);
+        assert_eq!(prod_config.initial_port, 3521);
     }
 }

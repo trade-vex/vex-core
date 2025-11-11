@@ -29,26 +29,62 @@
 //!
 //! ```ignore
 //! // Gateway receives client orders and publishes to core
-//! pub const ORDER_STREAM_ID: i32 = 1001;
-//! let mut publisher = AeronPublisher::new("/aeron/dir")?;
-//! publisher.add_publication("aeron:ipc", ORDER_STREAM_ID)?;
+//! # VEX Networking Crate
 //!
-//! // Publish order command
-//! publisher.send(&order_cmd_bytes, "aeron:ipc", ORDER_STREAM_ID)?;
+//! ## Overview
+//!
+//! The `networking` crate provides high-performance Aeron-based messaging for ultra-low-latency communication between the VEX Gateway and VEX Core.
+//!
+//! ## Example Usage
+//!
+//! ### Gateway (Client) Side
+//!
+//! ```rust
+//! use vex_networking::client::{VexGateway, GatewayNetworkingConfig};
+//! use common::cmd::OrderCommand;
+//!
+//! // Create a networking config (see GatewayNetworkingConfig::test_defaults for testing)
+//! let mut config = GatewayNetworkingConfig::test_defaults();
+//!
+//! // Initialize the gateway
+//! let mut gateway = VexGateway::new(config)?;
+//!
+//! // Implement a handler for incoming messages (see AeronFragmentHandlerCallback)
+//! let handler = MyOrderHandler { /* ... */ };
+//!
+//! // Start the gateway event loop
+//! gateway.start(handler)?;
+//!
+//! // Send an order command to the core
+//! let order_cmd = OrderCommand::default();
+//! gateway.send_order_command(&order_cmd)?;
 //! ```
 //!
-//! #### Core Engine Integration
-//! ```ignore
-//! // Core subscribes to orders and publishes market data
+//! ### Core (Server) Side
 //!
-//! pub const ORDER_STREAM_ID: i32 = 1001;
-//! let mut subscriber = AeronSubscriber::new("/aeron/dir", assembler)?;
-//! subscriber.add_subscription("aeron:ipc", ORDER_STREAM_ID)?;
+//! ```ignore, rust
+//! use vex_networking::server::{VexCoreServer, CoreNetworkingConfig};
 //!
-//! // Start processing loop
-//! subscriber.start();
+//! // Create a networking config (see CoreNetworkingConfig::test_defaults for testing)
+//! let mut config = CoreNetworkingConfig::test_defaults();
+//!
+//! // Initialize the core server
+//! let mut server = VexCoreServer::new(config)?;
+//!
+//! // Start the server event loop
+//! server.start()?;
 //! ```
 //!
+//! ## Integration Testing
+//!
+//! In integration tests, you can use `GatewayNetworkingConfig::test_defaults()` and `CoreNetworkingConfig::test_defaults()` to quickly set up client and server endpoints. The crate provides helpers for finding unused UDP ports and for handling Aeron fragments.
+//!
+//! ## Key Concepts
+//!
+//! - **VexGateway**: Client-side networking interface for sending order commands and receiving market data.
+//! - **VexCoreServer**: Server-side networking interface for receiving orders and publishing market data.
+//! - **AeronFragmentHandlerCallback**: Trait for handling incoming Aeron messages.
+//! - **OrderCommand**: The main message that goes into diruptor in the vex-core.
 //!
 
 pub mod client;

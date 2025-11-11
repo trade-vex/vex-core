@@ -20,19 +20,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get update && sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make cmake gcc g++ clang zlib1g-dev libbsd-dev
       - name: Build workspace
         run: cargo build --workspace
       - name: Build workspace (release)
-        run: cargo build --workspace --release
+        run: cargo build --workspace --release --all-features --all-targets
       - name: Run tests
-        run: cargo test
+        run: cargo test --workspace --all-features --all-targets
 
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -43,10 +50,14 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get update && sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make cmake gcc g++ clang zlib1g-dev libbsd-dev
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Linting
         run: cargo clippy --workspace --all-features --all-targets -- -D warnings -A clippy::missing_errors_doc -A clippy::missing_panics_doc -A clippy::must_use_candidate -A clippy::default_trait_access -A clippy::ignored_unit_patterns -A clippy::module_name_repetitions -A clippy::cast_possible_truncation
@@ -54,16 +65,21 @@ jobs:
   coverage:
     name: Code coverage
     runs-on: ubuntu-latest
-    container:
-      image: xd009642/tarpaulin
-      options: --security-opt seccomp=unconfined
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get update && sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make cmake gcc g++ clang zlib1g-dev libbsd-dev
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov
       - name: Generate code coverage
         run: |
-          cargo tarpaulin --verbose --workspace
+          cargo llvm-cov --workspace --all-features --all-targets --exclude rusteron_client --text
 
   audit:
     name: Security audit
@@ -76,3 +92,49 @@ jobs:
         run: cargo install cargo-audit
       - name: Run security audit
         run: cargo audit --deny warnings
+
+  e2e-tests:
+    name: End-to-end tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Docker and dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            docker.io docker-compose \
+            curl pkg-config libssl-dev uuid-dev ca-certificates \
+            make cmake gcc g++ clang zlib1g-dev libbsd-dev
+          docker --version
+
+      - name: Start Docker service
+        run: |
+          sudo systemctl start docker
+          docker info
+
+      - name: Run e2e tests
+        run: |
+          output=$(docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml up media-driver --build)
+          echo "$output"
+          if ! echo "$output" | grep -q "Media driver started"; then
+            echo "Media driver failed to start!"
+            exit 1
+          fi
+          output=$(cargo xtask build-docker)
+          echo "$output"
+          if ! echo "$output" | grep -q "Docker images built successfully."; then
+            echo "Docker image build failed!"
+            exit 1
+          fi
+          for scenario in basic-connectivity high-latency packet-loss; do
+            echo "Running test scenario: $scenario"
+            output=$(cargo xtask test-e2e --scenario "$scenario")
+            echo "$output"
+            if ! echo "$output" | grep -q "Scenario '$scenario' PASSED!"; then
+              echo "Test scenario '$scenario' failed!"
+              exit 1
+            fi
+          done

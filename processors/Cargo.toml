@@ -13,6 +13,8 @@ hashbrown = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 parking_lot = { workspace = true }
-
+tokio = { workspace = true }
 rdkafka = { version = "0.36", features = ["tokio"] }
-tokio = { version = "1", features = ["full"] }
+vex-networking = { workspace = true }
+rusteron-archive = { workspace = true }
+
