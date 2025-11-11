@@ -1,23 +1,28 @@
 mod cmd;
 mod core_arithmetic;
+mod events;
 mod l2_market_data;
+mod logging;
 mod market_specification;
 mod order;
-mod user_profile;
 mod snowflake;
+mod user_profile;
 
 pub use cmd::{
-    MatcherTradeEvent, ORDERCOMMANDSIZE, OrderCommand, Status, decode_order_command,
+    FRAMESIZE, MatcherTradeEvent, ORDERCOMMANDSIZE, OrderCommand, Status, decode_order_command,
     encode_order_command,
 };
 pub use core_arithmetic::CoreArithmetic;
+pub use events::{
+    BalanceEvent, CancelOrderEvent, OrderEvent, OrderbookEvent, OrderbookLevel, TradeEvent,
+};
 pub use l2_market_data::L2MarketData;
 pub use market_specification::{
     CoreMarketSpecification, CoreMarketSpecificationBuilder, base_asset, quote_asset,
 };
 pub use order::{Order, PriceCache};
-pub use user_profile::{BalanceError, BalanceKey, BalanceStore, UserBalance};
 pub use snowflake::Snowflake;
+pub use user_profile::{BalanceError, BalanceKey, BalanceStore, UserBalance};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use sbe_order::order_command_type::OrderCommandType as SbeOrderCommandType;
@@ -80,7 +85,7 @@ pub enum MatcherEventType {
 /// The specific action the command represents.
 ///
 /// This serves as the primary discriminant for the `OrderCommand` struct.
-#[derive(Debug, Copy,  Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
 pub enum OrderCommandType {
     /// A command to place a new order. All fields in `OrderCommand` are relevant.
@@ -88,6 +93,10 @@ pub enum OrderCommandType {
     /// A command to cancel an existing order. Only `order_id`, `user_id`, and
     /// `symbol_id` are relevant. Other fields should be ignored.
     CancelOrder,
+    /// Deposit funds to a user's account. Only `user_id` and `amount`, `market` are relevant, where market id is used as asset id.
+    DepositFunds,
+    /// Withdraw funds from a user's account. Only `user_id` and `amount`, `market` are relevant, where market id is used as asset id.
+    WithdrawFunds,
 }
 
 impl TryFrom<SbeOrderCommandType> for OrderCommandType {
@@ -97,6 +106,8 @@ impl TryFrom<SbeOrderCommandType> for OrderCommandType {
         match value {
             SbeOrderCommandType::PlaceOrder => Ok(OrderCommandType::PlaceOrder),
             SbeOrderCommandType::CancelOrder => Ok(OrderCommandType::CancelOrder),
+            SbeOrderCommandType::DepositFunds => Ok(OrderCommandType::DepositFunds),
+            SbeOrderCommandType::WithdrawFunds => Ok(OrderCommandType::WithdrawFunds),
             SbeOrderCommandType::NullVal => Err(SerdeError::custom("NullVal")), // Maybe handle NullVal specially
         }
     }
@@ -107,6 +118,8 @@ impl From<OrderCommandType> for SbeOrderCommandType {
         match val {
             OrderCommandType::PlaceOrder => SbeOrderCommandType::PlaceOrder,
             OrderCommandType::CancelOrder => SbeOrderCommandType::CancelOrder,
+            OrderCommandType::DepositFunds => SbeOrderCommandType::DepositFunds,
+            OrderCommandType::WithdrawFunds => SbeOrderCommandType::WithdrawFunds,
         }
     }
 }

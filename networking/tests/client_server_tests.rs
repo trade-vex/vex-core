@@ -2,14 +2,14 @@ use common::OrderCommandType;
 use common::{OrderCommand, decode_order_command};
 use common::{Side, TimeInForce};
 use disruptor::{BusySpin, ProcessorSettings, build_multi_producer};
-use rusteron_client::{AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port};
-use std::sync::Arc;
+use rusteron_archive::{AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port};
+use std::sync::{Arc, atomic::AtomicBool};
 use std::time::Duration;
 use std::{net::SocketAddr, thread};
 use tracing::{error, info};
 use vex_config::{CoreNetworkingConfig, GatewayNetworkingConfig};
 use vex_networking::client::{GatewayError, VexGateway};
-use vex_networking::server::{GatewayPublications, VexCoreServer};
+use vex_networking::server::{Publications, VexCoreServer};
 
 /// Fragment handler for processing OrderCommand messages from core
 struct OrderCommandHandler {
@@ -102,7 +102,7 @@ fn test_client_server_communication() {
         info!("server_config: {:?}", server_config);
         let producer = build_multi_producer(
             1024,
-            || OrderCommand::new(TimeInForce::Gtc, 1, 23, 32, 100, Side::Ask, 10),
+            || OrderCommand::place_order(TimeInForce::Gtc, 1, 23, 32, Side::Ask, 1, 10),
             BusySpin,
         )
         .pin_at_core(1)
@@ -119,8 +119,10 @@ fn test_client_server_communication() {
             }
         })
         .build();
-        let publications = Arc::new(GatewayPublications::new());
-        let mut server = VexCoreServer::new(server_config, producer, publications).unwrap();
+        let publications = Arc::new(Publications::new());
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let mut server =
+            VexCoreServer::new(server_config, producer, publications, false, shutdown_flag).unwrap();
         match server.start() {
             Ok(()) => println!("Server run() completed successfully (unexpected)"),
             Err(e) => println!("Server run() error: {e}"),

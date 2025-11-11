@@ -17,6 +17,7 @@ pub use loader::ConfigLoader;
 pub use logging::LoggingConfig;
 pub use networking::{CoreNetworkingConfig, GatewayNetworkingConfig};
 use serde::{Deserialize, Serialize};
+use std::fmt::{Display, Formatter};
 pub use symbols::SymbolSpecificationConfig;
 
 /// Main configuration structure that combines all VEX Core configuration modules
@@ -26,12 +27,18 @@ pub struct VexConfig {
     pub environment: Environment,
     /// Core networking configuration
     pub core_networking: CoreNetworkingConfig,
-    /// Gateway networking configuration  
+    /// Gateway networking configuration
     pub gateway_networking: GatewayNetworkingConfig,
     /// Logging configuration
     pub logging: LoggingConfig,
     /// Symbol specifications configuration
     pub symbols: SymbolSpecificationConfig,
+    /// Kafka broker address for event streaming
+    pub kafka_broker: String,
+}
+
+fn default_kafka_broker() -> String {
+    "localhost:9092".to_string()
 }
 
 impl VexConfig {
@@ -42,6 +49,7 @@ impl VexConfig {
             gateway_networking: GatewayNetworkingConfig::for_environment(&environment),
             logging: LoggingConfig::for_environment(&environment),
             symbols: SymbolSpecificationConfig::for_environment(&environment),
+            kafka_broker: default_kafka_broker(),
             environment,
         }
     }
@@ -146,5 +154,11 @@ impl VexConfig {
 impl Default for VexConfig {
     fn default() -> Self {
         Self::new(Environment::Development)
+    }
+}
+
+impl Display for VexConfig {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#?}", self)
     }
 }

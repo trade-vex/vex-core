@@ -2,9 +2,10 @@ use common::OrderCommand;
 use common::OrderCommandType;
 use common::PriceCache;
 use common::Status;
+use common::order_debug;
+use common::order_warn;
 use hashbrown::HashMap;
 use std::sync::Arc;
-use tracing::{info, warn};
 use vex_orderbook::OrderBook;
 use vex_orderbook::tree::{BTreeAskSide, BTreeBidSide};
 
@@ -24,9 +25,7 @@ impl MatchingEngineRouter {
     pub fn new(shard_id: u32, num_shards: u64) -> Self {
         // Validate num_shards is power of 2
         if num_shards.count_ones() != 1 {
-            panic!(
-                "Invalid number of shards {num_shards} - must be power of 2"
-            );
+            panic!("Invalid number of shards {num_shards} - must be power of 2");
         }
 
         Self {
@@ -66,19 +65,24 @@ impl MatchingEngineRouter {
     pub fn process_order(&mut self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) {
         if self.market_for_this_handler(cmd.market_id as u64) {
             if let Some(order_book) = self.order_books.get_mut(&cmd.market_id) {
-                info!(
-                    "[Router {}] Processing command for market_id {}",
-                    self.shard_id, cmd.market_id
+                order_debug!(
+                    "matching_dispatch",
+                    cmd,
+                    stage = "matching",
+                    shard_id = self.shard_id
                 );
 
                 match cmd.command {
                     OrderCommandType::PlaceOrder => order_book.place_order(cmd, price_cache),
                     OrderCommandType::CancelOrder => order_book.cancel_order(cmd, price_cache),
+                    _ => {} // this should be unreachable as non-op commands are filtered out in routing macro.
                 }
             } else {
-                warn!(
-                    "[Router {}] No order book found for market_id {}",
-                    self.shard_id, cmd.market_id
+                order_warn!(
+                    "matching_missing_orderbook",
+                    cmd,
+                    stage = "matching",
+                    shard_id = self.shard_id
                 );
                 cmd.set_status(Status::Rejected);
             }

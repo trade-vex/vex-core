@@ -1,75 +1,241 @@
 pub mod engine;
-pub mod utils;
-
-use processors::risk_engine::RiskEngine;
-use std::sync::Arc;
+mod utils;
 
 use common::CoreMarketSpecification;
+use engine::{CoreEngine, EngineResult, OrderProducer};
 use hashbrown::HashMap;
-use processors::events::KafkaEventsHandler;
-use processors::journaling::JournalingProcessor;
-use vex_networking::server::GatewayPublications;
+use processors::{
+    events::KafkaEventsHandler,
+    journaling::{JournalingProcessor, ReplayControl},
+};
+use std::{
+    sync::{Arc, atomic::AtomicBool},
+    thread::JoinHandle,
+};
+use vex_config::VexConfig;
+use vex_networking::server::Publications;
 
-use crate::engine::{CoreEngine, OrderProducer};
+// Re-export for convenience
+pub use engine::EngineError;
 
-/// Sets up the entire Exchange Core application with all processors.
-///
-/// This creates the core engine and adds symbols from the provided configuration
-pub fn init_exchange(
-    symbol_specs: HashMap<u32, CoreMarketSpecification>,
-) -> (CoreEngine, OrderProducer, Option<Arc<Vec<RiskEngine>>>) {
-    // Initialize journaling processor for audit trail
-    let journaling_processor = JournalingProcessor::new();
+use crate::engine::CorePinning;
 
-    let publications = Arc::new(GatewayPublications::new());
+pub struct RunningEngine {
+    thread: JoinHandle<Result<(), EngineError>>,
+    shutdown_flag: Arc<AtomicBool>,
+}
 
-    // Create events handler for trade events
-    let events_handler = Arc::new(KafkaEventsHandler::new(
-        "localhost:9092",
-        publications.clone(),
-    ));
-
-    // Create the Exchange Core with sharded risk engines and matching engines
-    // Symbols are automatically added to matching engines during initialization
-
-    #[cfg(test)]
-    {
-        let test_handler = |cmd: &mut common::OrderCommand, _seq: i64, _end_of_batch: bool| {
-            println!("Test handler received command: {cmd:?}");
-        };
-        let (core_engine, producer, risk_engines) = CoreEngine::new(
-            symbol_specs.clone(),
-            journaling_processor,
-            events_handler,
-            publications,
-            test_handler,
-        );
-        (core_engine, producer, risk_engines)
+impl RunningEngine {
+    /// Returns on panic or error during server execution
+    pub fn join(self) -> Result<(), EngineError> {
+        self.thread.join().unwrap_or_else(|e| {
+            Err(EngineError::ServerRuntime(format!(
+                "Server thread panicked: {:?}",
+                e
+            )))
+        })
     }
-    #[cfg(not(test))]
-    {
-        let (core_engine, producer, risk_engines) = CoreEngine::new(
-            symbol_specs.clone(),
-            journaling_processor,
-            events_handler,
-            publications,
+
+    /// Returns a clone of the shutdown flag for external signalling
+    pub fn shutdown_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.shutdown_flag)
+    }
+}
+
+/// Starts the exchange core server with the given configuration
+///
+/// This is the main entry point for production use. It initializes all components
+/// (risk engines, matching engines, journaling, event handlers) and starts the
+/// networking layer.
+///
+/// # Arguments
+///
+/// * `config` - Complete server configuration including symbols and networking
+///
+/// # Returns
+///
+/// A `RunningEngine` handle that keeps the server running. When dropped,
+/// the server will shut down gracefully.
+///
+/// # Errors
+///
+/// Returns `EngineError` if initialization or server startup fails.
+///
+/// # Example
+///
+/// ```no_run
+/// use vex_config::{VexConfig, Environment};
+/// use vex_server::start;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let config = VexConfig::new(Environment::Development);
+/// let _engine = start(config)?;
+/// // Server runs until _engine is dropped
+/// # Ok(())
+/// # }
+/// ```
+pub fn start(config: VexConfig, replay: bool) -> Result<RunningEngine, EngineError> {
+    let ((engine, producer), replay_control) = init_internal(
+        config.symbols.symbols.clone(),
+        config.kafka_broker.clone(),
+        replay,
+    )?;
+
+    let (thread_handle, shutdown_flag) =
+        engine.run(producer, replay_control, config.core_networking);
+
+    Ok(RunningEngine {
+        thread: thread_handle,
+        shutdown_flag,
+    })
+}
+
+/// Internal initialization function
+///
+/// Creates the core engine with all necessary components. This is used by both
+/// the production `start()` function and the test `setup()` function.
+pub fn init_internal(
+    symbol_specs: HashMap<u32, CoreMarketSpecification>,
+    kafka_broker: String,
+    replay: bool,
+) -> EngineResult<((CoreEngine, OrderProducer), ReplayControl)> {
+    let replay_control = if replay {
+        ReplayControl::enabled()
+    } else {
+        ReplayControl::disabled()
+    };
+    let publications = Arc::new(Publications::new());
+    let journaling_processor =
+        JournalingProcessor::new(Arc::clone(&publications), replay_control.clone());
+    let events_handler = KafkaEventsHandler::new(
+        &kafka_broker,
+        Arc::clone(&publications),
+        replay_control.clone(),
+    );
+
+    let engine = CoreEngine::new(
+        symbol_specs,
+        journaling_processor,
+        events_handler,
+        publications,
+        CorePinning::default(),
+    )?;
+
+    Ok((engine, replay_control))
+}
+
+/// Test utilities for vex-server
+///
+/// This module provides a simplified API for testing the exchange engine.
+/// Use `test::setup()` to create a test environment with direct access to
+/// the producer and risk engines.
+#[cfg(test)]
+pub mod test {
+    use super::*;
+    use common::{OrderCommand, Status};
+    use engine::{RiskEngines, test::TestEngineBuilder};
+    use std::sync::mpsc;
+
+    /// Test engine instance with access to internals for testing
+    pub struct TestEngine {
+        /// Order producer for publishing test commands
+        pub producer: OrderProducer,
+        /// Risk engines for balance manipulation and verification
+        pub risk_engines: RiskEngines,
+        /// Receiver for processed commands
+        pub receiver: mpsc::Receiver<OrderCommand>,
+    }
+
+    /// Sets up a test environment with the given market specifications (tuple form)
+    ///
+    /// Returns a tuple of (producer, risk_engines, receiver) for backwards compatibility.
+    /// For new code, prefer using `setup()` which returns a `TestEngine` struct.
+    pub fn setup_tuple(
+        specs: HashMap<u32, CoreMarketSpecification>,
+    ) -> (OrderProducer, RiskEngines, mpsc::Receiver<OrderCommand>) {
+        let test_engine = setup(specs);
+        (
+            test_engine.producer,
+            test_engine.risk_engines,
+            test_engine.receiver,
+        )
+    }
+
+    /// Sets up a test environment with the given market specifications
+    ///
+    /// This creates a complete engine instance configured for testing, with
+    /// a channel for receiving processed commands.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use vex_server::test::setup;
+    /// use hashbrown::HashMap;
+    ///
+    /// let mut specs = HashMap::new();
+    /// // ... add market specs ...
+    ///
+    /// let test_env = setup(specs);
+    /// test_env.producer.publish(|cmd| {
+    ///     // Configure order command
+    /// });
+    ///
+    /// let result = test_env.receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+    /// ```
+    pub fn setup(specs: HashMap<u32, CoreMarketSpecification>) -> TestEngine {
+        let (tx, rx) = mpsc::channel::<OrderCommand>();
+        let test_handler = move |cmd: &mut OrderCommand, _: i64, _: bool| {
+            if cmd.status != Status::Processing {
+                let _ = tx.send(cmd.clone());
+            }
+        };
+
+        let publications = Arc::new(Publications::new());
+
+        // Create risk engines manually for test access
+        use processors::risk_engine::RiskEngine;
+        let risk_engines = Arc::new(
+            (0..4)
+                .map(|shard_id| RiskEngine::new(specs.clone(), shard_id as u32, 4))
+                .collect::<Vec<_>>(),
         );
-        (core_engine, producer, risk_engines)
+
+        let (_engine, producer) = TestEngineBuilder::new()
+            .with_symbol_specs(specs)
+            .with_journaling_processor(JournalingProcessor::new(
+                Arc::clone(&publications),
+                ReplayControl::disabled(),
+            ))
+            .with_events_handler(KafkaEventsHandler::new(
+                "localhost:9092",
+                Arc::clone(&publications),
+                ReplayControl::disabled(),
+            ))
+            .with_publications(publications)
+            .with_risk_engines(Arc::clone(&risk_engines))
+            .with_test_handler(test_handler)
+            .build()
+            .expect("Failed to build test engine");
+
+        TestEngine {
+            producer,
+            risk_engines,
+            receiver: rx,
+        }
     }
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
+    use super::test::setup_tuple;
     use super::*;
-    use tracing::debug;
-    use common::PriceCache;
-    use common::{CoreMarketSpecification, MarketType, OrderCommand, Side, Status};
-    use common::{TimeInForce, UserBalance};
+    use common::{MarketType, OrderCommand, PriceCache, Side, Status, TimeInForce, UserBalance};
     use disruptor::Producer;
-    use std::sync::{Arc, mpsc};
+    use processors::risk_engine::RiskEngine;
     use std::time::Duration;
 
-    fn add_spec(market_id: u32, specs: &mut HashMap<u32, CoreMarketSpecification>) {
+    /// Helper function to add a market specification to the specs map
+    pub fn add_spec(market_id: u32, specs: &mut HashMap<u32, CoreMarketSpecification>) {
         specs.insert(
             market_id,
             CoreMarketSpecification::builder()
@@ -83,91 +249,53 @@ mod test {
         );
     }
 
-    // Helper function to reduce test boilerplate
-    fn setup_test_env(
-        specs: HashMap<u32, CoreMarketSpecification>,
-    ) -> (
-        OrderProducer,
-        Arc<Vec<processors::risk_engine::RiskEngine>>,
-        mpsc::Receiver<OrderCommand>,
-    ) {
-        let (tx, rx) = mpsc::channel::<OrderCommand>();
-        let test_handler = move |cmd: &mut OrderCommand, _, _| {
-            if cmd.status != Status::Processing {
-                tx.send(cmd.clone()).unwrap();
+    /// Helper struct for checking user balances in tests
+    pub struct BalanceChecker<'a> {
+        risk_engines: &'a Arc<Vec<RiskEngine>>,
+        shard_mask: u64,
+    }
+
+    impl<'a> BalanceChecker<'a> {
+        /// Creates a new balance checker
+        pub fn new(risk_engines: &'a Arc<Vec<RiskEngine>>) -> Self {
+            Self {
+                risk_engines,
+                shard_mask: risk_engines.len() as u64 - 1,
             }
-        };
-
-        let publications = Arc::new(GatewayPublications::new());
-
-        let (_core_engine, producer, risk_engines_opt) = CoreEngine::new(
-            specs,
-            JournalingProcessor::new(),
-            Arc::new(KafkaEventsHandler::new(
-                "localhost:9092",
-                publications.clone(),
-            )),
-            publications,
-            test_handler,
-        );
-        let risk_engines = risk_engines_opt.expect("Risk engines should be available in test mode");
-
-        (producer, risk_engines, rx)
-    }
-
-    fn get_producer(
-        test_handler: Option<impl FnMut(&mut OrderCommand, i64, bool) + Send + Sync + 'static>,
-    ) -> OrderProducer {
-        let mut specs = HashMap::new();
-        add_spec(1, &mut specs);
-        add_spec(2, &mut specs);
-        add_spec(3, &mut specs);
-        let publications = Arc::new(GatewayPublications::new());
-        if test_handler.is_some() {
-            let (_, producer, _) = CoreEngine::new(
-                specs,
-                JournalingProcessor::new(),
-                Arc::new(KafkaEventsHandler::new(
-                    "localhost:9092",
-                    publications.clone(),
-                )),
-                publications,
-                test_handler.unwrap(),
-            );
-            producer
-        } else {
-            let (_, producer, _) = CoreEngine::new(
-                specs,
-                JournalingProcessor::new(),
-                Arc::new(KafkaEventsHandler::new(
-                    "localhost:9092",
-                    publications.clone(),
-                )),
-                publications,
-                |_cmd: &mut OrderCommand, _seq: i64, _end_of_batch: bool| {},
-            );
-            producer
         }
-    }
 
-    #[test]
-    fn test_simple() {
-        let test_handler = Some(Box::new(
-            |cmd: &mut OrderCommand, _seq: i64, _end_of_batch: bool| {
-                println!("Test handler received command: {cmd:?}");
-            },
-        ));
-        let mut producer = get_producer(test_handler);
+        /// Gets the shard ID for a given user
+        fn get_shard_id(&self, user_id: u64) -> usize {
+            (user_id & self.shard_mask) as usize
+        }
 
-        producer.publish(|cmd: &mut OrderCommand| {
-            cmd.user_id = 42;
-            cmd.market_id = 1;
-            cmd.order_id = 1;
-            cmd.price = 5000;
-            cmd.size = 10;
-            cmd.side = Side::Bid;
-            cmd.status = Status::Processing;
-        });
+        /// Checks if a user's balance matches expected values
+        pub fn check(
+            &self,
+            user_id: u64,
+            asset_id: u16,
+            expected_available: u64,
+            expected_locked: u64,
+            context: &str,
+        ) {
+            let shard_id = self.get_shard_id(user_id);
+            let balance = self.risk_engines[shard_id].get_balance(user_id, asset_id);
+            let expected_balance = UserBalance::new(expected_available, expected_locked);
+            assert_eq!(
+                balance, expected_balance,
+                "Balance check failed for User {user_id} Asset {asset_id} [Context: {context}]"
+            );
+        }
+
+        /// Sets a user's balance
+        pub fn set_balance(&self, user_id: u64, asset_id: u16, available: u64, locked: u64) {
+            let shard_id = self.get_shard_id(user_id);
+            self.risk_engines[shard_id].set_balance(
+                user_id,
+                asset_id,
+                UserBalance::new(available, locked),
+            );
+        }
     }
 
     #[test]
@@ -180,27 +308,7 @@ mod test {
         let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
         add_spec(market_id, &mut specs);
 
-        let (tx, rx) = mpsc::channel::<OrderCommand>();
-
-        let test_handler = move |cmd: &mut OrderCommand, _seq: i64, _end_of_batch: bool| {
-            // The test handler is at the end of the disruptor pipeline.
-            // We're interested in the final state of a placed order.
-            if cmd.status != Status::Processing {
-                tx.send(cmd.clone()).unwrap();
-            }
-        };
-        let publications = Arc::new(GatewayPublications::new());
-        let (_core_engine, mut producer, risk_engines_opt) = CoreEngine::new(
-            specs,
-            JournalingProcessor::new(),
-            Arc::new(KafkaEventsHandler::new(
-                "localhost:9092",
-                publications.clone(),
-            )),
-            publications,
-            test_handler,
-        );
-        let risk_engines = risk_engines_opt.expect("Risk engines should be available in test mode");
+        let (mut producer, risk_engines, rx) = setup_tuple(specs);
 
         // 2. Pre-fund user account
         let user_id = 42;
@@ -229,14 +337,14 @@ mod test {
         let expected_locked_amount = order_price * order_size;
 
         producer.publish(|cmd: &mut OrderCommand| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                1,
                 user_id,
                 order_price,
                 order_size,
                 Side::Bid,
                 market_id,
+                1,
             );
             cmd.market_id = market_id;
         });
@@ -275,21 +383,7 @@ mod test {
         let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
         add_spec(market_id, &mut specs);
 
-        let (tx, rx) = mpsc::channel::<OrderCommand>();
-        let test_handler = move |cmd: &mut OrderCommand, _, _| {
-            if cmd.status != Status::Processing {
-                tx.send(cmd.clone()).unwrap();
-            }
-        };
-        let publications = Arc::new(GatewayPublications::new());
-        let (_core_engine, mut producer, risk_engines_opt) = CoreEngine::new(
-            specs,
-            JournalingProcessor::new(),
-            Arc::new(KafkaEventsHandler::new("localhost:9092", publications.clone())),
-            publications,
-            test_handler,
-        );
-        let risk_engines = risk_engines_opt.expect("Risk engines should be available in test mode");
+        let (mut producer, risk_engines, rx) = setup_tuple(specs);
         let shard_mask = risk_engines.len() as u64 - 1;
 
         // 2. Define users and order details
@@ -323,14 +417,14 @@ mod test {
         // 4. Place Maker's ASK (sell) order
         let maker_order_id = 2;
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                maker_order_id,
                 maker_id,
                 order_price,
                 order_size,
                 Side::Ask,
                 market_id,
+                maker_order_id,
             );
             cmd.market_id = market_id;
         });
@@ -345,14 +439,14 @@ mod test {
         // 6. Place Taker's BID (buy) order to trigger a trade
         let taker_order_id = 1;
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                taker_order_id,
                 taker_id,
                 order_price,
                 order_size,
                 Side::Bid,
                 market_id,
+                taker_order_id,
             );
             cmd.market_id = market_id;
         });
@@ -428,21 +522,7 @@ mod test {
         let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
         add_spec(market_id, &mut specs);
 
-        let (tx, rx) = mpsc::channel::<OrderCommand>();
-        let test_handler = move |cmd: &mut OrderCommand, _, _| {
-            if cmd.status != Status::Processing {
-                tx.send(cmd.clone()).unwrap();
-            }
-        };
-        let publications = Arc::new(GatewayPublications::new());
-        let (_core_engine, mut producer, risk_engines_opt) = CoreEngine::new(
-            specs,
-            JournalingProcessor::new(),
-            Arc::new(KafkaEventsHandler::new("localhost:9092", publications.clone())),
-            publications,
-            test_handler,
-        );
-        let risk_engines = risk_engines_opt.expect("Risk engines should be available in test mode");
+        let (mut producer, risk_engines, rx) = setup_tuple(specs);
         let shard_mask = risk_engines.len() as u64 - 1;
         let get_shard_id = |user_id: u64| (user_id & shard_mask) as usize;
 
@@ -498,14 +578,14 @@ mod test {
 
         for &(id, size, order_id) in &maker_orders {
             producer.publish(|cmd| {
-                *cmd = OrderCommand::new(
+                *cmd = OrderCommand::place_order(
                     TimeInForce::Gtc,
-                    order_id,
                     id,
                     order_price,
                     size,
                     Side::Ask,
                     market_id,
+                    order_id,
                 );
             });
             let placed_cmd = rx
@@ -531,14 +611,14 @@ mod test {
         // 5. Place Taker's BID order to sweep the book
         let taker_order_id = 1;
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                taker_order_id,
                 taker_id,
                 order_price,
                 taker_trade_size,
                 Side::Bid,
                 market_id,
+                taker_order_id,
             );
         });
 
@@ -713,7 +793,7 @@ mod test {
         let quote_asset_id = 2;
         let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
         add_spec(market_id, &mut specs);
-        let (mut producer, risk_engines, rx) = setup_test_env(specs.clone());
+        let (mut producer, risk_engines, rx) = setup_tuple(specs.clone());
 
         let price_cache = Arc::new(PriceCache::new(specs.keys()));
 
@@ -740,14 +820,14 @@ mod test {
 
         // 3. Place Maker's resting ASK order
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                2,
                 maker_id,
                 maker_ask_price,
                 maker_ask_size,
                 Side::Ask,
                 market_id,
+                2,
             );
         });
         let maker_placed = rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -757,14 +837,14 @@ mod test {
         // 4. Place Taker's IOC Market Buy order, larger than available liquidity
         let taker_order_size = 10_000;
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Ioc,
-                1,
                 taker_id,
                 u64::MAX, // Market order price
                 taker_order_size,
                 Side::Bid,
                 market_id,
+                1,
             );
         });
 
@@ -819,7 +899,7 @@ mod test {
         let quote_asset_id = 2;
         let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
         add_spec(market_id, &mut specs);
-        let (mut producer, risk_engines, rx) = setup_test_env(specs);
+        let (mut producer, risk_engines, rx) = setup_tuple(specs);
 
         let maker_id = 101;
         let taker_id = 42;
@@ -837,14 +917,14 @@ mod test {
 
         // 3. Place Maker's resting ASK order
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                2,
                 maker_id,
                 50_000,
                 100,
                 Side::Ask,
                 market_id,
+                2,
             );
         });
         let maker_placed_cmd = rx.recv().unwrap(); // Consume maker's placed command
@@ -860,14 +940,14 @@ mod test {
 
         // 4. Place Taker's FOK order that is too large
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Fok,
-                1,
                 taker_id,
                 50_000,
                 101,
                 Side::Bid,
                 market_id,
+                1,
             );
         });
 
@@ -888,28 +968,28 @@ mod test {
         let maker2_id = 105; // Shard 1
         risk_engines[maker_shard].set_balance(maker2_id, base_asset_id, UserBalance::new(100, 0));
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                2,
                 maker2_id,
                 49_000,
                 100,
                 Side::Ask,
                 market_id,
+                2,
             );
         });
         rx.recv().unwrap(); // Consume maker2's placed command
 
         // 7. Place Taker's FOK order that can now be filled
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Fok,
-                2,
                 taker_id,
                 50_000,
                 150,
                 Side::Bid,
                 market_id,
+                2,
             );
         });
 
@@ -939,7 +1019,7 @@ mod test {
         assert_eq!(taker_final_quote.locked, 0);
     }
 
-    #[test]
+    #[test_log::test]
     fn test_complex_scenario_with_cancellations_and_mixed_tif() {
         // This test simulates a more complex, realistic trading session involving:
         // - Building an order book with multiple makers.
@@ -956,7 +1036,7 @@ mod test {
         // Market ID: base asset in lower 16 bits, quote in upper 16
         let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
         add_spec(market_id, &mut specs);
-        let (mut producer, risk_engines, rx) = setup_test_env(specs);
+        let (mut producer, risk_engines, rx) = setup_tuple(specs);
 
         let shard_mask = risk_engines.len() as u64 - 1;
         let get_shard_id = |user_id: u64| (user_id & shard_mask) as usize;
@@ -1004,14 +1084,14 @@ mod test {
         // --- Phase 1: Build the Order Book ---
         // Maker A places GTC ASK for 10 BASE @ 1010
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                1,
                 maker_a_id,
                 1010,
                 10,
                 Side::Ask,
                 market_id,
+                1,
             );
         });
         let placed_a = rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -1036,14 +1116,14 @@ mod test {
 
         // Maker B places GTC ASK for 15 BASE @ 1020
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                2,
                 maker_b_id,
                 1020,
                 15,
                 Side::Ask,
                 market_id,
+                2,
             );
         });
         let placed_b = rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -1068,14 +1148,14 @@ mod test {
 
         // Maker C places GTC ASK for 20 BASE @ 1020 (after B)
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                3,
                 maker_c_id,
                 1020,
                 20,
                 Side::Ask,
                 market_id,
+                3,
             );
         });
         let placed_c = rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -1101,14 +1181,14 @@ mod test {
         // --- Phase 2: Taker GTC order that partially fills and rests ---
         // Taker D places GTC BID for 30 BASE @ 1020
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                4,
                 taker_d_id,
                 1020,
                 30,
                 Side::Bid,
                 market_id,
+                4,
             );
         });
 
@@ -1173,8 +1253,9 @@ mod test {
 
         // --- Phase 3: Cancel an Order ---
         // Maker C cancels their order of the remaining (20 - 5) BASE @ 1020
+        let maker_c_order_id = placed_c.order_id; // Use the actual generated order ID
         producer.publish(|cmd| {
-            *cmd = OrderCommand::cancel(3, Side::Ask, market_id);
+            *cmd = OrderCommand::cancel_order(maker_c_order_id, Side::Ask, market_id);
         });
         let cancelled_c = rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(cancelled_c.status, Status::Cancelled);
@@ -1186,14 +1267,14 @@ mod test {
         // --- Phase 4: IOC Order ---
         // Taker E places IOC ASK for 10 BASE @ 1020. This should be cancelled as order book is empty now.
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Ioc,
-                5,
                 taker_e_id,
                 1020,
                 10,
                 Side::Ask,
                 market_id,
+                5,
             );
         });
 
@@ -1247,50 +1328,6 @@ mod test {
         );
     }
 
-    struct BalanceChecker<'a> {
-        risk_engines: &'a Arc<Vec<processors::risk_engine::RiskEngine>>,
-        shard_mask: u64,
-    }
-
-    impl<'a> BalanceChecker<'a> {
-        fn new(risk_engines: &'a Arc<Vec<processors::risk_engine::RiskEngine>>) -> Self {
-            Self {
-                risk_engines,
-                shard_mask: risk_engines.len() as u64 - 1,
-            }
-        }
-
-        fn get_shard_id(&self, user_id: u64) -> usize {
-            (user_id & self.shard_mask) as usize
-        }
-
-        fn check(
-            &self,
-            user_id: u64,
-            asset_id: u16,
-            expected_available: u64,
-            expected_locked: u64,
-            context: &str,
-        ) {
-            let shard_id = self.get_shard_id(user_id);
-            let balance = self.risk_engines[shard_id].get_balance(user_id, asset_id);
-            let expected_balance = UserBalance::new(expected_available, expected_locked);
-            assert_eq!(
-                balance, expected_balance,
-                "Balance check failed for User {user_id} Asset {asset_id} [Context: {context}]"
-            );
-        }
-
-        fn set_balance(&self, user_id: u64, asset_id: u16, available: u64, locked: u64) {
-            let shard_id = self.get_shard_id(user_id);
-            self.risk_engines[shard_id].set_balance(
-                user_id,
-                asset_id,
-                UserBalance::new(available, locked),
-            );
-        }
-    }
-
     #[test_log::test]
     fn test_multi_market_stress_scenario() {
         // This test simulates a high-volatility session across three interconnected markets:
@@ -1319,7 +1356,7 @@ mod test {
         add_spec(market_eth_usd, &mut specs);
         add_spec(market_sol_btc, &mut specs);
 
-        let (mut producer, risk_engines, rx) = setup_test_env(specs);
+        let (mut producer, risk_engines, rx) = setup_tuple(specs);
         let checker = BalanceChecker::new(&risk_engines);
 
         // Define users with clear roles
@@ -1351,80 +1388,76 @@ mod test {
         // --- Phase 1: Building the Order Books ---
         // Alice builds depth in BTC/USD
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                1,
                 alice_mm_id,
                 50000,
                 1000,
                 Side::Ask,
                 market_btc_usd,
+                1,
             )
         });
-        debug!("heree 1 ----------------------------------------------------------------");
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                2,
                 alice_mm_id,
                 50100,
                 1500,
                 Side::Ask,
                 market_btc_usd,
+                2,
             )
         });
 
-        debug!("heree 2 ----------------------------------------------------------------");
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                3,
                 alice_mm_id,
                 49900,
                 1000,
                 Side::Bid,
                 market_btc_usd,
+                3,
             )
         });
 
         // Alice builds depth in ETH/USD
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                4,
                 alice_mm_id,
                 3000,
                 20000,
                 Side::Ask,
                 market_eth_usd,
+                4,
             )
         });
 
-        debug!("heree3 ----------------------------------------------------------------");
         // David builds depth in SOL/BTC
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                5,
                 david_sol_mm_id,
                 30,
                 50000,
                 Side::Ask,
                 market_sol_btc,
+                5,
             )
         }); // Price: 30 BTC for 1 SOL
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                6,
                 david_sol_mm_id,
                 29,
                 50000,
                 Side::Bid,
                 market_sol_btc,
+                6,
             )
         });
-        debug!("heree4 ----------------------------------------------------------------");
         // Consume placement messages
         for _ in 0..6 {
             rx.recv().unwrap();
@@ -1470,14 +1503,14 @@ mod test {
         // --- Phase 2: IOC and Partial Fill ---
         // Charlie places an IOC buy for ETH that can only partially fill.
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Ioc,
-                1,
                 charlie_fok_ioc_id,
                 3000,
                 25000,
                 Side::Bid,
                 market_eth_usd,
+                1,
             )
         });
         let ioc_result = rx.recv().unwrap();
@@ -1530,14 +1563,14 @@ mod test {
         // --- Phase 3: FOK Rejection and Success ---
         // Bob tries to buy 50001 SOL with BTC. David is only offering 50000. It must fail.
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Fok,
-                1,
                 bob_taker_id,
                 30,
                 50001,
                 Side::Bid,
                 market_sol_btc,
+                1,
             )
         });
         let fok_fail = rx.recv().unwrap();
@@ -1565,14 +1598,14 @@ mod test {
 
         // Now Bob places a FOK that CAN be filled.
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Fok,
-                2,
                 bob_taker_id,
                 30,
                 40000,
                 Side::Bid,
                 market_sol_btc,
+                2,
             )
         });
         let fok_success = rx.recv().unwrap();
@@ -1624,18 +1657,19 @@ mod test {
         // However, he will first place a smaller GTC order to lock up most of his funds.
         let bob_btc_before_ask = 5_000_000 - bob_btc_cost;
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                4,
                 bob_taker_id,
                 49901,
                 200,
                 Side::Ask,
                 market_btc_usd,
+                4,
             )
         });
         let gtc_ask = rx.recv().unwrap(); // this will sit on the book
         assert_eq!(gtc_ask.status, Status::Placed);
+        let bob_gtc_order_id = gtc_ask.order_id;
 
         // Bob's 200 BTC are now locked.
         checker.check(
@@ -1645,18 +1679,17 @@ mod test {
             200,
             "Bob's BTC locked for GTC ask",
         );
-        debug!("heree ----------------------------------------------------------------");
         // NOW, he tries to buy 2000 BTC @ 50100. Estimated cost = 100,200,000 USD.
         // He has 10M USD, so this must be rejected by the risk engine.
         producer.publish(|cmd| {
-            *cmd = OrderCommand::new(
+            *cmd = OrderCommand::place_order(
                 TimeInForce::Gtc,
-                4,
                 bob_taker_id,
                 50100,
                 2000,
                 Side::Bid,
                 market_btc_usd,
+                4,
             )
         });
         let rejected_bid = rx.recv().unwrap();
@@ -1681,10 +1714,11 @@ mod test {
             0,
             "Bob's USD unaffected by rejected order",
         );
-        debug!("here");
         // --- Phase 5: Final Clean-up and State Verification ---
         // Bob cancels his resting GTC ask on BTC/USD
-        producer.publish(|cmd| *cmd = OrderCommand::cancel(4001, Side::Ask, market_btc_usd));
+        producer.publish(|cmd| {
+            *cmd = OrderCommand::cancel_order(bob_gtc_order_id, Side::Ask, market_btc_usd)
+        });
         let cancelled_bob = rx.recv().unwrap();
         assert_eq!(cancelled_bob.status, Status::Cancelled);
 

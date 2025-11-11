@@ -1,37 +1,50 @@
-use std::sync::atomic::{AtomicPtr, Ordering};
-
-use common::{MAX_GATEWAYS, ORDERCOMMANDSIZE, OrderCommand, Snowflake, encode_order_command};
-use rusteron_client::{AeronPublication, AeronReservedValueSupplierLogger};
+use arc_swap::ArcSwapOption;
+use common::{
+    MAX_GATEWAYS, ORDERCOMMANDSIZE, OrderCommand, OrderCommandType, Snowflake, encode_order_command,
+};
+use rusteron_archive::{AeronPublication, AeronReservedValueSupplierLogger};
+use std::sync::Arc;
 use tracing::{debug, error};
 
-pub struct GatewayPublications {
-    gateways: [AtomicPtr<AeronPublication>; MAX_GATEWAYS],
+/// Manages Gateway Publications from gateway id 0 to MAX_GATEWAYS
+/// Index MAX_GATEWAYS is reserved for archival publication
+pub struct Publications {
+    gateways: [ArcSwapOption<AeronPublication>; MAX_GATEWAYS + 1],
 }
 
-impl GatewayPublications {
+impl Publications {
     pub fn new() -> Self {
-        const INIT: AtomicPtr<AeronPublication> = AtomicPtr::new(std::ptr::null_mut());
+        const INIT: ArcSwapOption<AeronPublication> = ArcSwapOption::const_empty();
         Self {
-            gateways: [INIT; MAX_GATEWAYS],
+            gateways: [INIT; MAX_GATEWAYS + 1],
         }
     }
 
-    // Writer (networking thread)
-    pub fn set(&self, gateway_id: u8, publication: Box<AeronPublication>) {
-        self.gateways[gateway_id as usize].store(Box::into_raw(publication), Ordering::Release);
+    pub fn set_archive_publication(&self, publication: AeronPublication) {
+        self.gateways[MAX_GATEWAYS].store(Some(Arc::new(publication)));
     }
 
-    // Reader (event handler thread)
-    pub fn get(&self, gateway_id: u8) -> &AeronPublication {
-        let ptr = self.gateways[gateway_id as usize].load(Ordering::Acquire);
-        unsafe { &*ptr }
+    pub fn set(&self, gateway_id: u8, publication: Arc<AeronPublication>) {
+        self.gateways[gateway_id as usize].store(Some(publication));
+    }
+
+    pub fn get(&self, gateway_id: u8) -> Option<Arc<AeronPublication>> {
+        self.gateways[gateway_id as usize].load_full()
+    }
+
+    pub fn remove(&self, gateway_id: u8) {
+        self.gateways[gateway_id as usize].store(None);
     }
 
     // Publisher (event handler thread)
     pub fn publish_response(&self, cmd: &OrderCommand) {
-        let gateway_id = Snowflake::gateway_from_id(cmd.order_id());
-        let ptr = self.gateways[gateway_id as usize].load(Ordering::Acquire);
-        let publication = unsafe { ptr.as_ref() };
+        let gateway_id = if cmd.command == OrderCommandType::CancelOrder {
+            cmd.user_id as u8
+        } else {
+            Snowflake::gateway_from_id(cmd.order_id())
+        };
+        let ptr = self.get(gateway_id);
+        let publication = ptr.as_ref();
         if publication.is_none() {
             error!(
                 "gateway-{}: No publication found to send response",
@@ -56,6 +69,46 @@ impl GatewayPublications {
                     debug!(
                         "gateway-{}: Successfully sent processed OrderCommand",
                         gateway_id
+                    );
+                }
+            }
+            Err(e) => {
+                error!(
+                    "gateway-{}: Failed to encode processed OrderCommand: {:?}",
+                    gateway_id, e
+                );
+            }
+        }
+    }
+
+    // Publisher (event handler thread)
+    pub fn publish_to_archive(&self, cmd: &OrderCommand) {
+        let gateway_id = cmd.order_id;
+        let ptr = self.get(MAX_GATEWAYS as u8);
+        let publication = ptr.as_ref();
+        if publication.is_none() {
+            error!(
+                "gateway-{}: Archive publication not set, cannot archive command, client order_id: {}",
+                gateway_id, cmd.client_order_id
+            );
+            return;
+        }
+        let publication = publication.unwrap();
+        let mut response_buffer = [0; ORDERCOMMANDSIZE];
+        match encode_order_command(cmd, &mut response_buffer) {
+            Ok(_) => {
+                let result =
+                    publication.offer::<AeronReservedValueSupplierLogger>(&response_buffer, None);
+
+                if result < 0 {
+                    error!(
+                        "gateway-{}: Failed to archive OrderCommand, client order_id: {}, result: {}",
+                        gateway_id, cmd.client_order_id, result
+                    );
+                } else {
+                    debug!(
+                        "gateway-{}: successfully published to archive, client order_id: {}",
+                        gateway_id, cmd.client_order_id
                     );
                 }
             }

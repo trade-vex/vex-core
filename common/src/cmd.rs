@@ -5,8 +5,8 @@ use sbe_order::order_command_message_codec::{
 };
 use sbe_order::status::Status as SbeStatus;
 use sbe_order::{ReadBuf, SbeResult, WriteBuf};
-use serde::de::value::Error as SerdeError;
 use serde::de::Error;
+use serde::de::value::Error as SerdeError;
 
 // Size of the serialized OrderCommand in bytes
 // Header: 8 bytes
@@ -20,6 +20,10 @@ use serde::de::Error;
 // side: 1 byte
 // time_in_force: 1 byte
 pub const ORDERCOMMANDSIZE: usize = 64;
+
+/// This is the size of each frame sent or received via Aeron.
+/// It is a nearest multiple of 32 bytes that can hold an OrderCommand.
+pub const FRAMESIZE: i64 = 96;
 
 /// OrderCommand: OrderCommand Plays the central role throughout the processing of the Order.
 /// It is created in the Gateway, and processed in VexCore in different processors through the Disruptor
@@ -40,7 +44,14 @@ pub struct OrderCommand {
     pub order_id: u64,
 
     /// The unique identifier of the user initiating the command.
-    /// Used for routing, risk checks, and authorization.
+    /// For 'PlaceOrder' : This is the actual user id
+    /// For 'CancelOrder': this is set to the gateway id inside the OrderCommand Field
+    /// This is required because, in the existing scenarior the gateway id(required to send
+    /// back the response to gateway with gateway_id in the events handler) not present in
+    /// the OrderCommand Field, so it is encoded in the order_id by the snowflake algorithm
+    /// Everything works correctly untill the order_id is itself wrong that is sent the gateway
+    /// and user_id is not essential for the CancelOrder hence it is the best choice to place
+    /// gateway id to send response correctly.
     pub user_id: u64,
 
     /// The identifier for the market this command targets.
@@ -76,6 +87,8 @@ pub struct OrderCommand {
     pub events: Option<Box<MatcherTradeEvent>>,
 
     /// Final balance of the user/maker after this trade
+    /// For Deposit/Withdraw commands, only balance[0] is used to represent the asset balance change
+    /// For OrderBook commands, balance[0] is base currency, balance[1] is quote currency
     pub balance: [UserBalance; 2], // [0] = base currency, [1] = quote currency
 
     /// L2 Market Data Snapshot after the order is processed, it is not recorded when the status is Rejected
@@ -103,18 +116,18 @@ impl Default for OrderCommand {
     }
 }
 impl OrderCommand {
-    pub fn new(
+    pub fn place_order(
         time_in_force: TimeInForce,
-        order_id: u64,
         user_id: u64,
         price: u64,
         size: u64,
         side: Side,
         market_id: u32,
+        client_order_id: u64,
     ) -> Self {
         Self {
             command: OrderCommandType::PlaceOrder,
-            order_id,
+            order_id: 0,
             market_id,
             user_id,
             price,
@@ -123,14 +136,14 @@ impl OrderCommand {
             time_in_force,
             timestamp: 0,
             status: Status::Processing,
-            client_order_id: 0,
+            client_order_id,
             events: None,
             balance: [UserBalance::default(); 2],
             l2_data: None,
         }
     }
 
-    pub fn cancel(order_id: u64, side: Side, market_id: u32) -> Self {
+    pub fn cancel_order(order_id: u64, side: Side, market_id: u32) -> Self {
         Self {
             command: OrderCommandType::CancelOrder,
             order_id,
@@ -139,6 +152,25 @@ impl OrderCommand {
             price: 0,
             size: 0,
             side,
+            time_in_force: TimeInForce::Gtc,
+            timestamp: 0,
+            status: Status::Processing,
+            balance: [UserBalance::default(); 2],
+            client_order_id: 0,
+            events: None,
+            l2_data: None,
+        }
+    }
+
+    pub fn deposit_funds(user_id: u64, amount: u64, asset: u16) -> Self {
+        Self {
+            command: OrderCommandType::DepositFunds,
+            order_id: 0,
+            market_id: asset as u32,
+            user_id,
+            price: 0,
+            size: amount,
+            side: Side::Ask,
             time_in_force: TimeInForce::Gtc,
             timestamp: 0,
             status: Status::Processing,
@@ -233,6 +265,8 @@ pub enum Status {
     Filled,
     /// Processing state
     Processing,
+    /// For Deposit/Withdraw commands
+    Processed,
 }
 
 impl TryFrom<SbeStatus> for Status {
@@ -246,6 +280,7 @@ impl TryFrom<SbeStatus> for Status {
             SbeStatus::PartiallyFilled => Ok(Status::PartiallyFilled),
             SbeStatus::Filled => Ok(Status::Filled),
             SbeStatus::Processing => Ok(Status::Processing),
+            SbeStatus::Processed => Ok(Status::Processed),
             SbeStatus::NullVal => Err(SerdeError::custom("Invalid status: NullVal")),
         }
     }
@@ -260,6 +295,7 @@ impl Into<SbeStatus> for Status {
             Status::PartiallyFilled => SbeStatus::PartiallyFilled,
             Status::Filled => SbeStatus::Filled,
             Status::Processing => SbeStatus::Processing,
+            Status::Processed => SbeStatus::Processed,
         }
     }
 }
