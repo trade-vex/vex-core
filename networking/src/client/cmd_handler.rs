@@ -1,10 +1,10 @@
 use common::{OrderCommand, decode_order_command};
-use rusteron_client::{AeronFragmentHandlerCallback, AeronHeader};
+use rusteron_archive::{AeronFragmentHandlerCallback, AeronHeader};
 use std::sync::mpsc::Sender;
-use tracing::{error, info};
+use tracing::{debug, error};
 
 pub struct OrderCommandHandler {
-    gateway_id: String,
+    gateway_id: u8,
     sender: Sender<OrderCommand>,
 }
 
@@ -13,22 +13,23 @@ impl AeronFragmentHandlerCallback for OrderCommandHandler {
         // Deserialize OrderCommand
         match decode_order_command(buffer) {
             Ok(order_command) => {
-                info!(
-                    "Gateway {}: Received OrderCommand: {:?}",
+                debug!(
+                    "gateway-{}: Received OrderCommand: {:?}",
                     self.gateway_id, order_command
                 );
 
                 self.sender.send(order_command).unwrap_or_else(|e| {
                     error!(
-                        "Gateway {}: Failed to send OrderCommand to channel: {:?}",
+                        "gateway-{}: Failed to send OrderCommand to channel: {:?}",
                         self.gateway_id, e
                     );
                 });
             }
             Err(e) => {
                 error!(
-                    "Gateway {}: Failed to decode OrderCommand: {:?}",
-                    self.gateway_id, e
+                    gateway_id = %self.gateway_id,
+                    error = ?e,
+                    "Failed to decode OrderCommand"
                 );
             }
         }
@@ -36,7 +37,7 @@ impl AeronFragmentHandlerCallback for OrderCommandHandler {
 }
 
 impl OrderCommandHandler {
-    pub fn new(gateway_id: String, sender: Sender<OrderCommand>) -> Self {
+    pub fn new(gateway_id: u8, sender: Sender<OrderCommand>) -> Self {
         Self { gateway_id, sender }
     }
 }

@@ -3,6 +3,10 @@ name = "vex-server"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Test configuration with smaller buffer sizes for faster testing
+test-config = []
+
 [dependencies]
 # Workspace crates containing our data models and order book logic
 common = { workspace = true }
@@ -10,14 +14,15 @@ vex-orderbook = { workspace = true }
 processors = { workspace = true }
 vex-config = { workspace = true }
 vex-networking = { workspace = true }
-parking_lot = {workspace = true}
+parking_lot = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 hashbrown = { workspace = true }
 disruptor = { workspace = true }
-ctrlc = "3.4"
+thiserror = { workspace = true }
 tikv-jemallocator = { workspace = true }
 
 [dev-dependencies]
 rusteron-client = { workspace = true }
-
+tokio = { workspace = true }
+test-log = { version = "0.2.15", features = ["trace"] }

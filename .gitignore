@@ -5,5 +5,9 @@
 # Build
 **/target
 **/build
-**/bin
+**/tests/bin
 **/test-results
+
+# aeron & other binaries
+*.jar
+**/aeron-archive

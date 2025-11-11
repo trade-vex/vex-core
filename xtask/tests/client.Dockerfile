@@ -1,10 +1,10 @@
 # ---- Builder Stage ----
-FROM rust:1.88 as builder
+FROM rust:1.88 AS builder
 WORKDIR /usr/src/app
-RUN apt-get update && apt-get install -y wget iproute2 build-essential clang libbsd-dev pkg-config git \
+RUN apt-get update && apt-get install -y wget iproute2 build-essential clang pkg-config git libbsd-dev \
     && wget https://github.com/Kitware/CMake/releases/download/v3.30.0/cmake-3.30.0-linux-x86_64.tar.gz \
     && tar -xzvf cmake-3.30.0-linux-x86_64.tar.gz --strip-components=1 -C /usr/local \
-    && rm cmake-3.30.0-linux-x86_64.tar.gz
+    && rm cmake-3.30.0-linux-x86_64.tar.gz && rm -rf /var/lib/apt/lists/*
 
 RUN rustup component add rustfmt
 

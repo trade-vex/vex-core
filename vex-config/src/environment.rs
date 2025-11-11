@@ -27,12 +27,20 @@ impl Environment {
             if let Ok(value) = std::env::var(var)
                 && let Ok(env) = value.parse::<Environment>()
             {
-                tracing::info!("Detected environment '{}' from {}", env, var);
+                tracing::info!(
+                    target: "config",
+                    action = "environment_detected",
+                    environment = %env,
+                    source = *var
+                );
                 return env;
             }
         }
 
-        tracing::warn!("No valid environment variable found, defaulting to development");
+        tracing::warn!(
+            target: "config",
+            action = "environment_defaulted"
+        );
         Environment::Development
     }
 
@@ -80,11 +88,11 @@ impl Environment {
     }
 
     /// Get environment-specific configuration prefix for environment variables
-    pub fn env_prefix(&self) -> String {
+    pub fn env_key(&self) -> &'static str {
         match self {
-            Environment::Development => "VEX_DEV".to_string(),
-            Environment::Test => "VEX_TEST".to_string(),
-            Environment::Production => "VEX_PROD".to_string(),
+            Environment::Development => "DEV",
+            Environment::Test => "TEST",
+            Environment::Production => "PROD",
         }
     }
 }

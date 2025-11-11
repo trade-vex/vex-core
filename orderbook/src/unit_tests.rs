@@ -97,7 +97,6 @@ mod test {
     impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
         /// Helper function to check if the order book state is consistent
         /// Get the best bid price and volume
-
         pub fn verify_state(&mut self) -> Result<(), String> {
             // Check that each order referenced in self.orders exists in one of the sides
             for (order_id, price) in &self.orders {
@@ -119,8 +118,7 @@ mod test {
 
                 if !found {
                     return Err(format!(
-                        "Order {} at price {} not found on either side",
-                        order_id, price
+                        "Order {order_id} at price {price} not found on either side"
                     ));
                 }
             }
@@ -219,6 +217,7 @@ mod test {
         time_in_force: TimeInForce,
     ) -> OrderCommand {
         OrderCommand {
+            client_order_id: 0,
             command,
             order_id,
             timestamp,
@@ -231,6 +230,7 @@ mod test {
             status: Status::Processing,
             events: None,
             balance: [UserBalance::default(); 2],
+            l2_data: None,
         }
     }
 
@@ -1816,6 +1816,7 @@ mod test {
 
         // Test CancelOrder
         let mut cancel_cmd = OrderCommand {
+            client_order_id: 0,
             command: OrderCommandType::CancelOrder,
             order_id: 1,
             timestamp: 101,
@@ -1827,7 +1828,8 @@ mod test {
             time_in_force: TimeInForce::Gtc, // Irrelevant for cancel
             status: Status::Processing,
             events: None,
-            balance: [UserBalance::default(); 2]
+            balance: [UserBalance::default(); 2],
+            l2_data: None,
         };
         book.cancel_order(&mut cancel_cmd, price_cache.clone());
         assert_eq!(cancel_cmd.status(), Status::Cancelled);
@@ -1981,6 +1983,7 @@ mod test {
         pub fn build_place_order(self) -> OrderCommand {
             OrderCommand {
                 command: OrderCommandType::PlaceOrder,
+                client_order_id: 0,
                 order_id: self.order_id,
                 timestamp: self.timestamp,
                 user_id: self.user_id,
@@ -1991,13 +1994,15 @@ mod test {
                 time_in_force: self.time_in_force,
                 status: Status::Processing,
                 events: None,
-                balance: [UserBalance::default(); 2]
+                balance: [UserBalance::default(); 2],
+                l2_data: None,
             }
         }
 
         pub fn build_cancel_order(self) -> OrderCommand {
             OrderCommand {
                 command: OrderCommandType::CancelOrder,
+                client_order_id: 0,
                 order_id: self.order_id,
                 timestamp: self.timestamp,
                 user_id: self.user_id,
@@ -2008,7 +2013,8 @@ mod test {
                 time_in_force: self.time_in_force, // Ignored for cancel
                 status: Status::Processing,
                 events: None,
-                balance: [UserBalance::default(); 2]
+                balance: [UserBalance::default(); 2],
+                l2_data: None,
             }
         }
 
@@ -2047,11 +2053,6 @@ mod test {
             .collect();
         assert_eq!(ask_levels, expected_asks, "Ask levels don't match");
     }
-
-    /// Test helper to create a test order book
-    // pub fn create_test_order_book() -> OrderBook<BTreeAskSide, BTreeBidSide> {
-    //     OrderBook::new(BTreeBidSide::new(), BTreeAskSide::new())
-    // }
 
     /// Counter for generating unique order IDs and timestamps
     pub struct TestCounter {
@@ -2662,14 +2663,6 @@ mod test {
         );
     }
 
-    // A type alias for the concrete OrderBook implementation used in tests
-    // type TestVexOrderBook = OrderBook<BTreeAskSide, BTreeBidSide>;
-
-    /// Creates a new, empty order book with BTree-backed sides.
-    // fn create_empty_book() -> TestVexOrderBook {
-    //     OrderBook::new(BTreeBidSide::new(), BTreeAskSide::new())
-    // }
-
     /// A helper struct to manage state for tests, ensuring unique and incremental
     /// order IDs and timestamps, which is crucial for simulating a real-world scenario.
     struct TestHarness {
@@ -2706,6 +2699,7 @@ mod test {
         ) -> OrderCommand {
             OrderCommand {
                 command: OrderCommandType::PlaceOrder,
+                client_order_id: 0,
                 order_id: self.next_order_id(),
                 timestamp: self.next_timestamp(),
                 user_id,
@@ -2717,6 +2711,7 @@ mod test {
                 status: Status::Processing,
                 events: None,
                 balance: [UserBalance::default(); 2],
+                l2_data: None,
             }
         }
 
@@ -2732,6 +2727,7 @@ mod test {
         fn create_cancel_order_cmd(&self, order_to_cancel: &OrderCommand) -> OrderCommand {
             OrderCommand {
                 command: OrderCommandType::CancelOrder,
+                client_order_id: 0,
                 order_id: order_to_cancel.order_id,
                 timestamp: self.next_timestamp(),
                 user_id: order_to_cancel.user_id,
@@ -2743,6 +2739,7 @@ mod test {
                 status: Status::Processing,
                 events: None,
                 balance: [UserBalance::default(); 2],
+                l2_data: None,
             }
         }
     }
@@ -3279,7 +3276,97 @@ mod test {
     }
 
     #[test]
-    fn test_create_snapshot_with_depth() {
+    fn test_l2_snapshot_data_correctness() {
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+
+        // --- Scenario 1: Snapshot on an empty book ---
+        let mut cmd1 = harness.create_place_order_cmd(101, Side::Bid, 99_000, 10, TimeInForce::Gtc);
+        // Manually set status to avoid triggering place_order logic, just to test snapshot
+        cmd1.set_status(Status::Placed);
+        book.record_snapshot(&mut cmd1);
+
+        let snapshot1 = cmd1.l2_data.as_ref().unwrap();
+        assert!(snapshot1.bid_prices.is_empty());
+        assert!(snapshot1.bid_volumes.is_empty());
+        assert!(snapshot1.ask_prices.is_empty());
+        assert!(snapshot1.ask_volumes.is_empty());
+
+        // --- Scenario 2: Build a book with more than L2SIZE levels ---
+        // Place 12 bid levels (99 down to 88)
+        for i in 0..12 {
+            let price = 99 - i;
+            let size = (i + 1) * 10;
+            let mut bid_cmd =
+                harness.create_place_order_cmd(200 + i, Side::Bid, price, size, TimeInForce::Gtc);
+            book.place_order(&mut bid_cmd, price_cache.clone());
+        }
+
+        // Place 12 ask levels (101 up to 112)
+        for i in 0..12 {
+            let price = 101 + i;
+            let size = (i + 1) * 10;
+            let mut ask_cmd =
+                harness.create_place_order_cmd(300 + i, Side::Ask, price, size, TimeInForce::Gtc);
+            book.place_order(&mut ask_cmd, price_cache.clone());
+        }
+
+        // --- Scenario 3: Verify snapshot of a deep book ---
+        let mut cmd2 = harness.create_place_order_cmd(102, Side::Bid, 80, 5, TimeInForce::Gtc);
+        book.place_order(&mut cmd2, price_cache.clone()); // This order will be placed
+
+        let snapshot2 = cmd2.l2_data.as_ref().unwrap();
+
+        // Snapshot should contain exactly L2SIZE (10) levels
+        assert_eq!(snapshot2.bid_prices.len(), L2SIZE);
+        assert_eq!(snapshot2.ask_prices.len(), L2SIZE);
+
+        // Verify bids (descending price)
+        for i in 0..L2SIZE {
+            let expected_price = 99 - i as u64;
+            let expected_volume = (i as u64 + 1) * 10;
+            assert_eq!(snapshot2.bid_prices[i], expected_price);
+            assert_eq!(snapshot2.bid_volumes[i], expected_volume);
+        }
+
+        // Verify asks (ascending price)
+        for i in 0..L2SIZE {
+            let expected_price = 101 + i as u64;
+            let expected_volume = (i as u64 + 1) * 10;
+            assert_eq!(snapshot2.ask_prices[i], expected_price);
+            assert_eq!(snapshot2.ask_volumes[i], expected_volume);
+        }
+
+        // --- Scenario 4: Snapshot after a trade that clears levels ---
+        // A large market buy that clears the first 3 ask levels
+        let mut market_buy_cmd = harness.create_market_order_cmd(103, Side::Bid, 70); // 10+20+30=60, so this clears 3 levels and takes 10 from the 4th
+        book.place_order(&mut market_buy_cmd, price_cache.clone());
+
+        let snapshot3 = market_buy_cmd.l2_data.as_ref().unwrap();
+
+        // The new best ask should be 104 (since 101, 102, 103 are gone)
+        assert_eq!(snapshot3.ask_prices[0], 104);
+        // Original volume at 104 was 40, 10 was taken. 30 should remain.
+        assert_eq!(snapshot3.ask_volumes[0], 30);
+        // The next ask should be 105 with volume 50
+        assert_eq!(snapshot3.ask_prices[1], 105);
+        assert_eq!(snapshot3.ask_volumes[1], 50);
+
+        // Bid side should be unchanged
+        assert_eq!(snapshot3.bid_prices[0], 99); // The one we added in Scenario 3
+
+        // --- Scenario 5: Snapshot on a rejected command should be None ---
+        let mut rejected_cmd =
+            harness.create_place_order_cmd(104, Side::Bid, 100_000, 10, TimeInForce::Gtc);
+        rejected_cmd.set_status(Status::Rejected);
+        // We call place_order, but because the status is Rejected, it should return early
+        // and not record a snapshot.
+        book.place_order(&mut rejected_cmd, price_cache.clone());
+        assert!(rejected_cmd.l2_data.is_none());
+    }
+
+    #[test]
+    fn test_snapshot_data() {
         let (mut book, price_cache) = create_test_orderbook();
 
         // Place some bids
@@ -3301,7 +3388,8 @@ mod test {
 
         // Place some asks
         let asks = [(4, 101, 15), (5, 102, 25), (6, 103, 35)];
-        for (id, price, size) in asks {
+        let mut command = OrderCommand::default();
+        for (i, (id, price, size)) in asks.into_iter().enumerate() {
             let mut cmd = create_order_command(
                 OrderCommandType::PlaceOrder,
                 id,
@@ -3314,31 +3402,31 @@ mod test {
                 TimeInForce::Gtc,
             );
             book.place_order(&mut cmd, price_cache.clone());
+            if i == 2 {
+                command = cmd;
+            }
         }
 
-        // Create a snapshot with depth 2
-        let snapshot = book.create_snapshot_with_depth(2);
+        let snapshot = command.l2_data.unwrap();
 
-        // Verify bids in snapshot (top 2)
+        // Verify bids in snapshot (top 3)
         assert_eq!(snapshot.bid_prices[0], 100);
         assert_eq!(snapshot.bid_volumes[0], 10);
-        assert_eq!(snapshot.bid_orders[0], 1);
 
         assert_eq!(snapshot.bid_prices[1], 99);
         assert_eq!(snapshot.bid_volumes[1], 20);
-        assert_eq!(snapshot.bid_orders[1], 1);
 
-        // Verify asks in snapshot (top 2)
+        assert_eq!(snapshot.bid_prices[2], 98);
+        assert_eq!(snapshot.bid_volumes[2], 30);
+
+        // Verify asks in snapshot (top 3)
         assert_eq!(snapshot.ask_prices[0], 101);
         assert_eq!(snapshot.ask_volumes[0], 15);
-        assert_eq!(snapshot.ask_orders[0], 1);
 
         assert_eq!(snapshot.ask_prices[1], 102);
         assert_eq!(snapshot.ask_volumes[1], 25);
-        assert_eq!(snapshot.ask_orders[1], 1);
 
-        // Verify that the rest of the snapshot is empty
-        assert_eq!(snapshot.bid_prices[2], 0);
-        assert_eq!(snapshot.ask_prices[2], 0);
+        assert_eq!(snapshot.ask_prices[2], 103);
+        assert_eq!(snapshot.ask_volumes[2], 35);
     }
 }

@@ -1,43 +1,50 @@
+use crate::L2SIZE;
+
 /// Represents Level 2 market data with a fixed number of price levels.
 ///
 /// `LEVEL` is a const generic parameter that defines the depth of the order book
 /// for both asks and bids.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct L2MarketData<const LEVEL: usize> {
-    pub ask_prices: [u64; LEVEL],
-    pub ask_volumes: [u64; LEVEL],
-    pub ask_orders: [u64; LEVEL],
-    pub bid_prices: [u64; LEVEL],
-    pub bid_volumes: [u64; LEVEL],
-    pub bid_orders: [u64; LEVEL],
+pub struct L2MarketData {
+    pub ask_prices: Vec<u64>,
+    pub ask_volumes: Vec<u64>,
+    pub ask_orders: Vec<u64>,
+    pub bid_prices: Vec<u64>,
+    pub bid_volumes: Vec<u64>,
+    pub bid_orders: Vec<u64>,
     pub timestamp: u64,
     pub reference_seq: u64,
 }
 
-impl<const LEVEL: usize> Default for L2MarketData<LEVEL> {
+impl Default for L2MarketData {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<const LEVEL: usize> L2MarketData<LEVEL> {
+impl L2MarketData {
     /// Creates a new, empty `L2MarketData` instance with all values initialized to zero.
     pub fn new() -> Self {
         Self {
-            ask_prices: [0; LEVEL],
-            ask_volumes: [0; LEVEL],
-            ask_orders: [0; LEVEL],
-            bid_prices: [0; LEVEL],
-            bid_volumes: [0; LEVEL],
-            bid_orders: [0; LEVEL],
+            ask_prices: Vec::with_capacity(L2SIZE),
+            ask_volumes: Vec::with_capacity(L2SIZE),
+            ask_orders: Vec::with_capacity(L2SIZE),
+            bid_prices: Vec::with_capacity(L2SIZE),
+            bid_volumes: Vec::with_capacity(L2SIZE),
+            bid_orders: Vec::with_capacity(L2SIZE),
             timestamp: 0,
             reference_seq: 0,
         }
     }
 
     /// Returns the depth of the order book.
-    pub fn depth(&self) -> usize {
-        LEVEL
+    pub fn bid_depth(&self) -> usize {
+        self.bid_prices.len()
+    }
+
+    /// Returns the depth of the order book.
+    pub fn ask_depth(&self) -> usize {
+        self.ask_prices.len()
     }
 
     /// Calculates the total volume on the ask side of the order book.

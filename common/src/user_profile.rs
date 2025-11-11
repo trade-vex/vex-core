@@ -80,9 +80,7 @@ impl BalanceStore {
 
     pub fn get_balance_mut(&mut self, user_id: u64, asset_id: u16) -> &mut UserBalance {
         let key = BalanceKey { user_id, asset_id };
-        self.balances
-            .entry(key)
-            .or_insert_with(UserBalance::default)
+        self.balances.entry(key).or_default()
     }
 
     // Lock funds (move from available to locked)
@@ -138,6 +136,25 @@ impl BalanceStore {
             .checked_add(amount)
             .ok_or(BalanceError::Overflow)?;
         Ok(*balance)
+    }
+
+    // Subract from available funds
+    pub fn subtract_funds(
+        &mut self,
+        user_id: u64,
+        asset_id: u16,
+        amount: u64,
+    ) -> Result<UserBalance, BalanceError> {
+        let balance = self.get_balance_mut(user_id, asset_id);
+        if balance.available >= amount {
+            balance.available -= amount;
+            Ok(*balance)
+        } else {
+            Err(BalanceError::InsufficientAvailableFunds {
+                available: balance.available,
+                needed: amount,
+            })
+        }
     }
 
     // Subtract from locked funds

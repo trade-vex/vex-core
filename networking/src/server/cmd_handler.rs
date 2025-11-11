@@ -1,67 +1,118 @@
-use common::{OrderCommand, decode_order_command, encode_order_command};
+use common::{OrderCommand, OrderCommandType, Status, decode_order_command};
 use disruptor::{MultiProducer, Producer, SingleConsumerBarrier};
-use rusteron_client::{
-    AeronFragmentHandlerCallback, AeronHeader, AeronPublication, AeronReservedValueSupplierLogger,
-};
-use tracing::{debug, error};
+use rusteron_archive::{AeronFragmentHandlerCallback, AeronHeader};
+use tracing::{debug, error, info};
 
 pub struct FragmentHandler {
-    pub publication: AeronPublication,
-    pub gateway_id: String,
+    pub gateway_id: u8,
     pub producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
 }
 
 impl AeronFragmentHandlerCallback for FragmentHandler {
-    fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) {
-        // is executor thread
-        let session_id = header.get_values().unwrap().frame.session_id;
-
-        // Deserialize OrderCommand
+    fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], _header: AeronHeader) {
         match decode_order_command(buffer) {
-            Ok(order_command) => {
-                debug!(
-                    "[{}] Gateway '{}': Received OrderCommand: {:?}",
-                    session_id, self.gateway_id, order_command
+            Ok(mut order_command) => {
+                order_command.status = Status::Processing;
+                // order_id is updated in journaling processor
+                // the snowflake algorithm requires gateway_id to be part of order_id
+                // instead of adding a new field, we repurpose order_id here
+                if order_command.command != OrderCommandType::CancelOrder {
+                    order_command.order_id = self.gateway_id as u64;
+                } else {
+                    order_command.user_id = self.gateway_id as u64;
+                }
+                info!(
+                    target: "order_cammand",
+                    gateway_id = self.gateway_id,
+                    client_order_id = ?order_command,
+                    "received order command"
                 );
 
-                // Process the order command (placeholder function)
-                self.producer.publish(|cmd| {
+                if let Err(e) = self.producer.try_publish(|cmd| {
                     *cmd = order_command.clone();
-                });
-
-                // Serialize and send back the processed command
-                let mut response_buffer = vec![0u8; 67];
-                match encode_order_command(order_command, &mut response_buffer) {
-                    Ok(_) => {
-                        // Send the processed command back
-                        let result = self
-                            .publication
-                            .offer::<AeronReservedValueSupplierLogger>(&response_buffer, None);
-
-                        if result < 0 {
-                            error!(
-                                "[{}] Gateway '{}': Failed to send processed OrderCommand, result: {}",
-                                session_id, self.gateway_id, result
-                            );
-                        } else {
-                            debug!(
-                                "[{}] Gateway '{}': Successfully sent processed OrderCommand",
-                                session_id, self.gateway_id
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        error!(
-                            "[{}] Gateway '{}': Failed to encode processed OrderCommand: {:?}",
-                            session_id, self.gateway_id, e
-                        );
-                    }
+                }) {
+                    error!(
+                        target: "gateway_fragment",
+                        gateway_id = self.gateway_id,
+                        error = %e,
+                        "failed to publish order command to ring buffer"
+                    );
+                    return;
                 }
             }
             Err(e) => {
                 error!(
-                    "[{}] Gateway '{}': Failed to decode OrderCommand: {:?}",
-                    session_id, self.gateway_id, e
+                    target: "gateway_fragment",
+                    gateway_id = self.gateway_id,
+                    error = ?e,
+                    "failed to decode order command"
+                );
+            }
+        }
+    }
+}
+
+pub struct ReplayFragmentHandler {
+    pub gateway_id: u8,
+    pub producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
+}
+
+impl AeronFragmentHandlerCallback for ReplayFragmentHandler {
+    fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) {
+        if cfg!(debug_assertions) {
+            let values = match header.get_values() {
+                Ok(values) => values,
+                Err(e) => {
+                    error!(
+                        target: "replay_fragment",
+                        gateway_id = self.gateway_id,
+                        error = %e,
+                        "failed to decode header values"
+                    );
+                    return;
+                }
+            };
+            debug!(
+                target: "replay_fragment",
+                gateway_id = self.gateway_id,
+                session_id = values.frame.session_id,
+                stream_id = values.frame.stream_id, 
+                term_id = values.frame.term_id,
+                term_offset = values.frame.term_offset,
+                frame_size = values.position_bits_to_shift(),
+                "received replay fragment"
+            );
+        }
+
+        match decode_order_command(buffer) {
+            Ok(mut order_command) => {
+                order_command.status = Status::Processing;
+                info!(
+                    target: "replay_fragment",
+                    gateway_id = self.gateway_id,
+                    time_stamp = ?order_command.timestamp,
+                    client_order_id = ?order_command.client_order_id,
+                    "processing replay order command"
+                );
+
+                if let Err(e) = self.producer.try_publish(|cmd| {
+                    *cmd = order_command.clone();
+                }) {
+                    error!(
+                        target: "replay_fragment",
+                        gateway_id = self.gateway_id,
+                        error = %e,
+                        "failed to publish replay order command to ring buffer"
+                    );
+                    return;
+                }
+            }
+            Err(e) => {
+                error!(
+                    target: "replay_fragment",
+                    gateway_id = self.gateway_id,
+                    error = ?e,
+                    "failed to decode replay order command"
                 );
             }
         }

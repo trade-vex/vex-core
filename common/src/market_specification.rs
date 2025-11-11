@@ -9,10 +9,10 @@ pub struct CoreMarketSpecification {
     pub market_type: MarketType,
 
     // Currency pair specification
-    pub base_currency: u16,  // base currency
-    pub quote_currency: u16, // quote/counter currency (OR futures contract currency)
-    pub base_scale_k: u64,   // base currency amount multiplier (lot size in base currency units)
-    pub quote_scale_k: u64,  // quote currency amount multiplier (step size in quote currency units)
+    pub base_asset: u16,    // base currency
+    pub quote_asset: u16,   // quote/counter currency (OR futures contract currency)
+    pub base_scale_k: u64,  // base currency amount multiplier (lot size in base currency units)
+    pub quote_scale_k: u64, // quote currency amount multiplier (step size in quote currency units)
 
     // Fees per lot in quote currency units
     pub taker_fee: u64, // taker fee (should be >= maker fee)
@@ -33,8 +33,8 @@ impl CoreMarketSpecification {
 pub struct CoreMarketSpecificationBuilder {
     market_id: Option<u32>,
     market_type: Option<MarketType>,
-    base_currency: Option<u16>,
-    quote_currency: Option<u16>,
+    base_asset: Option<u16>,
+    quote_asset: Option<u16>,
     base_scale_k: Option<u64>,
     quote_scale_k: Option<u64>,
     taker_fee: Option<u64>,
@@ -45,8 +45,8 @@ pub struct CoreMarketSpecificationBuilder {
 impl CoreMarketSpecificationBuilder {
     pub fn market_id(mut self, market_id: u32) -> Self {
         self.market_id = Some(market_id);
-        self.base_currency = Some(base_asset(market_id));
-        self.quote_currency = Some(quote_asset(market_id));
+        self.base_asset = Some(base_asset(market_id));
+        self.quote_asset = Some(quote_asset(market_id));
         self
     }
 
@@ -84,8 +84,8 @@ impl CoreMarketSpecificationBuilder {
         Ok(CoreMarketSpecification {
             market_id: self.market_id.ok_or("market_id is required")?,
             market_type: self.market_type.ok_or("market_type is required")?,
-            base_currency: self.base_currency.ok_or("base_currency is required")?,
-            quote_currency: self.quote_currency.ok_or("quote_currency is required")?,
+            base_asset: self.base_asset.ok_or("base_asset is required")?,
+            quote_asset: self.quote_asset.ok_or("quote_asset is required")?,
             base_scale_k: self.base_scale_k.unwrap_or(1),
             quote_scale_k: self.quote_scale_k.unwrap_or(1),
             taker_fee: self.taker_fee.unwrap_or(0),
@@ -95,9 +95,8 @@ impl CoreMarketSpecificationBuilder {
     }
 }
 
-
 /// Market ID Specification helper functions
-/// 
+///
 /// Base And Quote asset extraction from market_id
 /// The Base asset is stored in the lower 16 bits of the market_id
 /// The Quote asset is stored in the upper 16 bits of the market_id
