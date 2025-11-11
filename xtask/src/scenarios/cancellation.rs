@@ -390,15 +390,15 @@ async fn cancel_resting_bid_section(ctx: &mut TestContext) -> TestResult<()> {
 
         // Check that the specific price level is either gone or has size 0
         let bid_at_price = orderbook.bids.iter().find(|b| b.price == price);
-        if let Some(bid) = bid_at_price
-            && bid.size != 0
-        {
-            return Err(TestError::Verification {
-                message: format!(
-                    "Expected bid at price {} to be removed, but found size {}",
-                    price, bid.size
-                ),
-            });
+        if let Some(bid) = bid_at_price {
+            if bid.size != 0 {
+                return Err(TestError::Verification {
+                    message: format!(
+                        "Expected bid at price {} to be removed, but found size {}",
+                        price, bid.size
+                    ),
+                });
+            }
         }
         info!("  → Order removed from orderbook");
     }
@@ -488,15 +488,15 @@ async fn cancel_resting_ask_section(ctx: &mut TestContext) -> TestResult<()> {
         let orderbook = orderbook_verifier.get_orderbook(market_id).await?;
 
         let ask_at_price = orderbook.asks.iter().find(|a| a.price == price);
-        if let Some(ask) = ask_at_price
-            && ask.size != 0
-        {
-            return Err(TestError::Verification {
-                message: format!(
-                    "Expected ask at price {} to be removed, but found size {}",
-                    price, ask.size
-                ),
-            });
+        if let Some(ask) = ask_at_price {
+            if ask.size != 0 {
+                return Err(TestError::Verification {
+                    message: format!(
+                        "Expected ask at price {} to be removed, but found size {}",
+                        price, ask.size
+                    ),
+                });
+            }
         }
         info!("  → Order removed from orderbook");
     }
@@ -650,15 +650,15 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
         let orderbook = orderbook_verifier.get_orderbook(market_id).await?;
 
         let bid_at_price = orderbook.bids.iter().find(|b| b.price == price);
-        if let Some(bid) = bid_at_price
-            && bid.size != 0
-        {
-            return Err(TestError::Verification {
-                message: format!(
-                    "Expected bid at price {} to be removed after cancel, but found size {}",
-                    price, bid.size
-                ),
-            });
+        if let Some(bid) = bid_at_price {
+            if bid.size != 0 {
+                return Err(TestError::Verification {
+                    message: format!(
+                        "Expected bid at price {} to be removed after cancel, but found size {}",
+                        price, bid.size
+                    ),
+                });
+            }
         }
         info!("  → Remaining order removed from orderbook");
     }
@@ -1010,17 +1010,17 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
 
         for (i, price) in [price1, price2, price3].iter().enumerate() {
             let ask_at_price = orderbook.asks.iter().find(|a| a.price == *price);
-            if let Some(ask) = ask_at_price
-                && ask.size != 0
-            {
-                return Err(TestError::Verification {
-                    message: format!(
-                        "Expected ask {} at price {} to be removed, but found size {}",
-                        i + 1,
-                        price,
-                        ask.size
-                    ),
-                });
+            if let Some(ask) = ask_at_price {
+                if ask.size != 0 {
+                    return Err(TestError::Verification {
+                        message: format!(
+                            "Expected ask {} at price {} to be removed, but found size {}",
+                            i + 1,
+                            price,
+                            ask.size
+                        ),
+                    });
+                }
             }
         }
         info!("  → All orders removed from orderbook");

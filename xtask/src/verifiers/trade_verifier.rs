@@ -139,7 +139,7 @@ impl<'a> TradeVerifier<'a> {
     ) -> TestResult<RedisTrade> {
         let trade = self
             .redis
-            .wait_for_trade(market_id, criteria, timeout)
+            .wait_for_trade(market_id, &criteria, timeout)
             .await?;
 
         if !criteria.matches(&trade) {

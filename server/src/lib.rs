@@ -87,20 +87,25 @@ pub fn start(config: VexConfig, replay: bool) -> Result<RunningEngine, EngineErr
         use common::OrderCommand;
         use disruptor::Producer;
         use tracing::info;
-        
-        info!("Balance preload enabled, funding {} users", config.balance_preload.users.len());
-        
+
+        info!(
+            "Balance preload enabled, funding {} users",
+            config.balance_preload.users.len()
+        );
+
         for (user_id, balances) in &config.balance_preload.users {
             for balance in balances {
-                info!("Depositing {} units of asset {} for user {}", 
-                    balance.amount, balance.asset_id, user_id);
-                
+                info!(
+                    "Depositing {} units of asset {} for user {}",
+                    balance.amount, balance.asset_id, user_id
+                );
+
                 producer.publish(|cmd| {
                     *cmd = OrderCommand::deposit_funds(*user_id, balance.amount, balance.asset_id);
                 });
             }
         }
-        
+
         info!("Balance preload complete");
     }
 

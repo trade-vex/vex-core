@@ -20,7 +20,7 @@ pub struct BalancePreloadConfig {
     /// Whether preloading is enabled
     #[serde(default)]
     pub enabled: bool,
-    
+
     /// Map of user_id -> list of balances to fund
     #[serde(default)]
     pub users: HashMap<u64, Vec<UserBalance>>,
@@ -43,4 +43,3 @@ impl BalancePreloadConfig {
         Ok(())
     }
 }
-

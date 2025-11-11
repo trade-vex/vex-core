@@ -4,7 +4,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use hashbrown::{HashMap, hash_map::Keys};
 use serde::{Deserialize, Serialize};
 
-use crate::{CoreMarketSpecification, Side};
+use crate::{CoreMarketSpecification, Side, Status, TimeInForce};
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
@@ -15,6 +15,8 @@ pub struct Order {
     pub price: u64,
     pub size: u64,
     pub side: Side,
+    pub time_in_force: TimeInForce,
+    pub status: Status,
     pub timestamp: u64,
 }
 

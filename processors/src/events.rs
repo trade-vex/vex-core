@@ -10,7 +10,8 @@ use common::OrderCommandType;
 use common::Status;
 use common::UserBalance;
 use common::{
-    BalanceEvent, CancelOrderEvent, DepositEvent, OrderEvent, OrderbookEvent, OrderbookLevel, TradeEvent, WithdrawEvent,
+    BalanceEvent, CancelOrderEvent, DepositEvent, OrderEvent, OrderbookEvent, OrderbookLevel,
+    TradeEvent, WithdrawEvent,
 };
 use common::{base_asset, order_debug, order_info, quote_asset};
 use rdkafka::config::ClientConfig;
@@ -163,12 +164,16 @@ impl KafkaEventsHandler {
             price: cmd.price(),
             size: cmd.size(),
             side: cmd.side(),
+            time_in_force: cmd.time_in_force,
+            status: cmd.status(),
             timestamp: cmd.timestamp(),
         };
 
         let order_event = OrderEvent {
             order,
             market_id: cmd.market_id(),
+            time_in_force: cmd.time_in_force,
+            status: cmd.status(),
         };
 
         let topic_name = "orders";
