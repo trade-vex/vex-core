@@ -1,4 +1,4 @@
-use rusteron_client::{
+use rusteron_archive::{
     AeronAvailableImageCallback, AeronFragmentHandlerCallback, AeronHeader, AeronImage,
     AeronPublication, AeronSubscription, AeronUnavailableImageCallback,
 };
@@ -32,7 +32,11 @@ impl AeronFragmentHandlerCallback for HandshakeMessageHandler {
         let session_id = match header.get_values() {
             Ok(values) => values.frame.session_id,
             Err(e) => {
-                error!("Failed to get header values: {}", e);
+                error!(
+                    target: "gateway_handler",
+                    action = "header_values_failed",
+                    error = %e
+                );
                 return;
             }
         };
@@ -43,8 +47,10 @@ impl AeronFragmentHandlerCallback for HandshakeMessageHandler {
                 .process_handshake_message(&self.publication, session_id, buffer)
         {
             error!(
-                "Error processing handshake from session 0x{:x}: {}",
-                session_id, e
+                target: "gateway_handler",
+                action = "handshake_processing_failed",
+                session = format_args!("{:#x}", session_id),
+                error = %e
             );
         }
     }
@@ -62,7 +68,11 @@ impl AeronAvailableImageCallback for GatewayImageAvailableHandler {
         let session_id = match image.get_constants() {
             Ok(b) => b.session_id,
             Err(e) => {
-                error!("Failed to get image constants: {}", e);
+                error!(
+                    target: "gateway_handler",
+                    action = "image_constants_failed",
+                    error = %e
+                );
                 return;
             }
         };
@@ -70,8 +80,10 @@ impl AeronAvailableImageCallback for GatewayImageAvailableHandler {
         let address = binding.source_identity();
 
         debug!(
-            "Gateway image available for session 0x{:x} from {}",
-            session_id, address
+            target: "gateway_handler",
+            action = "image_available",
+            session = format_args!("{:#x}", session_id),
+            address = %address
         );
     }
 }
@@ -88,15 +100,21 @@ impl AeronUnavailableImageCallback for GatewayImageUnavailableHandler {
         let (session_id, binding) = match image.get_constants() {
             Ok(b) => (b.session_id, b),
             Err(e) => {
-                error!("Failed to get image constants: {}", e);
+                error!(
+                    target: "gateway_handler",
+                    action = "image_constants_failed",
+                    error = %e
+                );
                 return;
             }
         };
         let address = binding.source_identity();
 
         debug!(
-            "Gateway image unavailable for session 0x{:x} from {}",
-            session_id, address
+            target: "gateway_handler",
+            action = "image_unavailable",
+            session = format_args!("{:#x}", session_id),
+            address = %address
         );
     }
 }

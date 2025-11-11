@@ -8,20 +8,29 @@ use disruptor::{
 };
 use hashbrown::HashMap;
 use processors::{
-    events::EventsHandler, journaling::JournalingProcessor, matching_engine::MatchingEngineRouter,
+    events::EventsHandler,
+    journaling::{JournalingProcessor, ReplayControl},
+    matching_engine::MatchingEngineRouter,
     risk_engine::RiskEngine,
 };
 use std::{
     sync::Arc,
+    sync::atomic::AtomicBool,
     thread::{self, JoinHandle},
 };
 use tracing::info;
 use vex_config::CoreNetworkingConfig;
-use vex_networking::server::GatewayPublications;
+use vex_networking::server::Publications;
 use vex_networking::server::VexCoreServer;
 
 /// Type alias for the order command producer
 pub type OrderProducer = MultiProducer<OrderCommand, SingleConsumerBarrier>;
+
+#[derive(Clone)]
+pub struct ReplayContext {
+    pub producer: OrderProducer,
+    pub control: ReplayControl,
+}
 
 /// Type alias for a shared reference to the risk engines
 pub type RiskEngines = Arc<Vec<RiskEngine>>;
@@ -116,7 +125,7 @@ impl Default for CorePinning {
 /// ```
 pub struct CoreEngine {
     /// Gateway Publications for sending responses back to gateways
-    publications: Arc<GatewayPublications>,
+    publications: Arc<Publications>,
 }
 
 impl CoreEngine {
@@ -129,9 +138,26 @@ impl CoreEngine {
     /// Currently does not return errors, but signature allows for future error handling
     pub fn new(
         symbol_specs: HashMap<u32, CoreMarketSpecification>,
+        journaling_processor: JournalingProcessor,
+        events_handler: impl EventsHandler,
+        publications: Arc<Publications>,
+        core_pinning: CorePinning,
+    ) -> EngineResult<(Self, OrderProducer)> {
+        let (engine, producer) = Self::build_engine(
+            symbol_specs,
+            journaling_processor,
+            events_handler,
+            publications,
+            core_pinning,
+        )?;
+        Ok((engine, producer))
+    }
+
+    fn build_engine(
+        symbol_specs: HashMap<u32, CoreMarketSpecification>,
         mut journaling_processor: JournalingProcessor,
         events_handler: impl EventsHandler,
-        publications: Arc<GatewayPublications>,
+        publications: Arc<Publications>,
         core_pinning: CorePinning,
     ) -> EngineResult<(Self, OrderProducer)> {
         let price_cache = Arc::new(PriceCache::new(symbol_specs.keys()));
@@ -303,32 +329,49 @@ impl CoreEngine {
     pub fn run(
         &self,
         producer: OrderProducer,
+        replay_control: ReplayControl,
         networking_config: CoreNetworkingConfig,
-    ) -> JoinHandle<Result<(), EngineError>> {
+    ) -> (JoinHandle<Result<(), EngineError>>, Arc<AtomicBool>) {
         let publications = Arc::clone(&self.publications);
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let shutdown_for_thread = Arc::clone(&shutdown_flag);
 
-        thread::Builder::new()
+        let handle = thread::Builder::new()
             .name("vex-core-server".into())
             .spawn(move || {
-                let mut core_server = VexCoreServer::new(networking_config, producer, publications)
-                    .map_err(|e| {
-                        EngineError::ServerInitialization(format!(
-                            "Failed to create VexCoreServer: {e}"
-                        ))
-                    })?;
+                let replay = replay_control.is_enabled();
+
+                let server_result = VexCoreServer::new(
+                    networking_config,
+                    producer,
+                    publications,
+                    replay,
+                    shutdown_for_thread,
+                )
+                .map_err(|e| {
+                    EngineError::ServerInitialization(format!(
+                        "Failed to create VexCoreServer: {e}"
+                    ))
+                });
+
+                replay_control.disable();
+
+                let mut core_server = server_result?;
 
                 core_server
                     .start()
                     .map_err(|e| EngineError::ServerRuntime(format!("Server error: {e}")))
             })
-            .expect("Failed to spawn server thread")
+            .expect("Failed to spawn server thread");
+
+        (handle, shutdown_flag)
     }
 
     /// Returns a reference to the gateway publications
     ///
     /// This can be used to send responses back to connected gateways
     #[must_use]
-    pub fn publications(&self) -> &Arc<GatewayPublications> {
+    pub fn publications(&self) -> &Arc<Publications> {
         &self.publications
     }
 }
@@ -367,7 +410,7 @@ pub mod test {
         symbol_specs: Option<HashMap<u32, CoreMarketSpecification>>,
         journaling_processor: Option<JournalingProcessor>,
         events_handler: Option<Box<dyn EventsHandler>>,
-        publications: Option<Arc<GatewayPublications>>,
+        publications: Option<Arc<Publications>>,
         core_pinning: TestCorePinning,
         test_handler: Option<Box<dyn FnMut(&mut OrderCommand, i64, bool) + Send + 'static>>,
         risk_engines: Option<RiskEngines>,
@@ -417,7 +460,7 @@ pub mod test {
 
         /// Sets the gateway publications for client communication
         #[must_use]
-        pub fn with_publications(mut self, publications: Arc<GatewayPublications>) -> Self {
+        pub fn with_publications(mut self, publications: Arc<Publications>) -> Self {
             self.publications = Some(publications);
             self
         }
@@ -482,7 +525,7 @@ pub mod test {
             symbol_specs: HashMap<u32, CoreMarketSpecification>,
             mut journaling_processor: JournalingProcessor,
             events_handler: Box<dyn EventsHandler>,
-            publications: Arc<GatewayPublications>,
+            publications: Arc<Publications>,
             test_handler: Option<Box<dyn FnMut(&mut OrderCommand, i64, bool) + Send + 'static>>,
             risk_engines: Option<RiskEngines>,
             core_pinning: TestCorePinning,

@@ -1,14 +1,14 @@
 use crate::server::duologue::{
     DUOLOGUE_STREAM_ID, Duologue, DuologueImageAvailable, DuologueImageUnavailable,
 };
-use crate::server::gateway_publications::GatewayPublications;
+use crate::server::gateway_publications::Publications;
 use crate::utils::{
     PortAllocator, SessionAllocator, new_publication_with_mdc_and_session,
     new_subsciption_with_handlers_and_session, send_message, send_message_with_retries,
 };
 use common::{MAX_GATEWAYS, OrderCommand};
 use disruptor::{MultiProducer, SingleConsumerBarrier};
-use rusteron_client::{Aeron, AeronPublication, Handler};
+use rusteron_archive::{Aeron, AeronPublication, Handler};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, RwLock};
 use tracing::{debug, error, info, warn};
@@ -110,7 +110,7 @@ pub struct GatewayManager {
     /// Producer that sends commands to the disruptor ring
     producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
     /// Aeron publications for each gateway
-    publications: Arc<GatewayPublications>,
+    publications: Arc<Publications>,
     /// Channel for receiving cleanup requests from image unavailable callbacks
     cleanup_rx: Receiver<u8>,
     /// Channel sender cloned for each callback
@@ -123,7 +123,7 @@ impl GatewayManager {
         config: CoreNetworkingConfig,
         aeron: Aeron,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
-        publications: Arc<GatewayPublications>,
+        publications: Arc<Publications>,
     ) -> Result<Self, ServerError> {
         let (cleanup_tx, cleanup_rx) = channel();
 
@@ -154,32 +154,14 @@ impl GatewayManager {
             Ok(guard) => guard.is_gateway_connected(gateway_id),
             Err(e) => {
                 error!(
-                    "Gateway sessions lock poisoned in is_gateway_connected: {}",
-                    e
+                    target: "gateway_manager",
+                    action = "lock_poisoned",
+                    context = "is_gateway_connected",
+                    error = %e
                 );
                 false // Assume not connected if lock is poisoned
             }
         }
-    }
-
-    /// This callback will be invoked when DuologueImageUnavailable is triggered
-    fn create_cleanup_callback(&self) -> Arc<dyn Fn(u8) + Send + Sync> {
-        let tx = self.cleanup_tx.clone();
-
-        Arc::new(move |gateway_id: u8| {
-            info!(
-                "Cleanup callback: image unavailable for gateway-{}, sending cleanup request",
-                gateway_id
-            );
-
-            // Send cleanup request through channel
-            if let Err(e) = tx.send(gateway_id) {
-                error!(
-                    "Cleanup callback: failed to send cleanup request for gateway-{}: {}",
-                    gateway_id, e
-                );
-            }
-        })
     }
 
     /// Processes pending cleanup requests from image unavailable callbacks
@@ -187,18 +169,27 @@ impl GatewayManager {
         loop {
             match self.cleanup_rx.try_recv() {
                 Ok(gateway_id) => {
-                    info!("Processing cleanup request for gateway-{}", gateway_id);
+                    debug!(
+                        target: "gateway_manager",
+                        action = "cleanup_process",
+                        gateway_id
+                    );
                     if let Err(e) = self.remove_gateway_session(gateway_id) {
                         // Log but don't fail - session might already be removed
                         warn!(
-                            "Cleanup request: failed to remove gateway-{}: {}",
-                            gateway_id, e
+                            target: "gateway_manager",
+                            action = "cleanup_remove_failed",
+                            gateway_id,
+                            error = %e
                         );
                     }
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    error!("Cleanup channel disconnected");
+                    error!(
+                        target: "gateway_manager",
+                        action = "cleanup_channel_disconnected"
+                    );
                     break;
                 }
             }
@@ -313,8 +304,12 @@ impl GatewayManager {
             }
         }
         info!(
-            "Gateway 'gateway-{}' connected successfully. Session: 0x{:x}, ports: {}, {}",
-            gateway_id, dedicated_session, ports[0], ports[1]
+            target: "gateway_manager",
+            action = "gateway_connected",
+            gateway_id,
+            session = format_args!("{:#x}", dedicated_session),
+            data_port = ports[0],
+            control_port = ports[1]
         );
 
         Ok(())
@@ -329,8 +324,10 @@ impl GatewayManager {
         for subscription in guard.iter() {
             if let Err(e) = subscription.poll() {
                 error!(
-                    "Error polling gateway session 0x{:x}: {}",
-                    subscription.gateway_id, e
+                    target: "gateway_manager",
+                    action = "poll_failed",
+                    gateway_id = subscription.gateway_id,
+                    error = %e
                 );
             }
         }
@@ -351,7 +348,10 @@ impl GatewayManager {
             self.remove_gateway_session(gateway_id)?;
         }
 
-        info!("All gateway sessions shut down");
+        info!(
+            target: "gateway_manager",
+            action = "shutdown_complete"
+        );
         Ok(())
     }
 
@@ -430,13 +430,10 @@ impl GatewayManager {
             gateway_id,
         });
 
-        // This will be invoked when Aeron detects the image is unavailable (connection lost)
-        let cleanup_callback = Some(self.create_cleanup_callback());
-
         let on_image_unavailable_handler = Handler::leak(DuologueImageUnavailable {
             session_id: dedicated_session,
             gateway_id,
-            cleanup_callback,
+            tx: self.cleanup_tx.clone(),
         });
 
         let subscription = match new_subsciption_with_handlers_and_session(
@@ -471,15 +468,23 @@ impl GatewayManager {
         guard.insert(gateway_id, dedicated_session, gateway_session, &ports);
 
         debug!(
-            "Allocated session 0x{:x} for gateway 'gateway-{}' with ports {}, {}",
-            dedicated_session, gateway_id, ports[0], ports[1]
+            target: "gateway_manager",
+            action = "session_allocated",
+            gateway_id,
+            session = format_args!("{:#x}", dedicated_session),
+            data_port = ports[0],
+            control_port = ports[1]
         );
         Ok((dedicated_session, [ports[0], ports[1]]))
     }
 
     fn authenticate_gateway(&self, gateway_id: u8, _credentials: &str) -> Result<(), ServerError> {
         // TODO: Implement proper authentication
-        info!("Gateway 'gateway-{}' authenticated", gateway_id);
+        info!(
+            target: "gateway_manager",
+            action = "gateway_authenticated",
+            gateway_id
+        );
         Ok(())
     }
 
@@ -500,8 +505,10 @@ impl GatewayManager {
         // close subscription
         if let Err(e) = session.close() {
             error!(
-                "Failed to close subscription for gateway-{}: {:?}",
-                gateway_id, e
+                target: "gateway_manager",
+                action = "session_close_failed",
+                gateway_id,
+                error = ?e
             );
         }
 
