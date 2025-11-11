@@ -4,7 +4,7 @@
 //! functions for validating that events are correctly published to Redis.
 
 use crate::test_framework::types::*;
-use redis::{aio::ConnectionManager, AsyncCommands, Client};
+use redis::{AsyncCommands, Client, aio::ConnectionManager};
 use serde_json;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -57,7 +57,10 @@ impl RedisVerifier {
                 .get("locked")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0),
-            total: result.get("total").and_then(|v| v.parse().ok()).unwrap_or(0),
+            total: result
+                .get("total")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
             timestamp: result
                 .get("timestamp")
                 .and_then(|v| v.parse().ok())
@@ -85,7 +88,10 @@ impl RedisVerifier {
                 .get("user_id")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0),
-            price: result.get("price").and_then(|v| v.parse().ok()).unwrap_or(0),
+            price: result
+                .get("price")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
             size: result.get("size").and_then(|v| v.parse().ok()).unwrap_or(0),
             side: result.get("side").cloned().unwrap_or_default(),
             timestamp: result
@@ -102,16 +108,21 @@ impl RedisVerifier {
 
     /// Get recent trades from Redis ZSET
     /// Key format: market:{market_id}:trades
-    pub async fn get_trades(&mut self, market_id: u32, count: usize) -> TestResult<Vec<RedisTrade>> {
+    pub async fn get_trades(
+        &mut self,
+        market_id: u32,
+        count: usize,
+    ) -> TestResult<Vec<RedisTrade>> {
         let key = format!("market:{}:trades", market_id);
 
         // Get from sorted set (most recent first)
-        let trades: Vec<String> = self
-            .conn
-            .zrevrange(&key, 0, (count as isize) - 1)
-            .await?;
+        let trades: Vec<String> = self.conn.zrevrange(&key, 0, (count as isize) - 1).await?;
 
-        info!("Fetched {} trades from Redis for market {}", trades.len(), market_id);
+        info!(
+            "Fetched {} trades from Redis for market {}",
+            trades.len(),
+            market_id
+        );
 
         let mut result = Vec::new();
         for trade_json in trades {
@@ -156,7 +167,10 @@ impl RedisVerifier {
         let orderbook_json = match orderbook_json {
             Some(json) => json,
             None => {
-                debug!("Orderbook key not found for market {}, returning empty orderbook", market_id);
+                debug!(
+                    "Orderbook key not found for market {}, returning empty orderbook",
+                    market_id
+                );
                 return Ok(RedisOrderbook {
                     market_id,
                     bids: vec![],
@@ -166,11 +180,10 @@ impl RedisVerifier {
             }
         };
 
-        let ob: serde_json::Value = serde_json::from_str(&orderbook_json).map_err(|e| {
-            TestError::Parse {
+        let ob: serde_json::Value =
+            serde_json::from_str(&orderbook_json).map_err(|e| TestError::Parse {
                 message: format!("Failed to parse orderbook JSON: {}", e),
-            }
-        })?;
+            })?;
 
         let bids: Vec<OrderbookLevel> = ob["bids"]
             .as_array()
@@ -206,7 +219,11 @@ impl RedisVerifier {
 
     /// Check if order exists in active orders set
     /// Set key: market:{market_id}:active_orders
-    pub async fn verify_order_in_active(&mut self, market_id: u32, order_id: u64) -> TestResult<bool> {
+    pub async fn verify_order_in_active(
+        &mut self,
+        market_id: u32,
+        order_id: u64,
+    ) -> TestResult<bool> {
         let key = format!("market:{}:active_orders", market_id);
         let order_id_str = order_id.to_string();
 
@@ -216,7 +233,11 @@ impl RedisVerifier {
 
     /// Check if order exists in cancelled orders set
     /// Set key: market:{market_id}:cancelled_orders
-    pub async fn verify_order_in_cancelled(&mut self, market_id: u32, order_id: u64) -> TestResult<bool> {
+    pub async fn verify_order_in_cancelled(
+        &mut self,
+        market_id: u32,
+        order_id: u64,
+    ) -> TestResult<bool> {
         let key = format!("market:{}:cancelled_orders", market_id);
         let order_id_str = order_id.to_string();
 
@@ -320,7 +341,10 @@ impl RedisVerifier {
                     }
                     Ok(_) => {
                         // Empty orderbook (not yet published), keep waiting
-                        debug!("Orderbook for market {} not yet published, waiting...", market_id);
+                        debug!(
+                            "Orderbook for market {} not yet published, waiting...",
+                            market_id
+                        );
                         sleep(Duration::from_millis(50)).await;
                     }
                     Err(_) => sleep(Duration::from_millis(50)).await,

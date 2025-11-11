@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 use tikv_jemallocator::Jemalloc;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::fmt;
-use vex_config::{VexConfig, environment::Environment};
+use vex_config::{environment::Environment, VexConfig};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]

@@ -44,7 +44,13 @@ pub async fn test_gtc_no_match(ctx: &mut TestContext) -> TestResult<()> {
     let response = ctx.execute_command(order_cmd)?;
 
     // Phase 1: Verify Response
-    ResponseVerifier::assert_gtc_placed_no_match(&response, user_id, market_id, price, original_size)?;
+    ResponseVerifier::assert_gtc_placed_no_match(
+        &response,
+        user_id,
+        market_id,
+        price,
+        original_size,
+    )?;
 
     // Phase 2: Verify Redis
     let locked_amount = price * size;
@@ -54,8 +60,12 @@ pub async fn test_gtc_no_match(ctx: &mut TestContext) -> TestResult<()> {
     // Verify funds locked (price * size for bid)
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
-        balance_verifier.assert_locked_eq(user_id, assets::USD, locked_amount).await?;
-        balance_verifier.assert_balance_invariant(user_id, assets::USD).await?;
+        balance_verifier
+            .assert_locked_eq(user_id, assets::USD, locked_amount)
+            .await?;
+        balance_verifier
+            .assert_balance_invariant(user_id, assets::USD)
+            .await?;
     }
 
     // Verify orderbook updated
@@ -64,7 +74,9 @@ pub async fn test_gtc_no_match(ctx: &mut TestContext) -> TestResult<()> {
         orderbook_verifier
             .wait_and_assert_depth(market_id, 1, 0, redis_timeout)
             .await?;
-        orderbook_verifier.assert_level(market_id, Side::Bid, price, size).await?;
+        orderbook_verifier
+            .assert_level(market_id, Side::Bid, price, size)
+            .await?;
     }
 
     info!("Test passed: gtc_no_match");
@@ -89,7 +101,7 @@ pub async fn test_gtc_full_match(ctx: &mut TestContext) -> TestResult<()> {
 
     // Fund both users
     ctx.fund_user(maker_id, 1_000_000, assets::USD).await?; // Quote for bid
-    ctx.fund_user(taker_id, 1_000, assets::BTC).await?;     // Base for ask
+    ctx.fund_user(taker_id, 1_000, assets::BTC).await?; // Base for ask
 
     // Setup: Maker places ask order
     let maker_order = OrderBuilder::place_limit()
@@ -132,7 +144,9 @@ pub async fn test_gtc_full_match(ctx: &mut TestContext) -> TestResult<()> {
         .price(price)
         .size(size);
 
-    trade_verifier.assert_trade_exists(market_id, &criteria).await?;
+    trade_verifier
+        .assert_trade_exists(market_id, &criteria)
+        .await?;
 
     // Verify orderbook is now empty
     let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
@@ -196,15 +210,17 @@ pub async fn test_gtc_partial_match(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify trade occurred for matched portion
     let mut trade_verifier = TradeVerifier::new(&mut ctx.redis);
-    let criteria = TradeCriteria::new()
-        .market_id(market_id)
-        .size(maker_size); // Only maker_size was matched
+    let criteria = TradeCriteria::new().market_id(market_id).size(maker_size); // Only maker_size was matched
 
-    trade_verifier.assert_trade_exists(market_id, &criteria).await?;
+    trade_verifier
+        .assert_trade_exists(market_id, &criteria)
+        .await?;
 
     // Verify remaining size rests on book
     let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-    orderbook_verifier.assert_level(market_id, Side::Bid, price, expected_remaining).await?;
+    orderbook_verifier
+        .assert_level(market_id, Side::Bid, price, expected_remaining)
+        .await?;
 
     info!("Test passed: gtc_partial_match");
     Ok(())
@@ -223,7 +239,10 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     info!("╔════════════════════════════════════════╗");
     info!("║   GTC COMPREHENSIVE TEST SUITE         ║");
     info!("╚════════════════════════════════════════╝");
-    info!("Market ID: {} (Base: {}, Quote: {})", ctx.market_id, ctx.base_asset_id, ctx.quote_asset_id);
+    info!(
+        "Market ID: {} (Base: {}, Quote: {})",
+        ctx.market_id, ctx.base_asset_id, ctx.quote_asset_id
+    );
     info!("");
 
     let suite_start = std::time::Instant::now();
@@ -237,12 +256,13 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     info!("└─────────────────────────────────────────┘");
 
     info!("Funding test users...");
-    ctx.fund_user(users::ALICE, 10_000_000, assets::USD).await?;  // 10M USD for Alice
-    ctx.fund_user(users::ALICE, 1_000, assets::BTC).await?;       // 1000 BTC for Alice
-    ctx.fund_user(users::BOB, 10_000_000, assets::USD).await?;    // 10M USD for Bob
-    ctx.fund_user(users::BOB, 1_000, assets::BTC).await?;         // 1000 BTC for Bob
-    ctx.fund_user(users::CHARLIE, 10_000_000, assets::USD).await?; // 10M USD for Charlie
-    ctx.fund_user(users::CHARLIE, 1_000, assets::BTC).await?;      // 1000 BTC for Charlie
+    ctx.fund_user(users::ALICE, 10_000_000, assets::USD).await?; // 10M USD for Alice
+    ctx.fund_user(users::ALICE, 1_000, assets::BTC).await?; // 1000 BTC for Alice
+    ctx.fund_user(users::BOB, 10_000_000, assets::USD).await?; // 10M USD for Bob
+    ctx.fund_user(users::BOB, 1_000, assets::BTC).await?; // 1000 BTC for Bob
+    ctx.fund_user(users::CHARLIE, 10_000_000, assets::USD)
+        .await?; // 10M USD for Charlie
+    ctx.fund_user(users::CHARLIE, 1_000, assets::BTC).await?; // 1000 BTC for Charlie
 
     info!("✓ All users funded successfully");
     info!("");
@@ -261,12 +281,19 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         Ok(_) => {
             let duration = section_start.elapsed();
             info!("✓ SECTION 2 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("gtc_no_match".to_string(), duration));
+            results.push(ScenarioResult::success(
+                "gtc_no_match".to_string(),
+                duration,
+            ));
         }
         Err(e) => {
             let duration = section_start.elapsed();
             warn!("✗ SECTION 2 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure("gtc_no_match".to_string(), duration, e));
+            results.push(ScenarioResult::failure(
+                "gtc_no_match".to_string(),
+                duration,
+                e,
+            ));
             return Ok(results); // Stop on first failure
         }
     }
@@ -286,12 +313,19 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         Ok(_) => {
             let duration = section_start.elapsed();
             info!("✓ SECTION 3 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("gtc_full_match".to_string(), duration));
+            results.push(ScenarioResult::success(
+                "gtc_full_match".to_string(),
+                duration,
+            ));
         }
         Err(e) => {
             let duration = section_start.elapsed();
             warn!("✗ SECTION 3 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure("gtc_full_match".to_string(), duration, e));
+            results.push(ScenarioResult::failure(
+                "gtc_full_match".to_string(),
+                duration,
+                e,
+            ));
             return Ok(results); // Stop on first failure
         }
     }
@@ -311,12 +345,19 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         Ok(_) => {
             let duration = section_start.elapsed();
             info!("✓ SECTION 4 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("gtc_partial_match".to_string(), duration));
+            results.push(ScenarioResult::success(
+                "gtc_partial_match".to_string(),
+                duration,
+            ));
         }
         Err(e) => {
             let duration = section_start.elapsed();
             warn!("✗ SECTION 4 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure("gtc_partial_match".to_string(), duration, e));
+            results.push(ScenarioResult::failure(
+                "gtc_partial_match".to_string(),
+                duration,
+                e,
+            ));
             return Ok(results); // Stop on first failure
         }
     }
@@ -343,7 +384,10 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
 
 /// SECTION 2: Test GTC orders that don't match (rest on book)
 async fn test_gtc_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
-    info!("Alice places bid @ {} for 10 BTC (below market)", prices::LOW);
+    info!(
+        "Alice places bid @ {} for 10 BTC (below market)",
+        prices::LOW
+    );
 
     let market_id = ctx.market_id;
     let price = prices::LOW; // 40,000
@@ -362,7 +406,13 @@ async fn test_gtc_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
     let response = ctx.execute_command(order_cmd)?;
 
     // Verify Response
-    ResponseVerifier::assert_gtc_placed_no_match(&response, users::ALICE, market_id, price, original_size)?;
+    ResponseVerifier::assert_gtc_placed_no_match(
+        &response,
+        users::ALICE,
+        market_id,
+        price,
+        original_size,
+    )?;
     info!("  → Order placed: order_id={}", response.order_id);
 
     // Verify Redis
@@ -371,15 +421,21 @@ async fn test_gtc_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
 
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
-        balance_verifier.assert_locked_eq(users::ALICE, assets::USD, locked_amount).await?;
+        balance_verifier
+            .assert_locked_eq(users::ALICE, assets::USD, locked_amount)
+            .await?;
         info!("  → Funds locked: {} USD", locked_amount);
     }
 
     let redis_timeout = ctx.config().redis_event_timeout;
     {
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-        orderbook_verifier.wait_and_assert_depth(market_id, 1, 0, redis_timeout).await?;
-        orderbook_verifier.assert_level(market_id, Side::Bid, price, size).await?;
+        orderbook_verifier
+            .wait_and_assert_depth(market_id, 1, 0, redis_timeout)
+            .await?;
+        orderbook_verifier
+            .assert_level(market_id, Side::Bid, price, size)
+            .await?;
         info!("  → Orderbook updated: 1 bid @ {}", price);
     }
 
@@ -389,7 +445,10 @@ async fn test_gtc_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
 /// SECTION 3: Test GTC orders that fully match
 async fn test_gtc_full_match_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Bob places ask @ {} for 5 BTC", prices::MID);
-    info!("Charlie places bid @ {} for 5 BTC → Full match", prices::MID);
+    info!(
+        "Charlie places bid @ {} for 5 BTC → Full match",
+        prices::MID
+    );
 
     let market_id = ctx.market_id;
     let price = prices::MID; // 50,000
@@ -421,7 +480,10 @@ async fn test_gtc_full_match_section(ctx: &mut TestContext) -> TestResult<()> {
 
     let taker_response = ctx.execute_command(taker_order)?;
     ResponseVerifier::assert_filled(&taker_response)?;
-    info!("  → Charlie's bid filled: order_id={}", taker_response.order_id);
+    info!(
+        "  → Charlie's bid filled: order_id={}",
+        taker_response.order_id
+    );
 
     // Verify trade in Redis
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -434,9 +496,11 @@ async fn test_gtc_full_match_section(ctx: &mut TestContext) -> TestResult<()> {
         .size(size)
         .maker_order_id(maker_response.order_id)
         .taker_order_id(taker_response.order_id);
-    
+
     let mut trade_verifier = TradeVerifier::new(&mut ctx.redis);
-    trade_verifier.wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2)).await?;
+    trade_verifier
+        .wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2))
+        .await?;
     info!("  → Trade executed: {} BTC @ {}", size, price);
 
     Ok(())
@@ -445,7 +509,10 @@ async fn test_gtc_full_match_section(ctx: &mut TestContext) -> TestResult<()> {
 /// SECTION 4: Test GTC orders that partially match
 async fn test_gtc_partial_match_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Alice places ask @ {} for 3 BTC", prices::MID);
-    info!("Bob places bid @ {} for 10 BTC → Partial match (3 filled, 7 rest)", prices::MID);
+    info!(
+        "Bob places bid @ {} for 10 BTC → Partial match (3 filled, 7 rest)",
+        prices::MID
+    );
 
     let market_id = ctx.market_id;
     let price = prices::MID;
@@ -478,17 +545,20 @@ async fn test_gtc_partial_match_section(ctx: &mut TestContext) -> TestResult<()>
     let taker_response = ctx.execute_command(taker_order)?;
     ResponseVerifier::assert_partially_filled(&taker_response, taker_size)?;
     ResponseVerifier::assert_size(&taker_response, expected_remaining)?;
-    info!("  → Bob's bid partially filled: {} BTC matched, {} BTC resting", maker_size, expected_remaining);
+    info!(
+        "  → Bob's bid partially filled: {} BTC matched, {} BTC resting",
+        maker_size, expected_remaining
+    );
 
     // Verify trade and remaining order
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.redis);
-        let criteria = TradeCriteria::new()
-            .market_id(market_id)
-            .size(maker_size);
-        trade_verifier.assert_trade_exists(market_id, &criteria).await?;
+        let criteria = TradeCriteria::new().market_id(market_id).size(maker_size);
+        trade_verifier
+            .assert_trade_exists(market_id, &criteria)
+            .await?;
         info!("  → Trade executed for matched portion: {} BTC", maker_size);
     }
 
@@ -496,8 +566,19 @@ async fn test_gtc_partial_match_section(ctx: &mut TestContext) -> TestResult<()>
         // Wait for orderbook to update with remaining order
         let redis_timeout = ctx.config().redis_event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-        orderbook_verifier.wait_and_assert_level(market_id, Side::Bid, price, expected_remaining, redis_timeout).await?;
-        info!("  → Remaining {} BTC rests on orderbook @ {}", expected_remaining, price);
+        orderbook_verifier
+            .wait_and_assert_level(
+                market_id,
+                Side::Bid,
+                price,
+                expected_remaining,
+                redis_timeout,
+            )
+            .await?;
+        info!(
+            "  → Remaining {} BTC rests on orderbook @ {}",
+            expected_remaining, price
+        );
     }
 
     Ok(())

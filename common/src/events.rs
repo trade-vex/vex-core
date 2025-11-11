@@ -1,4 +1,4 @@
-use super::Order;
+use super::{Order, Status, TimeInForce};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -15,6 +15,8 @@ pub struct BalanceEvent {
 pub struct OrderEvent {
     pub order: Order,
     pub market_id: u32,
+    pub time_in_force: TimeInForce,
+    pub status: Status,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

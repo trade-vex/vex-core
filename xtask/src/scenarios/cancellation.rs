@@ -31,7 +31,10 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     info!("╔════════════════════════════════════════╗");
     info!("║   CANCELLATION COMPREHENSIVE SUITE     ║");
     info!("╚════════════════════════════════════════╝");
-    info!("Market ID: {} (Base: {}, Quote: {})", ctx.market_id, ctx.base_asset_id, ctx.quote_asset_id);
+    info!(
+        "Market ID: {} (Base: {}, Quote: {})",
+        ctx.market_id, ctx.base_asset_id, ctx.quote_asset_id
+    );
     info!("");
 
     let suite_start = std::time::Instant::now();
@@ -45,12 +48,13 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     info!("└─────────────────────────────────────────┘");
 
     info!("Funding test users...");
-    ctx.fund_user(users::ALICE, 10_000_000, assets::USD).await?;  // 10M USD for Alice
-    ctx.fund_user(users::ALICE, 1_000, assets::BTC).await?;       // 1000 BTC for Alice
-    ctx.fund_user(users::BOB, 10_000_000, assets::USD).await?;    // 10M USD for Bob
-    ctx.fund_user(users::BOB, 1_000, assets::BTC).await?;         // 1000 BTC for Bob
-    ctx.fund_user(users::CHARLIE, 10_000_000, assets::USD).await?; // 10M USD for Charlie
-    ctx.fund_user(users::CHARLIE, 1_000, assets::BTC).await?;      // 1000 BTC for Charlie
+    ctx.fund_user(users::ALICE, 10_000_000, assets::USD).await?; // 10M USD for Alice
+    ctx.fund_user(users::ALICE, 1_000, assets::BTC).await?; // 1000 BTC for Alice
+    ctx.fund_user(users::BOB, 10_000_000, assets::USD).await?; // 10M USD for Bob
+    ctx.fund_user(users::BOB, 1_000, assets::BTC).await?; // 1000 BTC for Bob
+    ctx.fund_user(users::CHARLIE, 10_000_000, assets::USD)
+        .await?; // 10M USD for Charlie
+    ctx.fund_user(users::CHARLIE, 1_000, assets::BTC).await?; // 1000 BTC for Charlie
 
     info!("✓ All users funded successfully");
     info!("");
@@ -69,12 +73,19 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         Ok(_) => {
             let duration = section_start.elapsed();
             info!("✓ SECTION 2 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("cancel_resting_bid".to_string(), duration));
+            results.push(ScenarioResult::success(
+                "cancel_resting_bid".to_string(),
+                duration,
+            ));
         }
         Err(e) => {
             let duration = section_start.elapsed();
             warn!("✗ SECTION 2 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure("cancel_resting_bid".to_string(), duration, e));
+            results.push(ScenarioResult::failure(
+                "cancel_resting_bid".to_string(),
+                duration,
+                e,
+            ));
             return Ok(results); // Stop on first failure
         }
     }
@@ -94,12 +105,19 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         Ok(_) => {
             let duration = section_start.elapsed();
             info!("✓ SECTION 3 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("cancel_resting_ask".to_string(), duration));
+            results.push(ScenarioResult::success(
+                "cancel_resting_ask".to_string(),
+                duration,
+            ));
         }
         Err(e) => {
             let duration = section_start.elapsed();
             warn!("✗ SECTION 3 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure("cancel_resting_ask".to_string(), duration, e));
+            results.push(ScenarioResult::failure(
+                "cancel_resting_ask".to_string(),
+                duration,
+                e,
+            ));
             return Ok(results); // Stop on first failure
         }
     }
@@ -119,12 +137,19 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         Ok(_) => {
             let duration = section_start.elapsed();
             info!("✓ SECTION 4 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("cancel_partially_filled".to_string(), duration));
+            results.push(ScenarioResult::success(
+                "cancel_partially_filled".to_string(),
+                duration,
+            ));
         }
         Err(e) => {
             let duration = section_start.elapsed();
             warn!("✗ SECTION 4 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure("cancel_partially_filled".to_string(), duration, e));
+            results.push(ScenarioResult::failure(
+                "cancel_partially_filled".to_string(),
+                duration,
+                e,
+            ));
             return Ok(results); // Stop on first failure
         }
     }
@@ -144,12 +169,19 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         Ok(_) => {
             let duration = section_start.elapsed();
             info!("✓ SECTION 5 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("cancel_nonexistent_order".to_string(), duration));
+            results.push(ScenarioResult::success(
+                "cancel_nonexistent_order".to_string(),
+                duration,
+            ));
         }
         Err(e) => {
             let duration = section_start.elapsed();
             warn!("✗ SECTION 5 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure("cancel_nonexistent_order".to_string(), duration, e));
+            results.push(ScenarioResult::failure(
+                "cancel_nonexistent_order".to_string(),
+                duration,
+                e,
+            ));
             return Ok(results); // Stop on first failure
         }
     }
@@ -169,12 +201,19 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         Ok(_) => {
             let duration = section_start.elapsed();
             info!("✓ SECTION 6 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("cancel_filled_order".to_string(), duration));
+            results.push(ScenarioResult::success(
+                "cancel_filled_order".to_string(),
+                duration,
+            ));
         }
         Err(e) => {
             let duration = section_start.elapsed();
             warn!("✗ SECTION 6 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure("cancel_filled_order".to_string(), duration, e));
+            results.push(ScenarioResult::failure(
+                "cancel_filled_order".to_string(),
+                duration,
+                e,
+            ));
             return Ok(results); // Stop on first failure
         }
     }
@@ -194,12 +233,19 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         Ok(_) => {
             let duration = section_start.elapsed();
             info!("✓ SECTION 7 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("cancel_and_replace".to_string(), duration));
+            results.push(ScenarioResult::success(
+                "cancel_and_replace".to_string(),
+                duration,
+            ));
         }
         Err(e) => {
             let duration = section_start.elapsed();
             warn!("✗ SECTION 7 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure("cancel_and_replace".to_string(), duration, e));
+            results.push(ScenarioResult::failure(
+                "cancel_and_replace".to_string(),
+                duration,
+                e,
+            ));
             return Ok(results); // Stop on first failure
         }
     }
@@ -219,12 +265,19 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         Ok(_) => {
             let duration = section_start.elapsed();
             info!("✓ SECTION 8 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("multiple_cancellations".to_string(), duration));
+            results.push(ScenarioResult::success(
+                "multiple_cancellations".to_string(),
+                duration,
+            ));
         }
         Err(e) => {
             let duration = section_start.elapsed();
             warn!("✗ SECTION 8 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure("multiple_cancellations".to_string(), duration, e));
+            results.push(ScenarioResult::failure(
+                "multiple_cancellations".to_string(),
+                duration,
+                e,
+            ));
             return Ok(results); // Stop on first failure
         }
     }
@@ -260,8 +313,13 @@ async fn cancel_resting_bid_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Get Alice's initial balance
     let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
-    let initial_balance = balance_verifier.get_balance(users::ALICE, assets::USD).await?;
-    info!("  → Initial balance: available={} USD, locked={} USD", initial_balance.available, initial_balance.locked);
+    let initial_balance = balance_verifier
+        .get_balance(users::ALICE, assets::USD)
+        .await?;
+    info!(
+        "  → Initial balance: available={} USD, locked={} USD",
+        initial_balance.available, initial_balance.locked
+    );
 
     // Alice places limit bid order
     let order_cmd = OrderBuilder::place_limit()
@@ -283,7 +341,13 @@ async fn cancel_resting_bid_section(ctx: &mut TestContext) -> TestResult<()> {
     let locked_amount = price * size; // 40,000 * 5 = 200,000
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
-        balance_verifier.assert_locked_eq(users::ALICE, assets::USD, initial_balance.locked + locked_amount).await?;
+        balance_verifier
+            .assert_locked_eq(
+                users::ALICE,
+                assets::USD,
+                initial_balance.locked + locked_amount,
+            )
+            .await?;
         info!("  → Funds locked: {} USD", locked_amount);
     }
 
@@ -291,7 +355,9 @@ async fn cancel_resting_bid_section(ctx: &mut TestContext) -> TestResult<()> {
     {
         let redis_timeout = ctx.config().redis_event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-        orderbook_verifier.wait_and_assert_level(market_id, Side::Bid, price, size, redis_timeout).await?;
+        orderbook_verifier
+            .wait_and_assert_level(market_id, Side::Bid, price, size, redis_timeout)
+            .await?;
         info!("  → Order on orderbook at {} for {} BTC", price, size);
     }
 
@@ -311,7 +377,9 @@ async fn cancel_resting_bid_section(ctx: &mut TestContext) -> TestResult<()> {
     // Verify funds are unlocked
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
-        balance_verifier.assert_locked_eq(users::ALICE, assets::USD, initial_balance.locked).await?;
+        balance_verifier
+            .assert_locked_eq(users::ALICE, assets::USD, initial_balance.locked)
+            .await?;
         info!("  → Funds unlocked: {} USD", locked_amount);
     }
 
@@ -325,7 +393,10 @@ async fn cancel_resting_bid_section(ctx: &mut TestContext) -> TestResult<()> {
         if let Some(bid) = bid_at_price {
             if bid.size != 0 {
                 return Err(TestError::Verification {
-                    message: format!("Expected bid at price {} to be removed, but found size {}", price, bid.size),
+                    message: format!(
+                        "Expected bid at price {} to be removed, but found size {}",
+                        price, bid.size
+                    ),
                 });
             }
         }
@@ -346,8 +417,13 @@ async fn cancel_resting_ask_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Get Bob's initial balance
     let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
-    let initial_balance = balance_verifier.get_balance(users::BOB, assets::BTC).await?;
-    info!("  → Initial balance: available={} BTC, locked={} BTC", initial_balance.available, initial_balance.locked);
+    let initial_balance = balance_verifier
+        .get_balance(users::BOB, assets::BTC)
+        .await?;
+    info!(
+        "  → Initial balance: available={} BTC, locked={} BTC",
+        initial_balance.available, initial_balance.locked
+    );
 
     // Bob places limit ask order
     let order_cmd = OrderBuilder::place_limit()
@@ -368,7 +444,9 @@ async fn cancel_resting_ask_section(ctx: &mut TestContext) -> TestResult<()> {
     // Verify funds are locked (BTC for ask)
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
-        balance_verifier.assert_locked_eq(users::BOB, assets::BTC, initial_balance.locked + size).await?;
+        balance_verifier
+            .assert_locked_eq(users::BOB, assets::BTC, initial_balance.locked + size)
+            .await?;
         info!("  → Funds locked: {} BTC", size);
     }
 
@@ -376,7 +454,9 @@ async fn cancel_resting_ask_section(ctx: &mut TestContext) -> TestResult<()> {
     {
         let redis_timeout = ctx.config().redis_event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-        orderbook_verifier.wait_and_assert_level(market_id, Side::Ask, price, size, redis_timeout).await?;
+        orderbook_verifier
+            .wait_and_assert_level(market_id, Side::Ask, price, size, redis_timeout)
+            .await?;
         info!("  → Order on orderbook at {} for {} BTC", price, size);
     }
 
@@ -396,7 +476,9 @@ async fn cancel_resting_ask_section(ctx: &mut TestContext) -> TestResult<()> {
     // Verify funds are unlocked
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
-        balance_verifier.assert_locked_eq(users::BOB, assets::BTC, initial_balance.locked).await?;
+        balance_verifier
+            .assert_locked_eq(users::BOB, assets::BTC, initial_balance.locked)
+            .await?;
         info!("  → Funds unlocked: {} BTC", size);
     }
 
@@ -409,7 +491,10 @@ async fn cancel_resting_ask_section(ctx: &mut TestContext) -> TestResult<()> {
         if let Some(ask) = ask_at_price {
             if ask.size != 0 {
                 return Err(TestError::Verification {
-                    message: format!("Expected ask at price {} to be removed, but found size {}", price, ask.size),
+                    message: format!(
+                        "Expected ask at price {} to be removed, but found size {}",
+                        price, ask.size
+                    ),
                 });
             }
         }
@@ -422,7 +507,10 @@ async fn cancel_resting_ask_section(ctx: &mut TestContext) -> TestResult<()> {
 /// SECTION 4: Cancel a partially filled order - only remaining size unlocks
 async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Charlie places bid @ {} for 10 BTC", prices::MID);
-    info!("Alice places ask @ {} for 3 BTC → Partial match (3 filled, 7 remain)", prices::MID);
+    info!(
+        "Alice places ask @ {} for 3 BTC → Partial match (3 filled, 7 remain)",
+        prices::MID
+    );
     info!("Charlie cancels remaining 7 BTC → Partial funds unlock");
 
     let market_id = ctx.market_id;
@@ -433,9 +521,13 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
 
     // Get Charlie's initial balance
     let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
-    let charlie_initial_balance = balance_verifier.get_balance(users::CHARLIE, assets::USD).await?;
-    info!("  → Charlie initial: available={} USD, locked={} USD",
-          charlie_initial_balance.available, charlie_initial_balance.locked);
+    let charlie_initial_balance = balance_verifier
+        .get_balance(users::CHARLIE, assets::USD)
+        .await?;
+    info!(
+        "  → Charlie initial: available={} USD, locked={} USD",
+        charlie_initial_balance.available, charlie_initial_balance.locked
+    );
 
     // Charlie places limit bid order
     let charlie_order = OrderBuilder::place_limit()
@@ -457,7 +549,13 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
     let locked_amount = price * charlie_size; // 50,000 * 10 = 500,000
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
-        balance_verifier.assert_locked_eq(users::CHARLIE, assets::USD, charlie_initial_balance.locked + locked_amount).await?;
+        balance_verifier
+            .assert_locked_eq(
+                users::CHARLIE,
+                assets::USD,
+                charlie_initial_balance.locked + locked_amount,
+            )
+            .await?;
         info!("  → Charlie's funds locked: {} USD", locked_amount);
     }
 
@@ -485,7 +583,9 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
             .taker_user_id(users::ALICE)
             .price(price)
             .size(alice_size);
-        trade_verifier.wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2)).await?;
+        trade_verifier
+            .wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2))
+            .await?;
         info!("  → Trade executed: {} BTC @ {}", alice_size, price);
     }
 
@@ -493,16 +593,30 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
     let remaining_locked = price * remaining_size; // 50,000 * 7 = 350,000
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
-        balance_verifier.assert_locked_eq(users::CHARLIE, assets::USD, charlie_initial_balance.locked + remaining_locked).await?;
-        info!("  → Charlie's locked reduced to {} USD (for {} BTC remaining)", remaining_locked, remaining_size);
+        balance_verifier
+            .assert_locked_eq(
+                users::CHARLIE,
+                assets::USD,
+                charlie_initial_balance.locked + remaining_locked,
+            )
+            .await?;
+        info!(
+            "  → Charlie's locked reduced to {} USD (for {} BTC remaining)",
+            remaining_locked, remaining_size
+        );
     }
 
     // Verify remaining size on orderbook
     {
         let redis_timeout = ctx.config().redis_event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-        orderbook_verifier.wait_and_assert_level(market_id, Side::Bid, price, remaining_size, redis_timeout).await?;
-        info!("  → Remaining {} BTC on orderbook at {}", remaining_size, price);
+        orderbook_verifier
+            .wait_and_assert_level(market_id, Side::Bid, price, remaining_size, redis_timeout)
+            .await?;
+        info!(
+            "  → Remaining {} BTC on orderbook at {}",
+            remaining_size, price
+        );
     }
 
     // Cancel Charlie's remaining order
@@ -514,14 +628,19 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
 
     let cancel_response = ctx.execute_command(cancel_cmd)?;
     ResponseVerifier::assert_cancelled(&cancel_response)?;
-    info!("  → Charlie cancelled remaining order: order_id={}", charlie_order_id);
+    info!(
+        "  → Charlie cancelled remaining order: order_id={}",
+        charlie_order_id
+    );
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Verify only remaining funds unlocked
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
-        balance_verifier.assert_locked_eq(users::CHARLIE, assets::USD, charlie_initial_balance.locked).await?;
+        balance_verifier
+            .assert_locked_eq(users::CHARLIE, assets::USD, charlie_initial_balance.locked)
+            .await?;
         info!("  → Remaining {} USD unlocked", remaining_locked);
     }
 
@@ -534,7 +653,10 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
         if let Some(bid) = bid_at_price {
             if bid.size != 0 {
                 return Err(TestError::Verification {
-                    message: format!("Expected bid at price {} to be removed after cancel, but found size {}", price, bid.size),
+                    message: format!(
+                        "Expected bid at price {} to be removed after cancel, but found size {}",
+                        price, bid.size
+                    ),
                 });
             }
         }
@@ -571,7 +693,10 @@ async fn cancel_nonexistent_order_section(ctx: &mut TestContext) -> TestResult<(
 /// SECTION 6: Try to cancel an already filled order
 async fn cancel_filled_order_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Bob places ask @ {} for 2 BTC", prices::MID);
-    info!("Charlie places bid @ {} for 2 BTC → Full match", prices::MID);
+    info!(
+        "Charlie places bid @ {} for 2 BTC → Full match",
+        prices::MID
+    );
     info!("Bob tries to cancel filled order → Should handle gracefully");
 
     let market_id = ctx.market_id;
@@ -618,7 +743,9 @@ async fn cancel_filled_order_section(ctx: &mut TestContext) -> TestResult<()> {
             .taker_user_id(users::CHARLIE)
             .price(price)
             .size(size);
-        trade_verifier.wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2)).await?;
+        trade_verifier
+            .wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2))
+            .await?;
         info!("  → Trade executed: {} BTC @ {}", size, price);
     }
 
@@ -651,7 +778,9 @@ async fn cancel_and_replace_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Get Alice's initial balance
     let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
-    let initial_balance = balance_verifier.get_balance(users::ALICE, assets::USD).await?;
+    let initial_balance = balance_verifier
+        .get_balance(users::ALICE, assets::USD)
+        .await?;
 
     // Alice places first order
     let order1 = OrderBuilder::place_limit()
@@ -665,7 +794,10 @@ async fn cancel_and_replace_section(ctx: &mut TestContext) -> TestResult<()> {
     let response1 = ctx.execute_command(order1)?;
     ResponseVerifier::assert_placed(&response1)?;
     let order_id1 = response1.order_id;
-    info!("  → First order placed: order_id={}, size={} BTC", order_id1, size1);
+    info!(
+        "  → First order placed: order_id={}, size={} BTC",
+        order_id1, size1
+    );
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -673,7 +805,9 @@ async fn cancel_and_replace_section(ctx: &mut TestContext) -> TestResult<()> {
     {
         let redis_timeout = ctx.config().redis_event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-        orderbook_verifier.wait_and_assert_level(market_id, Side::Bid, price, size1, redis_timeout).await?;
+        orderbook_verifier
+            .wait_and_assert_level(market_id, Side::Bid, price, size1, redis_timeout)
+            .await?;
     }
 
     // Cancel first order
@@ -701,7 +835,10 @@ async fn cancel_and_replace_section(ctx: &mut TestContext) -> TestResult<()> {
     let response2 = ctx.execute_command(order2)?;
     ResponseVerifier::assert_placed(&response2)?;
     let order_id2 = response2.order_id;
-    info!("  → Second order placed: order_id={}, size={} BTC", order_id2, size2);
+    info!(
+        "  → Second order placed: order_id={}, size={} BTC",
+        order_id2, size2
+    );
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -709,7 +846,9 @@ async fn cancel_and_replace_section(ctx: &mut TestContext) -> TestResult<()> {
     {
         let redis_timeout = ctx.config().redis_event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-        orderbook_verifier.wait_and_assert_level(market_id, Side::Bid, price, size2, redis_timeout).await?;
+        orderbook_verifier
+            .wait_and_assert_level(market_id, Side::Bid, price, size2, redis_timeout)
+            .await?;
         info!("  → New order on orderbook at {} for {} BTC", price, size2);
     }
 
@@ -717,8 +856,17 @@ async fn cancel_and_replace_section(ctx: &mut TestContext) -> TestResult<()> {
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
         let locked_amount = price * size2;
-        balance_verifier.assert_locked_eq(users::ALICE, assets::USD, initial_balance.locked + locked_amount).await?;
-        info!("  → Correct funds locked: {} USD for {} BTC", locked_amount, size2);
+        balance_verifier
+            .assert_locked_eq(
+                users::ALICE,
+                assets::USD,
+                initial_balance.locked + locked_amount,
+            )
+            .await?;
+        info!(
+            "  → Correct funds locked: {} USD for {} BTC",
+            locked_amount, size2
+        );
     }
 
     Ok(())
@@ -730,14 +878,16 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
     info!("Bob cancels all 3 orders sequentially");
 
     let market_id = ctx.market_id;
-    let price1 = prices::MID;        // 50,000
+    let price1 = prices::MID; // 50,000
     let price2 = prices::MID + 5000; // 55,000
-    let price3 = prices::HIGH;       // 60,000
+    let price3 = prices::HIGH; // 60,000
     let size = 3;
 
     // Get Bob's initial balance
     let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
-    let initial_balance = balance_verifier.get_balance(users::BOB, assets::BTC).await?;
+    let initial_balance = balance_verifier
+        .get_balance(users::BOB, assets::BTC)
+        .await?;
 
     // Place 3 orders
     let order1 = OrderBuilder::place_limit()
@@ -786,16 +936,28 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
     let total_locked = size * 3; // 3 BTC per order * 3 orders = 9 BTC
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
-        balance_verifier.assert_locked_eq(users::BOB, assets::BTC, initial_balance.locked + total_locked).await?;
+        balance_verifier
+            .assert_locked_eq(
+                users::BOB,
+                assets::BTC,
+                initial_balance.locked + total_locked,
+            )
+            .await?;
         info!("  → All orders locked {} BTC total", total_locked);
     }
 
     // Verify all orders on orderbook
     {
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-        orderbook_verifier.assert_level(market_id, Side::Ask, price1, size).await?;
-        orderbook_verifier.assert_level(market_id, Side::Ask, price2, size).await?;
-        orderbook_verifier.assert_level(market_id, Side::Ask, price3, size).await?;
+        orderbook_verifier
+            .assert_level(market_id, Side::Ask, price1, size)
+            .await?;
+        orderbook_verifier
+            .assert_level(market_id, Side::Ask, price2, size)
+            .await?;
+        orderbook_verifier
+            .assert_level(market_id, Side::Ask, price3, size)
+            .await?;
         info!("  → All 3 orders on orderbook");
     }
 
@@ -835,7 +997,9 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
     // Verify all funds unlocked
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
-        balance_verifier.assert_locked_eq(users::BOB, assets::BTC, initial_balance.locked).await?;
+        balance_verifier
+            .assert_locked_eq(users::BOB, assets::BTC, initial_balance.locked)
+            .await?;
         info!("  → All {} BTC unlocked", total_locked);
     }
 
@@ -849,7 +1013,12 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
             if let Some(ask) = ask_at_price {
                 if ask.size != 0 {
                     return Err(TestError::Verification {
-                        message: format!("Expected ask {} at price {} to be removed, but found size {}", i+1, price, ask.size),
+                        message: format!(
+                            "Expected ask {} at price {} to be removed, but found size {}",
+                            i + 1,
+                            price,
+                            ask.size
+                        ),
                     });
                 }
             }

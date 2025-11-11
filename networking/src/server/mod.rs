@@ -443,7 +443,8 @@ impl VexCoreServer {
 
             let mut position = record.start_position;
             while let fragaments_read = subscription.poll(Some(&message_handler), 1)?
-                && position < record.stop_position && !shutdown.load(Ordering::Acquire)
+                && position < record.stop_position
+                && !shutdown.load(Ordering::Acquire)
             {
                 if fragaments_read == 0 {
                     AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);

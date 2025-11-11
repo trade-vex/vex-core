@@ -1,4 +1,5 @@
 use crate::{L2MarketData, OrderCommandType, Side, TimeInForce, UserBalance};
+use borsh::{BorshDeserialize, BorshSerialize};
 use sbe_order::message_header_codec::{self, MessageHeaderDecoder};
 use sbe_order::order_command_message_codec::{
     OrderCommandMessageDecoder, OrderCommandMessageEncoder,
@@ -7,6 +8,7 @@ use sbe_order::status::Status as SbeStatus;
 use sbe_order::{ReadBuf, SbeResult, WriteBuf};
 use serde::de::Error;
 use serde::de::value::Error as SerdeError;
+use serde::{Deserialize, Serialize};
 
 // Size of the serialized OrderCommand in bytes
 // Header: 8 bytes
@@ -269,7 +271,9 @@ impl OrderCommand {
 }
 
 /// Status Of The Order Command.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
+)]
 #[repr(u8)]
 pub enum Status {
     /// Rejected { due to Insufficient funds etc}

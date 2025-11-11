@@ -80,10 +80,10 @@ pub struct RedisOrder {
     pub user_id: u64,
     pub price: u64,
     pub size: u64,
-    pub side: String,          // "Bid" or "Ask"
+    pub side: String, // "Bid" or "Ask"
     pub timestamp: u64,
     pub market_id: u32,
-    pub status: String,        // "placed", "cancelled", etc.
+    pub status: String, // "placed", "cancelled", etc.
 }
 
 /// Redis trade event representation (from Redis STREAM or ZSET)

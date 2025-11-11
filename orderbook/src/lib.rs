@@ -330,6 +330,8 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             price: cmd.price,
             size: remaining_size,
             side: cmd.side,
+            time_in_force: cmd.time_in_force,
+            status: cmd.status,
             timestamp: cmd.timestamp,
         };
         let level = match cmd.side {

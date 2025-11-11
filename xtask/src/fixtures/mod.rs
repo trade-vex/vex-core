@@ -13,15 +13,15 @@ pub mod users {
 
 /// Common asset IDs
 pub mod assets {
-    pub const USD: u16 = 1;  // Quote asset
-    pub const BTC: u16 = 2;  // Base asset
+    pub const USD: u16 = 1; // Quote asset
+    pub const BTC: u16 = 2; // Base asset
     pub const ETH: u16 = 3;
 }
 
 /// Common market configurations
 pub mod markets {
-    pub const BTC_USD: u32 = 0x00010002;  // ((1 << 16) | 2)
-    pub const ETH_USD: u32 = 0x00010003;  // ((1 << 16) | 3)
+    pub const BTC_USD: u32 = 0x00010002; // ((1 << 16) | 2)
+    pub const ETH_USD: u32 = 0x00010003; // ((1 << 16) | 3)
 }
 
 /// Common amounts for testing

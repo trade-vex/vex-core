@@ -197,9 +197,7 @@ pub mod encoder {
             let offset = self.offset + 55;
             self.get_buf_mut().put_u8_at(offset, value as u8)
         }
-
     }
-
 } // end encoder
 
 pub mod decoder {
@@ -343,8 +341,5 @@ pub mod decoder {
         pub fn status(&self) -> status::Status {
             self.get_buf().get_u8_at(self.offset + 55).into()
         }
-
     }
-
 } // end decoder
-

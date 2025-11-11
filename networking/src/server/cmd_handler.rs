@@ -76,7 +76,7 @@ impl AeronFragmentHandlerCallback for ReplayFragmentHandler {
                 target: "replay_fragment",
                 gateway_id = self.gateway_id,
                 session_id = values.frame.session_id,
-                stream_id = values.frame.stream_id, 
+                stream_id = values.frame.stream_id,
                 term_id = values.frame.term_id,
                 term_offset = values.frame.term_offset,
                 frame_size = values.position_bits_to_shift(),
