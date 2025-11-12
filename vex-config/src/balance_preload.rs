@@ -54,7 +54,21 @@ where
     let new_users = HashMap::<String, Vec<UserBalance>>::deserialize(deserializer)?;
     let mut users = HashMap::new();
     for (key, value) in new_users {
-        let key = key.parse::<u64>().map_err(serde::de::Error::custom)?;
+        // Try parsing as i64 first to handle negative numbers (which represent
+        // large u64 values when interpreted as two's complement)
+        // If that fails, try parsing as u64 directly
+        let key = if let Ok(i64_val) = key.parse::<i64>() {
+            // Convert i64 to u64 using bit casting (two's complement representation)
+            i64_val as u64
+        } else {
+            // If not a valid i64, try parsing as u64 directly
+            key.parse::<u64>().map_err(|e| {
+                serde::de::Error::custom(format!(
+                    "Failed to parse user_id '{}' as i64 or u64: {}",
+                    key, e
+                ))
+            })?
+        };
         users.insert(key, value);
     }
     Ok(users)
