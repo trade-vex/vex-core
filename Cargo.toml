@@ -1,14 +1,19 @@
+[package]
+name = "vex-core"
+version = "0.1.0"
+edition = "2021"
+
 [workspace]
 resolver = "2"
 members = [
-    "common", 
+    "common",
     "vex-config",
     "networking",
     "processors",
     "order",
     "xtask",
     "orderbook" ,
-    "server", 
+    "server",
 ]
 
 [dependencies]
@@ -22,12 +27,14 @@ tikv-jemallocator = { workspace = true }
 [workspace.dependencies]
 common = { path = "./common"}
 vex-config = { path = "./vex-config" }
+vex-server = { path = "./server" }
 sbe_order = { path = "./order" }
 vex-networking = { path = "./networking" }
 vex-orderbook = { path = "./orderbook" }
 processors = { path = "./processors" }
 borsh = { version = "1.5.7", default-features = false, features = ["hashbrown", "derive", "de_strict_order"] }
-hashbrown = { version = "0.16.0", features = ["serde"]}
+tokio = { version = "1", features = ["full"] }
+hashbrown = { version = "0.15.4", features = ["serde"]}
 thiserror = "2.0.12"
 rusteron-client = "0.1.143"
 rusteron-media-driver = "0.1.143"
@@ -39,7 +46,7 @@ tracing = "0.1"
 tracing-subscriber = "0.1"
 ctrlc = "3.4"
 parking_lot = "0.12"
-tikv-jemallocator = "0.6.1"
+tikv-jemallocator = "0.5"
 
 [profile.release]
 # Link Time Optimization - enables cross-crate inlining and optimization

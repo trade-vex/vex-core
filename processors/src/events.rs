@@ -158,7 +158,7 @@ impl KafkaEventsHandler {
     fn publish_order_event(&self, cmd: &OrderCommand) {
         let order = Order {
             order_id: cmd.order_id(),
-            user_id: cmd.taker_id(),
+            user_id: cmd.user_id(),
             price: cmd.price(),
             size: cmd.size(),
             side: cmd.side(),
@@ -220,7 +220,7 @@ impl KafkaEventsHandler {
         let cancel_event = CancelOrderEvent {
             order_id: cmd.order_id(),
             market_id: cmd.market_id(),
-            user_id: cmd.taker_id(),
+            user_id: cmd.user_id(),
             timestamp: cmd.timestamp(),
         };
 

@@ -1,7 +1,7 @@
 use common::{OrderCommand, decode_order_command};
 use rusteron_archive::{AeronFragmentHandlerCallback, AeronHeader};
 use std::sync::mpsc::Sender;
-use tracing::{error, info};
+use tracing::{debug, error};
 
 pub struct OrderCommandHandler {
     gateway_id: u8,
@@ -27,8 +27,9 @@ impl AeronFragmentHandlerCallback for OrderCommandHandler {
             }
             Err(e) => {
                 error!(
-                    "Gateway {}: Failed to decode OrderCommand: {:?}",
-                    self.gateway_id, e
+                    gateway_id = %self.gateway_id,
+                    error = ?e,
+                    "Failed to decode OrderCommand"
                 );
             }
         }

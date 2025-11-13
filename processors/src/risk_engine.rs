@@ -1,4 +1,5 @@
 use crate::error::{Result, RiskEngineError};
+use common::BalanceError;
 use common::BalanceStore;
 use common::CoreMarketSpecification;
 use common::MatcherTradeEvent;
@@ -16,7 +17,7 @@ use tracing::{debug, error, info, warn};
 
 /// Manages all user profiles and performs risk checks as well as settlements
 pub struct RiskEngine {
-    pub user_balances: HashMap<u64, BalanceStore>,
+    balances: Arc<Mutex<BalanceStore>>,
     pub symbol_specs: HashMap<u32, CoreMarketSpecification>,
     shard_id: u32,
     shard_mask: u64,
@@ -32,7 +33,7 @@ impl RiskEngine {
             panic!("Number of shards must be a power of 2");
         }
         Self {
-            user_balances: HashMap::new(),
+            balances: Arc::new(Mutex::new(BalanceStore::new())),
             symbol_specs,
             shard_id,
             shard_mask: (num_shards - 1) as u64,

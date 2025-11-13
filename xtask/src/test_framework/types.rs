@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
+use hashbrown::HashMap;
 
 /// Test framework error types
 #[derive(Debug, Error)]
@@ -120,7 +121,7 @@ pub struct OrderbookLevel {
 pub struct UserState {
     pub user_id: u64,
     /// Tracks expected balances for verification
-    pub expected_balances: hashbrown::HashMap<u16, Balance>,
+    pub expected_balances: HashMap<u16, Balance>,
     /// Tracks active orders
     pub active_orders: Vec<u64>,
 }
@@ -129,7 +130,7 @@ impl UserState {
     pub fn new(user_id: u64) -> Self {
         Self {
             user_id,
-            expected_balances: hashbrown::HashMap::new(),
+            expected_balances: HashMap::new(),
             active_orders: Vec::new(),
         }
     }

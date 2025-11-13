@@ -185,12 +185,12 @@ impl OrderCommand {
         self.status
     }
 
-    pub fn order_id(&self) -> u64 {
-        self.order_id
+    pub fn user_id(&self) -> u64 {
+        self.user_id
     }
 
-    pub fn taker_id(&self) -> u64 {
-        self.taker_id
+    pub fn order_id(&self) -> u64 {
+        self.order_id
     }
 
     pub fn market_id(&self) -> u32 {

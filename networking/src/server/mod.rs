@@ -335,9 +335,9 @@ impl VexCoreServer {
     ) -> Result<(i64, String), ServerError> {
         match recording {
             Some(ExtendedRecordingDescriptor {
-                recording_id,
-                channel,
-            }) => Ok((
+                     recording_id,
+                     channel,
+                 }) => Ok((
                 archive.extend_recording(
                     recording_id,
                     &channel.clone().into_c_string(),

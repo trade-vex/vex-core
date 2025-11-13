@@ -22,7 +22,9 @@ path = "src/bin/run_test_suite.rs"
 [dependencies]
 duct = "0.13"
 hdrhistogram = "7.5"
-tracing-subscriber = "0.3.19"
+vex-server = { workspace = true }
+hashbrown = { workspace = true }
+tracing-subscriber = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
 thiserror = { workspace = true }
 common = { workspace = true }

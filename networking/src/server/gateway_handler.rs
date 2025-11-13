@@ -2,14 +2,14 @@ use rusteron_archive::{
     AeronAvailableImageCallback, AeronFragmentHandlerCallback, AeronHeader, AeronImage,
     AeronPublication, AeronSubscription, AeronUnavailableImageCallback,
 };
-use std::rc::Rc;
+use std::sync::Arc;
 use tracing::{debug, error};
 
 use super::gateway_manager::GatewayManager;
 
 /// Handles initial handshake messages from gateways
 pub struct HandshakeMessageHandler {
-    gateways: Rc<GatewayManager>,
+    gateways: Arc<GatewayManager>,
     publication: AeronPublication,
 }
 
@@ -19,7 +19,7 @@ impl HandshakeMessageHandler {
     /// # Arguments
     /// * `gateways` - Shared gateway manager instance
     /// * `publication` - Aeron publication for sending responses
-    pub fn new(gateways: Rc<GatewayManager>, publication: AeronPublication) -> Self {
+    pub fn new(gateways: Arc<GatewayManager>, publication: AeronPublication) -> Self {
         Self {
             gateways,
             publication,

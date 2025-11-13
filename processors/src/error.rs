@@ -1,3 +1,4 @@
+use common::BalanceError;
 use thiserror::Error;
 
 /// Result type alias for processor operations
@@ -29,4 +30,8 @@ pub enum RiskEngineError {
     /// Order command not supported by this risk engine
     #[error("unsupported command: {command:?}")]
     UnsupportedCommand { command: String },
+
+    /// Balance related errors
+    #[error("balance error: {0}")]
+    BalanceError(#[from] BalanceError),
 }

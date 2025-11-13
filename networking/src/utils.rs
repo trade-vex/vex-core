@@ -19,7 +19,8 @@ pub fn new_publication(
     stream_id: i32,
 ) -> Result<AeronPublication, AeronCError> {
     let endpoint = format!("{address}:{port}");
-    let uri = CString::new(format!("aeron:udp?endpoint={endpoint}")).unwrap();
+    let uri =
+        CString::new(format!("aeron:udp?endpoint={endpoint}")).expect("Creation of CString failed");
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -34,7 +35,7 @@ pub fn new_publication_with_mdc_and_session(
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic|session-id={session_id}"
     ))
-    .unwrap();
+        .expect("Creation of CString failed");
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -48,7 +49,7 @@ pub fn new_publication_with_mdc(
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic"
     ))
-    .unwrap();
+        .expect("Creation of CString failed");
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -63,7 +64,7 @@ pub fn new_publication_with_session(
     let uri = CString::new(format!(
         "aeron:udp?endpoint={endpoint}|session-id={session_id}"
     ))
-    .unwrap();
+        .expect("Creation of CString failed");
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -77,7 +78,7 @@ pub fn new_subscription_with_mdc(
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic"
     ))
-    .unwrap();
+        .expect("Creation of CString failed");
     let available_logger = AeronAvailableImageLogger {};
     let available_handler = Handler::leak(available_logger);
     let unavailable_logger = AeronUnavailableImageLogger {};
@@ -102,7 +103,7 @@ pub fn new_subscription_with_mdc_and_session(
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic|session-id={session_id}"
     ))
-    .unwrap();
+        .expect("Creation of CString failed");
     let available_logger = AeronAvailableImageLogger {};
     let available_handler = Handler::leak(available_logger);
     let unavailable_logger = AeronUnavailableImageLogger {};
@@ -125,19 +126,19 @@ pub fn new_subsciption_with_handlers_and_session<
     port: u16,
     stream_id: i32,
     session_id: i32,
-    on_image_available: X,
-    on_image_unavailable: Y,
+    on_image_available: Option<&Handler<X>>,
+    on_image_unavailable: Option<&Handler<Y>>,
 ) -> Result<AeronSubscription, AeronCError> {
     let endpoint = format!("{address}:{port}");
     let uri = CString::new(format!(
         "aeron:udp?endpoint={endpoint}|session-id={session_id}"
     ))
-    .unwrap();
+        .expect("Creation of CString failed");
     aeron.add_subscription(
         &uri,
         stream_id,
-        Some(&Handler::leak(on_image_available)),
-        Some(&Handler::leak(on_image_unavailable)),
+        on_image_available,
+        on_image_unavailable,
         Duration::from_secs(1),
     )
 }
@@ -150,16 +151,17 @@ pub fn new_subscription_with_handlers<
     address: &str,
     port: u16,
     stream_id: i32,
-    on_image_available: X,
-    on_image_unavailable: Y,
+    on_image_available: Option<&Handler<X>>,
+    on_image_unavailable: Option<&Handler<Y>>,
 ) -> Result<AeronSubscription, AeronCError> {
     let endpoint = format!("{address}:{port}");
-    let uri = CString::new(format!("aeron:udp?endpoint={endpoint}")).unwrap();
+    let uri =
+        CString::new(format!("aeron:udp?endpoint={endpoint}")).expect("Creation of CString failed");
     aeron.add_subscription(
         &uri,
         stream_id,
-        Some(&Handler::leak(on_image_available)),
-        Some(&Handler::leak(on_image_unavailable)),
+        on_image_available,
+        on_image_unavailable,
         Duration::from_secs(1),
     )
 }
@@ -181,13 +183,13 @@ pub fn send_message_with_retries(
         if result >= 0 {
             return Ok(());
         }
-        if result < 0 {
-            error!(
-                "Failed to send message: {}",
-                AeronCError::from_code(result as i32)
-            );
-        }
-        if i == MESSAGE_RETRY_COUNT {
+        error!(
+            "Failed to send message (attempt {} of {}): {}",
+            i + 1,
+            MESSAGE_RETRY_COUNT,
+            AeronCError::from_code(result as i32)
+        );
+        if i == MESSAGE_RETRY_COUNT - 1 {
             return Err(AeronCError::from_code(result as i32));
         }
         thread::sleep(Duration::from_millis(100));
@@ -223,16 +225,19 @@ impl PortAllocator {
             ));
         }
 
-        let port_hi = port_base.checked_add(max_ports as u16 - 1).ok_or_else(|| {
-            ServerError::ResourceAllocationError("Port range exceeds u16::MAX".to_string())
-        })?;
-
+        if max_ports == 0 {
+            return Err(ServerError::ResourceAllocationError(
+                "Max ports must be greater than 0".to_string(),
+            ));
+        }
+        let hi_u32 = port_base as u32 + (max_ports as u32) - 1;
+        if hi_u32 > u16::MAX as u32 {
+            return Err(ServerError::ResourceAllocationError(
+                "Port range exceeds u16::MAX".to_string(),
+            ));
+        }
+        let port_hi = hi_u32 as u16;
         let port_range = port_base..=port_hi;
-        let mut ports_free: Vec<u16> = port_range.clone().collect();
-
-        // Shuffle the ports for random allocation
-        let mut rng = rand::thread_rng();
-        ports_free.shuffle(&mut rng);
 
         Ok(Self {
             port_range,
@@ -324,7 +329,7 @@ impl SessionAllocator {
     /// # Errors
     /// Returns `ResourceAllocationError` if max < min
     pub fn new(min: i32, max: i32) -> Result<Self, ServerError> {
-        if max < min {
+        if max <= min {
             return Err(ServerError::ResourceAllocationError(format!(
                 "Maximum value {max} must be >= minimum value {min}"
             )));
