@@ -440,6 +440,8 @@ impl EventsHandler for KafkaEventsHandler {
                 }
                 // Publish balance event for the taker
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
+                // Publish taker order event
+                self.publish_order_event(cmd);
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
             Status::Processing => {
