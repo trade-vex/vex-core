@@ -95,6 +95,8 @@ pub struct OrderCommand {
 
     /// L2 Market Data Snapshot after the order is processed, it is not recorded when the status is Rejected
     pub l2_data: Option<L2MarketData>,
+    /// Internal-only routing field: gateway that sent THIS command (not serialized)
+    pub route_gateway_id: u8,
 }
 
 impl Default for OrderCommand {
@@ -114,6 +116,7 @@ impl Default for OrderCommand {
             events: None,
             balance: [UserBalance::default(); 2],
             l2_data: None,
+            route_gateway_id: 0,
         }
     }
 }
@@ -142,6 +145,7 @@ impl OrderCommand {
             events: None,
             balance: [UserBalance::default(); 2],
             l2_data: None,
+            route_gateway_id: 0,
         }
     }
 
@@ -161,6 +165,7 @@ impl OrderCommand {
             client_order_id: 0,
             events: None,
             l2_data: None,
+            route_gateway_id: 0,
         }
     }
 
@@ -180,6 +185,7 @@ impl OrderCommand {
             client_order_id: 0,
             events: None,
             l2_data: None,
+            route_gateway_id: 0,
         }
     }
 
@@ -199,6 +205,7 @@ impl OrderCommand {
             client_order_id: 0,
             events: None,
             l2_data: None,
+            route_gateway_id: 0,
         }
     }
 
@@ -386,5 +393,6 @@ pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
         events: None,
         balance: [UserBalance::default(); 2],
         l2_data: None,
+        route_gateway_id: 0,
     })
 }
