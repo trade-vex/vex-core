@@ -29,7 +29,8 @@ impl JournalingProcessor {
         }
 
         if cmd.command != OrderCommandType::CancelOrder {
-            cmd.order_id = self.snowflake.generate(cmd.order_id).unwrap();
+            // Generate order_id embedding the sender gateway id captured at ingress
+            cmd.order_id = self.snowflake.generate(cmd.route_gateway_id as u64).unwrap();
         }
         cmd.timestamp = self.snowflake.timestamp();
         self.publications.publish_to_archive(cmd);
