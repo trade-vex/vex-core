@@ -204,6 +204,7 @@ impl KafkaEventsHandler {
             size: event.size,
             maker_order_id: event.matched_order_id,
             taker_order_id,
+            taker_side: cmd.side(),
             timestamp: cmd.timestamp(),
         };
 
