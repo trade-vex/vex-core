@@ -34,9 +34,19 @@ impl CoreMarketSpecification {
     // Normalizes Price*Size into Atomic Quote Units
     #[inline]
     pub fn calculate_quote_cost(&self, price: u64, size: u64) -> u64 {
-        // Formula: (P * V * S_quote) / (S_base * K_quote)
-        let numerator = (price as u128) * (size as u128) * (self.quote_native_scale as u128);
-        let denominator = (self.base_native_scale as u128) * (self.quote_scale_k as u128);
+        // Formula: (P * K_quote * V * S_quote) / (S_base * (S_base / S_quote))
+        // Price is in price steps where each step = quote_scale_k in quote currency units
+        // Size is in base native units (e.g., satoshi for BTC)
+        // We convert to quote native units by accounting for the scale difference:
+        // - Multiply price by quote_scale_k to get quote currency per step
+        // - Multiply by size to get total quote currency
+        // - Multiply by quote_native_scale to convert to native quote units
+        // - Divide by base_native_scale to normalize from base native units
+        // - Divide by scale_ratio (base_native_scale / quote_native_scale) to account for scale difference
+        let price_in_quote_units = (price as u128) * (self.quote_scale_k as u128);
+        let scale_ratio = (self.base_native_scale as u128) / (self.quote_native_scale as u128).max(1);
+        let numerator = price_in_quote_units * (size as u128) * (self.quote_native_scale as u128);
+        let denominator = (self.base_native_scale as u128) * scale_ratio;
         
         if denominator == 0 { return 0; }
         (numerator / denominator) as u64
