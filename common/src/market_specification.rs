@@ -34,9 +34,8 @@ impl CoreMarketSpecification {
     // Normalizes Price*Size into Atomic Quote Units
     #[inline]
     pub fn calculate_quote_cost(&self, price: u64, size: u64) -> u64 {
-        // Formula: (P * V * S_quote) / (S_base * K_quote)
-        let numerator = (price as u128) * (size as u128) * (self.quote_native_scale as u128);
-        let denominator = (self.base_native_scale as u128) * (self.quote_scale_k as u128);
+        let numerator = (price as u128) * (size as u128) * (self.quote_native_scale as u128) * (self.base_scale_k as u128);
+        let denominator = (self.quote_scale_k as u128) * (self.base_native_scale as u128);
         
         if denominator == 0 { return 0; }
         (numerator / denominator) as u64
