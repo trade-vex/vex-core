@@ -261,10 +261,6 @@ impl OrderCommand {
         self.user_id = user_id;
     }
 
-    pub fn set_side(&mut self, side: Side) {
-        self.side = side;
-    }
-
     pub fn attatch_event(&mut self, event: Box<MatcherTradeEvent>) {
         if let Some(mut tail) = self.events.as_mut() {
             while tail.next_event.is_some() {
