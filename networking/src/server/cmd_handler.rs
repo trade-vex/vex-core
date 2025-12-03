@@ -1,4 +1,4 @@
-use common::{OrderCommand, OrderCommandType, Status, decode_order_command};
+use common::{OrderCommand, Status, decode_order_command};
 use disruptor::{MultiProducer, Producer, SingleConsumerBarrier};
 use rusteron_archive::{AeronFragmentHandlerCallback, AeronHeader};
 use tracing::{debug, error, info};
@@ -13,14 +13,7 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
         match decode_order_command(buffer) {
             Ok(mut order_command) => {
                 order_command.status = Status::Processing;
-                // order_id is updated in journaling processor
-                // the snowflake algorithm requires gateway_id to be part of order_id
-                // instead of adding a new field, we repurpose order_id here
-                if order_command.command != OrderCommandType::CancelOrder {
-                    order_command.order_id = self.gateway_id as u64;
-                } else {
-                    order_command.user_id = self.gateway_id as u64;
-                }
+                order_command.route_gateway_id = self.gateway_id;
                 info!(
                     target: "order_cammand",
                     gateway_id = self.gateway_id,
