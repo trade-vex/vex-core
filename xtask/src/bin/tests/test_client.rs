@@ -98,6 +98,7 @@ fn run_correctness_test(
             events: None,
             balance: [UserBalance::default(); 2],
             l2_data: None,
+            route_gateway_id: 0
         };
         client.send_order_command(&order_command)?;
     }

@@ -294,6 +294,7 @@ mod tests {
             events: None,
             balance: [common::UserBalance::default(); 2],
             l2_data: None,
+            route_gateway_id: 0,
         }
     }
 

@@ -54,8 +54,8 @@ impl CoreNetworkingConfig {
         Self {
             context_dir: "/dev/shm/aeron-test-server".to_string(),
             local_address: "127.0.0.1".to_string(),
-            initial_port: 3521,
-            initial_control_port: 3522,
+            initial_port: 40001,
+            initial_control_port: 40002,
             base_gateway_port: 50000,
             max_gateways: 15,
             reserved_session_id_low: 1000,
@@ -76,8 +76,8 @@ impl CoreNetworkingConfig {
         Self {
             context_dir: "/dev/shm/aeron-test-server".to_string(),
             local_address: "127.0.0.1".to_string(),
-            initial_port: 3521,
-            initial_control_port: 3522,
+            initial_port: 40001,
+            initial_control_port: 40002,
             base_gateway_port: 50000,
             max_gateways: 15,
             reserved_session_id_low: 1000,

@@ -142,6 +142,7 @@ impl WithdrawBuilder {
             events: None,
             balance: [common::UserBalance::default(); 2],
             l2_data: None,
+            route_gateway_id: 0,
         }
     }
 }
@@ -373,6 +374,7 @@ impl MarketOrderBuilder<Complete> {
             events: None,
             balance: [common::UserBalance::default(); 2],
             l2_data: None,
+            route_gateway_id: 0,
         }
     }
 }
@@ -495,6 +497,7 @@ impl IocOrderBuilder<Complete> {
             events: None,
             balance: [common::UserBalance::default(); 2],
             l2_data: None,
+            route_gateway_id: 0,
         }
     }
 }
@@ -617,6 +620,7 @@ impl FokOrderBuilder<Complete> {
             events: None,
             balance: [common::UserBalance::default(); 2],
             l2_data: None,
+            route_gateway_id: 0,
         }
     }
 }

@@ -157,12 +157,12 @@ impl KafkaEventsHandler {
         );
     }
 
-    fn publish_order_event(&self, cmd: &OrderCommand) {
+    fn publish_order_event(&self, cmd: &OrderCommand, original_size: Option<u64>) {
         let order = Order {
             order_id: cmd.order_id(),
             user_id: cmd.user_id(),
             price: cmd.price(),
-            size: cmd.size(),
+            size: original_size.unwrap_or_else(|| cmd.size()),
             side: cmd.side(),
             time_in_force: cmd.time_in_force,
             status: cmd.status(),
@@ -204,6 +204,7 @@ impl KafkaEventsHandler {
             size: event.size,
             maker_order_id: event.matched_order_id,
             taker_order_id,
+            taker_side: cmd.side(),
             timestamp: cmd.timestamp(),
         };
 
@@ -407,7 +408,7 @@ impl EventsHandler for KafkaEventsHandler {
                     handler = "kafka"
                 );
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
-                self.publish_order_event(cmd);
+                self.publish_order_event(cmd, None);
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
             Status::Cancelled => {
@@ -438,8 +439,14 @@ impl EventsHandler for KafkaEventsHandler {
 
                     curr_event = event.next_event.as_deref();
                 }
+                // Calculate original size: filled_size + remaining_size
+                let original_size = cmd.events()
+                    .map(|e| e.calc_filled_size())
+                    .unwrap_or(0) + cmd.size();
                 // Publish balance event for the taker
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
+                // Publish taker order event with original size
+                self.publish_order_event(cmd, Some(original_size));
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
             Status::Processing => {

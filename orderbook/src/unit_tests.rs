@@ -231,6 +231,7 @@ mod test {
             events: None,
             balance: [UserBalance::default(); 2],
             l2_data: None,
+            route_gateway_id: 0,
         }
     }
 
@@ -1830,6 +1831,7 @@ mod test {
             events: None,
             balance: [UserBalance::default(); 2],
             l2_data: None,
+            route_gateway_id: 0,
         };
         book.cancel_order(&mut cancel_cmd, price_cache.clone());
         assert_eq!(cancel_cmd.status(), Status::Cancelled);
@@ -1996,6 +1998,7 @@ mod test {
                 events: None,
                 balance: [UserBalance::default(); 2],
                 l2_data: None,
+                route_gateway_id: 0,
             }
         }
 
@@ -2015,6 +2018,7 @@ mod test {
                 events: None,
                 balance: [UserBalance::default(); 2],
                 l2_data: None,
+                route_gateway_id: 0,
             }
         }
 
@@ -2712,6 +2716,7 @@ mod test {
                 events: None,
                 balance: [UserBalance::default(); 2],
                 l2_data: None,
+                route_gateway_id: 0,
             }
         }
 
@@ -2740,6 +2745,7 @@ mod test {
                 events: None,
                 balance: [UserBalance::default(); 2],
                 l2_data: None,
+                route_gateway_id: 0,
             }
         }
     }
