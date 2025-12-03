@@ -34,6 +34,11 @@ enum Commands {
         #[arg(short, long, default_value_t = 1)]
         clients: u32,
     },
+    /// Run integration test suite in Docker.
+    TestSuite {
+        #[arg(short, long, default_value = "all")]
+        suite: String,
+    },
 }
 
 #[derive(Error, Debug)]
@@ -70,6 +75,7 @@ fn main() -> Result<(), XTaskError> {
             run_correctness_task(project_root.into_boxed_path(), &scenario, clients)
         }
         Commands::Benchmark { clients } => run_benchmark(project_root.into_boxed_path(), clients),
+        Commands::TestSuite { suite } => run_test_suite(&project_root, &suite),
     }
 }
 
@@ -356,7 +362,7 @@ fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
                 "vex-client",
                 "sh",
                 "-c",
-                &format!("/usr/local/bin/test_client --client-id {} latency --samples {} | tee /proc/1/fd/1", 
+                &format!("/usr/local/bin/test_client --client-id {} latency --samples {} | tee /proc/1/fd/1",
                         i - 1, msg_count_per_client)
             )
             .dir(project_root.join("xtask/tests"))
@@ -442,4 +448,41 @@ fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
         println!("\n Benchmark completed successfully!");
     }
     Ok(())
+}
+
+fn run_test_suite(root: &Path, suite: &str) -> Result<(), XTaskError> {
+    println!("Running integration test suite: {suite}");
+
+    let output = cmd!(
+        "docker",
+        "compose",
+        "run",
+        "--rm",
+        "vex-core",
+        "cargo",
+        "run",
+        "--bin",
+        "run_test_suite",
+        suite
+    )
+    .dir(root.join("xtask/tests"))
+    .stdout_capture()
+    .stderr_capture()
+    .unchecked()
+    .run()?;
+
+    // Print output
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+
+    // Check exit status
+    if output.status.success() {
+        println!("Test suite '{suite}' PASSED!");
+        Ok(())
+    } else {
+        Err(XTaskError::Testing(TestingError::TestFailed(format!(
+            "Test suite '{suite}' failed with exit code: {:?}",
+            output.status.code()
+        ))))
+    }
 }
