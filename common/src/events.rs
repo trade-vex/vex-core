@@ -1,4 +1,4 @@
-use super::{Order, Status, TimeInForce};
+use super::{Order, Side, Status, TimeInForce};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -28,6 +28,7 @@ pub struct TradeEvent {
     pub size: u64,
     pub maker_order_id: u64,
     pub taker_order_id: u64,
+    pub taker_side: Side,
     pub timestamp: u64,
 }
 

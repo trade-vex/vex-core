@@ -77,6 +77,7 @@ impl PriceLevel {
             self.total_volume -= removed_order.size;
             cmd.set_price(removed_order.price);
             cmd.set_size(removed_order.size);
+            cmd.set_user_id(removed_order.user_id);
             cmd.set_status(Status::Cancelled);
         } else {
             cmd.set_status(Status::Rejected);

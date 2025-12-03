@@ -86,6 +86,7 @@ fn test_client_server_communication() {
             balance: [common::UserBalance::default(); 2],
             client_order_id: 0,
             l2_data: None,
+            route_gateway_id: 0,
         };
         for i in 0..10 {
             order_command.order_id = i;
