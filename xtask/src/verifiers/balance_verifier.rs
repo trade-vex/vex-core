@@ -181,9 +181,14 @@ impl<'a> BalanceVerifier<'a> {
             return Err(TestError::Verification {
                 message: format!(
                     "Balance mismatch after wait for user {} asset {}: expected (available={}, locked={}, total={}), got (available={}, locked={}, total={})",
-                    user_id, asset_id,
-                    expected.available, expected.locked, expected.total,
-                    actual.available, actual.locked, actual.total
+                    user_id,
+                    asset_id,
+                    expected.available,
+                    expected.locked,
+                    expected.total,
+                    actual.available,
+                    actual.locked,
+                    actual.total
                 ),
             });
         }

@@ -122,7 +122,8 @@ fn test_client_server_communication() {
         let publications = Arc::new(Publications::new());
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let mut server =
-            VexCoreServer::new(server_config, producer, publications, false, shutdown_flag).unwrap();
+            VexCoreServer::new(server_config, producer, publications, false, shutdown_flag)
+                .unwrap();
         match server.start() {
             Ok(()) => println!("Server run() completed successfully (unexpected)"),
             Err(e) => println!("Server run() error: {e}"),

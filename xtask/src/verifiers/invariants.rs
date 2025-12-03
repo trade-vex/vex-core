@@ -29,11 +29,11 @@ impl InvariantVerifier {
             for &asset_id in assets {
                 match redis.get_balance(user_id, asset_id).await {
                     Ok(balance) => {
-                        balance.verify_invariant().map_err(|e| {
-                            TestError::Verification {
+                        balance
+                            .verify_invariant()
+                            .map_err(|e| TestError::Verification {
                                 message: format!("Balance invariant violated: {}", e),
-                            }
-                        })?;
+                            })?;
                     }
                     Err(TestError::Verification { .. }) => {
                         // Balance not found, skip (user may not have this asset)

@@ -3,10 +3,10 @@
 //! This module defines all the data structures used for test execution,
 //! verification, and result reporting.
 
+use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
-use hashbrown::HashMap;
 
 /// Test framework error types
 #[derive(Debug, Error)]
@@ -81,10 +81,10 @@ pub struct RedisOrder {
     pub user_id: u64,
     pub price: u64,
     pub size: u64,
-    pub side: String,          // "Bid" or "Ask"
+    pub side: String, // "Bid" or "Ask"
     pub timestamp: u64,
     pub market_id: u32,
-    pub status: String,        // "placed", "cancelled", etc.
+    pub status: String, // "placed", "cancelled", etc.
 }
 
 /// Redis trade event representation (from Redis STREAM or ZSET)
@@ -235,40 +235,40 @@ impl TradeCriteria {
     }
 
     pub fn matches(&self, trade: &RedisTrade) -> bool {
-        if let Some(market_id) = self.market_id {
-            if trade.market_id != market_id {
-                return false;
-            }
+        if let Some(market_id) = self.market_id
+            && trade.market_id != market_id
+        {
+            return false;
         }
-        if let Some(maker_user_id) = self.maker_user_id {
-            if trade.maker_user_id != maker_user_id {
-                return false;
-            }
+        if let Some(maker_user_id) = self.maker_user_id
+            && trade.maker_user_id != maker_user_id
+        {
+            return false;
         }
-        if let Some(taker_user_id) = self.taker_user_id {
-            if trade.taker_user_id != taker_user_id {
-                return false;
-            }
+        if let Some(taker_user_id) = self.taker_user_id
+            && trade.taker_user_id != taker_user_id
+        {
+            return false;
         }
-        if let Some(price) = self.price {
-            if trade.price != price {
-                return false;
-            }
+        if let Some(price) = self.price
+            && trade.price != price
+        {
+            return false;
         }
-        if let Some(size) = self.size {
-            if trade.size != size {
-                return false;
-            }
+        if let Some(size) = self.size
+            && trade.size != size
+        {
+            return false;
         }
-        if let Some(maker_order_id) = self.maker_order_id {
-            if trade.maker_order_id != maker_order_id {
-                return false;
-            }
+        if let Some(maker_order_id) = self.maker_order_id
+            && trade.maker_order_id != maker_order_id
+        {
+            return false;
         }
-        if let Some(taker_order_id) = self.taker_order_id {
-            if trade.taker_order_id != taker_order_id {
-                return false;
-            }
+        if let Some(taker_order_id) = self.taker_order_id
+            && trade.taker_order_id != taker_order_id
+        {
+            return false;
         }
         true
     }

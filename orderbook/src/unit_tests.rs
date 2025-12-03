@@ -102,18 +102,17 @@ mod test {
             for (order_id, price) in &self.orders {
                 let mut found = false;
 
-                if let Some(level) = self.bids.get_level_mut(*price) {
-                    if level.orders.iter().any(|o| o.order_id == *order_id) {
-                        found = true;
-                    }
+                if let Some(level) = self.bids.get_level_mut(*price)
+                    && level.orders.iter().any(|o| o.order_id == *order_id)
+                {
+                    found = true;
                 }
 
-                if !found {
-                    if let Some(level) = self.asks.get_level_mut(*price) {
-                        if level.orders.iter().any(|o| o.order_id == *order_id) {
-                            found = true;
-                        }
-                    }
+                if !found
+                    && let Some(level) = self.asks.get_level_mut(*price)
+                    && level.orders.iter().any(|o| o.order_id == *order_id)
+                {
+                    found = true;
                 }
 
                 if !found {

@@ -4,8 +4,8 @@
 //! VEX-CORE trading functionality.
 
 pub mod balance;
-pub mod gtc;
-pub mod ioc;
-pub mod fok;
 pub mod cancellation;
 pub mod comprehensive;
+pub mod fok;
+pub mod gtc;
+pub mod ioc;

@@ -1,4 +1,4 @@
-use crate::{L2MarketData, L2SIZE, OrderCommandType, Side, TimeInForce, UserBalance};
+use crate::{L2MarketData, OrderCommandType, Side, TimeInForce, UserBalance};
 use sbe_order::message_header_codec::{self, MessageHeaderDecoder};
 use sbe_order::order_command_message_codec::{
     OrderCommandMessageDecoder, OrderCommandMessageEncoder,
@@ -185,12 +185,12 @@ impl OrderCommand {
         self.status
     }
 
-    pub fn user_id(&self) -> u64 {
-        self.user_id
-    }
-
     pub fn order_id(&self) -> u64 {
         self.order_id
+    }
+
+    pub fn user_id(&self) -> u64 {
+        self.user_id
     }
 
     pub fn market_id(&self) -> u32 {
@@ -286,9 +286,9 @@ impl TryFrom<SbeStatus> for Status {
     }
 }
 
-impl Into<SbeStatus> for Status {
-    fn into(self) -> SbeStatus {
-        match self {
+impl From<Status> for SbeStatus {
+    fn from(val: Status) -> Self {
+        match val {
             Status::Rejected => SbeStatus::Rejected,
             Status::Placed => SbeStatus::Placed,
             Status::Cancelled => SbeStatus::Cancelled,

@@ -28,7 +28,10 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     info!("╔════════════════════════════════════════╗");
     info!("║   FOK COMPREHENSIVE TEST SUITE         ║");
     info!("╚════════════════════════════════════════╝");
-    info!("Market ID: {} (Base: {}, Quote: {})", ctx.market_id, ctx.base_asset_id, ctx.quote_asset_id);
+    info!(
+        "Market ID: {} (Base: {}, Quote: {})",
+        ctx.market_id, ctx.base_asset_id, ctx.quote_asset_id
+    );
     info!("");
 
     let suite_start = std::time::Instant::now();
@@ -42,12 +45,13 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     info!("└─────────────────────────────────────────┘");
 
     info!("Funding test users...");
-    ctx.fund_user(users::ALICE, 10_000_000, assets::USD).await?;  // 10M USD
-    ctx.fund_user(users::ALICE, 1_000, assets::BTC).await?;       // 1000 BTC
-    ctx.fund_user(users::BOB, 10_000_000, assets::USD).await?;    // 10M USD
-    ctx.fund_user(users::BOB, 1_000, assets::BTC).await?;         // 1000 BTC
-    ctx.fund_user(users::CHARLIE, 10_000_000, assets::USD).await?; // 10M USD
-    ctx.fund_user(users::CHARLIE, 1_000, assets::BTC).await?;      // 1000 BTC
+    ctx.fund_user(users::ALICE, 10_000_000, assets::USD).await?; // 10M USD
+    ctx.fund_user(users::ALICE, 1_000, assets::BTC).await?; // 1000 BTC
+    ctx.fund_user(users::BOB, 10_000_000, assets::USD).await?; // 10M USD
+    ctx.fund_user(users::BOB, 1_000, assets::BTC).await?; // 1000 BTC
+    ctx.fund_user(users::CHARLIE, 10_000_000, assets::USD)
+        .await?; // 10M USD
+    ctx.fund_user(users::CHARLIE, 1_000, assets::BTC).await?; // 1000 BTC
 
     info!("✓ All users funded successfully");
     info!("");
@@ -66,12 +70,19 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         Ok(_) => {
             let duration = section_start.elapsed();
             info!("✓ SECTION 2 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("fok_no_match".to_string(), duration));
+            results.push(ScenarioResult::success(
+                "fok_no_match".to_string(),
+                duration,
+            ));
         }
         Err(e) => {
             let duration = section_start.elapsed();
             warn!("✗ SECTION 2 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure("fok_no_match".to_string(), duration, e));
+            results.push(ScenarioResult::failure(
+                "fok_no_match".to_string(),
+                duration,
+                e,
+            ));
             return Ok(results);
         }
     }
@@ -91,12 +102,19 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         Ok(_) => {
             let duration = section_start.elapsed();
             info!("✓ SECTION 3 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("fok_insufficient_liquidity".to_string(), duration));
+            results.push(ScenarioResult::success(
+                "fok_insufficient_liquidity".to_string(),
+                duration,
+            ));
         }
         Err(e) => {
             let duration = section_start.elapsed();
             warn!("✗ SECTION 3 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure("fok_insufficient_liquidity".to_string(), duration, e));
+            results.push(ScenarioResult::failure(
+                "fok_insufficient_liquidity".to_string(),
+                duration,
+                e,
+            ));
             return Ok(results);
         }
     }
@@ -116,12 +134,19 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         Ok(_) => {
             let duration = section_start.elapsed();
             info!("✓ SECTION 4 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("fok_exact_match".to_string(), duration));
+            results.push(ScenarioResult::success(
+                "fok_exact_match".to_string(),
+                duration,
+            ));
         }
         Err(e) => {
             let duration = section_start.elapsed();
             warn!("✗ SECTION 4 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure("fok_exact_match".to_string(), duration, e));
+            results.push(ScenarioResult::failure(
+                "fok_exact_match".to_string(),
+                duration,
+                e,
+            ));
             return Ok(results);
         }
     }
@@ -141,12 +166,19 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         Ok(_) => {
             let duration = section_start.elapsed();
             info!("✓ SECTION 5 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("fok_excess_liquidity".to_string(), duration));
+            results.push(ScenarioResult::success(
+                "fok_excess_liquidity".to_string(),
+                duration,
+            ));
         }
         Err(e) => {
             let duration = section_start.elapsed();
             warn!("✗ SECTION 5 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure("fok_excess_liquidity".to_string(), duration, e));
+            results.push(ScenarioResult::failure(
+                "fok_excess_liquidity".to_string(),
+                duration,
+                e,
+            ));
             return Ok(results);
         }
     }
@@ -166,12 +198,19 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         Ok(_) => {
             let duration = section_start.elapsed();
             info!("✓ SECTION 6 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("fok_multiple_levels".to_string(), duration));
+            results.push(ScenarioResult::success(
+                "fok_multiple_levels".to_string(),
+                duration,
+            ));
         }
         Err(e) => {
             let duration = section_start.elapsed();
             warn!("✗ SECTION 6 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure("fok_multiple_levels".to_string(), duration, e));
+            results.push(ScenarioResult::failure(
+                "fok_multiple_levels".to_string(),
+                duration,
+                e,
+            ));
             return Ok(results);
         }
     }
@@ -191,12 +230,19 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         Ok(_) => {
             let duration = section_start.elapsed();
             info!("✓ SECTION 7 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("market_buy_fok".to_string(), duration));
+            results.push(ScenarioResult::success(
+                "market_buy_fok".to_string(),
+                duration,
+            ));
         }
         Err(e) => {
             let duration = section_start.elapsed();
             warn!("✗ SECTION 7 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure("market_buy_fok".to_string(), duration, e));
+            results.push(ScenarioResult::failure(
+                "market_buy_fok".to_string(),
+                duration,
+                e,
+            ));
             return Ok(results);
         }
     }
@@ -216,12 +262,19 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         Ok(_) => {
             let duration = section_start.elapsed();
             info!("✓ SECTION 8 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("market_sell_fok".to_string(), duration));
+            results.push(ScenarioResult::success(
+                "market_sell_fok".to_string(),
+                duration,
+            ));
         }
         Err(e) => {
             let duration = section_start.elapsed();
             warn!("✗ SECTION 8 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure("market_sell_fok".to_string(), duration, e));
+            results.push(ScenarioResult::failure(
+                "market_sell_fok".to_string(),
+                duration,
+                e,
+            ));
             return Ok(results);
         }
     }
@@ -248,7 +301,10 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
 
 /// SECTION 2: Test FOK order with no matching liquidity (fully rejected)
 async fn test_fok_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
-    info!("Alice places FOK bid @ {} for 5 BTC (no liquidity)", prices::LOW);
+    info!(
+        "Alice places FOK bid @ {} for 5 BTC (no liquidity)",
+        prices::LOW
+    );
 
     let market_id = ctx.market_id;
     let price = prices::LOW; // 40,000 - no asks at this price
@@ -257,7 +313,9 @@ async fn test_fok_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
     // Record initial balance
     let initial_balance = {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
-        balance_verifier.get_balance(users::ALICE, assets::USD).await?
+        balance_verifier
+            .get_balance(users::ALICE, assets::USD)
+            .await?
     };
 
     // Alice places FOK bid order (should be fully rejected - no liquidity)
@@ -273,7 +331,10 @@ async fn test_fok_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify Response: FOK with no match should be rejected/cancelled
     ResponseVerifier::assert_cancelled(&response)?;
-    info!("  → Order rejected: order_id={} (no liquidity)", response.order_id);
+    info!(
+        "  → Order rejected: order_id={} (no liquidity)",
+        response.order_id
+    );
 
     // Verify Redis
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -281,10 +342,14 @@ async fn test_fok_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
     {
         // Verify no funds were locked (order was immediately rejected)
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
-        balance_verifier.assert_locked_eq(users::ALICE, assets::USD, 0).await?;
+        balance_verifier
+            .assert_locked_eq(users::ALICE, assets::USD, 0)
+            .await?;
 
         // Verify total balance unchanged
-        let current_balance = balance_verifier.get_balance(users::ALICE, assets::USD).await?;
+        let current_balance = balance_verifier
+            .get_balance(users::ALICE, assets::USD)
+            .await?;
         if current_balance.total != initial_balance.total {
             return Err(TestError::Verification {
                 message: format!(
@@ -309,7 +374,10 @@ async fn test_fok_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
 /// SECTION 3: Test FOK order with insufficient liquidity (rejected)
 async fn test_fok_insufficient_liquidity_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Bob places GTC ask @ {} for 3 BTC", prices::MID);
-    info!("Alice places FOK bid @ {} for 5 BTC → Rejected (only 3 BTC available)", prices::MID);
+    info!(
+        "Alice places FOK bid @ {} for 5 BTC → Rejected (only 3 BTC available)",
+        prices::MID
+    );
 
     let market_id = ctx.market_id;
     let price = prices::MID; // 50,000
@@ -327,7 +395,10 @@ async fn test_fok_insufficient_liquidity_section(ctx: &mut TestContext) -> TestR
 
     let maker_response = ctx.execute_command(maker_order)?;
     ResponseVerifier::assert_placed(&maker_response)?;
-    info!("  → Bob's GTC ask placed: order_id={}", maker_response.order_id);
+    info!(
+        "  → Bob's GTC ask placed: order_id={}",
+        maker_response.order_id
+    );
 
     // Wait longer for orderbook to update
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -336,8 +407,13 @@ async fn test_fok_insufficient_liquidity_section(ctx: &mut TestContext) -> TestR
     {
         let redis_timeout = ctx.config().redis_event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-        orderbook_verifier.wait_and_assert_depth(market_id, 0, 1, redis_timeout).await?;
-        info!("  → Orderbook has 1 ask level: {} BTC @ {}", maker_size, price);
+        orderbook_verifier
+            .wait_and_assert_depth(market_id, 0, 1, redis_timeout)
+            .await?;
+        info!(
+            "  → Orderbook has 1 ask level: {} BTC @ {}",
+            maker_size, price
+        );
     }
 
     // Alice (taker) places FOK bid for 5 BTC (more than available)
@@ -353,7 +429,10 @@ async fn test_fok_insufficient_liquidity_section(ctx: &mut TestContext) -> TestR
 
     // Verify Response: FOK should be rejected (insufficient liquidity)
     ResponseVerifier::assert_cancelled(&fok_response)?;
-    info!("  → Alice's FOK bid rejected (insufficient liquidity: need {} BTC, only {} BTC available)", fok_size, maker_size);
+    info!(
+        "  → Alice's FOK bid rejected (insufficient liquidity: need {} BTC, only {} BTC available)",
+        fok_size, maker_size
+    );
 
     // Verify no trade occurred
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -361,8 +440,13 @@ async fn test_fok_insufficient_liquidity_section(ctx: &mut TestContext) -> TestR
     {
         // Verify Bob's ask is still on the orderbook (FOK was rejected, no trade)
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-        orderbook_verifier.assert_level(market_id, Side::Ask, price, maker_size).await?;
-        info!("  → Bob's ask still on book: {} BTC @ {} (FOK was rejected)", maker_size, price);
+        orderbook_verifier
+            .assert_level(market_id, Side::Ask, price, maker_size)
+            .await?;
+        info!(
+            "  → Bob's ask still on book: {} BTC @ {} (FOK was rejected)",
+            maker_size, price
+        );
     }
 
     Ok(())
@@ -372,7 +456,10 @@ async fn test_fok_insufficient_liquidity_section(ctx: &mut TestContext) -> TestR
 async fn test_fok_exact_match_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("First, consume Bob's leftover ask from Section 3");
     info!("Charlie places GTC ask @ {} for 6 BTC", prices::MID);
-    info!("Alice places FOK bid @ {} for 6 BTC → Filled exactly", prices::MID);
+    info!(
+        "Alice places FOK bid @ {} for 6 BTC → Filled exactly",
+        prices::MID
+    );
 
     let market_id = ctx.market_id;
     let price = prices::MID; // 50,000
@@ -402,7 +489,10 @@ async fn test_fok_exact_match_section(ctx: &mut TestContext) -> TestResult<()> {
 
     let maker_response = ctx.execute_command(maker_order)?;
     ResponseVerifier::assert_placed(&maker_response)?;
-    info!("  → Charlie's GTC ask placed: order_id={}", maker_response.order_id);
+    info!(
+        "  → Charlie's GTC ask placed: order_id={}",
+        maker_response.order_id
+    );
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -419,7 +509,10 @@ async fn test_fok_exact_match_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify Response: FOK should be filled
     ResponseVerifier::assert_filled(&fok_response)?;
-    info!("  → Alice's FOK bid filled: order_id={}", fok_response.order_id);
+    info!(
+        "  → Alice's FOK bid filled: order_id={}",
+        fok_response.order_id
+    );
 
     // Verify trade occurred
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -435,7 +528,9 @@ async fn test_fok_exact_match_section(ctx: &mut TestContext) -> TestResult<()> {
             .maker_order_id(maker_response.order_id)
             .taker_order_id(fok_response.order_id);
 
-        trade_verifier.wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2)).await?;
+        trade_verifier
+            .wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2))
+            .await?;
         info!("  → Trade executed: {} BTC @ {}", size, price);
     }
 
@@ -452,7 +547,10 @@ async fn test_fok_exact_match_section(ctx: &mut TestContext) -> TestResult<()> {
 /// SECTION 5: Test FOK order with excess liquidity
 async fn test_fok_excess_liquidity_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Bob places GTC ask @ {} for 10 BTC", prices::MID);
-    info!("Alice places FOK bid @ {} for 7 BTC → Filled, 3 BTC remains", prices::MID);
+    info!(
+        "Alice places FOK bid @ {} for 7 BTC → Filled, 3 BTC remains",
+        prices::MID
+    );
 
     let market_id = ctx.market_id;
     let price = prices::MID;
@@ -501,14 +599,18 @@ async fn test_fok_excess_liquidity_section(ctx: &mut TestContext) -> TestResult<
             .taker_user_id(users::ALICE)
             .size(fok_size);
 
-        trade_verifier.assert_trade_exists(market_id, &criteria).await?;
+        trade_verifier
+            .assert_trade_exists(market_id, &criteria)
+            .await?;
         info!("  → Trade executed: {} BTC", fok_size);
     }
 
     {
         // Verify remaining ask stays on orderbook
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-        orderbook_verifier.assert_level(market_id, Side::Ask, price, remaining).await?;
+        orderbook_verifier
+            .assert_level(market_id, Side::Ask, price, remaining)
+            .await?;
         info!("  → Remaining on orderbook: {} BTC @ {}", remaining, price);
     }
 
@@ -517,15 +619,21 @@ async fn test_fok_excess_liquidity_section(ctx: &mut TestContext) -> TestResult<
 
 /// SECTION 6: Test FOK order crossing multiple price levels (all-or-nothing)
 async fn test_fok_multiple_levels_section(ctx: &mut TestContext) -> TestResult<()> {
-    info!("First, consume Bob's leftover 3 BTC ask @ {} from Section 5", prices::MID);
+    info!(
+        "First, consume Bob's leftover 3 BTC ask @ {} from Section 5",
+        prices::MID
+    );
     info!("Setting up orderbook with multiple ask levels:");
     info!("  - Charlie: 2 BTC @ {}", prices::MID);
     info!("  - Bob: 3 BTC @ {}", prices::MID + 1000);
     info!("  - Charlie: 2 BTC @ {}", prices::MID + 2000);
-    info!("Alice places FOK bid @ {} for 7 BTC → All-or-nothing across levels", prices::HIGH);
+    info!(
+        "Alice places FOK bid @ {} for 7 BTC → All-or-nothing across levels",
+        prices::HIGH
+    );
 
     let market_id = ctx.market_id;
-    let level1_price = prices::MID;      // 50,000
+    let level1_price = prices::MID; // 50,000
     let level2_price = prices::MID + 1000; // 51,000
     let level3_price = prices::MID + 2000; // 52,000
 
@@ -586,7 +694,9 @@ async fn test_fok_multiple_levels_section(ctx: &mut TestContext) -> TestResult<(
     {
         let redis_timeout = ctx.config().redis_event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-        orderbook_verifier.wait_and_assert_depth(market_id, 0, 3, redis_timeout).await?;
+        orderbook_verifier
+            .wait_and_assert_depth(market_id, 0, 3, redis_timeout)
+            .await?;
         info!("  → Orderbook ready: 3 ask levels (2+3+2=7 BTC total)");
     }
 
@@ -617,7 +727,9 @@ async fn test_fok_multiple_levels_section(ctx: &mut TestContext) -> TestResult<(
             .taker_order_id(fok_response.order_id)
             .price(level1_price)
             .size(2);
-        trade_verifier.assert_trade_exists(market_id, &criteria1).await?;
+        trade_verifier
+            .assert_trade_exists(market_id, &criteria1)
+            .await?;
         info!("  → Trade 1: 2 BTC @ {}", level1_price);
 
         // Verify trade at level 2 (3 BTC @ 51,000)
@@ -627,7 +739,9 @@ async fn test_fok_multiple_levels_section(ctx: &mut TestContext) -> TestResult<(
             .taker_order_id(fok_response.order_id)
             .price(level2_price)
             .size(3);
-        trade_verifier.assert_trade_exists(market_id, &criteria2).await?;
+        trade_verifier
+            .assert_trade_exists(market_id, &criteria2)
+            .await?;
         info!("  → Trade 2: 3 BTC @ {}", level2_price);
 
         // Verify trade at level 3 (2 BTC @ 52,000)
@@ -637,7 +751,9 @@ async fn test_fok_multiple_levels_section(ctx: &mut TestContext) -> TestResult<(
             .taker_order_id(fok_response.order_id)
             .price(level3_price)
             .size(2);
-        trade_verifier.assert_trade_exists(market_id, &criteria3).await?;
+        trade_verifier
+            .assert_trade_exists(market_id, &criteria3)
+            .await?;
         info!("  → Trade 3: 2 BTC @ {}", level3_price);
     }
 
@@ -699,7 +815,9 @@ async fn test_market_buy_fok_section(ctx: &mut TestContext) -> TestResult<()> {
     {
         let redis_timeout = ctx.config().redis_event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-        orderbook_verifier.wait_and_assert_depth(market_id, 0, 2, redis_timeout).await?;
+        orderbook_verifier
+            .wait_and_assert_depth(market_id, 0, 2, redis_timeout)
+            .await?;
         info!("  → Orderbook ready: 0 bids, 2 asks");
     }
     info!("");
@@ -711,12 +829,15 @@ async fn test_market_buy_fok_section(ctx: &mut TestContext) -> TestResult<()> {
     let slippage_bps = 50;
     let slippage = (best_ask_price * slippage_bps) / 10_000;
     let conservative_price = best_ask_price + slippage;
-    info!("  → Conservative price: {} (best_ask={} + slippage={})", conservative_price, best_ask_price, slippage);
+    info!(
+        "  → Conservative price: {} (best_ask={} + slippage={})",
+        conservative_price, best_ask_price, slippage
+    );
 
     // Market buy FOK: use FOK builder with price = u64::MAX (market orders are IOC by default)
     let market_buy1 = OrderBuilder::place_fok()
         .user(users::ALICE)
-        .price(u64::MAX)  // Market buy sentinel
+        .price(u64::MAX) // Market buy sentinel
         .size(buy_size_1)
         .side(Side::Bid)
         .market_id(market_id)
@@ -724,7 +845,10 @@ async fn test_market_buy_fok_section(ctx: &mut TestContext) -> TestResult<()> {
 
     let response1 = ctx.execute_command(market_buy1)?;
     ResponseVerifier::assert_filled(&response1)?;
-    info!("  → Alice's market buy FOK filled: {} BTC @ {}", buy_size_1, best_ask_price);
+    info!(
+        "  → Alice's market buy FOK filled: {} BTC @ {}",
+        buy_size_1, best_ask_price
+    );
 
     // Verify trade
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -736,18 +860,32 @@ async fn test_market_buy_fok_section(ctx: &mut TestContext) -> TestResult<()> {
             .taker_order_id(response1.order_id)
             .price(best_ask_price)
             .size(buy_size_1);
-        trade_verifier.assert_trade_exists(market_id, &criteria).await?;
-        info!("  → Trade verified: {} BTC @ {}", buy_size_1, best_ask_price);
+        trade_verifier
+            .assert_trade_exists(market_id, &criteria)
+            .await?;
+        info!(
+            "  → Trade verified: {} BTC @ {}",
+            buy_size_1, best_ask_price
+        );
     }
 
     // Orderbook state: 1 BTC @ 53k, 5 BTC @ 54k = 0 bids, 2 asks
     {
         let redis_timeout = ctx.config().redis_event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-        orderbook_verifier.wait_and_assert_depth(market_id, 0, 2, redis_timeout).await?;
-        orderbook_verifier.assert_level(market_id, Side::Ask, best_ask_price, 1).await?;
-        orderbook_verifier.assert_level(market_id, Side::Ask, second_ask_price, 5).await?;
-        info!("  → Orderbook after Test 1: 1 BTC @ {}, 5 BTC @ {}", best_ask_price, second_ask_price);
+        orderbook_verifier
+            .wait_and_assert_depth(market_id, 0, 2, redis_timeout)
+            .await?;
+        orderbook_verifier
+            .assert_level(market_id, Side::Ask, best_ask_price, 1)
+            .await?;
+        orderbook_verifier
+            .assert_level(market_id, Side::Ask, second_ask_price, 5)
+            .await?;
+        info!(
+            "  → Orderbook after Test 1: 1 BTC @ {}, 5 BTC @ {}",
+            best_ask_price, second_ask_price
+        );
     }
     info!("");
 
@@ -760,7 +898,7 @@ async fn test_market_buy_fok_section(ctx: &mut TestContext) -> TestResult<()> {
     // Market buy FOK: use FOK builder with price = u64::MAX
     let market_buy2 = OrderBuilder::place_fok()
         .user(users::BOB)
-        .price(u64::MAX)  // Market buy sentinel
+        .price(u64::MAX) // Market buy sentinel
         .size(buy_size_2)
         .side(Side::Bid)
         .market_id(market_id)
@@ -774,9 +912,16 @@ async fn test_market_buy_fok_section(ctx: &mut TestContext) -> TestResult<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
     {
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-        orderbook_verifier.assert_level(market_id, Side::Ask, best_ask_price, 1).await?;
-        orderbook_verifier.assert_level(market_id, Side::Ask, second_ask_price, 5).await?;
-        info!("  → Orderbook unchanged: 1 BTC @ {}, 5 BTC @ {}", best_ask_price, second_ask_price);
+        orderbook_verifier
+            .assert_level(market_id, Side::Ask, best_ask_price, 1)
+            .await?;
+        orderbook_verifier
+            .assert_level(market_id, Side::Ask, second_ask_price, 5)
+            .await?;
+        info!(
+            "  → Orderbook unchanged: 1 BTC @ {}, 5 BTC @ {}",
+            best_ask_price, second_ask_price
+        );
     }
 
     info!("Section 7 ends with: 0 bids, 2 asks (1 BTC @ 53k, 5 BTC @ 54k)");
@@ -830,7 +975,9 @@ async fn test_market_sell_fok_section(ctx: &mut TestContext) -> TestResult<()> {
     {
         let redis_timeout = ctx.config().redis_event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-        orderbook_verifier.wait_and_assert_depth(market_id, 2, 2, redis_timeout).await?;
+        orderbook_verifier
+            .wait_and_assert_depth(market_id, 2, 2, redis_timeout)
+            .await?;
         info!("  → Orderbook ready: 2 bids, 2 asks");
     }
     info!("");
@@ -843,7 +990,7 @@ async fn test_market_sell_fok_section(ctx: &mut TestContext) -> TestResult<()> {
     // Market sell FOK: use FOK builder with price = 0
     let market_sell1 = OrderBuilder::place_fok()
         .user(users::CHARLIE)
-        .price(0)  // Market sell sentinel
+        .price(0) // Market sell sentinel
         .size(sell_size_1)
         .side(Side::Ask)
         .market_id(market_id)
@@ -851,7 +998,10 @@ async fn test_market_sell_fok_section(ctx: &mut TestContext) -> TestResult<()> {
 
     let response1 = ctx.execute_command(market_sell1)?;
     ResponseVerifier::assert_filled(&response1)?;
-    info!("  → Charlie's market sell FOK filled: {} BTC @ {}", sell_size_1, best_bid_price);
+    info!(
+        "  → Charlie's market sell FOK filled: {} BTC @ {}",
+        sell_size_1, best_bid_price
+    );
 
     // Verify trade
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -863,18 +1013,32 @@ async fn test_market_sell_fok_section(ctx: &mut TestContext) -> TestResult<()> {
             .taker_order_id(response1.order_id)
             .price(best_bid_price)
             .size(sell_size_1);
-        trade_verifier.assert_trade_exists(market_id, &criteria).await?;
-        info!("  → Trade verified: {} BTC @ {}", sell_size_1, best_bid_price);
+        trade_verifier
+            .assert_trade_exists(market_id, &criteria)
+            .await?;
+        info!(
+            "  → Trade verified: {} BTC @ {}",
+            sell_size_1, best_bid_price
+        );
     }
 
     // Orderbook state: 90 BTC @ 52k, 100 BTC @ 51k, 2 asks
     {
         let redis_timeout = ctx.config().redis_event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-        orderbook_verifier.wait_and_assert_depth(market_id, 2, 2, redis_timeout).await?;
-        orderbook_verifier.assert_level(market_id, Side::Bid, best_bid_price, 90).await?;
-        orderbook_verifier.assert_level(market_id, Side::Bid, second_bid_price, 100).await?;
-        info!("  → Orderbook after Test 1: 90 BTC @ {}, 100 BTC @ {} | 2 asks", best_bid_price, second_bid_price);
+        orderbook_verifier
+            .wait_and_assert_depth(market_id, 2, 2, redis_timeout)
+            .await?;
+        orderbook_verifier
+            .assert_level(market_id, Side::Bid, best_bid_price, 90)
+            .await?;
+        orderbook_verifier
+            .assert_level(market_id, Side::Bid, second_bid_price, 100)
+            .await?;
+        info!(
+            "  → Orderbook after Test 1: 90 BTC @ {}, 100 BTC @ {} | 2 asks",
+            best_bid_price, second_bid_price
+        );
     }
     info!("");
 
@@ -887,7 +1051,7 @@ async fn test_market_sell_fok_section(ctx: &mut TestContext) -> TestResult<()> {
     // Market sell FOK: use FOK builder with price = 0
     let market_sell2 = OrderBuilder::place_fok()
         .user(users::ALICE)
-        .price(0)  // Market sell sentinel
+        .price(0) // Market sell sentinel
         .size(sell_size_2)
         .side(Side::Ask)
         .market_id(market_id)
@@ -901,9 +1065,16 @@ async fn test_market_sell_fok_section(ctx: &mut TestContext) -> TestResult<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
     {
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
-        orderbook_verifier.assert_level(market_id, Side::Bid, best_bid_price, 90).await?;
-        orderbook_verifier.assert_level(market_id, Side::Bid, second_bid_price, 100).await?;
-        info!("  → Orderbook unchanged: 90 BTC @ {}, 100 BTC @ {} | 2 asks", best_bid_price, second_bid_price);
+        orderbook_verifier
+            .assert_level(market_id, Side::Bid, best_bid_price, 90)
+            .await?;
+        orderbook_verifier
+            .assert_level(market_id, Side::Bid, second_bid_price, 100)
+            .await?;
+        info!(
+            "  → Orderbook unchanged: 90 BTC @ {}, 100 BTC @ {} | 2 asks",
+            best_bid_price, second_bid_price
+        );
     }
 
     info!("Section 8 ends with: 2 bids (90 @ 52k, 100 @ 51k), 2 asks (1 @ 53k, 5 @ 54k)");

@@ -412,6 +412,7 @@ pub mod test {
         events_handler: Option<Box<dyn EventsHandler>>,
         publications: Option<Arc<Publications>>,
         core_pinning: TestCorePinning,
+        #[allow(clippy::type_complexity)]
         test_handler: Option<Box<dyn FnMut(&mut OrderCommand, i64, bool) + Send + 'static>>,
         risk_engines: Option<RiskEngines>,
     }
@@ -520,6 +521,7 @@ pub mod test {
         }
 
         /// Internal build method that constructs the test engine
+        #[allow(clippy::too_many_arguments)]
         fn build_internal(
             self,
             symbol_specs: HashMap<u32, CoreMarketSpecification>,
@@ -596,6 +598,7 @@ pub mod test {
         }
 
         /// Builds the test-specific disruptor pipeline with test handler
+        #[allow(clippy::too_many_arguments)]
         fn build_test_pipeline(
             &self,
             buffer_size: usize,

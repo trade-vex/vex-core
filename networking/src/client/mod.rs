@@ -294,7 +294,7 @@ impl Publisher {
 
         let mut message_buffer = [0u8; ORDERCOMMANDSIZE];
 
-        encode_order_command(&order_command, &mut message_buffer).map_err(|e| {
+        encode_order_command(order_command, &mut message_buffer).map_err(|e| {
             GatewayError::ProtocolError(format!("Failed to encode OrderCommand: {e:?}"))
         })?;
 

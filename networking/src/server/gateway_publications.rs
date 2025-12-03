@@ -14,9 +14,12 @@ pub struct Publications {
 
 impl Publications {
     pub fn new() -> Self {
-        const INIT: ArcSwapOption<AeronPublication> = ArcSwapOption::const_empty();
         Self {
-            gateways: [INIT; MAX_GATEWAYS + 1],
+            gateways: core::array::from_fn::<
+                ArcSwapOption<AeronPublication>,
+                { MAX_GATEWAYS + 1 },
+                _,
+            >(|_| ArcSwapOption::const_empty()),
         }
     }
 
@@ -119,5 +122,11 @@ impl Publications {
                 );
             }
         }
+    }
+}
+
+impl Default for Publications {
+    fn default() -> Self {
+        Self::new()
     }
 }

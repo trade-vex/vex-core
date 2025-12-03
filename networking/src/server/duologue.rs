@@ -59,9 +59,11 @@ impl Duologue {
         let on_image_available_handler = self.on_image_available_handler.take();
         let on_image_unavailable_handler = self.on_image_unavailable_handler.take();
 
-        if let (Some(fh), Some(iah), Some(iuh)) =
-            (fragment_handler, on_image_available_handler, on_image_unavailable_handler)
-        {
+        if let (Some(fh), Some(iah), Some(iuh)) = (
+            fragment_handler,
+            on_image_available_handler,
+            on_image_unavailable_handler,
+        ) {
             let close_notification = DuologueCloseNotification {
                 gateway_id: self.gateway_id,
                 fragment_handler: fh,

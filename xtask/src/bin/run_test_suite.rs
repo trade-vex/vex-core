@@ -62,8 +62,7 @@ async fn main() {
             .with_max_level(tracing::Level::INFO)
             .finish()
     };
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("Failed to set tracing subscriber");
+    tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
 
     info!("Starting VEX-CORE Integration Test Suite");
     info!("========================================");

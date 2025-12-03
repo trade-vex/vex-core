@@ -74,7 +74,10 @@ impl TestClient {
                 Ok(response)
             }
             Err(RecvTimeoutError::Timeout) => {
-                error!("Client {} receive timeout after {:?}", self.client_id, self.timeout);
+                error!(
+                    "Client {} receive timeout after {:?}",
+                    self.client_id, self.timeout
+                );
                 Err(TestError::Timeout {
                     timeout: self.timeout,
                 })
@@ -99,7 +102,10 @@ impl TestClient {
                 Ok(response)
             }
             Err(RecvTimeoutError::Timeout) => {
-                error!("Client {} receive timeout after {:?}", self.client_id, timeout);
+                error!(
+                    "Client {} receive timeout after {:?}",
+                    self.client_id, timeout
+                );
                 Err(TestError::Timeout { timeout })
             }
             Err(RecvTimeoutError::Disconnected) => {

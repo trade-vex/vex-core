@@ -76,13 +76,13 @@
 //! - Maker Fee: 10bp (0.1%)
 //! - Taker Fee: 20bp (0.2%)
 
-pub mod test_framework;
 pub mod builders;
-pub mod verifiers;
-pub mod scenarios;
 pub mod fixtures;
+pub mod scenarios;
+pub mod test_framework;
+pub mod verifiers;
 
 // Re-export commonly used types
-pub use test_framework::{TestContext, types::*};
 pub use builders::OrderBuilder;
-pub use verifiers::{ResponseVerifier, BalanceVerifier, TradeVerifier, OrderbookVerifier};
+pub use test_framework::{TestContext, types::*};
+pub use verifiers::{BalanceVerifier, OrderbookVerifier, ResponseVerifier, TradeVerifier};

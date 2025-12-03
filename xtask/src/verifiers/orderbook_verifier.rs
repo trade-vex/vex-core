@@ -187,7 +187,9 @@ impl<'a> OrderbookVerifier<'a> {
         market_id: u32,
         timeout: Duration,
     ) -> TestResult<RedisOrderbook> {
-        self.redis.wait_for_orderbook_update(market_id, timeout).await
+        self.redis
+            .wait_for_orderbook_update(market_id, timeout)
+            .await
     }
 
     /// Get current orderbook
@@ -201,11 +203,7 @@ impl<'a> OrderbookVerifier<'a> {
     }
 
     /// Assert spread (difference between best bid and best ask)
-    pub async fn assert_spread(
-        &mut self,
-        market_id: u32,
-        expected_spread: u64,
-    ) -> TestResult<()> {
+    pub async fn assert_spread(&mut self, market_id: u32, expected_spread: u64) -> TestResult<()> {
         let orderbook = self.redis.get_orderbook(market_id).await?;
 
         if orderbook.bids.is_empty() || orderbook.asks.is_empty() {
@@ -239,11 +237,7 @@ impl<'a> OrderbookVerifier<'a> {
     }
 
     /// Calculate total volume on one side of the book
-    pub async fn calculate_side_volume(
-        &mut self,
-        market_id: u32,
-        side: Side,
-    ) -> TestResult<u64> {
+    pub async fn calculate_side_volume(&mut self, market_id: u32, side: Side) -> TestResult<u64> {
         let orderbook = self.redis.get_orderbook(market_id).await?;
 
         let levels = match side {
@@ -318,14 +312,14 @@ impl<'a> OrderbookVerifier<'a> {
                         Side::Ask => &orderbook.asks,
                     };
 
-                    if let Some(level) = levels.iter().find(|level| level.price == price) {
-                        if level.size == expected_volume {
-                            debug!(
-                                "Price level found: market={}, side={:?}, price={}, volume={}",
-                                market_id, side, price, level.size
-                            );
-                            return Ok(());
-                        }
+                    if let Some(level) = levels.iter().find(|level| level.price == price)
+                        && level.size == expected_volume
+                    {
+                        debug!(
+                            "Price level found: market={}, side={:?}, price={}, volume={}",
+                            market_id, side, price, level.size
+                        );
+                        return Ok(());
                     }
                 }
                 Err(e) => {

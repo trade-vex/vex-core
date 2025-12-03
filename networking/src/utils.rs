@@ -35,7 +35,7 @@ pub fn new_publication_with_mdc_and_session(
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic|session-id={session_id}"
     ))
-        .expect("Creation of CString failed");
+    .expect("Creation of CString failed");
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -49,7 +49,7 @@ pub fn new_publication_with_mdc(
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic"
     ))
-        .expect("Creation of CString failed");
+    .expect("Creation of CString failed");
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -64,7 +64,7 @@ pub fn new_publication_with_session(
     let uri = CString::new(format!(
         "aeron:udp?endpoint={endpoint}|session-id={session_id}"
     ))
-        .expect("Creation of CString failed");
+    .expect("Creation of CString failed");
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -78,7 +78,7 @@ pub fn new_subscription_with_mdc(
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic"
     ))
-        .expect("Creation of CString failed");
+    .expect("Creation of CString failed");
     let available_logger = AeronAvailableImageLogger {};
     let available_handler = Handler::leak(available_logger);
     let unavailable_logger = AeronUnavailableImageLogger {};
@@ -103,7 +103,7 @@ pub fn new_subscription_with_mdc_and_session(
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic|session-id={session_id}"
     ))
-        .expect("Creation of CString failed");
+    .expect("Creation of CString failed");
     let available_logger = AeronAvailableImageLogger {};
     let available_handler = Handler::leak(available_logger);
     let unavailable_logger = AeronUnavailableImageLogger {};
@@ -133,7 +133,7 @@ pub fn new_subsciption_with_handlers_and_session<
     let uri = CString::new(format!(
         "aeron:udp?endpoint={endpoint}|session-id={session_id}"
     ))
-        .expect("Creation of CString failed");
+    .expect("Creation of CString failed");
     aeron.add_subscription(
         &uri,
         stream_id,

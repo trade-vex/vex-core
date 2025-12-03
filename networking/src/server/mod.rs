@@ -49,7 +49,7 @@ use rusteron_archive::{
 };
 use rusteron_archive::{AeronArchive, AeronArchiveContext};
 use rusteron_media_driver::AeronIdleStrategy;
-use std::i32;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -95,7 +95,7 @@ pub struct VexCoreServer {
     /// Core configuration
     config: CoreNetworkingConfig,
     /// Gateway state management (lock-free)
-    gateways: Arc<GatewayManager>,
+    gateways: Rc<GatewayManager>,
     /// Shared shutdown flag
     shutdown: Arc<AtomicBool>,
     /// Image available handler
@@ -186,7 +186,7 @@ impl VexCoreServer {
             Some(&image_unavailable_handler),
         )?;
 
-        let gateways = Arc::new(GatewayManager::new(
+        let gateways = Rc::new(GatewayManager::new(
             config.clone(),
             aeron,
             producer,
@@ -194,7 +194,7 @@ impl VexCoreServer {
         )?);
 
         // Create handshake handler
-        let handshake_handler = HandshakeMessageHandler::new(Arc::clone(&gateways), publication);
+        let handshake_handler = HandshakeMessageHandler::new(Rc::clone(&gateways), publication);
 
         Ok(Self {
             gateways,
@@ -316,13 +316,13 @@ impl VexCoreServer {
         aeron: &Aeron,
     ) -> Result<AeronArchive, ServerError> {
         let archive_ctx = AeronArchiveContext::new_with_no_credentials_supplier(
-            &aeron,
+            aeron,
             &config.request_control_channel,
             &config.response_control_channel,
-            &RECORDING_CHANNEL,
+            RECORDING_CHANNEL,
         )?;
 
-        let archive_async_connect = AeronArchiveAsyncConnect::new_with_aeron(&archive_ctx, &aeron)?;
+        let archive_async_connect = AeronArchiveAsyncConnect::new_with_aeron(&archive_ctx, aeron)?;
         let archive = archive_async_connect.poll_blocking(Duration::from_secs(10))?;
         Ok(archive)
     }
@@ -335,9 +335,9 @@ impl VexCoreServer {
     ) -> Result<(i64, String), ServerError> {
         match recording {
             Some(ExtendedRecordingDescriptor {
-                     recording_id,
-                     channel,
-                 }) => Ok((
+                recording_id,
+                channel,
+            }) => Ok((
                 archive.extend_recording(
                     recording_id,
                     &channel.clone().into_c_string(),
@@ -443,7 +443,8 @@ impl VexCoreServer {
 
             let mut position = record.start_position;
             while let fragaments_read = subscription.poll(Some(&message_handler), 1)?
-                && position < record.stop_position && !shutdown.load(Ordering::Acquire)
+                && position < record.stop_position
+                && !shutdown.load(Ordering::Acquire)
             {
                 if fragaments_read == 0 {
                     AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
@@ -473,10 +474,10 @@ impl VexCoreServer {
             message_handler.release();
             reader.release();
             subscription.close::<AeronNotificationLogger>(None)?;
-            return Ok(Some(extended_recording_descriptor));
+            Ok(Some(extended_recording_descriptor))
         } else {
             info!(target: "replay", action = "no_recording_available");
-            return Ok(None);
+            Ok(None)
         }
     }
 

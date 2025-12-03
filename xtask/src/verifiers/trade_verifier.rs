@@ -137,7 +137,10 @@ impl<'a> TradeVerifier<'a> {
         criteria: &TradeCriteria,
         timeout: Duration,
     ) -> TestResult<RedisTrade> {
-        let trade = self.redis.wait_for_trade(market_id, &criteria, timeout).await?;
+        let trade = self
+            .redis
+            .wait_for_trade(market_id, criteria, timeout)
+            .await?;
 
         if !criteria.matches(&trade) {
             return Err(TestError::Verification {

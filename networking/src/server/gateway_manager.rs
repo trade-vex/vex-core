@@ -134,12 +134,12 @@ impl GatewayManager {
                 config.base_gateway_port,
                 config.max_gateways.into(),
             )
-                .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?,
+            .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?,
             session_allocator: SessionAllocator::new(
                 config.reserved_session_id_low,
                 config.reserved_session_id_high,
             )
-                .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?,
+            .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?,
             config,
             producer,
             publications,
