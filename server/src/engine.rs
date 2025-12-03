@@ -380,6 +380,9 @@ impl CoreEngine {
 pub mod test {
     use super::*;
 
+    /// Type alias for test handler that intercepts order commands during testing
+    pub type TestHandler = Box<dyn FnMut(&mut OrderCommand, i64, bool) + Send + 'static>;
+
     /// Test-specific core pinning configuration
     /// Uses higher core numbers to avoid conflicts with system processes
     #[derive(Debug, Clone, Copy)]
@@ -412,8 +415,7 @@ pub mod test {
         events_handler: Option<Box<dyn EventsHandler>>,
         publications: Option<Arc<Publications>>,
         core_pinning: TestCorePinning,
-        #[allow(clippy::type_complexity)]
-        test_handler: Option<Box<dyn FnMut(&mut OrderCommand, i64, bool) + Send + 'static>>,
+        test_handler: Option<TestHandler>,
         risk_engines: Option<RiskEngines>,
     }
 
@@ -528,7 +530,7 @@ pub mod test {
             mut journaling_processor: JournalingProcessor,
             events_handler: Box<dyn EventsHandler>,
             publications: Arc<Publications>,
-            test_handler: Option<Box<dyn FnMut(&mut OrderCommand, i64, bool) + Send + 'static>>,
+            test_handler: Option<TestHandler>,
             risk_engines: Option<RiskEngines>,
             core_pinning: TestCorePinning,
         ) -> EngineResult<(CoreEngine, OrderProducer)> {
@@ -610,7 +612,7 @@ pub mod test {
                 Item = impl FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
             >,
             events_handler: impl FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
-            test_handler: Box<dyn FnMut(&mut OrderCommand, i64, bool) + Send + 'static>,
+            test_handler: TestHandler,
             core_pinning: TestCorePinning,
         ) -> OrderProducer {
             build_multi_producer(buffer_size, order_factory, BusySpin)
