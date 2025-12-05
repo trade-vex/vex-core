@@ -118,14 +118,20 @@ fn run_correctness_test(
             Ok(response) => {
                 received_ids.insert(response.client_order_id);
                 if received_ids.len() % 100 == 0 {
-                    println!("Client-{client_id} received {}/{count} responses", received_ids.len());
+                    println!(
+                        "Client-{client_id} received {}/{count} responses",
+                        received_ids.len()
+                    );
                 }
             }
             Err(_) => continue,
         }
     }
 
-    println!("Client-{client_id} received {}/{count} responses", received_ids.len());
+    println!(
+        "Client-{client_id} received {}/{count} responses",
+        received_ids.len()
+    );
 
     // Write received IDs to file
     let mut file = File::create("/results/received_ids.txt")?;
