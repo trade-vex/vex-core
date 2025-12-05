@@ -28,15 +28,7 @@ WORKDIR /build/aeron
 RUN CMAKE_BUILD_PARALLEL_LEVEL=$(nproc) ./cppbuild/cppbuild --no-tests
 
 # Create runtime image
-FROM rust:1.79 AS runtime
-
-# Install runtime dependencies
-# RUN apt-get update && apt-get install -y \
-#     # libbsd0 \
-#     libuuser_id1 \
-#     # libssl3 \
-#     # zlib1g \
-#     && rm -rf /var/lib/apt/lists/*
+FROM debian:bookworm-slim AS runtime
 
 # Copy the built C Media Driver from builder stage
 COPY --from=builder /build/aeron/cppbuild/Release/binaries/aeronmd /usr/local/bin/aeronmd
