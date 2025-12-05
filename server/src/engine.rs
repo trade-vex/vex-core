@@ -141,7 +141,7 @@ impl CoreEngine {
         journaling_processor: JournalingProcessor,
         events_handler: impl EventsHandler,
         publications: Arc<Publications>,
-        core_pinning: CorePinning,
+        core_pinning: Option<CorePinning>,
     ) -> EngineResult<(Self, OrderProducer)> {
         let (engine, producer) = Self::build_engine(
             symbol_specs,
@@ -158,7 +158,7 @@ impl CoreEngine {
         mut journaling_processor: JournalingProcessor,
         events_handler: impl EventsHandler,
         publications: Arc<Publications>,
-        core_pinning: CorePinning,
+        core_pinning: Option<CorePinning>,
     ) -> EngineResult<(Self, OrderProducer)> {
         let price_cache = Arc::new(PriceCache::new(symbol_specs.keys()));
 
@@ -191,17 +191,29 @@ impl CoreEngine {
             events_handler.handle_processed_command(cmd);
         };
 
-        // Build the disruptor pipeline with proper stage dependencies
-        let producer = Self::build_disruptor_pipeline(
-            BUFFER_SIZE,
-            order_factory,
-            journaling_handler,
-            &risk_engines_arc,
-            &price_cache,
-            router_handlers,
-            events_handler,
-            core_pinning,
-        );
+        // Build the disruptor pipeline - with or without CPU pinning
+        let producer = if let Some(pinning) = core_pinning {
+            Self::build_disruptor_pipeline(
+                BUFFER_SIZE,
+                order_factory,
+                journaling_handler,
+                &risk_engines_arc,
+                &price_cache,
+                router_handlers,
+                events_handler,
+                pinning,
+            )
+        } else {
+            Self::build_disruptor_pipeline_no_pinning(
+                BUFFER_SIZE,
+                order_factory,
+                journaling_handler,
+                &risk_engines_arc,
+                &price_cache,
+                router_handlers,
+                events_handler,
+            )
+        };
 
         let engine = Self { publications };
         Ok((engine, producer))
@@ -304,6 +316,53 @@ impl CoreEngine {
             .and_then()
             // Stage 5: Event Handlers for market data and notifications
             .pin_at_core(core_pinning.events)
+            .handle_events_with(events_handler)
+            .build()
+    }
+
+    /// Builds the disruptor pipeline without CPU pinning (for development/testing)
+    /// This allows the OS to schedule threads freely without requiring specific CPU cores
+    #[allow(clippy::too_many_arguments)]
+    fn build_disruptor_pipeline_no_pinning<X, Y, Z>(
+        buffer_size: usize,
+        order_factory: fn() -> OrderCommand,
+        journaling_handler: X,
+        risk_engines: &RiskEngines,
+        price_cache: &Arc<PriceCache>,
+        mut router_handlers_iter: impl Iterator<Item = Y>,
+        events_handler: Z,
+    ) -> OrderProducer
+    where
+        X: FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
+        Y: FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
+        Z: FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
+    {
+        // Build the entire pipeline without CPU pinning
+        build_multi_producer(buffer_size, order_factory, BusySpin)
+            // Stage 1: Journaling for audit trail
+            .handle_events_with(journaling_handler)
+            // Stage 2: Risk Engine R1 - parallel risk hold/pre-processing
+            .handle_events_with(create_risk_handler!(0, risk_engines, price_cache))
+            .handle_events_with(create_risk_handler!(1, risk_engines, price_cache))
+            .handle_events_with(create_risk_handler!(2, risk_engines, price_cache))
+            .handle_events_with(create_risk_handler!(3, risk_engines, price_cache))
+            // Dependency barrier: matching engines wait for risk engines
+            .and_then()
+            // Stage 3: Matching Engine - parallel order processing
+            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
+            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
+            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
+            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
+            // Dependency barrier: R2 engines wait for matching
+            .and_then()
+            // Stage 4: Risk Engine R2 - parallel settlement processing
+            .handle_events_with(create_risk_r2_handler!(0, risk_engines))
+            .handle_events_with(create_risk_r2_handler!(1, risk_engines))
+            .handle_events_with(create_risk_r2_handler!(2, risk_engines))
+            .handle_events_with(create_risk_r2_handler!(3, risk_engines))
+            // Dependency barrier: event handlers wait for settlement
+            .and_then()
+            // Stage 5: Event Handlers for market data and notifications
             .handle_events_with(events_handler)
             .build()
     }

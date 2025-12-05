@@ -18,8 +18,6 @@ use vex_networking::server::Publications;
 // Re-export for convenience
 pub use engine::EngineError;
 
-use crate::engine::CorePinning;
-
 pub struct RunningEngine {
     thread: JoinHandle<Result<(), EngineError>>,
     shutdown_flag: Arc<AtomicBool>,
@@ -79,6 +77,7 @@ pub fn start(config: VexConfig, replay: bool) -> Result<RunningEngine, EngineErr
         config.symbols.symbols.clone(),
         config.kafka_broker.clone(),
         replay,
+        config.environment.clone(),
     )?;
 
     let (thread_handle, shutdown_flag) =
@@ -98,6 +97,7 @@ pub fn init_internal(
     symbol_specs: HashMap<u32, CoreMarketSpecification>,
     kafka_broker: String,
     replay: bool,
+    environment: vex_config::environment::Environment,
 ) -> EngineResult<((CoreEngine, OrderProducer), ReplayControl)> {
     let replay_control = if replay {
         ReplayControl::enabled()
@@ -113,12 +113,19 @@ pub fn init_internal(
         replay_control.clone(),
     );
 
+    // Use no-pinning for Development environment to avoid CPU affinity issues
+    let core_pinning = if matches!(environment, vex_config::environment::Environment::Development) {
+        None
+    } else {
+        Some(engine::CorePinning::default())
+    };
+
     let engine = CoreEngine::new(
         symbol_specs,
         journaling_processor,
         events_handler,
         publications,
-        CorePinning::default(),
+        core_pinning,
     )?;
 
     Ok((engine, replay_control))
