@@ -225,6 +225,11 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     ///    All the contraints are NOT checked in the ORDERBOOK, must be guaranteed by upstream systems
     ///    They are not included here to avoid redundant checks that are already made
     pub fn place_order(&mut self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) {
+        // Skip processing if the order is already rejected
+        if cmd.status == Status::Rejected {
+            return;
+        }
+
         match cmd.time_in_force {
             TimeInForce::Gtc => {
                 // Handle GTC (Good 'Til Canceled) orders
