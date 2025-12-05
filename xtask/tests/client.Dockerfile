@@ -38,11 +38,12 @@ RUN cargo build --release --bin test_client --package xtask
 
 # ---- Final Stage ----
 FROM --platform=$BUILDPLATFORM debian:bookworm-slim
-# Install runtime dependencies for Aeron C++ libraries
+# Install runtime dependencies for Aeron C++ libraries and iproute2 for tc (traffic control) in e2e tests
 RUN apt-get update && apt-get install -y \
     libbsd0 \
     libstdc++6 \
     libgcc-s1 \
+    iproute2 \
     && rm -rf /var/lib/apt/lists/*
 # Copy the built test client binary
 COPY --from=builder /usr/src/app/target/release/test_client /usr/local/bin/test_client
