@@ -79,6 +79,7 @@ pub fn start(config: VexConfig, replay: bool) -> Result<RunningEngine, EngineErr
         config.symbols.symbols.clone(),
         config.kafka_broker.clone(),
         replay,
+        config.core_networking.enable_core_pinning,
     )?;
 
     // Balance preload for test/local environments
@@ -126,6 +127,7 @@ pub fn init_internal(
     symbol_specs: HashMap<u32, CoreMarketSpecification>,
     kafka_broker: String,
     replay: bool,
+    enable_core_pinning: bool,
 ) -> EngineResult<((CoreEngine, OrderProducer), ReplayControl)> {
     let replay_control = if replay {
         ReplayControl::enabled()
@@ -147,6 +149,7 @@ pub fn init_internal(
         events_handler,
         publications,
         CorePinning::default(),
+        enable_core_pinning,
     )?;
 
     Ok((engine, replay_control))

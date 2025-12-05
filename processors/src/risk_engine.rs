@@ -219,19 +219,15 @@ impl RiskEngine {
         // --- Price Improvement Refund Logic (for Taker only) ---
         // If the taker gets a better price than their limit, refund the difference.
         if !is_maker
-            && let Some(limit_price) = taker_price &&
-                // Price improvement only applies to BID orders where QUOTE currency was locked.
-                 user_side == Side::Bid
+            && let Some(limit_price) = taker_price
+            && user_side == Side::Bid // Price improvement only applies to BID orders where QUOTE currency was locked.
         {
             let execution_price = event.price;
-
-                    if execution_price < limit_price {
-                        let price_diff = limit_price - execution_price;
-                        let refund_amount = spec.calculate_quote_cost(price_diff, event.size);
-                        // Move the saved amount from 'locked' back to 'available'.
-                        store.unlock_funds(user_id, quote_asset(market_id), refund_amount)?;
-                    }
-                }
+            if execution_price < limit_price {
+                let price_diff = limit_price - execution_price;
+                let refund_amount = spec.calculate_quote_cost(price_diff, event.size);
+                // Move the saved amount from 'locked' back to 'available'.
+                store.unlock_funds(user_id, quote_asset(market_id), refund_amount)?;
             }
         }
 

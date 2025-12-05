@@ -37,6 +37,14 @@ pub struct CoreNetworkingConfig {
     pub request_control_channel: String,
     pub response_control_channel: String,
     pub recording_events_channel: String,
+    /// CPU core pinning for processor threads
+    /// Disabled by default in development/test, enabled in production.
+    #[serde(default = "default_enable_core_pinning")]
+    pub enable_core_pinning: bool,
+}
+
+fn default_enable_core_pinning() -> bool {
+    false
 }
 
 impl CoreNetworkingConfig {
@@ -68,6 +76,7 @@ impl CoreNetworkingConfig {
             request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
             response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
             recording_events_channel: "aeron:udp?endpoint=localhost:0".to_string(),
+            enable_core_pinning: false,
         }
     }
 
@@ -90,6 +99,7 @@ impl CoreNetworkingConfig {
             request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
             response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
             recording_events_channel: "aeron:udp?endpoint=localhost:0".to_string(),
+            enable_core_pinning: false,
         }
     }
 
@@ -112,6 +122,7 @@ impl CoreNetworkingConfig {
             request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
             response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
             recording_events_channel: "aeron:udp?endpoint=localhost:8012".to_string(),
+            enable_core_pinning: true,
         }
     }
 
