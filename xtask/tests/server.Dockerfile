@@ -38,6 +38,12 @@ RUN cargo build --release --bin test_server --package xtask
 
 # ---- Final Stage ----
 FROM --platform=$BUILDPLATFORM debian:bookworm-slim
+# Install runtime dependencies for Aeron C++ libraries
+RUN apt-get update && apt-get install -y \
+    libbsd0 \
+    libstdc++6 \
+    libgcc-s1 \
+    && rm -rf /var/lib/apt/lists/*
 # Copy the built test server binary
 COPY --from=builder /usr/src/app/target/release/test_server /usr/local/bin/test_server
 # Copy the Aeron media driver and the entrypoint script
