@@ -106,10 +106,10 @@ pub struct VexCoreServer {
     handshake_handler: Handler<HandshakeMessageHandler>,
     /// Subscription for handshake messages
     subscription: AeronSubscription,
-    /// Archive Client
-    archive: AeronArchive,
-    /// Subscription ID for recording
-    subscription_id: i64,
+    /// Archive Client (optional, only when archiving is enabled)
+    archive: Option<AeronArchive>,
+    /// Subscription ID for recording (optional, only when archiving is enabled)
+    subscription_id: Option<i64>,
 }
 
 impl VexCoreServer {
@@ -127,44 +127,56 @@ impl VexCoreServer {
         // Initialize Aeron context
         let aeron = Self::initialize_aeron(&config)?;
 
-        // Initialize Aeron Archive
-        let archive = Self::initialize_archive(&config, &aeron)?;
+        // Initialize Aeron Archive (only if enabled)
+        let (archive, subscription_id) = if config.enable_archiving {
+            let archive = Self::initialize_archive(&config, &aeron)?;
 
-        // Replay
-        let recording = if replay {
-            Self::start_replay(&aeron, &archive, producer.clone(), Arc::clone(&shutdown))?
-        } else {
-            None
-        };
+            // Replay
+            let recording = if replay {
+                Self::start_replay(&aeron, &archive, producer.clone(), Arc::clone(&shutdown))?
+            } else {
+                None
+            };
 
-        // Start recording
-        let (subscription_id, channel) = Self::start_recording(&archive, recording)?;
+            // Start recording
+            let (subscription_id, channel) = Self::start_recording(&archive, recording)?;
 
-        // Publisher for Recording the incoming messages
-        let archive_publication = aeron.add_publication(
-            &channel.into_c_string(),
-            RECORDING_STREAM_ID,
-            Duration::from_secs(1),
-        )?;
+            // Publisher for Recording the incoming messages
+            let archive_publication = aeron.add_publication(
+                &channel.into_c_string(),
+                RECORDING_STREAM_ID,
+                Duration::from_secs(1),
+            )?;
 
-        // wait for publication to be connected
-        while !archive_publication.is_connected() {
-            std::thread::sleep(Duration::from_millis(100));
+            // wait for publication to be connected
+            while !archive_publication.is_connected() {
+                std::thread::sleep(Duration::from_millis(100));
+                info!(
+                    target: "core_server",
+                    action = "archive_publication_wait",
+                    core_id = %config.core_id
+                );
+            }
+
+            publications.set_archive_publication(archive_publication);
+
             info!(
                 target: "core_server",
-                action = "archive_publication_wait",
+                action = "initialized",
+                archive_recording = true,
                 core_id = %config.core_id
             );
-        }
 
-        publications.set_archive_publication(archive_publication);
-
-        info!(
-            target: "core_server",
-            action = "initialized",
-            archive_recording = true,
-            core_id = %config.core_id
-        );
+            (Some(archive), Some(subscription_id))
+        } else {
+            info!(
+                target: "core_server",
+                action = "initialized",
+                archive_recording = false,
+                core_id = %config.core_id
+            );
+            (None, None)
+        };
 
         let image_available_handler = Handler::leak(GatewayImageAvailableHandler);
         let image_unavailable_handler = Handler::leak(GatewayImageUnavailableHandler);
@@ -266,9 +278,12 @@ impl VexCoreServer {
         self.image_available_handler.release();
         self.image_unavailable_handler.release();
         self.handshake_handler.release();
-        self.archive
-            .stop_recording_subscription(self.subscription_id)?;
-        self.archive.close()?;
+
+        // Stop recording and close archive if enabled
+        if let (Some(archive), Some(subscription_id)) = (&self.archive, self.subscription_id) {
+            archive.stop_recording_subscription(subscription_id)?;
+            archive.close()?;
+        }
 
         info!(
             target: "core_server",
