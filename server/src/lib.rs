@@ -210,7 +210,15 @@ pub mod test {
                 .collect::<Vec<_>>(),
         );
 
-        let (_engine, producer) = TestEngineBuilder::new()
+        // Check VEX_ENV to determine if CPU pinning should be disabled
+        let mut builder = TestEngineBuilder::new();
+        if let Ok(env) = std::env::var("VEX_ENV") {
+            if env.to_lowercase() == "dev" || env.to_lowercase() == "development" {
+                builder = builder.without_cpu_pinning();
+            }
+        }
+
+        let (_engine, producer) = builder
             .with_symbol_specs(specs)
             .with_journaling_processor(JournalingProcessor::new(
                 Arc::clone(&publications),

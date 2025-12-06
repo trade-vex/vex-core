@@ -473,7 +473,7 @@ pub mod test {
         journaling_processor: Option<JournalingProcessor>,
         events_handler: Option<Box<dyn EventsHandler>>,
         publications: Option<Arc<Publications>>,
-        core_pinning: TestCorePinning,
+        core_pinning: Option<TestCorePinning>,
         test_handler: Option<TestHandler>,
         risk_engines: Option<RiskEngines>,
     }
@@ -486,17 +486,24 @@ pub mod test {
                 journaling_processor: None,
                 events_handler: None,
                 publications: None,
-                core_pinning: TestCorePinning {
+                core_pinning: Some(TestCorePinning {
                     journaling: 1,
                     risk_engines: [2, 3, 4, 5],
                     matching_engines: [6, 7, 8, 9],
                     risk_r2_engines: [10, 11, 12, 13],
                     events: 14,
                     test_handler: 15,
-                },
+                }),
                 test_handler: None,
                 risk_engines: None,
             }
+        }
+
+        /// Disables CPU pinning for this test (useful for environments without enough cores)
+        #[must_use]
+        pub fn without_cpu_pinning(mut self) -> Self {
+            self.core_pinning = None;
+            self
         }
 
         /// Sets the symbol specifications for markets
@@ -630,18 +637,31 @@ pub mod test {
                 };
 
             let producer = if let Some(test_handler) = test_handler {
-                self.build_test_pipeline(
-                    BUFFER_SIZE,
-                    order_factory,
-                    journaling_handler,
-                    &risk_engines_arc,
-                    &price_cache,
-                    &mut router_handlers_iter,
-                    events_handler,
-                    test_handler,
-                    core_pinning,
-                )
-            } else {
+                if let Some(pinning) = core_pinning {
+                    self.build_test_pipeline(
+                        BUFFER_SIZE,
+                        order_factory,
+                        journaling_handler,
+                        &risk_engines_arc,
+                        &price_cache,
+                        &mut router_handlers_iter,
+                        events_handler,
+                        test_handler,
+                        pinning,
+                    )
+                } else {
+                    self.build_test_pipeline_no_pinning(
+                        BUFFER_SIZE,
+                        order_factory,
+                        journaling_handler,
+                        &risk_engines_arc,
+                        &price_cache,
+                        &mut router_handlers_iter,
+                        events_handler,
+                        test_handler,
+                    )
+                }
+            } else if let Some(pinning) = core_pinning {
                 CoreEngine::build_disruptor_pipeline(
                     BUFFER_SIZE,
                     order_factory,
@@ -650,7 +670,23 @@ pub mod test {
                     &price_cache,
                     &mut router_handlers_iter,
                     events_handler,
-                    CorePinning::default(),
+                    CorePinning {
+                        journaling: pinning.journaling,
+                        risk_engines: pinning.risk_engines,
+                        matching_engines: pinning.matching_engines,
+                        risk_r2_engines: pinning.risk_r2_engines,
+                        events: pinning.events,
+                    },
+                )
+            } else {
+                CoreEngine::build_disruptor_pipeline_no_pinning(
+                    BUFFER_SIZE,
+                    order_factory,
+                    journaling_handler,
+                    &risk_engines_arc,
+                    &price_cache,
+                    &mut router_handlers_iter,
+                    events_handler,
                 )
             };
 
@@ -708,6 +744,44 @@ pub mod test {
                 .handle_events_with(events_handler)
                 .and_then()
                 .pin_at_core(core_pinning.test_handler)
+                .handle_events_with(test_handler)
+                .build()
+        }
+
+        /// Builds the test-specific disruptor pipeline without CPU pinning
+        #[allow(clippy::too_many_arguments)]
+        fn build_test_pipeline_no_pinning(
+            &self,
+            buffer_size: usize,
+            order_factory: fn() -> OrderCommand,
+            journaling_handler: impl FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
+            risk_engines: &RiskEngines,
+            price_cache: &Arc<PriceCache>,
+            router_handlers_iter: &mut impl Iterator<
+                Item = impl FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
+            >,
+            events_handler: impl FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
+            test_handler: TestHandler,
+        ) -> OrderProducer {
+            build_multi_producer(buffer_size, order_factory, BusySpin)
+                .handle_events_with(journaling_handler)
+                .handle_events_with(create_risk_handler!(0, risk_engines, price_cache))
+                .handle_events_with(create_risk_handler!(1, risk_engines, price_cache))
+                .handle_events_with(create_risk_handler!(2, risk_engines, price_cache))
+                .handle_events_with(create_risk_handler!(3, risk_engines, price_cache))
+                .and_then()
+                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
+                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
+                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
+                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
+                .and_then()
+                .handle_events_with(create_risk_r2_handler!(0, risk_engines))
+                .handle_events_with(create_risk_r2_handler!(1, risk_engines))
+                .handle_events_with(create_risk_r2_handler!(2, risk_engines))
+                .handle_events_with(create_risk_r2_handler!(3, risk_engines))
+                .and_then()
+                .handle_events_with(events_handler)
+                .and_then()
                 .handle_events_with(test_handler)
                 .build()
         }
