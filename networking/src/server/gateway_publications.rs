@@ -40,7 +40,7 @@ impl Publications {
     // Publisher (event handler thread)
     pub fn publish_response(&self, cmd: &OrderCommand) {
         let gateway_id = cmd.route_gateway_id;
-        if (gateway_id as usize) > MAX_GATEWAYS {
+        if (gateway_id as usize) >= MAX_GATEWAYS {
             error!("gateway-{}: invalid gateway id to send response", gateway_id);
             return;
         }
