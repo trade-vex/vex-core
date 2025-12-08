@@ -18,8 +18,6 @@ use vex_networking::server::Publications;
 // Re-export for convenience
 pub use engine::EngineError;
 
-use crate::engine::CorePinning;
-
 pub struct RunningEngine {
     thread: JoinHandle<Result<(), EngineError>>,
     shutdown_flag: Arc<AtomicBool>,
@@ -143,6 +141,16 @@ pub fn init_internal(
         replay_control.clone(),
     );
 
+    // Use no-pinning for Development environment to avoid CPU affinity issues
+    let core_pinning = if matches!(
+        environment,
+        vex_config::environment::Environment::Development
+    ) {
+        None
+    } else {
+        Some(engine::CorePinning::default())
+    };
+
     let engine = CoreEngine::new(
         symbol_specs,
         journaling_processor,
@@ -231,7 +239,16 @@ pub mod test {
                 .collect::<Vec<_>>(),
         );
 
-        let (_engine, producer) = TestEngineBuilder::new()
+        // Check VEX_ENV to determine if CPU pinning should be disabled
+        let mut builder = TestEngineBuilder::new();
+        if matches!(
+            std::env::var("VEX_ENV"),
+            Ok(env) if env.to_lowercase() == "dev" || env.to_lowercase() == "development"
+        ) {
+            builder = builder.without_cpu_pinning();
+        }
+
+        let (_engine, producer) = builder
             .with_symbol_specs(specs)
             .with_journaling_processor(JournalingProcessor::new(
                 Arc::clone(&publications),

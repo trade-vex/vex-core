@@ -498,7 +498,7 @@ pub mod test {
         journaling_processor: Option<JournalingProcessor>,
         events_handler: Option<Box<dyn EventsHandler>>,
         publications: Option<Arc<Publications>>,
-        core_pinning: TestCorePinning,
+        core_pinning: Option<TestCorePinning>,
         test_handler: Option<TestHandler>,
         risk_engines: Option<RiskEngines>,
     }
@@ -511,17 +511,24 @@ pub mod test {
                 journaling_processor: None,
                 events_handler: None,
                 publications: None,
-                core_pinning: TestCorePinning {
+                core_pinning: Some(TestCorePinning {
                     journaling: 1,
                     risk_engines: [2, 3, 4, 5],
                     matching_engines: [6, 7, 8, 9],
                     risk_r2_engines: [10, 11, 12, 13],
                     events: 14,
                     test_handler: 15,
-                },
+                }),
                 test_handler: None,
                 risk_engines: None,
             }
+        }
+
+        /// Disables CPU pinning for this test (useful for environments without enough cores)
+        #[must_use]
+        pub fn without_cpu_pinning(mut self) -> Self {
+            self.core_pinning = None;
+            self
         }
 
         /// Sets the symbol specifications for markets
@@ -616,7 +623,7 @@ pub mod test {
             publications: Arc<Publications>,
             test_handler: Option<TestHandler>,
             risk_engines: Option<RiskEngines>,
-            core_pinning: TestCorePinning,
+            core_pinning: Option<TestCorePinning>,
         ) -> EngineResult<(CoreEngine, OrderProducer)> {
             let price_cache = Arc::new(PriceCache::new(symbol_specs.keys()));
             let order_factory = OrderCommand::default;
@@ -655,7 +662,32 @@ pub mod test {
                 };
 
             let producer = if let Some(test_handler) = test_handler {
-                self.build_test_pipeline(
+                if let Some(pinning) = core_pinning {
+                    self.build_test_pipeline(
+                        BUFFER_SIZE,
+                        order_factory,
+                        journaling_handler,
+                        &risk_engines_arc,
+                        &price_cache,
+                        &mut router_handlers_iter,
+                        events_handler,
+                        test_handler,
+                        pinning,
+                    )
+                } else {
+                    self.build_test_pipeline_no_pinning(
+                        BUFFER_SIZE,
+                        order_factory,
+                        journaling_handler,
+                        &risk_engines_arc,
+                        &price_cache,
+                        &mut router_handlers_iter,
+                        events_handler,
+                        test_handler,
+                    )
+                }
+            } else if let Some(pinning) = core_pinning {
+                CoreEngine::build_disruptor_pipeline(
                     BUFFER_SIZE,
                     order_factory,
                     journaling_handler,
@@ -668,7 +700,7 @@ pub mod test {
                     false, // Tests don't use pinning
                 )
             } else {
-                CoreEngine::build_disruptor_pipeline(
+                CoreEngine::build_disruptor_pipeline_no_pinning(
                     BUFFER_SIZE,
                     order_factory,
                     journaling_handler,

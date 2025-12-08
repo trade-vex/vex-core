@@ -65,8 +65,8 @@ impl AeronAvailableImageCallback for GatewayImageAvailableHandler {
         _subscription: AeronSubscription,
         image: AeronImage,
     ) {
-        let session_id = match image.get_constants() {
-            Ok(b) => b.session_id,
+        let (session_id, binding) = match image.get_constants() {
+            Ok(b) => (b.session_id, b),
             Err(e) => {
                 error!(
                     target: "gateway_handler",
@@ -76,7 +76,6 @@ impl AeronAvailableImageCallback for GatewayImageAvailableHandler {
                 return;
             }
         };
-        let binding = image.get_constants().unwrap();
         let address = binding.source_identity();
 
         debug!(
