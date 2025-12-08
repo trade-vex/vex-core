@@ -464,12 +464,20 @@ fn run_test_suite(root: &Path, suite: &str) -> Result<(), XTaskError> {
 
     // Run the test suite binary directly on the host
     println!("Running test suite binary...");
-    let output = cmd!("cargo", "run", "--package", "xtask", "--bin", "run_test_suite", suite)
-        .dir(root)
-        .stdout_capture()
-        .stderr_capture()
-        .unchecked()
-        .run();
+    let output = cmd!(
+        "cargo",
+        "run",
+        "--package",
+        "xtask",
+        "--bin",
+        "run_test_suite",
+        suite
+    )
+    .dir(root)
+    .stdout_capture()
+    .stderr_capture()
+    .unchecked()
+    .run();
 
     // Print output
     if let Ok(ref result) = output {
