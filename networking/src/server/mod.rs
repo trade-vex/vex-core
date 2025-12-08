@@ -64,7 +64,7 @@ const ALL_GATEWAYS_STREAM_ID: i32 = 1001;
 
 /// Recording stream ID for Aeron Archive
 const RECORDING_STREAM_ID: i32 = 2001;
-/// Replay Stram ID for Aeron Archive
+/// Replay Stream ID for Aeron Archive
 pub const REPLAY_STREAM_ID: i32 = 2002;
 /// Channel for Aeron Recording also known as Aeron Control Channel
 const RECORDING_CHANNEL: &str = "aeron:ipc";
@@ -230,7 +230,7 @@ impl VexCoreServer {
         );
 
         // Main Message Polling Loop
-        // 1. Listens for new handhakes
+        // 1. Listens for new handshakes
         // 2. Listens for new orders
         loop {
             if self.shutdown.load(Ordering::Acquire) {
@@ -457,15 +457,28 @@ impl VexCoreServer {
             }
 
             let mut position = record.start_position;
-            while let fragaments_read = subscription.poll(Some(&message_handler), 1)?
-                && position < record.stop_position
-                && !shutdown.load(Ordering::Acquire)
-            {
-                if fragaments_read == 0 {
+            loop {
+                // Check shutdown condition
+                if shutdown.load(Ordering::Acquire) {
+                    break;
+                }
+
+                // Check position condition
+                if position >= record.stop_position {
+                    break;
+                }
+
+                // Poll subscription and handle Result
+                let fragments_read = subscription.poll(Some(&message_handler), 1)?;
+
+                // If zero fragments, run idle strategy and continue
+                if fragments_read == 0 {
                     AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
                     continue;
                 }
-                position += FRAMESIZE;
+
+                // Otherwise, increment position by the number of fragments processed
+                position += fragments_read as i64 * FRAMESIZE;
                 debug!(
                     target: "replay",
                     action = "position_advanced",
