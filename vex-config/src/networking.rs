@@ -378,8 +378,8 @@ mod tests {
         assert!(test_config.enable_authentication);
         assert!(prod_config.enable_authentication);
 
-        assert_eq!(dev_config.initial_port, 3521);
-        assert_eq!(test_config.initial_port, 3521);
+        assert_eq!(dev_config.initial_port, 40001);
+        assert_eq!(test_config.initial_port, 40001);
         assert_eq!(prod_config.initial_port, 3521);
     }
 }

@@ -18,7 +18,7 @@
 //! ```no_run
 //! use xtask::test_framework::TestContext;
 //! use xtask::builders::OrderBuilder;
-//! use common::{Side, TimeInForce};
+//! use common::Side;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create test context
@@ -33,7 +33,6 @@
 //!     .price(50000)
 //!     .size(10)
 //!     .side(Side::Bid)
-//!     .time_in_force(TimeInForce::Gtc)
 //!     .market_id(ctx.market_id)
 //!     .build();
 //!
