@@ -144,10 +144,7 @@ pub fn init_internal(
     );
 
     // Use no-pinning for Development environment to avoid CPU affinity issues
-    let core_pinning = if matches!(
-        environment,
-        vex_config::Environment::Development
-    ) {
+    let core_pinning = if matches!(environment, vex_config::Environment::Development) {
         None
     } else {
         Some(engine::CorePinning::default())

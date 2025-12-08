@@ -27,7 +27,7 @@ pub enum SnowflakeError {
     MachineIdOutOfRange,
     SequenceOverflow,
     EpochInTheFuture,
-    EpochTooOld,      // Triggered if Epoch is > ~9 years old
+    EpochTooOld, // Triggered if Epoch is > ~9 years old
     TimeBackwards,
     TimestampOverflow, // Triggered if running > ~9 years
 }
@@ -66,11 +66,11 @@ impl Error for SnowflakeError {}
 /// Uses Shift-10 encoding: nanoseconds are right-shifted by 10 bits (divided by 1024) to fit
 /// ~9.13 years of time range into 48 bits. This provides ~1.024 microsecond resolution.
 pub struct Snowflake {
-    start_time: Instant,      // Monotonic clock for duration measurement
-    start_system_ns: u64,     // Wall-clock start time
-    epoch_ns: u64,            // Configured epoch
-    last_tick: u64,           // Last used time bucket (Shifted value)
-    sequence: u16,            // Sequence within the bucket
+    start_time: Instant,  // Monotonic clock for duration measurement
+    start_system_ns: u64, // Wall-clock start time
+    epoch_ns: u64,        // Configured epoch
+    last_tick: u64,       // Last used time bucket (Shifted value)
+    sequence: u16,        // Sequence within the bucket
 }
 
 impl Snowflake {
@@ -172,7 +172,7 @@ impl Snowflake {
                 if current > last_tick {
                     return Ok(current);
                 }
-                std::hint::spin_loop(); 
+                std::hint::spin_loop();
             }
 
             // Fall back to yield if spinning too long
@@ -194,7 +194,7 @@ impl Snowflake {
     }
 
     /// Returns the current system time in nanoseconds since Unix epoch
-    /// This is used for external timestamping 
+    /// This is used for external timestamping
     pub fn timestamp(&self) -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
