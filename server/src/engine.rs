@@ -598,7 +598,7 @@ pub mod test {
             publications: Arc<Publications>,
             test_handler: Option<TestHandler>,
             risk_engines: Option<RiskEngines>,
-            core_pinning: TestCorePinning,
+            core_pinning: Option<TestCorePinning>,
         ) -> EngineResult<(CoreEngine, OrderProducer)> {
             let price_cache = Arc::new(PriceCache::new(symbol_specs.keys()));
             let order_factory = OrderCommand::default;
