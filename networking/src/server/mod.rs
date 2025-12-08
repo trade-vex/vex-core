@@ -38,7 +38,9 @@ use crate::server::gateway_handler::{
     GatewayImageAvailableHandler, GatewayImageUnavailableHandler, HandshakeMessageHandler,
 };
 use crate::server::gateway_manager::GatewayManager;
-use crate::server::replay::{ActiveRecordingReader, ExtendedRecordingDescriptor, RecorderDescriptorReader};
+use crate::server::replay::{
+    ActiveRecordingReader, ExtendedRecordingDescriptor, RecorderDescriptorReader,
+};
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
 use common::{FRAMESIZE, OrderCommand};
 use disruptor::{MultiProducer, SingleConsumerBarrier};
@@ -367,7 +369,7 @@ impl VexCoreServer {
                     RECORDING_STREAM_ID,
                     Some(&active_reader),
                 )?;
-                
+
                 if let Some(active_record) = &active_reader.active_recording {
                     info!(
                         target: "recording",
@@ -406,7 +408,7 @@ impl VexCoreServer {
                                     error = %error_msg,
                                     "Archive reports recording exists, treating as active recording"
                                 );
-                                
+
                                 // When Archive says "recording exists", it means there's an active recording
                                 // that we can't query via list_recordings_for_uri. We'll proceed with
                                 // the assumption that an active recording exists and use it.

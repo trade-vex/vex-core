@@ -440,9 +440,8 @@ impl EventsHandler for KafkaEventsHandler {
                     curr_event = event.next_event.as_deref();
                 }
                 // Calculate original size: filled_size + remaining_size
-                let original_size = cmd.events()
-                    .map(|e| e.calc_filled_size())
-                    .unwrap_or(0) + cmd.size();
+                let original_size =
+                    cmd.events().map(|e| e.calc_filled_size()).unwrap_or(0) + cmd.size();
                 // Publish balance event for the taker
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
                 // Publish taker order event with original size

@@ -508,7 +508,11 @@ impl GatewayManager {
         // Get ports before removing the session
         let ports_to_free = {
             let guard = self.gateway_sessions.read().unwrap();
-            if let Some(slot) = guard.slots.get(gateway_id as usize).and_then(|s| s.as_ref()) {
+            if let Some(slot) = guard
+                .slots
+                .get(gateway_id as usize)
+                .and_then(|s| s.as_ref())
+            {
                 vec![slot.port_data, slot.port_control]
             } else {
                 vec![]
