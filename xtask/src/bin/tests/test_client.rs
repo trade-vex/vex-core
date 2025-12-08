@@ -2,6 +2,9 @@ use clap::{Parser, Subcommand};
 use common::{OrderCommand, UserBalance};
 use common::{OrderCommandType, Side, TimeInForce};
 use hdrhistogram::Histogram;
+use std::collections::HashSet;
+use std::fs::File;
+use std::io::Write;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 use vex_config::GatewayNetworkingConfig;
@@ -36,18 +39,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Read configuration from environment variables provided by docker-compose
     // start logging
     tracing_subscriber::fmt::init();
-    // let server_host = env::var("VEX_SERVER_HOST").unwrap_or("127.0.0.1".to_string());
-    // let server_port: u16 = env::var("VEX_SERVER_PORT")?.parse()?;
-    // // let sleep_duration = if args.rate > 0 { Duration::from_micros(1_000_000 / args.rate) } else { Duration::ZERO };
+    let server_host = std::env::var("VEX_SERVER_HOST").unwrap_or("127.0.0.1".to_string());
+    let server_port: u16 = std::env::var("VEX_SERVER_PORT")
+        .unwrap_or("3521".to_string())
+        .parse()?;
 
-    // println!("Client starting. Attempting to connect to {server_host}:{server_port}");
+    println!("Client starting. Attempting to connect to {server_host}:{server_port}");
 
     let mut client_config = GatewayNetworkingConfig::test_defaults(); // Use your test defaults
-    // client_config.context_dir =
-    //     env::var("VEX_CONTEXT_DIR").unwrap_or("/dev/shm/aeron-test-client".to_string());
-    // client_config.core_address = server_host;
-    // client_config.core_port = server_port;
-    // client_config.core_control_port = server_port + 1;
+    client_config.core_address = server_host;
+    client_config.core_port = server_port;
+    client_config.core_control_port = server_port + 1;
     client_config.gateway_id = args.client_id as u8;
 
     let mut client = VexGateway::new(client_config)?;
@@ -60,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The client's main loop to send commands
     match args.mode {
         Mode::Correctness { count } => {
-            run_correctness_test(&publisher, count, args.client_id)?;
+            run_correctness_test(&publisher, &mut rx, count, args.client_id)?;
         }
         Mode::Latency { samples } => {
             // For this to work, the client needs a way to receive acks.
@@ -74,6 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_correctness_test(
     client: &Publisher,
+    rx: &mut Receiver<OrderCommand>,
     count: u64,
     client_id: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -82,6 +85,9 @@ fn run_correctness_test(
     let quote_asset_id = 1;
     // Market ID: base asset in lower 16 bits, quote in upper 16
     let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
+
+    let mut received_ids = HashSet::new();
+
     for i in 0..count {
         let order_command = OrderCommand {
             client_order_id: i,
@@ -98,12 +104,43 @@ fn run_correctness_test(
             events: None,
             balance: [UserBalance::default(); 2],
             l2_data: None,
-            route_gateway_id: 0
+            route_gateway_id: 0,
         };
         client.send_order_command(&order_command)?;
     }
-    println!("Client finished sending.");
-    // std::thread::sleep(Duration::from_secs(2));
+    println!("Client-{client_id} finished sending, waiting for responses...");
+
+    // Wait for all responses with a timeout
+    let start = Instant::now();
+    let timeout = Duration::from_secs(30);
+
+    while received_ids.len() < count as usize && start.elapsed() < timeout {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(response) => {
+                received_ids.insert(response.client_order_id);
+                if received_ids.len() % 100 == 0 {
+                    println!(
+                        "Client-{client_id} received {}/{count} responses",
+                        received_ids.len()
+                    );
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+
+    println!(
+        "Client-{client_id} received {}/{count} responses",
+        received_ids.len()
+    );
+
+    // Write received IDs to file
+    let mut file = File::create("/results/received_ids.txt")?;
+    for id in &received_ids {
+        writeln!(file, "{}", client_id * 1_000_000 + id)?;
+    }
+
+    println!("Client-{client_id} finished.");
     Ok(())
 }
 

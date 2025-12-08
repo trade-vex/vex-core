@@ -119,7 +119,7 @@ impl KafkaEventsHandler {
             };
 
             let topic_name = "balances";
-            self.publish_event(&topic_name, &user_id.to_string(), &balance_event);
+            self.publish_event(topic_name, &user_id.to_string(), &balance_event);
             debug!(
                 target: "events",
                 component = "kafka_handler",
@@ -145,7 +145,7 @@ impl KafkaEventsHandler {
         };
 
         let topic_name = "balances";
-        self.publish_event(&topic_name, &cmd.user_id.to_string(), &balance_event);
+        self.publish_event(topic_name, &cmd.user_id.to_string(), &balance_event);
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -177,7 +177,7 @@ impl KafkaEventsHandler {
         };
 
         let topic_name = "orders";
-        self.publish_event(&topic_name, &cmd.order_id().to_string(), &order_event);
+        self.publish_event(topic_name, &cmd.order_id().to_string(), &order_event);
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -210,7 +210,7 @@ impl KafkaEventsHandler {
 
         let topic_name = "trades";
         let trade_key = format!("{}:{}", taker_order_id, event.matched_order_id);
-        self.publish_event(&topic_name, &trade_key, &trade_event);
+        self.publish_event(topic_name, &trade_key, &trade_event);
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -232,7 +232,7 @@ impl KafkaEventsHandler {
         };
 
         let topic_name = "cancels";
-        self.publish_event(&topic_name, &cmd.order_id().to_string(), &cancel_event);
+        self.publish_event(topic_name, &cmd.order_id().to_string(), &cancel_event);
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -274,7 +274,7 @@ impl KafkaEventsHandler {
             };
 
             let topic_name = "orderbook";
-            self.publish_event(&topic_name, &market_id.to_string(), &orderbook_event);
+            self.publish_event(topic_name, &market_id.to_string(), &orderbook_event);
 
             debug!(
                 target: "events",
@@ -295,7 +295,7 @@ impl KafkaEventsHandler {
         };
 
         let topic_name = "deposits";
-        self.publish_event(&topic_name, &cmd.user_id().to_string(), &deposit_event);
+        self.publish_event(topic_name, &cmd.user_id().to_string(), &deposit_event);
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -316,7 +316,7 @@ impl KafkaEventsHandler {
         };
 
         let topic_name = "withdrawals";
-        self.publish_event(&topic_name, &cmd.user_id().to_string(), &withdraw_event);
+        self.publish_event(topic_name, &cmd.user_id().to_string(), &withdraw_event);
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -440,9 +440,8 @@ impl EventsHandler for KafkaEventsHandler {
                     curr_event = event.next_event.as_deref();
                 }
                 // Calculate original size: filled_size + remaining_size
-                let original_size = cmd.events()
-                    .map(|e| e.calc_filled_size())
-                    .unwrap_or(0) + cmd.size();
+                let original_size =
+                    cmd.events().map(|e| e.calc_filled_size()).unwrap_or(0) + cmd.size();
                 // Publish balance event for the taker
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
                 // Publish taker order event with original size

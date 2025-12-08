@@ -251,7 +251,12 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                     cmd.set_status(Status::Cancelled);
                 } else {
                     let remaining = self.match_order(cmd);
-                    cmd.set_status(Status::Filled);
+                    // Double-check in case self-trade prevention caused incomplete fill
+                    cmd.set_status(if remaining == 0 {
+                        Status::Filled
+                    } else {
+                        Status::Cancelled
+                    });
                     cmd.set_size(remaining);
                 }
             }
@@ -357,10 +362,18 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 // Check against asks
                 for (price, level) in self.asks.iter() {
                     if Self::is_market_order(cmd) || price <= cmd.price {
-                        if level.total_volume >= remaining {
+                        // Account for self-trade prevention by filtering out orders from the same user
+                        let available_volume = level
+                            .orders
+                            .iter()
+                            .filter(|order| order.user_id != cmd.user_id)
+                            .map(|order| order.size)
+                            .sum::<u64>();
+
+                        if available_volume >= remaining {
                             return true;
                         }
-                        remaining -= level.total_volume;
+                        remaining -= available_volume;
                     } else {
                         break;
                     }
@@ -370,10 +383,18 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 // Check against bids
                 for (price, level) in self.bids.iter() {
                     if Self::is_market_order(cmd) || price >= cmd.price {
-                        if level.total_volume >= remaining {
+                        // Account for self-trade prevention by filtering out orders from the same user
+                        let available_volume = level
+                            .orders
+                            .iter()
+                            .filter(|order| order.user_id != cmd.user_id)
+                            .map(|order| order.size)
+                            .sum::<u64>();
+
+                        if available_volume >= remaining {
                             return true;
                         }
-                        remaining -= level.total_volume;
+                        remaining -= available_volume;
                     } else {
                         break;
                     }

@@ -22,15 +22,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // config.core_networking.local_address = "0.0.0.0".to_string();
     config.core_networking.context_dir = "/tmp/aeron".to_string();
-    config.kafka_broker = std::env::var("KAFKA_BROKER")
-    .unwrap_or_else(|_| "localhost:9092".to_string());
-    
+    config.kafka_broker =
+        std::env::var("KAFKA_BROKER").unwrap_or_else(|_| "localhost:9092".to_string());
+
     if let Ok(pinning_str) = std::env::var("ENABLE_CORE_PINNING") {
         if let Ok(pinning_value) = pinning_str.parse::<bool>() {
             config.core_networking.enable_core_pinning = pinning_value;
         }
     }
-    
+
     if config.core_networking.enable_core_pinning {
         info!(
             target: "server_main",
@@ -39,12 +39,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     } else {
         info!(
-            target: "server_main", 
+            target: "server_main",
             action = "cpu_pinning_disabled",
             "CPU core pinning is DISABLED (suitable for development/testing)"
         );
     }
-    
+
     info!("CORE CONFIG 226: {:?}", config);
 
     info!(

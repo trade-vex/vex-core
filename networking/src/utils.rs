@@ -319,9 +319,10 @@ impl PortAllocator {
             let port = rng.gen_range(self.low..=self.high);
 
             // Check if port is not in use, not in cooldown, and not already in result
-            if !ports_in_use.contains(&port) 
-                && !recently_freed.contains(&port) 
-                && !result.contains(&port) {
+            if !ports_in_use.contains(&port)
+                && !recently_freed.contains(&port)
+                && !result.contains(&port)
+            {
                 result.push(port);
             }
 

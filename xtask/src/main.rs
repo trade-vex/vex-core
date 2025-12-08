@@ -453,36 +453,57 @@ fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
 fn run_test_suite(root: &Path, suite: &str) -> Result<(), XTaskError> {
     println!("Running integration test suite: {suite}");
 
+    // Start docker-compose services (redis, kafka, zookeeper, vex-server)
+    println!("Starting infrastructure services...");
+    cmd!("docker", "compose", "up", "-d")
+        .dir(root.join("xtask/tests"))
+        .run()?;
+
+    println!("Waiting for services to stabilize...");
+    std::thread::sleep(std::time::Duration::from_secs(10));
+
+    // Run the test suite binary directly on the host
+    println!("Running test suite binary...");
     let output = cmd!(
-        "docker",
-        "compose",
-        "run",
-        "--rm",
-        "vex-core",
         "cargo",
         "run",
+        "--package",
+        "xtask",
         "--bin",
         "run_test_suite",
         suite
     )
-    .dir(root.join("xtask/tests"))
+    .dir(root)
     .stdout_capture()
     .stderr_capture()
     .unchecked()
-    .run()?;
+    .run();
 
     // Print output
-    println!("{}", String::from_utf8_lossy(&output.stdout));
-    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    if let Ok(ref result) = output {
+        println!("{}", String::from_utf8_lossy(&result.stdout));
+        eprint!("{}", String::from_utf8_lossy(&result.stderr));
+    }
+
+    // Cleanup docker-compose services (always run, even on failure)
+    println!("Cleaning up services...");
+    if let Err(e) = cmd!("docker", "compose", "down", "-v")
+        .dir(root.join("xtask/tests"))
+        .run()
+    {
+        eprintln!("Warning: Failed to clean up docker-compose services: {}", e);
+    }
 
     // Check exit status
-    if output.status.success() {
-        println!("Test suite '{suite}' PASSED!");
-        Ok(())
-    } else {
-        Err(XTaskError::Testing(TestingError::TestFailed(format!(
+    match output {
+        Ok(result) if result.status.success() => {
+            println!("Test suite '{suite}' PASSED!");
+            Ok(())
+        }
+        Ok(result) => Err(XTaskError::Testing(TestingError::TestFailed(format!(
             "Test suite '{suite}' failed with exit code: {:?}",
-            output.status.code()
-        ))))
+            result.status.code()
+        )))),
+        Err(e) => Err(XTaskError::CommandExecution(e)),
     }
 }

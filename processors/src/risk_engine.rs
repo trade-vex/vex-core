@@ -220,7 +220,8 @@ impl RiskEngine {
         // If the taker gets a better price than their limit, refund the difference.
         if !is_maker
             && let Some(limit_price) = taker_price
-            && user_side == Side::Bid // Price improvement only applies to BID orders where QUOTE currency was locked.
+            && user_side == Side::Bid
+        // Price improvement only applies to BID orders where QUOTE currency was locked.
         {
             let execution_price = event.price;
             if execution_price < limit_price {
@@ -324,11 +325,12 @@ impl RiskEngine {
     #[inline]
     fn bid_amount(&self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) -> Result<u64> {
         // Get spec early
-        let spec = self.symbol_specs.get(&cmd.market_id).ok_or(
-            RiskEngineError::MarketSpecNotFound {
-                market_id: cmd.market_id,
-            },
-        )?;
+        let spec =
+            self.symbol_specs
+                .get(&cmd.market_id)
+                .ok_or(RiskEngineError::MarketSpecNotFound {
+                    market_id: cmd.market_id,
+                })?;
 
         if cmd.price == u64::MAX {
             // Market buy order
@@ -371,9 +373,10 @@ impl RiskEngine {
         price: u64,
         size: u64,
     ) -> Result<()> {
-        let spec = self.symbol_specs.get(&market_id).ok_or(
-            RiskEngineError::MarketSpecNotFound { market_id }
-        )?;
+        let spec = self
+            .symbol_specs
+            .get(&market_id)
+            .ok_or(RiskEngineError::MarketSpecNotFound { market_id })?;
 
         let (asset_to_unlock, amount_to_unlock) = match side {
             Side::Bid => {

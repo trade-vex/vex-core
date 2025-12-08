@@ -14,11 +14,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fmt::init();
 
     // Load configuration
-    let config = VexConfig::load_auto().or_else(|e| {
+    let mut config = VexConfig::load_auto().or_else(|e| {
         warn!("Failed to load configuration from files: {e}");
-        info!("Using default Test configuration");
-        Ok::<_, Box<dyn std::error::Error>>(VexConfig::new(Environment::Test))
+        info!("Using default Development configuration for e2e tests");
+        Ok::<_, Box<dyn std::error::Error>>(VexConfig::new(Environment::Development))
     })?;
+
+    // Override Kafka broker from environment if set
+    if let Ok(kafka_broker) = std::env::var("VEX_KAFKA_BROKER") {
+        info!("Using Kafka broker from environment: {}", kafka_broker);
+        config.kafka_broker = kafka_broker;
+    }
 
     info!(
         "Loaded configuration for environment: {}",

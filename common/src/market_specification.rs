@@ -37,8 +37,10 @@ impl CoreMarketSpecification {
         // Formula: (P * V * S_quote) / (S_base * K_quote)
         let numerator = (price as u128) * (size as u128) * (self.quote_native_scale as u128);
         let denominator = (self.base_native_scale as u128) * (self.quote_scale_k as u128);
-        
-        if denominator == 0 { return 0; }
+
+        if denominator == 0 {
+            return 0;
+        }
         (numerator / denominator) as u64
     }
 }

@@ -18,8 +18,6 @@ use vex_networking::server::Publications;
 // Re-export for convenience
 pub use engine::EngineError;
 
-use crate::engine::CorePinning;
-
 pub struct RunningEngine {
     thread: JoinHandle<Result<(), EngineError>>,
     shutdown_flag: Arc<AtomicBool>,
@@ -75,11 +73,13 @@ impl RunningEngine {
 /// # }
 /// ```
 pub fn start(config: VexConfig, replay: bool) -> Result<RunningEngine, EngineError> {
+    #[allow(unused_mut)] // mut needed when balance-preload feature is enabled
     let ((engine, mut producer), replay_control) = init_internal(
         config.symbols.symbols.clone(),
         config.kafka_broker.clone(),
         replay,
         config.core_networking.enable_core_pinning,
+        config.environment,
     )?;
 
     // Balance preload for test/local environments
@@ -128,6 +128,7 @@ pub fn init_internal(
     kafka_broker: String,
     replay: bool,
     enable_core_pinning: bool,
+    environment: vex_config::Environment,
 ) -> EngineResult<((CoreEngine, OrderProducer), ReplayControl)> {
     let replay_control = if replay {
         ReplayControl::enabled()
@@ -143,12 +144,19 @@ pub fn init_internal(
         replay_control.clone(),
     );
 
+    // Use no-pinning for Development environment to avoid CPU affinity issues
+    let core_pinning = if matches!(environment, vex_config::Environment::Development) {
+        None
+    } else {
+        Some(engine::CorePinning::default())
+    };
+
     let engine = CoreEngine::new(
         symbol_specs,
         journaling_processor,
         events_handler,
         publications,
-        CorePinning::default(),
+        core_pinning.unwrap_or_default(),
         enable_core_pinning,
     )?;
 
@@ -231,7 +239,16 @@ pub mod test {
                 .collect::<Vec<_>>(),
         );
 
-        let (_engine, producer) = TestEngineBuilder::new()
+        // Check VEX_ENV to determine if CPU pinning should be disabled
+        let mut builder = TestEngineBuilder::new();
+        if matches!(
+            std::env::var("VEX_ENV"),
+            Ok(env) if env.to_lowercase() == "dev" || env.to_lowercase() == "development"
+        ) {
+            builder = builder.without_cpu_pinning();
+        }
+
+        let (_engine, producer) = builder
             .with_symbol_specs(specs)
             .with_journaling_processor(JournalingProcessor::new(
                 Arc::clone(&publications),

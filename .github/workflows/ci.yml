@@ -17,6 +17,49 @@ jobs:
   test:
     name: Build and Test
     runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      zookeeper:
+        image: confluentinc/cp-zookeeper:7.3.0
+        ports:
+          - 2181:2181
+        env:
+          ZOOKEEPER_CLIENT_PORT: 2181
+          ZOOKEEPER_TICK_TIME: 2000
+        options: >-
+          --health-cmd "nc -z localhost 2181"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      kafka:
+        image: confluentinc/cp-kafka:7.3.0
+        ports:
+          - 9092:9092
+        env:
+          KAFKA_BROKER_ID: 1
+          KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+          KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+        options: >-
+          --health-cmd "kafka-broker-api-versions --bootstrap-server localhost:9092"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
 
@@ -53,6 +96,9 @@ jobs:
         run: cargo test --workspace --all-features --all-targets
         env:
           RUSTFLAGS: "-D warnings -C link-arg=-fuse-ld=mold"
+          VEX_KAFKA_BROKER: localhost:9092
+          VEX_REDIS_URL: redis://localhost:6379
+          VEX_ENV: dev
 
   fmt:
     name: Rustfmt
@@ -99,6 +145,49 @@ jobs:
   coverage:
     name: Code coverage
     runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      zookeeper:
+        image: confluentinc/cp-zookeeper:7.3.0
+        ports:
+          - 2181:2181
+        env:
+          ZOOKEEPER_CLIENT_PORT: 2181
+          ZOOKEEPER_TICK_TIME: 2000
+        options: >-
+          --health-cmd "nc -z localhost 2181"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      kafka:
+        image: confluentinc/cp-kafka:7.3.0
+        ports:
+          - 9092:9092
+        env:
+          KAFKA_BROKER_ID: 1
+          KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+          KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+        options: >-
+          --health-cmd "kafka-broker-api-versions --bootstrap-server localhost:9092"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -114,6 +203,10 @@ jobs:
       - name: Generate code coverage
         run: |
           cargo llvm-cov --workspace --all-features --all-targets --exclude rusteron_client --text
+        env:
+          VEX_KAFKA_BROKER: localhost:9092
+          VEX_REDIS_URL: redis://localhost:6379
+          VEX_ENV: dev
 
   audit:
     name: Security audit
@@ -179,6 +272,8 @@ jobs:
 
       - name: Run test suite
         run: cargo xtask test-suite
+        env:
+          VEX_ENV: dev
 
       # Temp fix for cache growth - https://github.com/docker/build-push-action/issues/252
       - name: Move cache
