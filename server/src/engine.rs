@@ -492,6 +492,18 @@ pub mod test {
         }
     }
 
+    impl From<TestCorePinning> for CorePinning {
+        fn from(pinning: TestCorePinning) -> Self {
+            Self {
+                journaling: pinning.journaling,
+                risk_engines: pinning.risk_engines,
+                matching_engines: pinning.matching_engines,
+                risk_r2_engines: pinning.risk_r2_engines,
+                events: pinning.events,
+            }
+        }
+    }
+
     /// Test-specific builder that extends CoreEngineBuilder with test functionality
     pub struct TestEngineBuilder {
         symbol_specs: Option<HashMap<u32, CoreMarketSpecification>>,
@@ -673,9 +685,10 @@ pub mod test {
                         events_handler,
                         test_handler,
                         pinning,
+                        false, // Tests don't use pinning
                     )
                 } else {
-                    self.build_test_pipeline_no_pinning(
+                    self.build_test_pipeline(
                         BUFFER_SIZE,
                         order_factory,
                         journaling_handler,
@@ -684,6 +697,8 @@ pub mod test {
                         &mut router_handlers_iter,
                         events_handler,
                         test_handler,
+                        TestCorePinning::default(),
+                        false, // Tests don't use pinning
                     )
                 }
             } else if let Some(pinning) = core_pinning {
@@ -695,12 +710,11 @@ pub mod test {
                     &price_cache,
                     &mut router_handlers_iter,
                     events_handler,
-                    test_handler,
-                    core_pinning,
+                    pinning.into(),
                     false, // Tests don't use pinning
                 )
             } else {
-                CoreEngine::build_disruptor_pipeline_no_pinning(
+                CoreEngine::build_disruptor_pipeline(
                     BUFFER_SIZE,
                     order_factory,
                     journaling_handler,

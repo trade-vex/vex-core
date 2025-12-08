@@ -129,8 +129,8 @@ impl VexCoreServer {
         // Initialize Aeron context
         let aeron = Self::initialize_aeron(&config)?;
 
-        // Initialize Aeron Archive (only if enabled)
-        let (archive, subscription_id) = if config.enable_archiving {
+        // Initialize Aeron Archive (only if archive channels are configured)
+        let (archive, subscription_id) = if !config.request_control_channel.is_empty() {
             let archive = Self::initialize_archive(&config, &aeron)?;
 
             // Replay
@@ -280,19 +280,24 @@ impl VexCoreServer {
         self.image_available_handler.release();
         self.image_unavailable_handler.release();
         self.handshake_handler.release();
-        // Only stop recording subscription if we own it (subscription_id != 0)
-        // subscription_id = 0 means we're using an existing active recording we don't own
-        if self.subscription_id != 0 {
-            self.archive
-                .stop_recording_subscription(self.subscription_id)?;
-        } else {
-            info!(
-                target: "core_server",
-                action = "skipping_stop_recording",
-                "Using existing active recording, not stopping it"
-            );
+        // Only stop recording subscription if we own it (subscription_id != Some(0))
+        // subscription_id = Some(0) means we're using an existing active recording we don't own
+        if let Some(sub_id) = self.subscription_id {
+            if sub_id != 0 {
+                if let Some(ref mut archive) = self.archive {
+                    archive.stop_recording_subscription(sub_id)?;
+                }
+            } else {
+                info!(
+                    target: "core_server",
+                    action = "skipping_stop_recording",
+                    "Using existing active recording, not stopping it"
+                );
+            }
         }
-        self.archive.close()?;
+        if let Some(ref mut archive) = self.archive {
+            archive.close()?;
+        }
 
         info!(
             target: "core_server",

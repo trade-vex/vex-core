@@ -73,11 +73,12 @@ impl RunningEngine {
 /// # }
 /// ```
 pub fn start(config: VexConfig, replay: bool) -> Result<RunningEngine, EngineError> {
-    let ((engine, mut producer), replay_control) = init_internal(
+    let ((engine, producer), replay_control) = init_internal(
         config.symbols.symbols.clone(),
         config.kafka_broker.clone(),
         replay,
         config.core_networking.enable_core_pinning,
+        config.environment,
     )?;
 
     // Balance preload for test/local environments
@@ -126,6 +127,7 @@ pub fn init_internal(
     kafka_broker: String,
     replay: bool,
     enable_core_pinning: bool,
+    environment: vex_config::Environment,
 ) -> EngineResult<((CoreEngine, OrderProducer), ReplayControl)> {
     let replay_control = if replay {
         ReplayControl::enabled()
@@ -144,7 +146,7 @@ pub fn init_internal(
     // Use no-pinning for Development environment to avoid CPU affinity issues
     let core_pinning = if matches!(
         environment,
-        vex_config::environment::Environment::Development
+        vex_config::Environment::Development
     ) {
         None
     } else {
@@ -156,7 +158,7 @@ pub fn init_internal(
         journaling_processor,
         events_handler,
         publications,
-        CorePinning::default(),
+        core_pinning.unwrap_or_default(),
         enable_core_pinning,
     )?;
 
