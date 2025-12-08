@@ -73,7 +73,8 @@ impl RunningEngine {
 /// # }
 /// ```
 pub fn start(config: VexConfig, replay: bool) -> Result<RunningEngine, EngineError> {
-    let ((engine, producer), replay_control) = init_internal(
+    #[allow(unused_mut)] // mut needed when balance-preload feature is enabled
+    let ((engine, mut producer), replay_control) = init_internal(
         config.symbols.symbols.clone(),
         config.kafka_broker.clone(),
         replay,
