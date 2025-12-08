@@ -212,10 +212,11 @@ pub mod test {
 
         // Check VEX_ENV to determine if CPU pinning should be disabled
         let mut builder = TestEngineBuilder::new();
-        if let Ok(env) = std::env::var("VEX_ENV") {
-            if env.to_lowercase() == "dev" || env.to_lowercase() == "development" {
-                builder = builder.without_cpu_pinning();
-            }
+        if matches!(
+            std::env::var("VEX_ENV"),
+            Ok(env) if env.to_lowercase() == "dev" || env.to_lowercase() == "development"
+        ) {
+            builder = builder.without_cpu_pinning();
         }
 
         let (_engine, producer) = builder
