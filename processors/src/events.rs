@@ -419,6 +419,7 @@ impl EventsHandler for KafkaEventsHandler {
                     handler = "kafka"
                 );
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
+                self.publish_order_event(cmd, None);
                 self.publish_cancel_order_event(cmd);
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
