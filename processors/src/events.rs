@@ -172,8 +172,6 @@ impl KafkaEventsHandler {
         let order_event = OrderEvent {
             order,
             market_id: cmd.market_id(),
-            time_in_force: cmd.time_in_force,
-            status: cmd.status(),
         };
 
         let topic_name = "orders";
