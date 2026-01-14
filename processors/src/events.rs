@@ -185,7 +185,8 @@ impl KafkaEventsHandler {
             };
 
             let topic_name = "balances";
-            self.publish_proto(topic_name, &user_id.to_string(), "trading.BalanceEvent", balance_event);
+            let composite_key = format!("{}:{}", user_id, asset_id);
+            self.publish_proto(topic_name, &composite_key, "trading.BalanceEvent", balance_event);
             debug!(
                 target: "events",
                 component = "kafka_handler",
@@ -211,7 +212,8 @@ impl KafkaEventsHandler {
         };
 
         let topic_name = "balances";
-        self.publish_proto(topic_name, &cmd.user_id().to_string(), "trading.BalanceEvent", balance_event);
+        let composite_key = format!("{}:{}", cmd.user_id(), asset_id);
+        self.publish_proto(topic_name, &composite_key, "trading.BalanceEvent", balance_event);
         debug!(
             target: "events",
             component = "kafka_handler",
