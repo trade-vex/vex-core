@@ -19,6 +19,7 @@ use schema_registry_converter::schema_registry_common::{
 use tokio::runtime::Runtime;
 use tracing::{debug, error, info};
 use vex_networking::server::Publications;
+use serde::Serialize;
 
 // Include generated protobuf code
 pub mod trading_proto {
@@ -27,6 +28,13 @@ pub mod trading_proto {
 
 // Embed the .proto file content for Schema Registry registration
 const TRADING_SCHEMA: &str = include_str!("protos/trading.proto");
+
+// Helper struct for JSON serialization of Orderbook Levels
+#[derive(Serialize)]
+struct JsonOrderbookLevel {
+    price: u64,
+    size: u64,
+}
 
 pub trait EventsHandler: Send + Sync + 'static {
     fn handle_processed_command(&self, cmd: &mut OrderCommand);
@@ -327,31 +335,32 @@ impl KafkaEventsHandler {
 
     fn publish_orderbook_event(&self, market_id: u32, orderbook_snapshot: &Option<L2MarketData>) {
         if let Some(snapshot) = orderbook_snapshot {
-            let mut bids = Vec::new();
-            let mut asks = Vec::new();
-
+            let mut bids_vec = Vec::new();
             for i in 0..snapshot.bid_depth() {
                 if snapshot.bid_prices[i] > 0 {
-                    bids.push(trading_proto::OrderbookLevel {
+                    bids_vec.push(JsonOrderbookLevel {
                         price: snapshot.bid_prices[i],
                         size: snapshot.bid_volumes[i],
                     });
                 }
             }
+            let bids_json = serde_json::to_string(&bids_vec).unwrap_or_else(|_| "[]".to_string());
 
+            let mut asks_vec = Vec::new();
             for i in 0..snapshot.ask_depth() {
                 if snapshot.ask_prices[i] > 0 {
-                    asks.push(trading_proto::OrderbookLevel {
+                    asks_vec.push(JsonOrderbookLevel {
                         price: snapshot.ask_prices[i],
                         size: snapshot.ask_volumes[i],
                     });
                 }
             }
+            let asks_json = serde_json::to_string(&asks_vec).unwrap_or_else(|_| "[]".to_string());
 
             let orderbook_event = trading_proto::OrderbookEvent {
                 market_id,
-                bids,
-                asks,
+                bids: bids_json,
+                asks: asks_json, 
                 timestamp: snapshot.timestamp,
             };
 

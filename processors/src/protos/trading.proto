@@ -76,8 +76,8 @@ message OrderbookLevel {
 
 message OrderbookEvent {
   uint32 market_id = 1;
-  repeated OrderbookLevel bids = 2;
-  repeated OrderbookLevel asks = 3;
+  string bids = 2; // JSON String: "[{\"price\":100, \"size\":10}, ...]"
+  string asks = 3; // JSON String
   uint64 timestamp = 4;
 }
 
