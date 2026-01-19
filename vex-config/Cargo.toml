@@ -3,6 +3,9 @@ name = "vex-config"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+balance-preload = []
+
 [dependencies]
 serde_yaml = "0.9"
 toml = "0.8"

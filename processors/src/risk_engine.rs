@@ -219,15 +219,14 @@ impl RiskEngine {
         // --- Price Improvement Refund Logic (for Taker only) ---
         // If the taker gets a better price than their limit, refund the difference.
         if !is_maker
-            && let Some(limit_price) = taker_price &&
-                // Price improvement only applies to BID orders where QUOTE currency was locked.
-                 user_side == Side::Bid
+            && let Some(limit_price) = taker_price
+            && user_side == Side::Bid
+        // Price improvement only applies to BID orders where QUOTE currency was locked.
         {
             let execution_price = event.price;
-
             if execution_price < limit_price {
                 let price_diff = limit_price - execution_price;
-                let refund_amount = price_diff * event.size;
+                let refund_amount = spec.calculate_quote_cost(price_diff, event.size);
                 // Move the saved amount from 'locked' back to 'available'.
                 store.unlock_funds(user_id, quote_asset(market_id), refund_amount)?;
             }
@@ -237,7 +236,7 @@ impl RiskEngine {
             // User is BUYING base asset with quote asset.
             // Spends quote, receives base. Fee is on base asset received.
             Side::Bid => {
-                let quote_spent = event.price * event.size;
+                let quote_spent = spec.calculate_quote_cost(event.price, event.size);
                 // Fee is on the base asset received. Assuming fee is in basis points (e.g., 20bp = 0.2%)
                 let fee_in_base = (event.size * fee) / 10000;
                 let base_received_net = event.size - fee_in_base;
@@ -252,7 +251,7 @@ impl RiskEngine {
             // Spends base, receives quote. Fee is on quote asset received.
             Side::Ask => {
                 let base_spent = event.size;
-                let quote_received_gross = event.price * event.size;
+                let quote_received_gross = spec.calculate_quote_cost(event.price, event.size);
                 // Fee is on the quote asset received. Assuming fee is in basis points.
                 let fee_in_quote = (quote_received_gross * fee) / 10000;
                 let quote_received_net = quote_received_gross - fee_in_quote;
@@ -325,13 +324,16 @@ impl RiskEngine {
 
     #[inline]
     fn bid_amount(&self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) -> Result<u64> {
+        // Get spec early
+        let spec =
+            self.symbol_specs
+                .get(&cmd.market_id)
+                .ok_or(RiskEngineError::MarketSpecNotFound {
+                    market_id: cmd.market_id,
+                })?;
+
         if cmd.price == u64::MAX {
             // Market buy order
-            let spec = self.symbol_specs.get(&cmd.market_id).ok_or(
-                RiskEngineError::MarketSpecNotFound {
-                    market_id: cmd.market_id,
-                },
-            )?;
             let slippage = spec.slippage;
             let best_ask = price_cache.get_best_ask(cmd.market_id);
 
@@ -354,14 +356,10 @@ impl RiskEngine {
             // To ensure that if the order is cancelled (fully or partially),
             // the correct amount of funds can be released.
             cmd.price = conservative_price;
-            cmd.size
-                .checked_mul(conservative_price)
-                .ok_or(BalanceError::Overflow.into())
+            Ok(spec.calculate_quote_cost(conservative_price, cmd.size))
         } else {
             // Limit order
-            cmd.price
-                .checked_mul(cmd.size)
-                .ok_or(BalanceError::Overflow.into())
+            Ok(spec.calculate_quote_cost(cmd.price, cmd.size))
         }
     }
 
@@ -375,9 +373,14 @@ impl RiskEngine {
         price: u64,
         size: u64,
     ) -> Result<()> {
+        let spec = self
+            .symbol_specs
+            .get(&market_id)
+            .ok_or(RiskEngineError::MarketSpecNotFound { market_id })?;
+
         let (asset_to_unlock, amount_to_unlock) = match side {
             Side::Bid => {
-                let amount = price.checked_mul(size).ok_or(BalanceError::Overflow)?;
+                let amount = spec.calculate_quote_cost(price, size);
                 (quote_asset(market_id), amount)
             }
             Side::Ask => (base_asset(market_id), size),

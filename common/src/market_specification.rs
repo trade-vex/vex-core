@@ -14,6 +14,10 @@ pub struct CoreMarketSpecification {
     pub base_scale_k: u64,  // base currency amount multiplier (lot size in base currency units)
     pub quote_scale_k: u64, // quote currency amount multiplier (step size in quote currency units)
 
+    // Native scales for atomic calculations
+    pub base_native_scale: u64,  // e.g. 100,000,000
+    pub quote_native_scale: u64, // e.g. 1,000,000
+
     // Fees per lot in quote currency units
     pub taker_fee: u64, // taker fee (should be >= maker fee)
     pub maker_fee: u64, // maker fee
@@ -26,6 +30,19 @@ impl CoreMarketSpecification {
     pub fn builder() -> CoreMarketSpecificationBuilder {
         CoreMarketSpecificationBuilder::default()
     }
+
+    // Normalizes Price*Size into Atomic Quote Units
+    #[inline]
+    pub fn calculate_quote_cost(&self, price: u64, size: u64) -> u64 {
+        // Formula: (P * V * S_quote) / (S_base * K_quote)
+        let numerator = (price as u128) * (size as u128) * (self.quote_native_scale as u128);
+        let denominator = (self.base_native_scale as u128) * (self.quote_scale_k as u128);
+
+        if denominator == 0 {
+            return 0;
+        }
+        (numerator / denominator) as u64
+    }
 }
 
 /// Builder for CoreMarketSpecification to match Java's builder pattern
@@ -37,6 +54,8 @@ pub struct CoreMarketSpecificationBuilder {
     quote_asset: Option<u16>,
     base_scale_k: Option<u64>,
     quote_scale_k: Option<u64>,
+    base_native_scale: Option<u64>,
+    quote_native_scale: Option<u64>,
     taker_fee: Option<u64>,
     maker_fee: Option<u64>,
     slippage: Option<u32>,
@@ -65,6 +84,16 @@ impl CoreMarketSpecificationBuilder {
         self
     }
 
+    pub fn base_native_scale(mut self, scale: u64) -> Self {
+        self.base_native_scale = Some(scale);
+        self
+    }
+
+    pub fn quote_native_scale(mut self, scale: u64) -> Self {
+        self.quote_native_scale = Some(scale);
+        self
+    }
+
     pub fn taker_fee(mut self, taker_fee: u64) -> Self {
         self.taker_fee = Some(taker_fee);
         self
@@ -88,6 +117,8 @@ impl CoreMarketSpecificationBuilder {
             quote_asset: self.quote_asset.ok_or("quote_asset is required")?,
             base_scale_k: self.base_scale_k.unwrap_or(1),
             quote_scale_k: self.quote_scale_k.unwrap_or(1),
+            base_native_scale: self.base_native_scale.unwrap_or(1),
+            quote_native_scale: self.quote_native_scale.unwrap_or(1),
             taker_fee: self.taker_fee.unwrap_or(0),
             maker_fee: self.maker_fee.unwrap_or(0),
             slippage: self.slippage.unwrap_or(150), // 1.5% by default

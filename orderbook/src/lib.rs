@@ -77,6 +77,7 @@ impl PriceLevel {
             self.total_volume -= removed_order.size;
             cmd.set_price(removed_order.price);
             cmd.set_size(removed_order.size);
+            cmd.set_user_id(removed_order.user_id);
             cmd.set_status(Status::Cancelled);
         } else {
             cmd.set_status(Status::Rejected);
@@ -340,6 +341,8 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             price: cmd.price,
             size: remaining_size,
             side: cmd.side,
+            time_in_force: cmd.time_in_force,
+            status: cmd.status,
             timestamp: cmd.timestamp,
         };
         let level = match cmd.side {
@@ -439,7 +442,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
         l2_data.timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_millis() as u64;
+            .as_nanos() as u64;
 
         cmd.l2_data = Some(l2_data);
     }

@@ -1,4 +1,5 @@
 use crate::{L2MarketData, OrderCommandType, Side, TimeInForce, UserBalance};
+use borsh::{BorshDeserialize, BorshSerialize};
 use sbe_order::message_header_codec::{self, MessageHeaderDecoder};
 use sbe_order::order_command_message_codec::{
     OrderCommandMessageDecoder, OrderCommandMessageEncoder,
@@ -7,6 +8,7 @@ use sbe_order::status::Status as SbeStatus;
 use sbe_order::{ReadBuf, SbeResult, WriteBuf};
 use serde::de::Error;
 use serde::de::value::Error as SerdeError;
+use serde::{Deserialize, Serialize};
 
 // Size of the serialized OrderCommand in bytes
 // Header: 8 bytes
@@ -93,6 +95,8 @@ pub struct OrderCommand {
 
     /// L2 Market Data Snapshot after the order is processed, it is not recorded when the status is Rejected
     pub l2_data: Option<L2MarketData>,
+    /// Internal-only routing field: gateway that sent THIS command (not serialized)
+    pub route_gateway_id: u8,
 }
 
 impl Default for OrderCommand {
@@ -112,6 +116,7 @@ impl Default for OrderCommand {
             events: None,
             balance: [UserBalance::default(); 2],
             l2_data: None,
+            route_gateway_id: 0,
         }
     }
 }
@@ -140,6 +145,7 @@ impl OrderCommand {
             events: None,
             balance: [UserBalance::default(); 2],
             l2_data: None,
+            route_gateway_id: 0,
         }
     }
 
@@ -159,6 +165,7 @@ impl OrderCommand {
             client_order_id: 0,
             events: None,
             l2_data: None,
+            route_gateway_id: 0,
         }
     }
 
@@ -178,6 +185,27 @@ impl OrderCommand {
             client_order_id: 0,
             events: None,
             l2_data: None,
+            route_gateway_id: 0,
+        }
+    }
+
+    pub fn withdraw_funds(user_id: u64, amount: u64, asset: u16) -> Self {
+        Self {
+            command: OrderCommandType::WithdrawFunds,
+            order_id: 0,
+            market_id: asset as u32,
+            user_id,
+            price: 0,
+            size: amount,
+            side: Side::Ask,
+            time_in_force: TimeInForce::Gtc,
+            timestamp: 0,
+            status: Status::Processing,
+            balance: [UserBalance::default(); 2],
+            client_order_id: 0,
+            events: None,
+            l2_data: None,
+            route_gateway_id: 0,
         }
     }
 
@@ -250,7 +278,9 @@ impl OrderCommand {
 }
 
 /// Status Of The Order Command.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
+)]
 #[repr(u8)]
 pub enum Status {
     /// Rejected { due to Insufficient funds etc}
@@ -363,5 +393,6 @@ pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
         events: None,
         balance: [UserBalance::default(); 2],
         l2_data: None,
+        route_gateway_id: 0,
     })
 }

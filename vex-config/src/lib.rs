@@ -11,6 +11,9 @@ pub mod logging;
 pub mod networking;
 pub mod symbols;
 
+#[cfg(feature = "balance-preload")]
+pub mod balance_preload;
+
 pub use environment::Environment;
 pub use error::{ConfigError, Result};
 pub use loader::ConfigLoader;
@@ -19,6 +22,9 @@ pub use networking::{CoreNetworkingConfig, GatewayNetworkingConfig};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 pub use symbols::SymbolSpecificationConfig;
+
+#[cfg(feature = "balance-preload")]
+pub use balance_preload::BalancePreloadConfig;
 
 /// Main configuration structure that combines all VEX Core configuration modules
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +41,10 @@ pub struct VexConfig {
     pub symbols: SymbolSpecificationConfig,
     /// Kafka broker address for event streaming
     pub kafka_broker: String,
+    /// Balance preload configuration (test/local only)
+    #[cfg(feature = "balance-preload")]
+    #[serde(default)]
+    pub balance_preload: BalancePreloadConfig,
 }
 
 fn default_kafka_broker() -> String {
@@ -51,6 +61,8 @@ impl VexConfig {
             symbols: SymbolSpecificationConfig::for_environment(&environment),
             kafka_broker: default_kafka_broker(),
             environment,
+            #[cfg(feature = "balance-preload")]
+            balance_preload: BalancePreloadConfig::new(),
         }
     }
 
@@ -110,6 +122,10 @@ impl VexConfig {
         self.gateway_networking.validate()?;
         self.logging.validate()?;
         self.symbols.validate()?;
+        #[cfg(feature = "balance-preload")]
+        if self.balance_preload.enabled {
+            self.balance_preload.validate()?;
+        }
         Ok(())
     }
 

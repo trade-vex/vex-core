@@ -289,6 +289,21 @@ impl GatewayManager {
         let (dedicated_session, ports) = self.allocate_gateway_session(gateway_id)?;
         let encrypted_session = encryption_key ^ dedicated_session;
 
+        // Wait for publication to be connected before sending ACCEPT message
+        // This avoids transient errors during connection establishment
+        let mut attempts = 0;
+        const MAX_CONNECTION_WAIT_ATTEMPTS: usize = 50; // 5 seconds max wait
+        while !publication.is_connected() && attempts < MAX_CONNECTION_WAIT_ATTEMPTS {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            attempts += 1;
+        }
+        if !publication.is_connected() {
+            self.remove_gateway_session(gateway_id)?;
+            return Err(ServerError::GatewayMessageError(
+                "Publication not connected after waiting".to_string(),
+            ));
+        }
+
         // Send success response
         let accept_msg = format!(
             "{} gateway-{} ACCEPT {} {} {}",
@@ -490,6 +505,20 @@ impl GatewayManager {
 
     /// Removes a gateway session and frees all associated resources
     pub fn remove_gateway_session(&self, gateway_id: u8) -> Result<(), ServerError> {
+        // Get ports before removing the session
+        let ports_to_free = {
+            let guard = self.gateway_sessions.read().unwrap();
+            if let Some(slot) = guard
+                .slots
+                .get(gateway_id as usize)
+                .and_then(|s| s.as_ref())
+            {
+                vec![slot.port_data, slot.port_control]
+            } else {
+                vec![]
+            }
+        };
+
         let mut session = match self.gateway_sessions.write().unwrap().remove(gateway_id) {
             Some(duologue) => duologue,
             None => {
@@ -509,6 +538,19 @@ impl GatewayManager {
                 action = "session_close_failed",
                 gateway_id,
                 error = ?e
+            );
+        }
+
+        // Mark ports as recently freed to avoid OS-level port binding race conditions
+        // The OS may still have the UDP port bound even after Aeron closes the subscription
+        if !ports_to_free.is_empty() {
+            self.port_allocator.mark_freed(&ports_to_free);
+            debug!(
+                target: "gateway_manager",
+                action = "ports_marked_freed",
+                gateway_id,
+                data_port = ports_to_free[0],
+                control_port = ports_to_free[1]
             );
         }
 

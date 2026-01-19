@@ -199,12 +199,20 @@ pub fn send_message_with_retries(
 
 /// Port allocator that randomly selects ports from a given range.
 /// Does not track allocated ports - the Session struct is the source of truth.
-#[derive(Debug, Clone)]
+/// Tracks recently freed ports to avoid OS-level port binding race conditions.
+#[derive(Debug)]
 pub struct PortAllocator {
     port_range: std::ops::RangeInclusive<u16>,
     low: u16,
     high: u16,
+    /// Tracks ports that were recently freed with their timestamp
+    /// Ports are kept in this set for PORT_COOLDOWN_SECONDS to allow OS to release them
+    recently_freed_ports: std::sync::RwLock<std::collections::HashMap<u16, std::time::Instant>>,
 }
+
+/// Time to wait before reusing a freed port (in seconds)
+/// This allows the OS to fully release the UDP port binding
+const PORT_COOLDOWN_SECONDS: u64 = 10;
 
 impl PortAllocator {
     /// Create a new port allocator.
@@ -243,6 +251,7 @@ impl PortAllocator {
             port_range,
             low: port_base,
             high: port_hi,
+            recently_freed_ports: std::sync::RwLock::new(std::collections::HashMap::new()),
         })
     }
 
@@ -251,7 +260,7 @@ impl PortAllocator {
         self.port_range.clone().count()
     }
 
-    /// Allocate `count` ports randomly, avoiding the ports already in use.
+    /// Allocate `count` ports randomly, avoiding the ports already in use and recently freed ports.
     ///
     /// # Arguments
     /// * `count` - The number of ports that will be allocated
@@ -268,13 +277,26 @@ impl PortAllocator {
             return Ok(Vec::new());
         }
 
+        // Clean up expired entries from recently_freed_ports
+        self.cleanup_expired_ports();
+
+        // Get list of ports that are still in cooldown
+        let recently_freed: Vec<u16> = {
+            let freed = self.recently_freed_ports.read().unwrap();
+            freed.keys().copied().collect()
+        };
+
         let total = self.total_ports();
         let used = ports_in_use.len();
+        let in_cooldown = recently_freed.len();
 
-        if count > total.saturating_sub(used) {
+        // Account for ports in cooldown when checking availability
+        if count > total.saturating_sub(used).saturating_sub(in_cooldown) {
             return Err(ServerError::ResourceAllocationError(format!(
-                "Requested {count} ports, but only {} available",
-                total - used
+                "Requested {count} ports, but only {} available ({} in use, {} in cooldown)",
+                total.saturating_sub(used).saturating_sub(in_cooldown),
+                used,
+                in_cooldown
             )));
         }
 
@@ -286,17 +308,21 @@ impl PortAllocator {
         while result.len() < count {
             if attempts >= max_attempts {
                 return Err(ServerError::ResourceAllocationError(format!(
-                    "Failed to allocate {} ports after {} attempts ({} already allocated)",
+                    "Failed to allocate {} ports after {} attempts ({} already allocated, {} in cooldown)",
                     count,
                     max_attempts,
-                    result.len()
+                    result.len(),
+                    in_cooldown
                 )));
             }
 
             let port = rng.gen_range(self.low..=self.high);
 
-            // Check if port is not in use and not already in result
-            if !ports_in_use.contains(&port) && !result.contains(&port) {
+            // Check if port is not in use, not in cooldown, and not already in result
+            if !ports_in_use.contains(&port)
+                && !recently_freed.contains(&port)
+                && !result.contains(&port)
+            {
                 result.push(port);
             }
 
@@ -304,6 +330,26 @@ impl PortAllocator {
         }
 
         Ok(result)
+    }
+
+    /// Mark ports as recently freed. They will be unavailable for allocation for PORT_COOLDOWN_SECONDS.
+    ///
+    /// # Arguments
+    /// * `ports` - Slice of ports that were just freed
+    pub fn mark_freed(&self, ports: &[u16]) {
+        let now = std::time::Instant::now();
+        let mut freed = self.recently_freed_ports.write().unwrap();
+        for &port in ports {
+            freed.insert(port, now);
+        }
+    }
+
+    /// Remove expired entries from recently_freed_ports
+    fn cleanup_expired_ports(&self) {
+        let now = std::time::Instant::now();
+        let cooldown = std::time::Duration::from_secs(PORT_COOLDOWN_SECONDS);
+        let mut freed = self.recently_freed_ports.write().unwrap();
+        freed.retain(|_, &mut timestamp| now.duration_since(timestamp) < cooldown);
     }
 }
 

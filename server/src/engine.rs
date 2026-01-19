@@ -141,7 +141,8 @@ impl CoreEngine {
         journaling_processor: JournalingProcessor,
         events_handler: impl EventsHandler,
         publications: Arc<Publications>,
-        core_pinning: Option<CorePinning>,
+        core_pinning: CorePinning,
+        enable_pinning: bool,
     ) -> EngineResult<(Self, OrderProducer)> {
         let (engine, producer) = Self::build_engine(
             symbol_specs,
@@ -149,6 +150,7 @@ impl CoreEngine {
             events_handler,
             publications,
             core_pinning,
+            enable_pinning,
         )?;
         Ok((engine, producer))
     }
@@ -158,7 +160,8 @@ impl CoreEngine {
         mut journaling_processor: JournalingProcessor,
         events_handler: impl EventsHandler,
         publications: Arc<Publications>,
-        core_pinning: Option<CorePinning>,
+        core_pinning: CorePinning,
+        enable_pinning: bool,
     ) -> EngineResult<(Self, OrderProducer)> {
         let price_cache = Arc::new(PriceCache::new(symbol_specs.keys()));
 
@@ -191,29 +194,18 @@ impl CoreEngine {
             events_handler.handle_processed_command(cmd);
         };
 
-        // Build the disruptor pipeline - with or without CPU pinning
-        let producer = if let Some(pinning) = core_pinning {
-            Self::build_disruptor_pipeline(
-                BUFFER_SIZE,
-                order_factory,
-                journaling_handler,
-                &risk_engines_arc,
-                &price_cache,
-                router_handlers,
-                events_handler,
-                pinning,
-            )
-        } else {
-            Self::build_disruptor_pipeline_no_pinning(
-                BUFFER_SIZE,
-                order_factory,
-                journaling_handler,
-                &risk_engines_arc,
-                &price_cache,
-                router_handlers,
-                events_handler,
-            )
-        };
+        // Build the disruptor pipeline with proper stage dependencies
+        let producer = Self::build_disruptor_pipeline(
+            BUFFER_SIZE,
+            order_factory,
+            journaling_handler,
+            &risk_engines_arc,
+            &price_cache,
+            router_handlers,
+            events_handler,
+            core_pinning,
+            enable_pinning,
+        );
 
         let engine = Self { publications };
         Ok((engine, producer))
@@ -270,6 +262,7 @@ impl CoreEngine {
         mut router_handlers_iter: impl Iterator<Item = Y>,
         events_handler: Z,
         core_pinning: CorePinning,
+        enable_pinning: bool,
     ) -> OrderProducer
     where
         X: FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
@@ -277,94 +270,126 @@ impl CoreEngine {
         Z: FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
     {
         // Build the entire pipeline in one chain to maintain proper types
-        build_multi_producer(buffer_size, order_factory, BusySpin)
-            // Stage 1: Journaling for audit trail
-            .pin_at_core(core_pinning.journaling)
-            .handle_events_with(journaling_handler)
-            // Stage 2: Risk Engine R1 - parallel risk hold/pre-processing
-            .pin_at_core(core_pinning.risk_engines[0])
-            .handle_events_with(create_risk_handler!(0, risk_engines, price_cache))
-            .pin_at_core(core_pinning.risk_engines[1])
-            .handle_events_with(create_risk_handler!(1, risk_engines, price_cache))
-            .pin_at_core(core_pinning.risk_engines[2])
-            .handle_events_with(create_risk_handler!(2, risk_engines, price_cache))
-            .pin_at_core(core_pinning.risk_engines[3])
-            .handle_events_with(create_risk_handler!(3, risk_engines, price_cache))
-            // Dependency barrier: matching engines wait for risk engines
-            .and_then()
-            // Stage 3: Matching Engine - parallel order processing
-            .pin_at_core(core_pinning.matching_engines[0])
-            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
-            .pin_at_core(core_pinning.matching_engines[1])
-            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
-            .pin_at_core(core_pinning.matching_engines[2])
-            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
-            .pin_at_core(core_pinning.matching_engines[3])
-            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
-            // Dependency barrier: R2 engines wait for matching
-            .and_then()
-            // Stage 4: Risk Engine R2 - parallel settlement processing
-            .pin_at_core(core_pinning.risk_r2_engines[0])
-            .handle_events_with(create_risk_r2_handler!(0, risk_engines))
-            .pin_at_core(core_pinning.risk_r2_engines[1])
-            .handle_events_with(create_risk_r2_handler!(1, risk_engines))
-            .pin_at_core(core_pinning.risk_r2_engines[2])
-            .handle_events_with(create_risk_r2_handler!(2, risk_engines))
-            .pin_at_core(core_pinning.risk_r2_engines[3])
-            .handle_events_with(create_risk_r2_handler!(3, risk_engines))
-            // Dependency barrier: event handlers wait for settlement
-            .and_then()
-            // Stage 5: Event Handlers for market data and notifications
-            .pin_at_core(core_pinning.events)
-            .handle_events_with(events_handler)
-            .build()
-    }
+        info!(
+            target: "engine",
+            action = "building_pipeline",
+            enable_pinning,
+            "Building disruptor pipeline with pinning: {}", enable_pinning
+        );
 
-    /// Builds the disruptor pipeline without CPU pinning (for development/testing)
-    /// This allows the OS to schedule threads freely without requiring specific CPU cores
-    #[allow(clippy::too_many_arguments)]
-    fn build_disruptor_pipeline_no_pinning<X, Y, Z>(
-        buffer_size: usize,
-        order_factory: fn() -> OrderCommand,
-        journaling_handler: X,
-        risk_engines: &RiskEngines,
-        price_cache: &Arc<PriceCache>,
-        mut router_handlers_iter: impl Iterator<Item = Y>,
-        events_handler: Z,
-    ) -> OrderProducer
-    where
-        X: FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
-        Y: FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
-        Z: FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
-    {
-        // Build the entire pipeline without CPU pinning
-        build_multi_producer(buffer_size, order_factory, BusySpin)
-            // Stage 1: Journaling for audit trail
-            .handle_events_with(journaling_handler)
-            // Stage 2: Risk Engine R1 - parallel risk hold/pre-processing
-            .handle_events_with(create_risk_handler!(0, risk_engines, price_cache))
-            .handle_events_with(create_risk_handler!(1, risk_engines, price_cache))
-            .handle_events_with(create_risk_handler!(2, risk_engines, price_cache))
-            .handle_events_with(create_risk_handler!(3, risk_engines, price_cache))
-            // Dependency barrier: matching engines wait for risk engines
-            .and_then()
-            // Stage 3: Matching Engine - parallel order processing
-            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
-            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
-            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
-            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
-            // Dependency barrier: R2 engines wait for matching
-            .and_then()
-            // Stage 4: Risk Engine R2 - parallel settlement processing
-            .handle_events_with(create_risk_r2_handler!(0, risk_engines))
-            .handle_events_with(create_risk_r2_handler!(1, risk_engines))
-            .handle_events_with(create_risk_r2_handler!(2, risk_engines))
-            .handle_events_with(create_risk_r2_handler!(3, risk_engines))
-            // Dependency barrier: event handlers wait for settlement
-            .and_then()
-            // Stage 5: Event Handlers for market data and notifications
-            .handle_events_with(events_handler)
-            .build()
+        // Stage 1: Journaling for audit trail
+        let pipeline = build_multi_producer(buffer_size, order_factory, BusySpin);
+        let pipeline = if enable_pinning {
+            pipeline.pin_at_core(core_pinning.journaling)
+        } else {
+            pipeline
+        };
+        let pipeline = pipeline.handle_events_with(journaling_handler);
+
+        // Stage 2: Risk Engine R1 - parallel risk hold/pre-processing
+        let pipeline = if enable_pinning {
+            pipeline.pin_at_core(core_pinning.risk_engines[0])
+        } else {
+            pipeline
+        };
+        let pipeline =
+            pipeline.handle_events_with(create_risk_handler!(0, risk_engines, price_cache));
+        let pipeline = if enable_pinning {
+            pipeline.pin_at_core(core_pinning.risk_engines[1])
+        } else {
+            pipeline
+        };
+        let pipeline =
+            pipeline.handle_events_with(create_risk_handler!(1, risk_engines, price_cache));
+        let pipeline = if enable_pinning {
+            pipeline.pin_at_core(core_pinning.risk_engines[2])
+        } else {
+            pipeline
+        };
+        let pipeline =
+            pipeline.handle_events_with(create_risk_handler!(2, risk_engines, price_cache));
+        let pipeline = if enable_pinning {
+            pipeline.pin_at_core(core_pinning.risk_engines[3])
+        } else {
+            pipeline
+        };
+        let pipeline =
+            pipeline.handle_events_with(create_risk_handler!(3, risk_engines, price_cache));
+
+        // Dependency barrier: matching engines wait for risk engines
+        let pipeline = pipeline.and_then();
+
+        // Stage 3: Matching Engine - parallel order processing
+        let pipeline = if enable_pinning {
+            pipeline.pin_at_core(core_pinning.matching_engines[0])
+        } else {
+            pipeline
+        };
+        let pipeline = pipeline
+            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"));
+        let pipeline = if enable_pinning {
+            pipeline.pin_at_core(core_pinning.matching_engines[1])
+        } else {
+            pipeline
+        };
+        let pipeline = pipeline
+            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"));
+        let pipeline = if enable_pinning {
+            pipeline.pin_at_core(core_pinning.matching_engines[2])
+        } else {
+            pipeline
+        };
+        let pipeline = pipeline
+            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"));
+        let pipeline = if enable_pinning {
+            pipeline.pin_at_core(core_pinning.matching_engines[3])
+        } else {
+            pipeline
+        };
+        let pipeline = pipeline
+            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"));
+
+        // Dependency barrier: R2 engines wait for matching
+        let pipeline = pipeline.and_then();
+
+        // Stage 4: Risk Engine R2 - parallel settlement processing
+        let pipeline = if enable_pinning {
+            pipeline.pin_at_core(core_pinning.risk_r2_engines[0])
+        } else {
+            pipeline
+        };
+        let pipeline = pipeline.handle_events_with(create_risk_r2_handler!(0, risk_engines));
+        let pipeline = if enable_pinning {
+            pipeline.pin_at_core(core_pinning.risk_r2_engines[1])
+        } else {
+            pipeline
+        };
+        let pipeline = pipeline.handle_events_with(create_risk_r2_handler!(1, risk_engines));
+        let pipeline = if enable_pinning {
+            pipeline.pin_at_core(core_pinning.risk_r2_engines[2])
+        } else {
+            pipeline
+        };
+        let pipeline = pipeline.handle_events_with(create_risk_r2_handler!(2, risk_engines));
+        let pipeline = if enable_pinning {
+            pipeline.pin_at_core(core_pinning.risk_r2_engines[3])
+        } else {
+            pipeline
+        };
+        let pipeline = pipeline.handle_events_with(create_risk_r2_handler!(3, risk_engines));
+
+        // Dependency barrier: event handlers wait for settlement
+        let pipeline = pipeline.and_then();
+
+        // Stage 5: Event Handlers for market data and notifications
+        let pipeline = if enable_pinning {
+            pipeline.pin_at_core(core_pinning.events)
+        } else {
+            pipeline
+        };
+        let pipeline = pipeline.handle_events_with(events_handler);
+
+        pipeline.build()
     }
 
     /// Starts the networking layer and begins processing orders
@@ -463,6 +488,18 @@ pub mod test {
                 risk_r2_engines: [10, 11, 12, 13],
                 events: 14,
                 test_handler: 15,
+            }
+        }
+    }
+
+    impl From<TestCorePinning> for CorePinning {
+        fn from(pinning: TestCorePinning) -> Self {
+            Self {
+                journaling: pinning.journaling,
+                risk_engines: pinning.risk_engines,
+                matching_engines: pinning.matching_engines,
+                risk_r2_engines: pinning.risk_r2_engines,
+                events: pinning.events,
             }
         }
     }
@@ -648,9 +685,10 @@ pub mod test {
                         events_handler,
                         test_handler,
                         pinning,
+                        false, // Tests don't use pinning
                     )
                 } else {
-                    self.build_test_pipeline_no_pinning(
+                    self.build_test_pipeline(
                         BUFFER_SIZE,
                         order_factory,
                         journaling_handler,
@@ -659,6 +697,8 @@ pub mod test {
                         &mut router_handlers_iter,
                         events_handler,
                         test_handler,
+                        TestCorePinning::default(),
+                        false, // Tests don't use pinning
                     )
                 }
             } else if let Some(pinning) = core_pinning {
@@ -670,16 +710,11 @@ pub mod test {
                     &price_cache,
                     &mut router_handlers_iter,
                     events_handler,
-                    CorePinning {
-                        journaling: pinning.journaling,
-                        risk_engines: pinning.risk_engines,
-                        matching_engines: pinning.matching_engines,
-                        risk_r2_engines: pinning.risk_r2_engines,
-                        events: pinning.events,
-                    },
+                    pinning.into(),
+                    false, // Tests don't use pinning
                 )
             } else {
-                CoreEngine::build_disruptor_pipeline_no_pinning(
+                CoreEngine::build_disruptor_pipeline(
                     BUFFER_SIZE,
                     order_factory,
                     journaling_handler,
@@ -687,6 +722,8 @@ pub mod test {
                     &price_cache,
                     &mut router_handlers_iter,
                     events_handler,
+                    CorePinning::default(),
+                    false, // Tests don't use pinning
                 )
             };
 
@@ -709,81 +746,131 @@ pub mod test {
             events_handler: impl FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
             test_handler: TestHandler,
             core_pinning: TestCorePinning,
+            enable_pinning: bool,
         ) -> OrderProducer {
-            build_multi_producer(buffer_size, order_factory, BusySpin)
-                .pin_at_core(core_pinning.journaling)
-                .handle_events_with(journaling_handler)
-                .pin_at_core(core_pinning.risk_engines[0])
-                .handle_events_with(create_risk_handler!(0, risk_engines, price_cache))
-                .pin_at_core(core_pinning.risk_engines[1])
-                .handle_events_with(create_risk_handler!(1, risk_engines, price_cache))
-                .pin_at_core(core_pinning.risk_engines[2])
-                .handle_events_with(create_risk_handler!(2, risk_engines, price_cache))
-                .pin_at_core(core_pinning.risk_engines[3])
-                .handle_events_with(create_risk_handler!(3, risk_engines, price_cache))
-                .and_then()
-                .pin_at_core(core_pinning.matching_engines[0])
-                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
-                .pin_at_core(core_pinning.matching_engines[1])
-                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
-                .pin_at_core(core_pinning.matching_engines[2])
-                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
-                .pin_at_core(core_pinning.matching_engines[3])
-                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
-                .and_then()
-                .pin_at_core(core_pinning.risk_r2_engines[0])
-                .handle_events_with(create_risk_r2_handler!(0, risk_engines))
-                .pin_at_core(core_pinning.risk_r2_engines[1])
-                .handle_events_with(create_risk_r2_handler!(1, risk_engines))
-                .pin_at_core(core_pinning.risk_r2_engines[2])
-                .handle_events_with(create_risk_r2_handler!(2, risk_engines))
-                .pin_at_core(core_pinning.risk_r2_engines[3])
-                .handle_events_with(create_risk_r2_handler!(3, risk_engines))
-                .and_then()
-                .pin_at_core(core_pinning.events)
-                .handle_events_with(events_handler)
-                .and_then()
-                .pin_at_core(core_pinning.test_handler)
-                .handle_events_with(test_handler)
-                .build()
-        }
+            info!(
+                target: "engine::test",
+                action = "building_test_pipeline",
+                enable_pinning,
+                "Building test disruptor pipeline with pinning: {}", enable_pinning
+            );
 
-        /// Builds the test-specific disruptor pipeline without CPU pinning
-        #[allow(clippy::too_many_arguments)]
-        fn build_test_pipeline_no_pinning(
-            &self,
-            buffer_size: usize,
-            order_factory: fn() -> OrderCommand,
-            journaling_handler: impl FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
-            risk_engines: &RiskEngines,
-            price_cache: &Arc<PriceCache>,
-            router_handlers_iter: &mut impl Iterator<
-                Item = impl FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
-            >,
-            events_handler: impl FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
-            test_handler: TestHandler,
-        ) -> OrderProducer {
-            build_multi_producer(buffer_size, order_factory, BusySpin)
-                .handle_events_with(journaling_handler)
-                .handle_events_with(create_risk_handler!(0, risk_engines, price_cache))
-                .handle_events_with(create_risk_handler!(1, risk_engines, price_cache))
-                .handle_events_with(create_risk_handler!(2, risk_engines, price_cache))
-                .handle_events_with(create_risk_handler!(3, risk_engines, price_cache))
-                .and_then()
-                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
-                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
-                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
-                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"))
-                .and_then()
-                .handle_events_with(create_risk_r2_handler!(0, risk_engines))
-                .handle_events_with(create_risk_r2_handler!(1, risk_engines))
-                .handle_events_with(create_risk_r2_handler!(2, risk_engines))
-                .handle_events_with(create_risk_r2_handler!(3, risk_engines))
-                .and_then()
-                .handle_events_with(events_handler)
-                .and_then()
-                .handle_events_with(test_handler)
-                .build()
+            // Stage 1: Journaling
+            let pipeline = build_multi_producer(buffer_size, order_factory, BusySpin);
+            let pipeline = if enable_pinning {
+                pipeline.pin_at_core(core_pinning.journaling)
+            } else {
+                pipeline
+            };
+            let pipeline = pipeline.handle_events_with(journaling_handler);
+
+            // Stage 2: Risk Engine R1
+            let pipeline = if enable_pinning {
+                pipeline.pin_at_core(core_pinning.risk_engines[0])
+            } else {
+                pipeline
+            };
+            let pipeline =
+                pipeline.handle_events_with(create_risk_handler!(0, risk_engines, price_cache));
+            let pipeline = if enable_pinning {
+                pipeline.pin_at_core(core_pinning.risk_engines[1])
+            } else {
+                pipeline
+            };
+            let pipeline =
+                pipeline.handle_events_with(create_risk_handler!(1, risk_engines, price_cache));
+            let pipeline = if enable_pinning {
+                pipeline.pin_at_core(core_pinning.risk_engines[2])
+            } else {
+                pipeline
+            };
+            let pipeline =
+                pipeline.handle_events_with(create_risk_handler!(2, risk_engines, price_cache));
+            let pipeline = if enable_pinning {
+                pipeline.pin_at_core(core_pinning.risk_engines[3])
+            } else {
+                pipeline
+            };
+            let pipeline =
+                pipeline.handle_events_with(create_risk_handler!(3, risk_engines, price_cache));
+            let pipeline = pipeline.and_then();
+
+            // Stage 3: Matching Engine
+            let pipeline = if enable_pinning {
+                pipeline.pin_at_core(core_pinning.matching_engines[0])
+            } else {
+                pipeline
+            };
+            let pipeline = pipeline
+                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"));
+            let pipeline = if enable_pinning {
+                pipeline.pin_at_core(core_pinning.matching_engines[1])
+            } else {
+                pipeline
+            };
+            let pipeline = pipeline
+                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"));
+            let pipeline = if enable_pinning {
+                pipeline.pin_at_core(core_pinning.matching_engines[2])
+            } else {
+                pipeline
+            };
+            let pipeline = pipeline
+                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"));
+            let pipeline = if enable_pinning {
+                pipeline.pin_at_core(core_pinning.matching_engines[3])
+            } else {
+                pipeline
+            };
+            let pipeline = pipeline
+                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"));
+            let pipeline = pipeline.and_then();
+
+            // Stage 4: Risk Engine R2
+            let pipeline = if enable_pinning {
+                pipeline.pin_at_core(core_pinning.risk_r2_engines[0])
+            } else {
+                pipeline
+            };
+            let pipeline = pipeline.handle_events_with(create_risk_r2_handler!(0, risk_engines));
+            let pipeline = if enable_pinning {
+                pipeline.pin_at_core(core_pinning.risk_r2_engines[1])
+            } else {
+                pipeline
+            };
+            let pipeline = pipeline.handle_events_with(create_risk_r2_handler!(1, risk_engines));
+            let pipeline = if enable_pinning {
+                pipeline.pin_at_core(core_pinning.risk_r2_engines[2])
+            } else {
+                pipeline
+            };
+            let pipeline = pipeline.handle_events_with(create_risk_r2_handler!(2, risk_engines));
+            let pipeline = if enable_pinning {
+                pipeline.pin_at_core(core_pinning.risk_r2_engines[3])
+            } else {
+                pipeline
+            };
+            let pipeline = pipeline.handle_events_with(create_risk_r2_handler!(3, risk_engines));
+            let pipeline = pipeline.and_then();
+
+            // Stage 5: Event Handlers
+            let pipeline = if enable_pinning {
+                pipeline.pin_at_core(core_pinning.events)
+            } else {
+                pipeline
+            };
+            let pipeline = pipeline.handle_events_with(events_handler);
+            let pipeline = pipeline.and_then();
+
+            // Test Handler
+            let pipeline = if enable_pinning {
+                pipeline.pin_at_core(core_pinning.test_handler)
+            } else {
+                pipeline
+            };
+            let pipeline = pipeline.handle_events_with(test_handler);
+
+            pipeline.build()
         }
     }
 

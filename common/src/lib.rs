@@ -14,7 +14,8 @@ pub use cmd::{
 };
 pub use core_arithmetic::CoreArithmetic;
 pub use events::{
-    BalanceEvent, CancelOrderEvent, OrderEvent, OrderbookEvent, OrderbookLevel, TradeEvent,
+    BalanceEvent, CancelOrderEvent, DepositEvent, OrderEvent, OrderbookEvent, OrderbookLevel,
+    TradeEvent, WithdrawEvent,
 };
 pub use l2_market_data::L2MarketData;
 pub use market_specification::{

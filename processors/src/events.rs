@@ -6,10 +6,12 @@ use common::L2MarketData;
 use common::MatcherTradeEvent;
 use common::Order;
 use common::OrderCommand;
+use common::OrderCommandType;
 use common::Status;
 use common::UserBalance;
 use common::{
-    BalanceEvent, CancelOrderEvent, OrderEvent, OrderbookEvent, OrderbookLevel, TradeEvent,
+    BalanceEvent, CancelOrderEvent, DepositEvent, OrderEvent, OrderbookEvent, OrderbookLevel,
+    TradeEvent, WithdrawEvent,
 };
 use common::{base_asset, order_debug, order_info, quote_asset};
 use rdkafka::config::ClientConfig;
@@ -116,8 +118,8 @@ impl KafkaEventsHandler {
                 timestamp: cmd.timestamp(),
             };
 
-            let topic_name = format!("asset-{}-balances", asset_id);
-            self.publish_event(&topic_name, &user_id.to_string(), &balance_event);
+            let topic_name = "balances";
+            self.publish_event(topic_name, &user_id.to_string(), &balance_event);
             debug!(
                 target: "events",
                 component = "kafka_handler",
@@ -142,8 +144,8 @@ impl KafkaEventsHandler {
             timestamp: cmd.timestamp(),
         };
 
-        let topic_name = format!("asset-{}-balances", cmd.market_id);
-        self.publish_event(&topic_name, &cmd.user_id.to_string(), &balance_event);
+        let topic_name = "balances";
+        self.publish_event(topic_name, &cmd.user_id.to_string(), &balance_event);
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -155,23 +157,27 @@ impl KafkaEventsHandler {
         );
     }
 
-    fn publish_order_event(&self, cmd: &OrderCommand) {
+    fn publish_order_event(&self, cmd: &OrderCommand, original_size: Option<u64>) {
         let order = Order {
             order_id: cmd.order_id(),
             user_id: cmd.user_id(),
             price: cmd.price(),
-            size: cmd.size(),
+            size: original_size.unwrap_or_else(|| cmd.size()),
             side: cmd.side(),
+            time_in_force: cmd.time_in_force,
+            status: cmd.status(),
             timestamp: cmd.timestamp(),
         };
 
         let order_event = OrderEvent {
             order,
             market_id: cmd.market_id(),
+            time_in_force: cmd.time_in_force,
+            status: cmd.status(),
         };
 
-        let topic_name = format!("market-{}-orders", cmd.market_id());
-        self.publish_event(&topic_name, &cmd.order_id().to_string(), &order_event);
+        let topic_name = "orders";
+        self.publish_event(topic_name, &cmd.order_id().to_string(), &order_event);
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -198,12 +204,13 @@ impl KafkaEventsHandler {
             size: event.size,
             maker_order_id: event.matched_order_id,
             taker_order_id,
+            taker_side: cmd.side(),
             timestamp: cmd.timestamp(),
         };
 
-        let topic_name = format!("market-{market_id}-trades");
+        let topic_name = "trades";
         let trade_key = format!("{}:{}", taker_order_id, event.matched_order_id);
-        self.publish_event(&topic_name, &trade_key, &trade_event);
+        self.publish_event(topic_name, &trade_key, &trade_event);
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -224,8 +231,8 @@ impl KafkaEventsHandler {
             timestamp: cmd.timestamp(),
         };
 
-        let topic_name = format!("market-{}-cancels", cmd.market_id());
-        self.publish_event(&topic_name, &cmd.order_id().to_string(), &cancel_event);
+        let topic_name = "cancels";
+        self.publish_event(topic_name, &cmd.order_id().to_string(), &cancel_event);
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -266,8 +273,8 @@ impl KafkaEventsHandler {
                 timestamp: snapshot.timestamp,
             };
 
-            let topic_name = format!("market-{market_id}-orderbook");
-            self.publish_event(&topic_name, &market_id.to_string(), &orderbook_event);
+            let topic_name = "orderbook";
+            self.publish_event(topic_name, &market_id.to_string(), &orderbook_event);
 
             debug!(
                 target: "events",
@@ -277,6 +284,48 @@ impl KafkaEventsHandler {
                 topic = %topic_name
             );
         }
+    }
+
+    fn publish_deposit_event(&self, cmd: &OrderCommand) {
+        let deposit_event = DepositEvent {
+            user_id: cmd.user_id(),
+            asset_id: cmd.market_id() as u16,
+            amount: cmd.size(),
+            timestamp: cmd.timestamp(),
+        };
+
+        let topic_name = "deposits";
+        self.publish_event(topic_name, &cmd.user_id().to_string(), &deposit_event);
+        debug!(
+            target: "events",
+            component = "kafka_handler",
+            action = "deposit_event_published",
+            user_id = cmd.user_id(),
+            asset_id = cmd.market_id(),
+            amount = cmd.size(),
+            topic = %topic_name
+        );
+    }
+
+    fn publish_withdraw_event(&self, cmd: &OrderCommand) {
+        let withdraw_event = WithdrawEvent {
+            user_id: cmd.user_id(),
+            asset_id: cmd.market_id() as u16,
+            amount: cmd.size(),
+            timestamp: cmd.timestamp(),
+        };
+
+        let topic_name = "withdrawals";
+        self.publish_event(topic_name, &cmd.user_id().to_string(), &withdraw_event);
+        debug!(
+            target: "events",
+            component = "kafka_handler",
+            action = "withdraw_event_published",
+            user_id = cmd.user_id(),
+            asset_id = cmd.market_id(),
+            amount = cmd.size(),
+            topic = %topic_name
+        );
     }
 
     fn publish_response(&self, cmd: &OrderCommand) {
@@ -303,6 +352,41 @@ impl EventsHandler for KafkaEventsHandler {
             handler = "kafka"
         );
 
+        // Handle deposit and withdraw commands separately
+        match cmd.command {
+            OrderCommandType::DepositFunds => {
+                if cmd.status() == Status::Processed {
+                    order_debug!(
+                        "events_publish_deposit",
+                        cmd,
+                        stage = "events",
+                        handler = "kafka"
+                    );
+                    self.publish_deposit_event(cmd);
+                    self.publish_deposit_withdrwal_event(cmd);
+                }
+                self.publish_response(cmd);
+                return;
+            }
+            OrderCommandType::WithdrawFunds => {
+                if cmd.status() == Status::Processed {
+                    order_debug!(
+                        "events_publish_withdraw",
+                        cmd,
+                        stage = "events",
+                        handler = "kafka"
+                    );
+                    self.publish_withdraw_event(cmd);
+                    self.publish_deposit_withdrwal_event(cmd);
+                }
+                self.publish_response(cmd);
+                return;
+            }
+            _ => {
+                // Continue with existing order book command handling
+            }
+        }
+
         let market_id = cmd.market_id();
         let taker_id = cmd.user_id();
         let taker_order_id = cmd.order_id();
@@ -324,7 +408,7 @@ impl EventsHandler for KafkaEventsHandler {
                     handler = "kafka"
                 );
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
-                self.publish_order_event(cmd);
+                self.publish_order_event(cmd, None);
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
             Status::Cancelled => {
@@ -355,8 +439,13 @@ impl EventsHandler for KafkaEventsHandler {
 
                     curr_event = event.next_event.as_deref();
                 }
+                // Calculate original size: filled_size + remaining_size
+                let original_size =
+                    cmd.events().map(|e| e.calc_filled_size()).unwrap_or(0) + cmd.size();
                 // Publish balance event for the taker
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
+                // Publish taker order event with original size
+                self.publish_order_event(cmd, Some(original_size));
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
             Status::Processing => {
@@ -509,6 +598,48 @@ mod tests {
         filled_cmd.attatch_event(Box::new(trade1));
 
         handler.handle_processed_command(&mut filled_cmd);
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    }
+
+    #[tokio::test]
+    async fn test_kafka_events_handler_deposit_funds() {
+        let handler = KafkaEventsHandler::new(
+            "localhost:9092",
+            Arc::new(Publications::new()),
+            ReplayControl::disabled(),
+        );
+
+        let mut cmd = OrderCommand::deposit_funds(
+            1005, // user_id
+            1000, // amount
+            1,    // asset_id
+        );
+        cmd.set_status(Status::Processed);
+        cmd.timestamp = 1004;
+
+        handler.handle_processed_command(&mut cmd);
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    }
+
+    #[tokio::test]
+    async fn test_kafka_events_handler_withdraw_funds() {
+        let handler = KafkaEventsHandler::new(
+            "localhost:9092",
+            Arc::new(Publications::new()),
+            ReplayControl::disabled(),
+        );
+
+        let mut cmd = OrderCommand::withdraw_funds(
+            1006, // user_id
+            500,  // amount
+            1,    // asset_id
+        );
+        cmd.set_status(Status::Processed);
+        cmd.timestamp = 1005;
+
+        handler.handle_processed_command(&mut cmd);
 
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
