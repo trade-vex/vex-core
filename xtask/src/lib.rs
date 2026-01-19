@@ -18,7 +18,7 @@
 //! ```no_run
 //! use xtask::test_framework::TestContext;
 //! use xtask::builders::OrderBuilder;
-//! use common::{Side, TimeInForce};
+//! use common::Side;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create test context
@@ -27,13 +27,12 @@
 //! // Fund test user
 //! ctx.fund_user(1, 1000000, 1).await?;  // 1M USD
 //!
-//! // Place an order
+//! // Place an order (defaults to GTC time-in-force)
 //! let order = OrderBuilder::place_limit()
 //!     .user(1)
 //!     .price(50000)
 //!     .size(10)
 //!     .side(Side::Bid)
-//!     .time_in_force(TimeInForce::Gtc)
 //!     .market_id(ctx.market_id)
 //!     .build();
 //!

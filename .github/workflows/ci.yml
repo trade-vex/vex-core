@@ -80,7 +80,10 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make cmake gcc g++ clang zlib1g-dev libbsd-dev
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk
+          # Install CMake 3.30+ (required by rusteron)
+          pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
+          cmake --version
 
       - name: Build workspace
         run: cargo build --workspace
@@ -135,7 +138,10 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make cmake gcc g++ clang zlib1g-dev libbsd-dev
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk
+          # Install CMake 3.30+ (required by rusteron)
+          pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
+          cmake --version
 
       - name: Linting
         run: cargo clippy --workspace --all-features --all-targets -- -D warnings -A clippy::missing_errors_doc -A clippy::missing_panics_doc -A clippy::must_use_candidate -A clippy::default_trait_access -A clippy::ignored_unit_patterns -A clippy::module_name_repetitions -A clippy::cast_possible_truncation
@@ -197,7 +203,10 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get update && sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make cmake gcc g++ clang zlib1g-dev libbsd-dev
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk
+          # Install CMake 3.30+ (required by rusteron)
+          pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
+          cmake --version
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov
       - name: Generate code coverage

@@ -534,13 +534,17 @@ mod tests {
 
     #[test]
     fn test_reserve_and_cancel_bid() {
-        let engine = RiskEngine::default();
         let user_id = 1;
         let market_id = (2_u32 << 16) | 1_u32; // base=1 (e.g. BTC), quote=2 (e.g. USD)
         let quote_asset = quote_asset(market_id);
         let price = 100;
         let size = 10;
         let required_quote = price * size;
+
+        let spec = get_spec(market_id);
+        let mut specs = HashMap::new();
+        specs.insert(market_id, spec);
+        let engine = RiskEngine::new(specs.clone(), 0, 1);
 
         engine.set_balance(user_id, quote_asset, UserBalance::new(required_quote, 0));
 
@@ -553,10 +557,6 @@ mod tests {
             market_id,
             1,
         );
-
-        let spec = get_spec(market_id);
-        let mut specs = HashMap::new();
-        specs.insert(market_id, spec);
 
         let price_cache = Arc::new(PriceCache::new(specs.keys()));
         engine
@@ -576,12 +576,16 @@ mod tests {
 
     #[test]
     fn test_reserve_and_cancel_ask() {
-        let engine = RiskEngine::default();
         let user_id = 1;
         let market_id = (2_u32 << 16) | 1_u32; // base=1 (e.g. BTC), quote=2 (e.g. USD)
         let base_asset = base_asset(market_id);
         let price = 100;
         let size = 10;
+
+        let spec = get_spec(market_id);
+        let mut specs = HashMap::new();
+        specs.insert(market_id, spec);
+        let engine = RiskEngine::new(specs.clone(), 0, 1);
 
         engine.set_balance(user_id, base_asset, UserBalance::new(size, 0));
 
@@ -594,10 +598,6 @@ mod tests {
             market_id,
             1,
         );
-
-        let spec = get_spec(market_id);
-        let mut specs = HashMap::new();
-        specs.insert(market_id, spec);
 
         let price_cache = Arc::new(PriceCache::new(specs.keys()));
         engine
@@ -617,13 +617,17 @@ mod tests {
 
     #[test]
     fn test_insufficient_funds() {
-        let engine = RiskEngine::default();
         let user_id = 1;
         let market_id = (2_u32 << 16) | 1_u32;
         let quote_asset = quote_asset(market_id);
         let price = 100;
         let size = 10;
         let required_quote = price * size;
+
+        let spec = get_spec(market_id);
+        let mut specs = HashMap::new();
+        specs.insert(market_id, spec);
+        let engine = RiskEngine::new(specs.clone(), 0, 1);
 
         engine.set_balance(
             user_id,
@@ -641,9 +645,6 @@ mod tests {
             1,
         );
 
-        let spec = get_spec(market_id);
-        let mut specs = HashMap::new();
-        specs.insert(market_id, spec);
         let price_cache = Arc::new(PriceCache::new(specs.keys()));
         let res = engine.reserve_funds_for_order(&mut cmd, price_cache);
         assert!(res.is_err());

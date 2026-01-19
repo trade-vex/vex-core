@@ -67,7 +67,7 @@ impl RunningEngine {
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let config = VexConfig::new(Environment::Development);
-/// let _engine = start(config)?;
+/// let _engine = start(config, false)?;
 /// // Server runs until _engine is dropped
 /// # Ok(())
 /// # }
