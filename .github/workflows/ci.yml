@@ -29,33 +29,12 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
-      zookeeper:
-        image: confluentinc/cp-zookeeper:7.3.0
-        ports:
-          - 2181:2181
-        env:
-          ZOOKEEPER_CLIENT_PORT: 2181
-          ZOOKEEPER_TICK_TIME: 2000
-        options: >-
-          --health-cmd "nc -z localhost 2181"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-      kafka:
-        image: confluentinc/cp-kafka:7.3.0
+      redpanda:
+        image: redpandadata/redpanda:v25.3.1
         ports:
           - 9092:9092
-        env:
-          KAFKA_BROKER_ID: 1
-          KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-          KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
         options: >-
-          --health-cmd "kafka-broker-api-versions --bootstrap-server localhost:9092"
+          --health-cmd "rpk cluster health"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -163,33 +142,12 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
-      zookeeper:
-        image: confluentinc/cp-zookeeper:7.3.0
-        ports:
-          - 2181:2181
-        env:
-          ZOOKEEPER_CLIENT_PORT: 2181
-          ZOOKEEPER_TICK_TIME: 2000
-        options: >-
-          --health-cmd "nc -z localhost 2181"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-      kafka:
-        image: confluentinc/cp-kafka:7.3.0
+      redpanda:
+        image: redpandadata/redpanda:v25.3.1
         ports:
           - 9092:9092
-        env:
-          KAFKA_BROKER_ID: 1
-          KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-          KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
         options: >-
-          --health-cmd "kafka-broker-api-versions --bootstrap-server localhost:9092"
+          --health-cmd "rpk cluster health"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -229,13 +187,23 @@ jobs:
       - name: Run security audit
         run: cargo audit --deny warnings
 
-  e2e-tests:
+  xtask-tests:
     name: End-to-end tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk
+          # Install CMake 3.30+ (required by rusteron)
+          pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
+          cmake --version
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -249,12 +217,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-buildx-
 
-      - name: Start Docker service
+      - name: Verify Docker is available
         run: |
-          sudo systemctl start docker
+          # Docker should already be running on GitHub Actions runners
+          # This just verifies it's available
           docker info
 
-      - name: Run e2e tests
+      - name: Build Aeron and Docker images
         run: |
           # Use buildx cache for faster builds
           export DOCKER_BUILDKIT=1
@@ -269,18 +238,15 @@ jobs:
             echo "Docker image build failed!"
             exit 1
           fi
-          for scenario in basic-connectivity high-latency packet-loss; do
-            echo "Running test scenario: $scenario"
-            output=$(cargo xtask test-e2e --scenario "$scenario")
-            echo "$output"
-            if ! echo "$output" | grep -q "Scenario '$scenario' PASSED!"; then
-              echo "Test scenario '$scenario' failed!"
-              exit 1
-            fi
-          done
 
-      - name: Run test suite
-        run: cargo xtask test-suite
+      - name: Run xtask unit tests
+        run: cargo test --package xtask --lib
+
+      - name: Run e2e tests
+        run: cargo xtask test e2e --all
+
+      - name: Run integration tests
+        run: cargo xtask test integration --fail-fast
         env:
           VEX_ENV: dev
 

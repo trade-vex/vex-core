@@ -11,10 +11,6 @@ path = "src/bin/tests/test_client.rs"
 name = "test_server"
 path = "src/bin/tests/test_server.rs"
 
-[[bin]]
-name = "run_test_suite"
-path = "src/bin/run_test_suite.rs"
-
 # [[bin]]
 # name = "test_e2e"
 # path = "src/bin/tests/test_e2e.rs"

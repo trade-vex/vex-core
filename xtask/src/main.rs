@@ -1,8 +1,14 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use duct::cmd;
 use serde::Deserialize;
 use std::{collections::HashSet, env, fs, path::Path, time::Instant};
 use thiserror::Error;
+use tracing::{error, info};
+use tracing_subscriber::FmtSubscriber;
+
+use xtask::scenarios;
+use xtask::test_framework::types::TestSuiteResult;
+use xtask::test_framework::TestContext;
 
 /// delay in network emulation in teste2e (high-latency scenario)
 const NETWORK_DELAY_MS: u64 = 100;
@@ -22,23 +28,94 @@ struct Cli {
 enum Commands {
     /// Build the Docker images for the server and client.
     BuildDocker,
-    /// Run End-to-End tests using a specified scenario.
+
+    /// Unified test command with subcommands for all test types.
+    Test {
+        #[command(subcommand)]
+        command: TestCommands,
+    },
+
+    // Legacy commands (hidden, kept for backwards compatibility)
+    /// [DEPRECATED] Use `test e2e` instead. Run End-to-End tests using a specified scenario.
+    #[command(hide = true)]
     TestE2e {
         #[arg(short, long, default_value = "basic-connectivity")]
         scenario: String,
         #[arg(short, long, default_value_t = 1)]
         clients: u32,
     },
-    /// Run performance benchmarks.
+
+    /// [DEPRECATED] Use `test benchmark` instead. Run performance benchmarks.
+    #[command(hide = true)]
     Benchmark {
         #[arg(short, long, default_value_t = 1)]
         clients: u32,
     },
-    /// Run integration test suite in Docker.
+
+    /// [DEPRECATED] Use `test integration` instead. Run integration test suite in Docker.
+    #[command(hide = true)]
     TestSuite {
         #[arg(short, long, default_value = "all")]
         suite: String,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum TestCommands {
+    /// Docker-based network E2E tests
+    E2e {
+        /// Test scenario to run (basic-connectivity, high-latency, packet-loss)
+        #[arg(short, long, default_value = "basic-connectivity")]
+        scenario: String,
+
+        /// Number of clients (default: 1)
+        #[arg(short, long, default_value_t = 1)]
+        clients: u32,
+
+        /// Run all scenarios sequentially
+        #[arg(long)]
+        all: bool,
+    },
+
+    /// Integration tests (all, balance, gtc, ioc, fok, cancellation)
+    Integration {
+        /// Test suite to run
+        #[arg(default_value = "all")]
+        suite: IntegrationSuite,
+
+        /// Verbose logging (debug level)
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// Stop on first failure
+        #[arg(short, long)]
+        fail_fast: bool,
+    },
+
+    /// Performance benchmarks
+    Benchmark {
+        /// Number of clients (default: 1)
+        #[arg(short, long, default_value_t = 1)]
+        clients: u32,
+    },
+
+    /// Run cargo test for xtask unit tests
+    Unit {
+        /// Filter pattern for tests
+        #[arg(short, long)]
+        filter: Option<String>,
+    },
+}
+
+#[derive(ValueEnum, Clone, Debug, Default)]
+enum IntegrationSuite {
+    #[default]
+    All,
+    Balance,
+    Gtc,
+    Ioc,
+    Fok,
+    Cancellation,
 }
 
 #[derive(Error, Debug)]
@@ -57,6 +134,9 @@ enum XTaskError {
 
     #[error("JSON parsing error: {0}")]
     JsonParse(#[from] serde_json::Error),
+
+    #[error("Integration test error: {0}")]
+    IntegrationTest(String),
 }
 
 #[derive(Error, Debug)]
@@ -65,18 +145,287 @@ enum TestingError {
     TestFailed(String),
 }
 
-fn main() -> Result<(), XTaskError> {
+#[tokio::main]
+async fn main() -> Result<(), XTaskError> {
     let cli = Cli::parse();
     let project_root = env::current_dir()?;
 
     match cli.command {
         Commands::BuildDocker => build_docker(&project_root),
+
+        Commands::Test { command } => match command {
+            TestCommands::E2e {
+                scenario,
+                clients,
+                all,
+            } => {
+                if all {
+                    run_all_e2e_scenarios(project_root.into_boxed_path()).await
+                } else {
+                    run_correctness_task(project_root.into_boxed_path(), &scenario, clients)
+                }
+            }
+            TestCommands::Integration {
+                suite,
+                verbose,
+                fail_fast,
+            } => run_integration_tests(&project_root, suite, verbose, fail_fast).await,
+            TestCommands::Benchmark { clients } => {
+                run_benchmark(project_root.into_boxed_path(), clients)
+            }
+            TestCommands::Unit { filter } => run_unit_tests(&project_root, filter),
+        },
+
+        // Legacy commands with deprecation warnings
         Commands::TestE2e { scenario, clients } => {
+            eprintln!("⚠️  DEPRECATED: `cargo xtask test-e2e` is deprecated.");
+            eprintln!("   Use `cargo xtask test e2e --scenario {} --clients {}` instead.", scenario, clients);
+            eprintln!();
             run_correctness_task(project_root.into_boxed_path(), &scenario, clients)
         }
-        Commands::Benchmark { clients } => run_benchmark(project_root.into_boxed_path(), clients),
-        Commands::TestSuite { suite } => run_test_suite(&project_root, &suite),
+        Commands::Benchmark { clients } => {
+            eprintln!("⚠️  DEPRECATED: `cargo xtask benchmark` is deprecated.");
+            eprintln!(
+                "   Use `cargo xtask test benchmark --clients {}` instead.",
+                clients
+            );
+            eprintln!();
+            run_benchmark(project_root.into_boxed_path(), clients)
+        }
+        Commands::TestSuite { suite } => {
+            eprintln!("⚠️  DEPRECATED: `cargo xtask test-suite` is deprecated.");
+            eprintln!("   Use `cargo xtask test integration {}` instead.", suite);
+            eprintln!();
+            let suite_enum = match suite.to_lowercase().as_str() {
+                "all" => IntegrationSuite::All,
+                "balance" => IntegrationSuite::Balance,
+                "gtc" => IntegrationSuite::Gtc,
+                "ioc" => IntegrationSuite::Ioc,
+                "fok" => IntegrationSuite::Fok,
+                "cancellation" => IntegrationSuite::Cancellation,
+                _ => IntegrationSuite::All,
+            };
+            run_integration_tests(&project_root, suite_enum, false, false).await
+        }
     }
+}
+
+/// Run all E2E test scenarios sequentially
+async fn run_all_e2e_scenarios(project_root: Box<Path>) -> Result<(), XTaskError> {
+    let scenarios = ["basic-connectivity", "high-latency", "packet-loss"];
+    let mut failed_scenarios = Vec::new();
+
+    for scenario in &scenarios {
+        println!("\n========================================");
+        println!("Running E2E scenario: {}", scenario);
+        println!("========================================\n");
+
+        if let Err(e) = run_correctness_task(project_root.clone(), scenario, 1) {
+            eprintln!("Scenario '{}' FAILED: {}", scenario, e);
+            failed_scenarios.push(scenario.to_string());
+        }
+    }
+
+    if failed_scenarios.is_empty() {
+        println!("\n========================================");
+        println!("All E2E scenarios PASSED!");
+        println!("========================================\n");
+        Ok(())
+    } else {
+        Err(XTaskError::Testing(TestingError::TestFailed(format!(
+            "Failed scenarios: {}",
+            failed_scenarios.join(", ")
+        ))))
+    }
+}
+
+/// Run integration tests directly (inlined from run_test_suite binary)
+async fn run_integration_tests(
+    root: &Path,
+    suite: IntegrationSuite,
+    verbose: bool,
+    fail_fast: bool,
+) -> Result<(), XTaskError> {
+    // Initialize logging
+    let subscriber = if verbose {
+        FmtSubscriber::builder()
+            .with_max_level(tracing::Level::DEBUG)
+            .finish()
+    } else {
+        FmtSubscriber::builder()
+            .with_max_level(tracing::Level::INFO)
+            .finish()
+    };
+
+    // Try to set the subscriber, but ignore if already set (e.g., in tests)
+    let _ = tracing::subscriber::set_global_default(subscriber);
+
+    info!("Starting VEX-CORE Integration Test Suite");
+    info!("========================================");
+
+    // Start docker-compose services
+    println!("Starting infrastructure services...");
+    cmd!("docker", "compose", "up", "-d")
+        .dir(root.join("xtask/tests"))
+        .run()?;
+
+    println!("Waiting for services to stabilize...");
+    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+
+    // Create test context
+    let mut ctx = match TestContext::new().await {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            error!("Failed to initialize test context: {}", e);
+            cleanup_docker(root);
+            return Err(XTaskError::IntegrationTest(format!(
+                "Failed to initialize test context: {}",
+                e
+            )));
+        }
+    };
+
+    let mut suite_result = TestSuiteResult::new();
+    let start = Instant::now();
+
+    let test_result = run_suite_tests(&mut ctx, &suite).await;
+
+    match test_result {
+        Ok(results) => {
+            for result in results {
+                suite_result.add_result(result);
+            }
+        }
+        Err(e) => {
+            error!("Test suite failed: {}", e);
+            if fail_fast {
+                cleanup_ctx_and_docker(&mut ctx, root).await;
+                return Err(XTaskError::IntegrationTest(e));
+            }
+        }
+    }
+
+    suite_result.duration = start.elapsed();
+
+    // Cleanup
+    cleanup_ctx_and_docker(&mut ctx, root).await;
+
+    // Print summary
+    info!("");
+    info!("========================================");
+    info!("Test Suite Summary");
+    info!("========================================");
+    info!("Total scenarios:  {}", suite_result.total);
+    info!("Passed:          {} ✓", suite_result.passed);
+    info!("Failed:          {} ✗", suite_result.failed);
+    info!("Duration:        {:?}", suite_result.duration);
+    info!("");
+
+    // Print individual results
+    for result in &suite_result.scenarios {
+        if result.success {
+            info!("  ✓ {} ({:?})", result.name, result.duration);
+        } else {
+            error!("  ✗ {} ({:?})", result.name, result.duration);
+            if let Some(ref err) = result.error {
+                error!("    Error: {}", err);
+            }
+        }
+    }
+
+    info!("========================================");
+
+    // Return appropriate result
+    if suite_result.is_success() {
+        info!("All tests passed! ✓");
+        Ok(())
+    } else {
+        error!("Some tests failed! ✗");
+        Err(XTaskError::Testing(TestingError::TestFailed(format!(
+            "{} of {} tests failed",
+            suite_result.failed, suite_result.total
+        ))))
+    }
+}
+
+async fn run_suite_tests(
+    ctx: &mut TestContext,
+    suite: &IntegrationSuite,
+) -> Result<Vec<xtask::test_framework::types::ScenarioResult>, String> {
+    match suite {
+        IntegrationSuite::All => {
+            info!("Running Comprehensive Integration Test Suite");
+            info!("(All order types + edge cases in single continuous state)");
+            info!("");
+            scenarios::comprehensive::run_all(ctx)
+                .await
+                .map_err(|e| format!("Comprehensive integration test failed: {}", e))
+        }
+        IntegrationSuite::Balance => {
+            info!("Running Balance Management tests");
+            scenarios::balance::run_all(ctx)
+                .await
+                .map_err(|e| format!("Balance tests failed: {}", e))
+        }
+        IntegrationSuite::Gtc => {
+            info!("Running GTC Order tests");
+            scenarios::gtc::run_all(ctx)
+                .await
+                .map_err(|e| format!("GTC tests failed: {}", e))
+        }
+        IntegrationSuite::Ioc => {
+            info!("Running IOC Order tests");
+            scenarios::ioc::run_all(ctx)
+                .await
+                .map_err(|e| format!("IOC tests failed: {}", e))
+        }
+        IntegrationSuite::Fok => {
+            info!("Running FOK Order tests");
+            scenarios::fok::run_all(ctx)
+                .await
+                .map_err(|e| format!("FOK tests failed: {}", e))
+        }
+        IntegrationSuite::Cancellation => {
+            info!("Running Cancellation tests");
+            scenarios::cancellation::run_all(ctx)
+                .await
+                .map_err(|e| format!("Cancellation tests failed: {}", e))
+        }
+    }
+}
+
+async fn cleanup_ctx_and_docker(ctx: &mut TestContext, root: &Path) {
+    if let Err(e) = ctx.cleanup().await {
+        error!("Cleanup failed: {}", e);
+    }
+    cleanup_docker(root);
+}
+
+fn cleanup_docker(root: &Path) {
+    println!("Cleaning up services...");
+    if let Err(e) = cmd!("docker", "compose", "down", "-v")
+        .dir(root.join("xtask/tests"))
+        .run()
+    {
+        eprintln!("Warning: Failed to clean up docker-compose services: {}", e);
+    }
+}
+
+/// Run xtask unit tests
+fn run_unit_tests(root: &Path, filter: Option<String>) -> Result<(), XTaskError> {
+    println!("Running xtask unit tests...");
+
+    let mut args = vec!["test", "--package", "xtask"];
+
+    if let Some(ref f) = filter {
+        args.push("--");
+        args.push(f);
+    }
+
+    cmd("cargo", &args).dir(root).run()?;
+
+    println!("Unit tests completed successfully.");
+    Ok(())
 }
 
 // Helper struct for automatic cleanup
@@ -448,62 +797,4 @@ fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
         println!("\n Benchmark completed successfully!");
     }
     Ok(())
-}
-
-fn run_test_suite(root: &Path, suite: &str) -> Result<(), XTaskError> {
-    println!("Running integration test suite: {suite}");
-
-    // Start docker-compose services (redis, kafka, zookeeper, vex-server)
-    println!("Starting infrastructure services...");
-    cmd!("docker", "compose", "up", "-d")
-        .dir(root.join("xtask/tests"))
-        .run()?;
-
-    println!("Waiting for services to stabilize...");
-    std::thread::sleep(std::time::Duration::from_secs(10));
-
-    // Run the test suite binary directly on the host
-    println!("Running test suite binary...");
-    let output = cmd!(
-        "cargo",
-        "run",
-        "--package",
-        "xtask",
-        "--bin",
-        "run_test_suite",
-        suite
-    )
-    .dir(root)
-    .stdout_capture()
-    .stderr_capture()
-    .unchecked()
-    .run();
-
-    // Print output
-    if let Ok(ref result) = output {
-        println!("{}", String::from_utf8_lossy(&result.stdout));
-        eprint!("{}", String::from_utf8_lossy(&result.stderr));
-    }
-
-    // Cleanup docker-compose services (always run, even on failure)
-    println!("Cleaning up services...");
-    if let Err(e) = cmd!("docker", "compose", "down", "-v")
-        .dir(root.join("xtask/tests"))
-        .run()
-    {
-        eprintln!("Warning: Failed to clean up docker-compose services: {}", e);
-    }
-
-    // Check exit status
-    match output {
-        Ok(result) if result.status.success() => {
-            println!("Test suite '{suite}' PASSED!");
-            Ok(())
-        }
-        Ok(result) => Err(XTaskError::Testing(TestingError::TestFailed(format!(
-            "Test suite '{suite}' failed with exit code: {:?}",
-            result.status.code()
-        )))),
-        Err(e) => Err(XTaskError::CommandExecution(e)),
-    }
 }
