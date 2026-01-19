@@ -49,6 +49,7 @@ RUN apt-get update && apt-get install -y \
 COPY --from=builder /usr/src/app/target/release/test_client /usr/local/bin/test_client
 # Copy the Aeron media driver and the entrypoint script
 COPY ./xtask/tests/bin/lib /usr/local/lib/
+RUN ldconfig
 COPY ./xtask/tests/bin/aeronmd /usr/local/bin/aeronmd
 COPY ./xtask/tests/start-client.sh /usr/local/bin/start-client.sh
 RUN chmod +x /usr/local/bin/start-client.sh
