@@ -7,8 +7,8 @@ use tracing::{error, info};
 use tracing_subscriber::FmtSubscriber;
 
 use xtask::scenarios;
-use xtask::test_framework::types::TestSuiteResult;
 use xtask::test_framework::TestContext;
+use xtask::test_framework::types::TestSuiteResult;
 
 /// delay in network emulation in teste2e (high-latency scenario)
 const NETWORK_DELAY_MS: u64 = 100;
@@ -179,7 +179,10 @@ async fn main() -> Result<(), XTaskError> {
         // Legacy commands with deprecation warnings
         Commands::TestE2e { scenario, clients } => {
             eprintln!("⚠️  DEPRECATED: `cargo xtask test-e2e` is deprecated.");
-            eprintln!("   Use `cargo xtask test e2e --scenario {} --clients {}` instead.", scenario, clients);
+            eprintln!(
+                "   Use `cargo xtask test e2e --scenario {} --clients {}` instead.",
+                scenario, clients
+            );
             eprintln!();
             run_correctness_task(project_root.into_boxed_path(), &scenario, clients)
         }
