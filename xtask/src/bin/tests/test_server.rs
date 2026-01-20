@@ -36,12 +36,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Override server networking from environment for Docker deployment
-    if let Ok(server_port) = std::env::var("VEX_SERVER_PORT") {
-        if let Ok(port) = server_port.parse::<u16>() {
-            info!("Using server port from environment: {}", port);
-            config.core_networking.initial_port = port;
-            config.core_networking.initial_control_port = port + 1;
-        }
+    if let Ok(server_port) = std::env::var("VEX_SERVER_PORT")
+        && let Ok(port) = server_port.parse::<u16>()
+    {
+        info!("Using server port from environment: {}", port);
+        config.core_networking.initial_port = port;
+        config.core_networking.initial_control_port = port + 1;
     }
 
     // In Docker, we need to listen on all interfaces to be reachable from other containers
