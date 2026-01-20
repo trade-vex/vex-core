@@ -296,7 +296,7 @@ mod tests {
             market_id: 0,
             ..Default::default()
         };
-        symbols.insert(456, spec); // Mismatch: key 456 != spec.market_id 123
+        symbols.insert(456, spec); // Mismatch: key 456 != spec.market_id 0
 
         let config = SymbolSpecificationConfig { symbols };
         assert!(config.validate().is_err());

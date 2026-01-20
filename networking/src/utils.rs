@@ -117,7 +117,7 @@ pub fn new_subscription_with_mdc_and_session(
     )
 }
 
-pub fn new_subsciption_with_handlers_and_session<
+pub fn new_subscription_with_handlers_and_session<
     X: AeronAvailableImageCallback,
     Y: AeronUnavailableImageCallback,
 >(

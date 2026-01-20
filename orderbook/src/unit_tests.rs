@@ -3152,15 +3152,16 @@ mod test {
 
         // 1. Initial state
         // Before any operations, the cache should have default values from MarketPrice::default()
+        // Sentinels: best_bid=0 (no bid), best_ask=MAX (no ask)
         assert_eq!(
             price_cache.get_best_bid(market_id),
-            u64::MAX,
-            "Initial best bid should be u64::MAX"
+            0,
+            "Initial best bid should be 0 (no bid sentinel)"
         );
         assert_eq!(
             price_cache.get_best_ask(market_id),
-            0,
-            "Initial best ask should be 0"
+            u64::MAX,
+            "Initial best ask should be u64::MAX (no ask sentinel)"
         );
 
         // 2. Place first bid

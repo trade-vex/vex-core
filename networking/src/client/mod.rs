@@ -266,7 +266,7 @@ pub struct VexGateway {
     core_publication: Option<AeronPublication>,
     /// Shutdown flag
     shutdown: Arc<AtomicBool>,
-    /// pollign thread
+    /// polling thread
     polling_thread: Option<JoinHandle<()>>,
 }
 
@@ -587,7 +587,7 @@ impl VexGateway {
                 handler.release();
                 return Ok(response);
             }
-            // Sleeping breifly here. Larger sleep as latency is not critical during handshake
+            // Sleeping briefly here. Larger sleep as latency is not critical during handshake
             std::thread::sleep(Duration::from_millis(10));
         }
         handler.release();

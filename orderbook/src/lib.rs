@@ -32,7 +32,7 @@
 //! 3.  **State Management:**
 //!     -   The order book is self-contained and mutates its state through the `place_order` and
 //!         `cancel_order` methods.
-//!     -   It generates `MatcherTradeEvent`s and attaches them to the `cmdOrderCommand` for downstream
+//!     -   It generates `MatcherTradeEvent`s and attaches them to the `OrderCommand` for downstream
 //!         processors (risk engines and event handlers) to consume.
 use crate::tree::BookSide;
 use common::{
@@ -177,7 +177,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                     next_event: None,
                     maker_balance: [UserBalance::default(); 2], // filled by risk engine
                 };
-                cmd.attatch_event(Box::new(event));
+                cmd.attach_event(Box::new(event));
 
                 if maker_order_completed {
                     orders_to_remove.push(idx);

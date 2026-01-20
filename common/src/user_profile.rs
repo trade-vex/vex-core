@@ -138,7 +138,7 @@ impl BalanceStore {
         Ok(*balance)
     }
 
-    // Subract from available funds
+    // Subtract from available funds
     pub fn subtract_funds(
         &mut self,
         user_id: u64,
@@ -186,6 +186,6 @@ pub enum BalanceError {
     InsufficientLockedFunds { locked: u64, needed: u64 },
     #[error("operation would cause numeric overflow")]
     Overflow,
-    #[error("user_id {0}, asset_id {1}")]
+    #[error("User asset not found: user_id={0}, asset_id={1}")]
     UserAssetNotFound(u64, u16),
 }

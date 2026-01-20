@@ -95,6 +95,6 @@ impl ReplayControl {
     }
 
     pub fn is_enabled(&self) -> bool {
-        self.flag.load(Ordering::Relaxed)
+        self.flag.load(Ordering::SeqCst)
     }
 }

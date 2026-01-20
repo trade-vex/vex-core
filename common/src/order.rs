@@ -49,9 +49,12 @@ pub struct MarketPrice {
 
 impl Default for MarketPrice {
     fn default() -> Self {
+        // Sentinels match orderbook semantics:
+        // - No bid means price floor (0) - can't sell
+        // - No ask means price ceiling (MAX) - can't buy
         Self {
-            best_bid: AtomicU64::new(u64::MAX),
-            best_ask: AtomicU64::new(0),
+            best_bid: AtomicU64::new(0),
+            best_ask: AtomicU64::new(u64::MAX),
         }
     }
 }

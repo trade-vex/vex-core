@@ -107,7 +107,7 @@ impl CoreNetworkingConfig {
     pub fn production_defaults() -> Self {
         Self {
             context_dir: "/var/lib/vex/aeron-core".to_string(),
-            local_address: "127.0.0.1".to_string(), // Bind to all interfaces
+            local_address: "127.0.0.1".to_string(), // Bind to localhost only
             initial_port: 3521,
             initial_control_port: 3522,
             base_gateway_port: 50000,
@@ -290,9 +290,9 @@ impl GatewayNetworkingConfig {
             ));
         }
 
-        if self.gateway_id > MAX_GATEWAYS as u8 {
+        if self.gateway_id >= MAX_GATEWAYS as u8 {
             return Err(ConfigError::network(format!(
-                "Gateway ID must be between 0 and {}",
+                "Gateway ID must be between 0 and {} (exclusive)",
                 MAX_GATEWAYS
             )));
         }

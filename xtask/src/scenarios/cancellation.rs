@@ -11,7 +11,7 @@ use crate::fixtures::{assets, prices, users};
 use crate::test_framework::TestContext;
 use crate::test_framework::types::*;
 use crate::verifiers::{BalanceVerifier, OrderbookVerifier, ResponseVerifier, TradeVerifier};
-use common::Side;
+use common::{Side, Status};
 use tracing::{info, warn};
 
 /// Comprehensive cancellation test suite - runs all scenarios in a single session
@@ -682,9 +682,19 @@ async fn cancel_nonexistent_order_section(ctx: &mut TestContext) -> TestResult<(
 
     let cancel_response = ctx.execute_command(cancel_cmd)?;
 
-    // The response should indicate the order doesn't exist or be rejected
-    // System should handle this gracefully without crashing
-    info!("  → Cancel response status: {:?}", cancel_response.status);
+    // The response should indicate the order doesn't exist - expect Rejected status
+    if cancel_response.status != Status::Rejected {
+        return Err(TestError::Assertion {
+            message: format!(
+                "Expected Status::Rejected for non-existent order, got {:?}",
+                cancel_response.status
+            ),
+        });
+    }
+    info!(
+        "  → Cancel correctly rejected with status: {:?}",
+        cancel_response.status
+    );
     info!("  → System handled non-existent order gracefully");
 
     Ok(())
@@ -758,8 +768,19 @@ async fn cancel_filled_order_section(ctx: &mut TestContext) -> TestResult<()> {
 
     let cancel_response = ctx.execute_command(cancel_cmd)?;
 
-    // System should handle this gracefully
-    info!("  → Cancel response status: {:?}", cancel_response.status);
+    // System should reject cancellation of already-filled order
+    if cancel_response.status != Status::Rejected {
+        return Err(TestError::Assertion {
+            message: format!(
+                "Expected Status::Rejected for already-filled order, got {:?}",
+                cancel_response.status
+            ),
+        });
+    }
+    info!(
+        "  → Cancel correctly rejected with status: {:?}",
+        cancel_response.status
+    );
     info!("  → System handled already-filled order cancel gracefully");
 
     Ok(())

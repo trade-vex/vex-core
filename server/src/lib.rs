@@ -639,7 +639,7 @@ mod tests {
             let placed_cmd = rx
                 .recv_timeout(Duration::from_secs(1))
                 .expect("Maker order placement timed out");
-            // assert oders arre placed correctly
+            // assert orders are placed correctly
             // assert_eq!(placed_cmd.order_id, order_id);
             assert_eq!(placed_cmd.status, Status::Placed);
             // assert if the balance is locked correctly for the maker

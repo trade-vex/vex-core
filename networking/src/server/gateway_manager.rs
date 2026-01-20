@@ -4,7 +4,7 @@ use crate::server::duologue::{
 use crate::server::gateway_publications::Publications;
 use crate::utils::{
     PortAllocator, SessionAllocator, new_publication_with_mdc_and_session,
-    new_subsciption_with_handlers_and_session, send_message, send_message_with_retries,
+    new_subscription_with_handlers_and_session, send_message, send_message_with_retries,
 };
 use common::{MAX_GATEWAYS, OrderCommand};
 use disruptor::{MultiProducer, SingleConsumerBarrier};
@@ -244,10 +244,11 @@ impl GatewayManager {
                 ));
             }
             match gateway_id_str[PREFIX.len()..].parse::<u8>() {
-                Ok(id) if id <= 15 => id,
+                Ok(id) if (id as usize) < MAX_GATEWAYS => id,
                 Ok(id) => {
                     let error_msg = format!(
-                        "{session_id} gateway-{id} REJECT Gateway ID out of range, expected 0-15"
+                        "{session_id} gateway-{id} REJECT Gateway ID out of range, expected 0-{}",
+                        MAX_GATEWAYS - 1
                     );
                     send_message(publication, error_msg.as_bytes())?;
                     return Err(ServerError::GatewayMessageError(
@@ -451,7 +452,7 @@ impl GatewayManager {
             tx: self.cleanup_tx.clone(),
         });
 
-        let subscription = match new_subsciption_with_handlers_and_session(
+        let subscription = match new_subscription_with_handlers_and_session(
             &self.aeron,
             &self.config.local_address,
             ports[0],

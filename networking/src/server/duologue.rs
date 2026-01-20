@@ -53,7 +53,7 @@ impl Duologue {
 
     pub fn close(&mut self) -> Result<(), AeronCError> {
         // taking ownership of the handlers to move into the close notification
-        // this is required because, the subsciption.close() is an async operation,
+        // this is required because, the subscription.close() is an async operation,
         // hence it is unsafe to release the handlers immediately after calling close()
         let fragment_handler = self.fragment_handler.take();
         let on_image_available_handler = self.on_image_available_handler.take();

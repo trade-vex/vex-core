@@ -337,8 +337,8 @@ impl RiskEngine {
             let slippage = spec.slippage;
             let best_ask = price_cache.get_best_ask(cmd.market_id);
 
-            if best_ask == 0 {
-                // No liquidity on ask side, cannot determine price for market order.
+            if best_ask == u64::MAX {
+                // No liquidity on ask side (sentinel value), cannot determine price for market order.
                 return Err(RiskEngineError::InvalidArguments {
                     price: cmd.price,
                     size: cmd.size,

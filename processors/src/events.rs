@@ -132,7 +132,7 @@ impl KafkaEventsHandler {
         }
     }
 
-    fn publish_deposit_withdrwal_event(&self, cmd: &OrderCommand) {
+    fn publish_deposit_withdrawal_event(&self, cmd: &OrderCommand) {
         let asset_id = cmd.market_id as u16;
 
         let balance_event = BalanceEvent {
@@ -363,7 +363,7 @@ impl EventsHandler for KafkaEventsHandler {
                         handler = "kafka"
                     );
                     self.publish_deposit_event(cmd);
-                    self.publish_deposit_withdrwal_event(cmd);
+                    self.publish_deposit_withdrawal_event(cmd);
                 }
                 self.publish_response(cmd);
                 return;
@@ -377,7 +377,7 @@ impl EventsHandler for KafkaEventsHandler {
                         handler = "kafka"
                     );
                     self.publish_withdraw_event(cmd);
-                    self.publish_deposit_withdrwal_event(cmd);
+                    self.publish_deposit_withdrawal_event(cmd);
                 }
                 self.publish_response(cmd);
                 return;
@@ -465,7 +465,7 @@ impl EventsHandler for KafkaEventsHandler {
                     stage = "events",
                     handler = "kafka"
                 );
-                self.publish_deposit_withdrwal_event(cmd);
+                self.publish_deposit_withdrawal_event(cmd);
             }
         }
         // Always publish the response back to the gateway
@@ -595,7 +595,7 @@ mod tests {
         };
 
         // Use the correct method name (note the typo in the original)
-        filled_cmd.attatch_event(Box::new(trade1));
+        filled_cmd.attach_event(Box::new(trade1));
 
         handler.handle_processed_command(&mut filled_cmd);
 

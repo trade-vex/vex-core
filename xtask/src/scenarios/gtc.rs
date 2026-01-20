@@ -100,8 +100,10 @@ pub async fn test_gtc_full_match(ctx: &mut TestContext) -> TestResult<()> {
     let size = 5;
 
     // Fund both users
-    ctx.fund_user(maker_id, 1_000_000, assets::USD).await?; // Quote for bid
-    ctx.fund_user(taker_id, 1_000, assets::BTC).await?; // Base for ask
+    // Maker places Ask (selling BTC) -> needs BTC
+    // Taker places Bid (buying BTC) -> needs USD
+    ctx.fund_user(maker_id, 1_000, assets::BTC).await?; // Base for ask
+    ctx.fund_user(taker_id, 1_000_000, assets::USD).await?; // Quote for bid
 
     // Setup: Maker places ask order
     let maker_order = OrderBuilder::place_limit()
@@ -175,8 +177,10 @@ pub async fn test_gtc_partial_match(ctx: &mut TestContext) -> TestResult<()> {
     let expected_remaining = taker_size - maker_size;
 
     // Fund both users
-    ctx.fund_user(maker_id, 1_000_000, assets::USD).await?;
-    ctx.fund_user(taker_id, 1_000, assets::BTC).await?;
+    // Maker places Ask (selling BTC) -> needs BTC
+    // Taker places Bid (buying BTC) -> needs USD
+    ctx.fund_user(maker_id, 1_000, assets::BTC).await?; // Base for ask
+    ctx.fund_user(taker_id, 1_000_000, assets::USD).await?; // Quote for bid
 
     // Setup: Maker places smaller ask
     let maker_order = OrderBuilder::place_limit()

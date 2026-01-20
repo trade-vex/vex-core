@@ -261,7 +261,7 @@ impl OrderCommand {
         self.user_id = user_id;
     }
 
-    pub fn attatch_event(&mut self, event: Box<MatcherTradeEvent>) {
+    pub fn attach_event(&mut self, event: Box<MatcherTradeEvent>) {
         if let Some(mut tail) = self.events.as_mut() {
             while tail.next_event.is_some() {
                 tail = tail.next_event.as_mut().unwrap();
