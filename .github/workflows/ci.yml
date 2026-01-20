@@ -1,14 +1,14 @@
 name: Vex Core CI
 
 on:
-    push: 
-        branches:
-            - main
-            - develop
-    pull_request: 
-        branches:
-            - main
-            - develop
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
 
 env:
   CARGO_TERM_COLOR: always
@@ -17,6 +17,28 @@ jobs:
   test:
     name: Build and Test
     runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redpanda:
+        image: redpandadata/redpanda:v25.3.1
+        ports:
+          - 9092:9092
+        options: >-
+          --health-cmd "rpk cluster health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
 
@@ -37,7 +59,10 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make cmake gcc g++ clang zlib1g-dev libbsd-dev
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk
+          # Install CMake 3.30+ (required by rusteron)
+          pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
+          cmake --version
 
       - name: Build workspace
         run: cargo build --workspace
@@ -53,6 +78,9 @@ jobs:
         run: cargo test --workspace --all-features --all-targets
         env:
           RUSTFLAGS: "-D warnings -C link-arg=-fuse-ld=mold"
+          VEX_KAFKA_BROKER: localhost:9092
+          VEX_REDIS_URL: redis://localhost:6379
+          VEX_ENV: dev
 
   fmt:
     name: Rustfmt
@@ -89,7 +117,10 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make cmake gcc g++ clang zlib1g-dev libbsd-dev
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk
+          # Install CMake 3.30+ (required by rusteron)
+          pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
+          cmake --version
 
       - name: Linting
         run: cargo clippy --workspace --all-features --all-targets -- -D warnings -A clippy::missing_errors_doc -A clippy::missing_panics_doc -A clippy::must_use_candidate -A clippy::default_trait_access -A clippy::ignored_unit_patterns -A clippy::module_name_repetitions -A clippy::cast_possible_truncation
@@ -99,6 +130,28 @@ jobs:
   coverage:
     name: Code coverage
     runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redpanda:
+        image: redpandadata/redpanda:v25.3.1
+        ports:
+          - 9092:9092
+        options: >-
+          --health-cmd "rpk cluster health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -108,12 +161,19 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get update && sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make cmake gcc g++ clang zlib1g-dev libbsd-dev
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk
+          # Install CMake 3.30+ (required by rusteron)
+          pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
+          cmake --version
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov
       - name: Generate code coverage
         run: |
           cargo llvm-cov --workspace --all-features --all-targets --exclude rusteron_client --text
+        env:
+          VEX_KAFKA_BROKER: localhost:9092
+          VEX_REDIS_URL: redis://localhost:6379
+          VEX_ENV: dev
 
   audit:
     name: Security audit
@@ -127,13 +187,23 @@ jobs:
       - name: Run security audit
         run: cargo audit --deny warnings
 
-  e2e-tests:
+  xtask-tests:
     name: End-to-end tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk
+          # Install CMake 3.30+ (required by rusteron)
+          pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
+          cmake --version
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -147,12 +217,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-buildx-
 
-      - name: Start Docker service
+      - name: Verify Docker is available
         run: |
-          sudo systemctl start docker
+          # Docker should already be running on GitHub Actions runners
+          # This just verifies it's available
           docker info
 
-      - name: Run e2e tests
+      - name: Build Aeron and Docker images
         run: |
           # Use buildx cache for faster builds
           export DOCKER_BUILDKIT=1
@@ -167,15 +238,17 @@ jobs:
             echo "Docker image build failed!"
             exit 1
           fi
-          for scenario in basic-connectivity high-latency packet-loss; do
-            echo "Running test scenario: $scenario"
-            output=$(cargo xtask test-e2e --scenario "$scenario")
-            echo "$output"
-            if ! echo "$output" | grep -q "Scenario '$scenario' PASSED!"; then
-              echo "Test scenario '$scenario' failed!"
-              exit 1
-            fi
-          done
+
+      - name: Run xtask unit tests
+        run: cargo test --package xtask --lib
+
+      - name: Run e2e tests
+        run: cargo xtask test e2e --all
+
+      - name: Run integration tests
+        run: cargo xtask test integration --fail-fast
+        env:
+          VEX_ENV: dev
 
       # Temp fix for cache growth - https://github.com/docker/build-push-action/issues/252
       - name: Move cache

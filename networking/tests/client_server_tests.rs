@@ -2,13 +2,14 @@ use common::OrderCommandType;
 use common::{OrderCommand, decode_order_command};
 use common::{Side, TimeInForce};
 use disruptor::{BusySpin, ProcessorSettings, build_multi_producer};
-use rusteron_client::{AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port};
+use rusteron_archive::{AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port};
+use std::sync::{Arc, atomic::AtomicBool};
 use std::time::Duration;
 use std::{net::SocketAddr, thread};
 use tracing::{error, info};
 use vex_config::{CoreNetworkingConfig, GatewayNetworkingConfig};
 use vex_networking::client::{GatewayError, VexGateway};
-use vex_networking::server::VexCoreServer;
+use vex_networking::server::{Publications, VexCoreServer};
 
 /// Fragment handler for processing OrderCommand messages from core
 struct OrderCommandHandler {
@@ -68,10 +69,7 @@ fn test_client_server_communication() {
             gateway_id: client.gateway_id().to_string(),
         };
 
-        match client.start(handler) {
-            Ok(()) => println!("Client run() completed successfully"),
-            Err(e) => println!("Client run() error: {e}"),
-        }
+        let publisher = client.start(handler).expect("Failed to start VexGateway");
 
         let mut order_command = OrderCommand {
             command: OrderCommandType::PlaceOrder,
@@ -83,10 +81,16 @@ fn test_client_server_communication() {
             market_id: 3124,
             price: 150,
             time_in_force: TimeInForce::Gtc,
+            status: common::Status::Processing,
+            events: None,
+            balance: [common::UserBalance::default(); 2],
+            client_order_id: 0,
+            l2_data: None,
+            route_gateway_id: 0,
         };
         for i in 0..10 {
             order_command.order_id = i;
-            client.send_order_command(&order_command)?;
+            publisher.send_order_command(&order_command)?;
             std::thread::sleep(Duration::from_millis(10));
         }
         Ok(())
@@ -99,23 +103,28 @@ fn test_client_server_communication() {
         info!("server_config: {:?}", server_config);
         let producer = build_multi_producer(
             1024,
-            || OrderCommand::new_order(TimeInForce::Gtc, 1, 23, 32, 100, Side::Ask),
+            || OrderCommand::place_order(TimeInForce::Gtc, 1, 23, 32, Side::Ask, 1, 10),
             BusySpin,
         )
         .pin_at_core(1)
         .handle_events_with({
-            move |cmd: &OrderCommand, _, _| {
+            move |cmd: &mut OrderCommand, _, _| {
                 info!("Server received OrderCommand Core 1: {:?}", cmd);
             }
         })
+        .and_then()
         .pin_at_core(2)
         .handle_events_with({
-            move |cmd: &OrderCommand, _, _| {
+            move |cmd: &mut OrderCommand, _, _| {
                 info!("Server processing OrderCommand Core 2: {:?}", cmd);
             }
         })
         .build();
-        let mut server = VexCoreServer::new(server_config, producer).unwrap();
+        let publications = Arc::new(Publications::new());
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let mut server =
+            VexCoreServer::new(server_config, producer, publications, false, shutdown_flag)
+                .unwrap();
         match server.start() {
             Ok(()) => println!("Server run() completed successfully (unexpected)"),
             Err(e) => println!("Server run() error: {e}"),

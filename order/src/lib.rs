@@ -9,6 +9,7 @@ pub mod message_header_codec;
 pub mod order_command_message_codec;
 pub mod order_command_type;
 pub mod side;
+pub mod status;
 pub mod time_in_force;
 
 pub const SBE_SCHEMA_ID: u16 = 1;

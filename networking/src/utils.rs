@@ -1,8 +1,7 @@
 use crate::server::ServerError;
-use dashmap::DashSet;
 use rand::Rng;
-use rand::{seq::SliceRandom, thread_rng};
-use rusteron_client::{
+use rand::thread_rng;
+use rusteron_archive::{
     Aeron, AeronAvailableImageCallback, AeronAvailableImageLogger, AeronCError, AeronPublication,
     AeronReservedValueSupplierLogger, AeronSubscription, AeronUnavailableImageCallback,
     AeronUnavailableImageLogger, Handler,
@@ -20,7 +19,8 @@ pub fn new_publication(
     stream_id: i32,
 ) -> Result<AeronPublication, AeronCError> {
     let endpoint = format!("{address}:{port}");
-    let uri = CString::new(format!("aeron:udp?endpoint={endpoint}")).unwrap();
+    let uri =
+        CString::new(format!("aeron:udp?endpoint={endpoint}")).expect("Creation of CString failed");
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -35,7 +35,7 @@ pub fn new_publication_with_mdc_and_session(
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic|session-id={session_id}"
     ))
-    .unwrap();
+    .expect("Creation of CString failed");
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -49,7 +49,7 @@ pub fn new_publication_with_mdc(
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic"
     ))
-    .unwrap();
+    .expect("Creation of CString failed");
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -64,7 +64,7 @@ pub fn new_publication_with_session(
     let uri = CString::new(format!(
         "aeron:udp?endpoint={endpoint}|session-id={session_id}"
     ))
-    .unwrap();
+    .expect("Creation of CString failed");
     aeron.add_publication(&uri, stream_id, Duration::from_secs(1))
 }
 
@@ -78,7 +78,7 @@ pub fn new_subscription_with_mdc(
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic"
     ))
-    .unwrap();
+    .expect("Creation of CString failed");
     let available_logger = AeronAvailableImageLogger {};
     let available_handler = Handler::leak(available_logger);
     let unavailable_logger = AeronUnavailableImageLogger {};
@@ -103,7 +103,7 @@ pub fn new_subscription_with_mdc_and_session(
     let uri = CString::new(format!(
         "aeron:udp?control={control_endpoint}|control-mode=dynamic|session-id={session_id}"
     ))
-    .unwrap();
+    .expect("Creation of CString failed");
     let available_logger = AeronAvailableImageLogger {};
     let available_handler = Handler::leak(available_logger);
     let unavailable_logger = AeronUnavailableImageLogger {};
@@ -117,7 +117,7 @@ pub fn new_subscription_with_mdc_and_session(
     )
 }
 
-pub fn new_subsciption_with_handlers_and_session<
+pub fn new_subscription_with_handlers_and_session<
     X: AeronAvailableImageCallback,
     Y: AeronUnavailableImageCallback,
 >(
@@ -126,19 +126,19 @@ pub fn new_subsciption_with_handlers_and_session<
     port: u16,
     stream_id: i32,
     session_id: i32,
-    on_image_available: X,
-    on_image_unavailable: Y,
+    on_image_available: Option<&Handler<X>>,
+    on_image_unavailable: Option<&Handler<Y>>,
 ) -> Result<AeronSubscription, AeronCError> {
     let endpoint = format!("{address}:{port}");
     let uri = CString::new(format!(
         "aeron:udp?endpoint={endpoint}|session-id={session_id}"
     ))
-    .unwrap();
+    .expect("Creation of CString failed");
     aeron.add_subscription(
         &uri,
         stream_id,
-        Some(&Handler::leak(on_image_available)),
-        Some(&Handler::leak(on_image_unavailable)),
+        on_image_available,
+        on_image_unavailable,
         Duration::from_secs(1),
     )
 }
@@ -151,16 +151,17 @@ pub fn new_subscription_with_handlers<
     address: &str,
     port: u16,
     stream_id: i32,
-    on_image_available: X,
-    on_image_unavailable: Y,
+    on_image_available: Option<&Handler<X>>,
+    on_image_unavailable: Option<&Handler<Y>>,
 ) -> Result<AeronSubscription, AeronCError> {
     let endpoint = format!("{address}:{port}");
-    let uri = CString::new(format!("aeron:udp?endpoint={endpoint}")).unwrap();
+    let uri =
+        CString::new(format!("aeron:udp?endpoint={endpoint}")).expect("Creation of CString failed");
     aeron.add_subscription(
         &uri,
         stream_id,
-        Some(&Handler::leak(on_image_available)),
-        Some(&Handler::leak(on_image_unavailable)),
+        on_image_available,
+        on_image_unavailable,
         Duration::from_secs(1),
     )
 }
@@ -182,13 +183,13 @@ pub fn send_message_with_retries(
         if result >= 0 {
             return Ok(());
         }
-        if result < 0 {
-            error!(
-                "Failed to send message: {}",
-                AeronCError::from_code(result as i32)
-            );
-        }
-        if i == MESSAGE_RETRY_COUNT {
+        error!(
+            "Failed to send message (attempt {} of {}): {}",
+            i + 1,
+            MESSAGE_RETRY_COUNT,
+            AeronCError::from_code(result as i32)
+        );
+        if i == MESSAGE_RETRY_COUNT - 1 {
             return Err(AeronCError::from_code(result as i32));
         }
         thread::sleep(Duration::from_millis(100));
@@ -196,13 +197,22 @@ pub fn send_message_with_retries(
     Ok(())
 }
 
+/// Port allocator that randomly selects ports from a given range.
+/// Does not track allocated ports - the Session struct is the source of truth.
+/// Tracks recently freed ports to avoid OS-level port binding race conditions.
 #[derive(Debug)]
 pub struct PortAllocator {
     port_range: std::ops::RangeInclusive<u16>,
-    ports_used: dashmap::DashSet<u16>,
     low: u16,
     high: u16,
+    /// Tracks ports that were recently freed with their timestamp
+    /// Ports are kept in this set for PORT_COOLDOWN_SECONDS to allow OS to release them
+    recently_freed_ports: std::sync::RwLock<std::collections::HashMap<u16, std::time::Instant>>,
 }
+
+/// Time to wait before reusing a freed port (in seconds)
+/// This allows the OS to fully release the UDP port binding
+const PORT_COOLDOWN_SECONDS: u64 = 10;
 
 impl PortAllocator {
     /// Create a new port allocator.
@@ -223,22 +233,25 @@ impl PortAllocator {
             ));
         }
 
-        let port_hi = port_base.checked_add(max_ports as u16 - 1).ok_or_else(|| {
-            ServerError::ResourceAllocationError("Port range exceeds u16::MAX".to_string())
-        })?;
-
+        if max_ports == 0 {
+            return Err(ServerError::ResourceAllocationError(
+                "Max ports must be greater than 0".to_string(),
+            ));
+        }
+        let hi_u32 = port_base as u32 + (max_ports as u32) - 1;
+        if hi_u32 > u16::MAX as u32 {
+            return Err(ServerError::ResourceAllocationError(
+                "Port range exceeds u16::MAX".to_string(),
+            ));
+        }
+        let port_hi = hi_u32 as u16;
         let port_range = port_base..=port_hi;
-        let mut ports_free: Vec<u16> = port_range.clone().collect();
-
-        // Shuffle the ports for random allocation
-        let mut rng = rand::thread_rng();
-        ports_free.shuffle(&mut rng);
 
         Ok(Self {
             port_range,
-            ports_used: dashmap::DashSet::new(),
             low: port_base,
             high: port_hi,
+            recently_freed_ports: std::sync::RwLock::new(std::collections::HashMap::new()),
         })
     }
 
@@ -247,63 +260,104 @@ impl PortAllocator {
         self.port_range.clone().count()
     }
 
-    // /// Get the number of available ports
-    // pub fn available_ports(&self) -> usize {
-    //     self.ports_free.len()
-    // }
-
-    // /// Get the number of used ports
-    // pub fn used_ports(&self) -> usize {
-    //     self.ports_used.len()
-    // }
-
-    /// Free a given port. Has no effect if the given port is outside of the range
-    /// considered by the allocator.
-    ///
-    /// # Arguments
-    /// * `port` - The port to free
-    pub fn free(&self, port: u16) {
-        if self.port_range.contains(&port) {
-            self.ports_used.remove(&port);
-        }
-    }
-
-    /// Allocate `count` ports.
+    /// Allocate `count` ports randomly, avoiding the ports already in use and recently freed ports.
     ///
     /// # Arguments
     /// * `count` - The number of ports that will be allocated
+    /// * `ports_in_use` - Slice of ports currently in use (from Session)
     ///
     /// # Returns
     /// A vector of allocated ports
     ///
     /// # Errors
     /// Returns `ResourceAllocationError` if there are fewer than `count` ports available to allocate
-    pub fn allocate(&self, mut count: usize) -> Result<Vec<u16>, ServerError> {
+    /// or if unable to find free ports after reasonable attempts
+    pub fn allocate(&self, count: usize, ports_in_use: &[u16]) -> Result<Vec<u16>, ServerError> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Clean up expired entries from recently_freed_ports
+        self.cleanup_expired_ports();
+
+        // Get list of ports that are still in cooldown
+        let recently_freed: Vec<u16> = {
+            let freed = self.recently_freed_ports.read().unwrap();
+            freed.keys().copied().collect()
+        };
+
+        let total = self.total_ports();
+        let used = ports_in_use.len();
+        let in_cooldown = recently_freed.len();
+
+        // Account for ports in cooldown when checking availability
+        if count > total.saturating_sub(used).saturating_sub(in_cooldown) {
+            return Err(ServerError::ResourceAllocationError(format!(
+                "Requested {count} ports, but only {} available ({} in use, {} in cooldown)",
+                total.saturating_sub(used).saturating_sub(in_cooldown),
+                used,
+                in_cooldown
+            )));
+        }
+
         let mut result = Vec::with_capacity(count);
         let mut rng = rand::thread_rng();
-        while count != 0 {
-            let port = rng.gen_range(self.low..=self.high);
-            if !self.ports_used.contains(&port) {
-                result.push(port);
-                self.ports_used.insert(port);
-                count -= 1;
+        let max_attempts = (total * 2).max(100); // Try at most 2x the total ports or 100 attempts
+        let mut attempts = 0;
+
+        while result.len() < count {
+            if attempts >= max_attempts {
+                return Err(ServerError::ResourceAllocationError(format!(
+                    "Failed to allocate {} ports after {} attempts ({} already allocated, {} in cooldown)",
+                    count,
+                    max_attempts,
+                    result.len(),
+                    in_cooldown
+                )));
             }
+
+            let port = rng.gen_range(self.low..=self.high);
+
+            // Check if port is not in use, not in cooldown, and not already in result
+            if !ports_in_use.contains(&port)
+                && !recently_freed.contains(&port)
+                && !result.contains(&port)
+            {
+                result.push(port);
+            }
+
+            attempts += 1;
         }
 
         Ok(result)
     }
+
+    /// Mark ports as recently freed. They will be unavailable for allocation for PORT_COOLDOWN_SECONDS.
+    ///
+    /// # Arguments
+    /// * `ports` - Slice of ports that were just freed
+    pub fn mark_freed(&self, ports: &[u16]) {
+        let now = std::time::Instant::now();
+        let mut freed = self.recently_freed_ports.write().unwrap();
+        for &port in ports {
+            freed.insert(port, now);
+        }
+    }
+
+    /// Remove expired entries from recently_freed_ports
+    fn cleanup_expired_ports(&self) {
+        let now = std::time::Instant::now();
+        let cooldown = std::time::Duration::from_secs(PORT_COOLDOWN_SECONDS);
+        let mut freed = self.recently_freed_ports.write().unwrap();
+        freed.retain(|_, &mut timestamp| now.duration_since(timestamp) < cooldown);
+    }
 }
 
 /// An allocator for session IDs. The allocator randomly selects values from
-/// the given range `[min, max)` and will not return a previously-returned value `x`
-/// until `x` has been freed with `free()`.
-///
-/// This implementation uses storage proportional to the number of currently-allocated
-/// values. Allocation time is bounded by `max - min`, will be `O(1)` with no allocated
-/// values, and will increase to `O(n)` as the number of allocated values approaches `max - min`.
-#[derive(Debug)]
+/// the given range `[min, max)`.
+/// Does not track allocated sessions - the Session struct is the source of truth.
+#[derive(Debug, Clone)]
 pub struct SessionAllocator {
-    used: DashSet<i32>,
     min: i32,
     max_count: i32,
 }
@@ -321,28 +375,30 @@ impl SessionAllocator {
     /// # Errors
     /// Returns `ResourceAllocationError` if max < min
     pub fn new(min: i32, max: i32) -> Result<Self, ServerError> {
-        if max < min {
+        if max <= min {
             return Err(ServerError::ResourceAllocationError(format!(
                 "Maximum value {max} must be >= minimum value {min}"
             )));
         }
 
         Ok(Self {
-            used: DashSet::new(),
             min,
             max_count: std::cmp::max(max - min, 1),
         })
     }
 
-    /// Allocate a new session.
+    /// Allocate a new session, avoiding sessions already in use.
+    ///
+    /// # Arguments
+    /// * `sessions_in_use` - Slice of session IDs currently in use (from Session)
     ///
     /// # Returns
     /// A new session ID
     ///
     /// # Errors
     /// Returns `ResourceAllocationError` if there are no non-allocated sessions left
-    pub fn allocate(&self) -> Result<i32, ServerError> {
-        if self.used.len() as i32 == self.max_count {
+    pub fn allocate(&self, sessions_in_use: &[i32]) -> Result<i32, ServerError> {
+        if sessions_in_use.len() as i32 >= self.max_count {
             return Err(ServerError::ResourceAllocationError(
                 "No session IDs left to allocate".to_string(),
             ));
@@ -352,8 +408,7 @@ impl SessionAllocator {
         let mut rng = thread_rng();
         for _ in 0..self.max_count {
             let session = rng.gen_range(self.min..self.min + self.max_count);
-            if !self.used.contains(&session) {
-                self.used.insert(session);
+            if !sessions_in_use.contains(&session) {
                 return Ok(session);
             }
         }
@@ -361,31 +416,12 @@ impl SessionAllocator {
         Err(ServerError::ResourceAllocationError(format!(
             "Unable to allocate a session ID after {} attempts ({} values in use)",
             self.max_count,
-            self.used.len()
+            sessions_in_use.len()
         )))
-    }
-
-    /// Free a session. After this method returns, `session` becomes eligible
-    /// for allocation by future calls to `allocate()`.
-    ///
-    /// # Arguments
-    /// * `session` - The session to free
-    pub fn free(&self, session: i32) {
-        self.used.remove(&session);
-    }
-
-    /// Get the number of currently allocated sessions
-    pub fn allocated_count(&self) -> usize {
-        self.used.len()
     }
 
     /// Get the maximum number of sessions that can be allocated
     pub fn max_sessions(&self) -> i32 {
         self.max_count
-    }
-
-    /// Check if a session is currently allocated
-    pub fn is_allocated(&self, session: i32) -> bool {
-        self.used.contains(&session)
     }
 }

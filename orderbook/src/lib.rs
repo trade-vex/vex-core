@@ -32,14 +32,17 @@
 //! 3.  **State Management:**
 //!     -   The order book is self-contained and mutates its state through the `place_order` and
 //!         `cancel_order` methods.
-//!     -   It generates `MatcherTradeEvent`s and attaches them to the `ProcessedOrderCommand` for downstream
+//!     -   It generates `MatcherTradeEvent`s and attaches them to the `OrderCommand` for downstream
 //!         processors (risk engines and event handlers) to consume.
 use crate::tree::BookSide;
 use common::{
-    L2MarketData, MatcherTradeEvent, Order, OrderCommand, ProcessedOrderCommand, Side, Status,
-    TimeInForce,
+    L2MarketData, L2SIZE, MatcherTradeEvent, Order, OrderCommand, PriceCache, Side, Status,
+    TimeInForce, UserBalance,
 };
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+};
 
 pub mod tree;
 mod unit_tests;
@@ -65,14 +68,19 @@ impl PriceLevel {
     }
 
     #[inline]
-    fn remove_order(&mut self, order_id: u64, processed: &mut ProcessedOrderCommand) {
+    fn remove_order(&mut self, order_id: u64, cmd: &mut OrderCommand) {
         if let Ok(pos) = self
             .orders
             .binary_search_by_key(&order_id, |order| order.order_id)
             && let Some(removed_order) = self.orders.remove(pos)
         {
             self.total_volume -= removed_order.size;
-            processed.set_status(Status::Cancelled);
+            cmd.set_price(removed_order.price);
+            cmd.set_size(removed_order.size);
+            cmd.set_user_id(removed_order.user_id);
+            cmd.set_status(Status::Cancelled);
+        } else {
+            cmd.set_status(Status::Rejected);
         }
     }
 
@@ -96,12 +104,15 @@ pub struct OrderBook<Ask: BookSide, Bid: BookSide> {
     asks: Ask,
     /// Orders for fast lookups in case of cancellations
     orders: HashMap<u64, u64>,
+    /// Market ID for this order book
+    market_id: u32,
 }
 
 impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     /// Creates a new empty order book.
-    pub fn new(bids: Bid, asks: Ask) -> Self {
+    pub fn new(bids: Bid, asks: Ask, market_id: u32) -> Self {
         Self {
+            market_id,
             bids,
             asks,
             orders: HashMap::new(),
@@ -110,7 +121,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
 
     /// Matches Order
     /// The core matching logic for an incoming taker order.
-    fn match_order(&mut self, cmd: &OrderCommand, events: &mut ProcessedOrderCommand) -> u64 {
+    fn match_order(&mut self, cmd: &mut OrderCommand) -> u64 {
         let mut remaining_size = cmd.size;
         type BookToMatch<'a> = (&'a mut dyn BookSide, Box<dyn Fn(u64, u64) -> bool>);
         let (book_to_match, price_check): BookToMatch = if cmd.side == Side::Bid {
@@ -142,6 +153,10 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                     break;
                 }
 
+                if maker_order.user_id == cmd.user_id {
+                    continue;
+                }
+
                 let trade_size = remaining_size.min(maker_order.size);
 
                 // Update sizes
@@ -160,8 +175,9 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                     price,
                     size: trade_size,
                     next_event: None,
+                    maker_balance: [UserBalance::default(); 2], // filled by risk engine
                 };
-                events.attatch_event(Box::new(event));
+                cmd.attach_event(Box::new(event));
 
                 if maker_order_completed {
                     orders_to_remove.push(idx);
@@ -196,7 +212,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     ///     user_id: 0, /// Gateway set user_id
     ///     market_id: 0, /// Market ID, No explicit check is made for market id, must be guaranteed by the ORDERBOOK Router
     ///     price: 0, /// for limit order price is as is by user, for MARKET ORDER: buy: u64::MAX, sell: 0
-    ///     size: 0, /// as set by user
+    ///     size: 0, /// as set by user, changes to remaining size
     ///     side: Side::Bid, /// as set by user
     ///     time_in_force: TimeInForce::Gtc, /// for limit order GTC, for marker IOC/FOK
     /// }
@@ -209,55 +225,58 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     /// 5. The command must be PlaceOrder
     ///    All the contraints are NOT checked in the ORDERBOOK, must be guaranteed by upstream systems
     ///    They are not included here to avoid redundant checks that are already made
-    pub fn place_order(&mut self, cmd: &OrderCommand) -> ProcessedOrderCommand {
-        let mut processed = ProcessedOrderCommand::new(
-            Status::Rejected,
-            cmd.order_id,
-            cmd.user_id,
-            cmd.market_id,
-            cmd.price,
-            cmd.size,
-            cmd.timestamp,
-            cmd.side,
-        );
+    pub fn place_order(&mut self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) {
+        // Skip processing if the order is already rejected
+        if cmd.status == Status::Rejected {
+            return;
+        }
+
         match cmd.time_in_force {
             TimeInForce::Gtc => {
                 // Handle GTC (Good 'Til Canceled) orders
-                let remaining = self.match_order(cmd, &mut processed);
-
+                let remaining = self.match_order(cmd);
                 if remaining == cmd.size {
                     self.add_to_book(cmd, remaining);
-                    processed.set_status(Status::Placed);
+                    cmd.set_status(Status::Placed);
                 } else if remaining > 0 {
                     // Add remaining to book
                     self.add_to_book(cmd, remaining);
-                    processed.set_status(Status::PartiallyFilled);
+                    cmd.set_status(Status::PartiallyFilled);
                 } else {
-                    processed.set_status(Status::Filled);
+                    cmd.set_status(Status::Filled);
                 }
+                cmd.set_size(remaining);
             }
             TimeInForce::Fok => {
                 if !self.can_fill_completely(cmd) {
-                    processed.set_status(Status::Cancelled);
+                    cmd.set_status(Status::Cancelled);
                 } else {
-                    self.match_order(cmd, &mut processed);
-                    processed.set_status(Status::Filled);
+                    let remaining = self.match_order(cmd);
+                    // Double-check in case self-trade prevention caused incomplete fill
+                    cmd.set_status(if remaining == 0 {
+                        Status::Filled
+                    } else {
+                        Status::Cancelled
+                    });
+                    cmd.set_size(remaining);
                 }
             }
             TimeInForce::Ioc => {
                 // Handle IOC (Immediate or Cancel) orders
-                let remaining = self.match_order(cmd, &mut processed);
+                let remaining = self.match_order(cmd);
 
                 if remaining == 0 {
-                    processed.set_status(Status::Filled);
+                    cmd.set_status(Status::Filled);
                 } else if remaining < cmd.size {
-                    processed.set_status(Status::PartiallyFilled);
+                    cmd.set_status(Status::PartiallyFilled);
                 } else {
-                    processed.set_status(Status::Cancelled);
+                    cmd.set_status(Status::Cancelled);
                 }
+                cmd.set_size(remaining);
             }
         }
-        processed
+        self.record_snapshot(cmd);
+        self.update_price_cache(price_cache);
     }
 
     /// Cancel Order
@@ -282,31 +301,36 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     ///
     /// Note: This function does not check for the validity of the cancel order command.
     /// All the contraints are NOT checked in the ORDERBOOK, must be guaranteed by upstream systems
-    pub fn cancel_order(&mut self, cmd: &OrderCommand) -> ProcessedOrderCommand {
-        let mut processed = ProcessedOrderCommand::new(
-            Status::Rejected,
-            cmd.order_id,
-            cmd.user_id,
-            cmd.market_id,
-            cmd.price,
-            cmd.size,
-            cmd.timestamp,
-            cmd.side,
-        );
-        if let Some(price) = self.orders.remove(&cmd.order_id) {
-            if let Some(best_price) = self.bids.best_price()
-                && price <= best_price
-            {
-                if let Some(level) = self.bids.get_level_mut(price) {
-                    level.remove_order(cmd.order_id, &mut processed);
-                    self.bids.remove_level_if_empty(cmd.price);
-                }
-            } else if let Some(level) = self.asks.get_level_mut(price) {
-                level.remove_order(cmd.order_id, &mut processed);
-                self.asks.remove_level_if_empty(cmd.price);
-            }
+    pub fn cancel_order(&mut self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) {
+        // Similar to place_order, if the command is already rejected, in case the user is not found
+        if cmd.status == Status::Rejected {
+            return;
         }
-        processed
+        if let Some(price) = self.orders.remove(&cmd.order_id) {
+            if let Some(level) = self.bids.get_level_mut(price) {
+                level.remove_order(cmd.order_id, cmd);
+                self.bids.remove_level_if_empty(price);
+                self.record_snapshot(cmd);
+            } else if let Some(level) = self.asks.get_level_mut(price) {
+                level.remove_order(cmd.order_id, cmd);
+                self.asks.remove_level_if_empty(price);
+                self.record_snapshot(cmd);
+            } else {
+                // this must ideally be unreachable, to avoid any undefined behaviour, we reject the order
+                cmd.set_status(Status::Rejected);
+            }
+        } else {
+            cmd.set_status(Status::Rejected);
+        }
+        self.update_price_cache(price_cache);
+    }
+
+    fn update_price_cache(&self, price_cache: Arc<PriceCache>) {
+        price_cache.update_prices(
+            self.market_id,
+            self.bids.best_price(),
+            self.asks.best_price(),
+        );
     }
 
     /// Add order to the book
@@ -317,6 +341,8 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             price: cmd.price,
             size: remaining_size,
             side: cmd.side,
+            time_in_force: cmd.time_in_force,
+            status: cmd.status,
             timestamp: cmd.timestamp,
         };
         let level = match cmd.side {
@@ -337,10 +363,18 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 // Check against asks
                 for (price, level) in self.asks.iter() {
                     if Self::is_market_order(cmd) || price <= cmd.price {
-                        if level.total_volume >= remaining {
+                        // Account for self-trade prevention by filtering out orders from the same user
+                        let available_volume = level
+                            .orders
+                            .iter()
+                            .filter(|order| order.user_id != cmd.user_id)
+                            .map(|order| order.size)
+                            .sum::<u64>();
+
+                        if available_volume >= remaining {
                             return true;
                         }
-                        remaining -= level.total_volume;
+                        remaining -= available_volume;
                     } else {
                         break;
                     }
@@ -350,10 +384,18 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 // Check against bids
                 for (price, level) in self.bids.iter() {
                     if Self::is_market_order(cmd) || price >= cmd.price {
-                        if level.total_volume >= remaining {
+                        // Account for self-trade prevention by filtering out orders from the same user
+                        let available_volume = level
+                            .orders
+                            .iter()
+                            .filter(|order| order.user_id != cmd.user_id)
+                            .map(|order| order.size)
+                            .sum::<u64>();
+
+                        if available_volume >= remaining {
                             return true;
                         }
-                        remaining -= level.total_volume;
+                        remaining -= available_volume;
                     } else {
                         break;
                     }
@@ -381,37 +423,27 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     }
 
     /// Create a snapshot of the orderbook data with specified depth
-    pub fn create_snapshot_with_depth(&self, depth: usize) -> L2MarketData<50> {
-        let mut l2_data = L2MarketData::<50>::new();
+    pub fn record_snapshot(&self, cmd: &mut OrderCommand) {
+        let mut l2_data = L2MarketData::new();
 
         // Fill bid levels (highest price first)
-        let mut bid_index = 0;
-        for (price, level) in self.get_bids().take(depth) {
-            if bid_index < 50 {
-                l2_data.bid_prices[bid_index] = price;
-                l2_data.bid_volumes[bid_index] = level.get_total_volume();
-                l2_data.bid_orders[bid_index] = level.get_order_count();
-                bid_index += 1;
-            }
+        for (price, level) in self.get_bids().take(L2SIZE) {
+            l2_data.bid_prices.push(price);
+            l2_data.bid_volumes.push(level.get_total_volume());
         }
 
         // Fill ask levels (lowest price first)
-        let mut ask_index = 0;
-        for (price, level) in self.get_asks().take(depth) {
-            if ask_index < 50 {
-                l2_data.ask_prices[ask_index] = price;
-                l2_data.ask_volumes[ask_index] = level.get_total_volume();
-                l2_data.ask_orders[ask_index] = level.get_order_count();
-                ask_index += 1;
-            }
+        for (price, level) in self.get_asks().take(L2SIZE) {
+            l2_data.ask_prices.push(price);
+            l2_data.ask_volumes.push(level.get_total_volume());
         }
 
         // Set timestamp
         l2_data.timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_millis() as u64;
+            .as_nanos() as u64;
 
-        l2_data
+        cmd.l2_data = Some(l2_data);
     }
 }

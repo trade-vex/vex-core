@@ -1,62 +1,114 @@
-use common::OrderCommand;
-use disruptor::{BusySpin, ProcessorSettings, build_multi_producer};
-use std::io::Write;
-use std::{
-    env,
-    fs::OpenOptions,
-    sync::{Arc, Mutex},
-};
-use tracing::info;
-use vex_config::CoreNetworkingConfig;
-use vex_networking::server::VexCoreServer;
+use std::sync::atomic::Ordering;
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
+use tracing::{debug, error, info, warn};
+use tracing_subscriber::fmt;
+use vex_config::{VexConfig, environment::Environment};
+
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Read configuration from environment variables
-    tracing_subscriber::fmt::init();
-    let server_host = env::var("VEX_SERVER_HOST").unwrap_or("127.0.0.1".to_string());
-    let listen_port: u16 = env::var("VEX_SERVER_PORT")?.parse()?;
-    println!("Server starting on port {listen_port}");
+    // Initialize logging
+    fmt::init();
 
-    let mut server_config = CoreNetworkingConfig::test_defaults();
-    server_config.local_address = server_host;
-    server_config.context_dir =
-        env::var("VEX_CONTEXT_DIR").unwrap_or("/dev/shm/aeron-test-server".to_string());
-    server_config.initial_port = listen_port;
-    server_config.initial_control_port = listen_port + 1;
-    server_config.max_gateways = 15;
-    server_config.max_connections_per_address = 10;
-    let results_path = "/results/received_ids.txt";
-    let file = Arc::new(Mutex::new(
-        OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(results_path)?,
-    ));
+    // Load configuration
+    let mut config = VexConfig::load_auto().or_else(|e| {
+        warn!("Failed to load configuration from files: {e}");
+        info!("Using default Development configuration for e2e tests");
+        Ok::<_, Box<dyn std::error::Error>>(VexConfig::new(Environment::Development))
+    })?;
 
-    // A dummy consumer that just logs the received command
-    let producer = build_multi_producer(1024, OrderCommand::default, BusySpin)
-        .pin_at_core(1)
-        .handle_events_with({
-            move |cmd: &OrderCommand, _, _| {
-                info!("Server received OrderCommand Core 1: {:?}", cmd);
-            }
-        })
-        .pin_at_core(2)
-        .handle_events_with({
-            move |cmd: &OrderCommand, _, _| {
-                let mut f = file.lock().unwrap();
-                writeln!(f, "{}", cmd.order_id).expect("Failed to write to results file");
-                info!("Server processing OrderCommand Core 2: {:?}", cmd);
-            }
-        })
-        .build();
+    // Override Kafka broker from environment if set
+    if let Ok(kafka_broker) = std::env::var("VEX_KAFKA_BROKER") {
+        info!("Using Kafka broker from environment: {}", kafka_broker);
+        config.kafka_broker = kafka_broker;
+    }
 
-    let mut server = VexCoreServer::new(server_config, producer)?;
+    // Disable Aeron Archive for E2E tests (no archive container in test environment)
+    // Setting request_control_channel to empty disables archive mode in VexCoreServer
+    if std::env::var("VEX_DISABLE_ARCHIVE").is_ok() {
+        info!("Disabling Aeron Archive for E2E tests");
+        config.core_networking.request_control_channel = String::new();
+        config.core_networking.response_control_channel = String::new();
+        config.core_networking.recording_events_channel = String::new();
+    }
 
-    // Start the server's event loop
-    println!("Server listening for messages...");
-    server.start()?; // This will run indefinitely
+    // Override server networking from environment for Docker deployment
+    if let Ok(server_port) = std::env::var("VEX_SERVER_PORT")
+        && let Ok(port) = server_port.parse::<u16>()
+    {
+        info!("Using server port from environment: {}", port);
+        config.core_networking.initial_port = port;
+        config.core_networking.initial_control_port = port + 1;
+    }
+
+    // In Docker, we need to listen on all interfaces to be reachable from other containers
+    if std::env::var("VEX_SERVER_HOST").is_ok() {
+        info!("Running in Docker mode, binding to 0.0.0.0");
+        config.core_networking.local_address = "0.0.0.0".to_string();
+    }
+
+    info!(
+        "Loaded configuration for environment: {}",
+        config.environment
+    );
+
+    // Validate configuration
+    config.validate().map_err(|e| {
+        error!(
+            target: "server_main",
+            action = "config_validation_failed",
+            error = %e
+        );
+        e
+    })?;
+
+    info!(
+        target: "server_main",
+        action = "config_validated"
+    );
+    debug!(target: "server_main", action = "config_snapshot", config = ?config);
+
+    let args: Vec<String> = std::env::args().collect();
+    let engine = if args.contains(&"--replay".to_string()) {
+        info!(target: "server_main", action = "starting_with_replay");
+        vex_server::start(config, true).map_err(|e| {
+            error!(
+                target: "server_main",
+                action = "engine_start_with_replay_failed",
+                error = %e
+            );
+            e
+        })?
+    } else {
+        vex_server::start(config, false).map_err(|e| {
+            error!(
+                target: "server_main",
+                action = "engine_start_failed",
+                error = %e
+            );
+            e
+        })?
+    };
+
+    info!(
+        target: "server_main",
+        action = "server_started"
+    );
+
+    let shutdown_trigger = engine.shutdown_handle();
+
+    ctrlc::set_handler(move || {
+        info!(
+            target: "server_main",
+            action = "shutdown_signal_received"
+        );
+        shutdown_trigger.store(true, Ordering::Release);
+    })?;
+
+    engine.join()?;
 
     Ok(())
 }

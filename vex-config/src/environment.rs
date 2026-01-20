@@ -27,12 +27,20 @@ impl Environment {
             if let Ok(value) = std::env::var(var)
                 && let Ok(env) = value.parse::<Environment>()
             {
-                tracing::info!("Detected environment '{}' from {}", env, var);
+                tracing::info!(
+                    target: "config",
+                    action = "environment_detected",
+                    environment = %env,
+                    source = *var
+                );
                 return env;
             }
         }
 
-        tracing::warn!("No valid environment variable found, defaulting to development");
+        tracing::warn!(
+            target: "config",
+            action = "environment_defaulted"
+        );
         Environment::Development
     }
 

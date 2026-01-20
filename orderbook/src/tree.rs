@@ -1,5 +1,7 @@
 // --- Abstraction for a side of the order book ---
 
+use common::Side;
+
 use crate::PriceLevel;
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
@@ -7,6 +9,7 @@ use std::collections::BTreeMap;
 /// A trait for one side of the order book (bids or asks).
 /// This allows us to swap out the underlying data structure (e.g., BTreeMap, custom tree).
 pub trait BookSide {
+    fn side(&self) -> Side;
     /// Gets a mutable reference to a price level.
     fn get_level_mut(&mut self, price: u64) -> Option<&mut PriceLevel>;
 
@@ -29,8 +32,15 @@ pub trait BookSide {
     fn iter(&self) -> Box<dyn Iterator<Item = (u64, &PriceLevel)> + '_>;
 
     /// Returns Best Price Available
-    fn best_price(&self) -> Option<u64> {
-        self.iter().next().map(|(price, _)| price)
+    /// If no price level is available, returns u64::MAX for asks and 0 for bids
+    fn best_price(&self) -> u64 {
+        match self.iter().next().map(|(price, _)| price) {
+            Some(price) => price,
+            None => match self.side() {
+                Side::Ask => u64::MAX,
+                Side::Bid => 0,
+            },
+        }
     }
 }
 
@@ -54,6 +64,10 @@ impl BTreeAskSide {
 }
 
 impl BookSide for BTreeAskSide {
+    fn side(&self) -> Side {
+        Side::Ask
+    }
+
     fn get_level_mut(&mut self, price: u64) -> Option<&mut PriceLevel> {
         self.tree.get_mut(&price)
     }
@@ -105,6 +119,9 @@ impl BTreeBidSide {
 }
 
 impl BookSide for BTreeBidSide {
+    fn side(&self) -> Side {
+        Side::Bid
+    }
     fn get_level_mut(&mut self, price: u64) -> Option<&mut PriceLevel> {
         self.tree.get_mut(&Reverse(price))
     }

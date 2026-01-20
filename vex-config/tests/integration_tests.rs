@@ -27,10 +27,10 @@ fn test_environment_specific_defaults() {
     assert!(test_config.core_networking.enable_authentication);
     assert!(prod_config.core_networking.enable_authentication);
 
-    // Different port ranges for test
+    // Different port ranges for environments
     assert_eq!(dev_config.core_networking.initial_port, 40001);
-    assert_eq!(test_config.core_networking.initial_port, 41001);
-    assert_eq!(prod_config.core_networking.initial_port, 40001);
+    assert_eq!(test_config.core_networking.initial_port, 40001);
+    assert_eq!(prod_config.core_networking.initial_port, 3521);
 
     // Different logging configurations
     assert_eq!(

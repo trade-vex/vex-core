@@ -11,13 +11,20 @@ pub mod logging;
 pub mod networking;
 pub mod symbols;
 
+#[cfg(feature = "balance-preload")]
+pub mod balance_preload;
+
 pub use environment::Environment;
 pub use error::{ConfigError, Result};
 pub use loader::ConfigLoader;
 pub use logging::LoggingConfig;
 pub use networking::{CoreNetworkingConfig, GatewayNetworkingConfig};
 use serde::{Deserialize, Serialize};
+use std::fmt::{Display, Formatter};
 pub use symbols::SymbolSpecificationConfig;
+
+#[cfg(feature = "balance-preload")]
+pub use balance_preload::BalancePreloadConfig;
 
 /// Main configuration structure that combines all VEX Core configuration modules
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,12 +33,22 @@ pub struct VexConfig {
     pub environment: Environment,
     /// Core networking configuration
     pub core_networking: CoreNetworkingConfig,
-    /// Gateway networking configuration  
+    /// Gateway networking configuration
     pub gateway_networking: GatewayNetworkingConfig,
     /// Logging configuration
     pub logging: LoggingConfig,
     /// Symbol specifications configuration
     pub symbols: SymbolSpecificationConfig,
+    /// Kafka broker address for event streaming
+    pub kafka_broker: String,
+    /// Balance preload configuration (test/local only)
+    #[cfg(feature = "balance-preload")]
+    #[serde(default)]
+    pub balance_preload: BalancePreloadConfig,
+}
+
+fn default_kafka_broker() -> String {
+    "localhost:9092".to_string()
 }
 
 impl VexConfig {
@@ -42,7 +59,10 @@ impl VexConfig {
             gateway_networking: GatewayNetworkingConfig::for_environment(&environment),
             logging: LoggingConfig::for_environment(&environment),
             symbols: SymbolSpecificationConfig::for_environment(&environment),
+            kafka_broker: default_kafka_broker(),
             environment,
+            #[cfg(feature = "balance-preload")]
+            balance_preload: BalancePreloadConfig::new(),
         }
     }
 
@@ -102,6 +122,10 @@ impl VexConfig {
         self.gateway_networking.validate()?;
         self.logging.validate()?;
         self.symbols.validate()?;
+        #[cfg(feature = "balance-preload")]
+        if self.balance_preload.enabled {
+            self.balance_preload.validate()?;
+        }
         Ok(())
     }
 
@@ -146,5 +170,11 @@ impl VexConfig {
 impl Default for VexConfig {
     fn default() -> Self {
         Self::new(Environment::Development)
+    }
+}
+
+impl Display for VexConfig {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#?}", self)
     }
 }

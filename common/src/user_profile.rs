@@ -1,48 +1,42 @@
 use ahash::AHashMap;
 use thiserror::Error;
 
-type UserId = u64;
-type MarketId = u32;
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UserBalance {
-    available: u64,
-    locked: u64,
-}
-
-impl Default for UserBalance {
-    fn default() -> Self {
-        Self::new()
-    }
+    pub available: u64,
+    pub locked: u64,
 }
 
 impl UserBalance {
-    pub fn new() -> Self {
-        Self {
-            available: 0,
-            locked: 0,
-        }
+    pub fn new(available: u64, locked: u64) -> Self {
+        Self { available, locked }
     }
-
     pub fn total(&self) -> u64 {
-        self.available + self.locked
+        self.available.saturating_add(self.locked)
     }
-
     pub fn available(&self) -> u64 {
         self.available
     }
-
     pub fn locked(&self) -> u64 {
         self.locked
     }
 }
 
+/// The key for the balances map. A user's balance is per-asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BalanceKey {
-    user_id: UserId,
-    asset_id: MarketId,
+    user_id: u64,
+    asset_id: u16,
 }
 
+impl BalanceKey {
+    pub fn new(user_id: u64, asset_id: u16) -> Self {
+        Self { user_id, asset_id }
+    }
+}
+
+/// The internal, non-thread-safe balance store.
+/// This should not be used directly by concurrent processors.
 pub struct BalanceStore {
     balances: AHashMap<BalanceKey, UserBalance>,
 }
@@ -53,6 +47,7 @@ impl Default for BalanceStore {
     }
 }
 
+// NOTE: All methods now correctly use `asset_id` instead of `market_id`.
 impl BalanceStore {
     pub fn new() -> Self {
         Self {
@@ -66,64 +61,36 @@ impl BalanceStore {
         }
     }
 
-    pub fn get_balance(
+    pub fn get_balance(&self, user_id: u64, asset_id: u16) -> UserBalance {
+        let key = BalanceKey { user_id, asset_id };
+        *self.balances.get(&key).unwrap_or(&UserBalance::default())
+    }
+
+    pub fn try_get_balance(
         &self,
-        user_id: UserId,
-        asset_id: MarketId,
+        user_id: u64,
+        asset_id: u16,
     ) -> Result<UserBalance, BalanceError> {
         let key = BalanceKey { user_id, asset_id };
-        match self.balances.get(&key) {
-            Some(balance) => Ok(*balance),
-            None => Err(BalanceError::UserNotFound { user_id, asset_id }),
-        }
+        self.balances
+            .get(&key)
+            .copied()
+            .ok_or(BalanceError::UserAssetNotFound(user_id, asset_id))
     }
 
-    pub fn set_balance(&mut self, user_id: UserId, asset_id: MarketId, balance: UserBalance) {
+    pub fn get_balance_mut(&mut self, user_id: u64, asset_id: u16) -> &mut UserBalance {
         let key = BalanceKey { user_id, asset_id };
-        self.balances.insert(key, balance);
-    }
-
-    pub fn update_available(
-        &mut self,
-        user_id: UserId,
-        asset_id: MarketId,
-        amount: u64,
-    ) -> Result<(), BalanceError> {
-        let key = BalanceKey { user_id, asset_id };
-        match self.balances.get_mut(&key) {
-            Some(balance) => balance.available = amount,
-            None => return Err(BalanceError::UserNotFound { user_id, asset_id }),
-        };
-        Ok(())
-    }
-
-    pub fn update_locked(
-        &mut self,
-        user_id: UserId,
-        asset_id: MarketId,
-        amount: u64,
-    ) -> Result<(), BalanceError> {
-        let key = BalanceKey { user_id, asset_id };
-        match self.balances.get_mut(&key) {
-            Some(balance) => balance.locked = amount,
-            None => return Err(BalanceError::UserNotFound { user_id, asset_id }),
-        };
-        Ok(())
+        self.balances.entry(key).or_default()
     }
 
     // Lock funds (move from available to locked)
     pub fn lock_funds(
         &mut self,
-        user_id: UserId,
-        asset_id: MarketId,
+        user_id: u64,
+        asset_id: u16,
         amount: u64,
     ) -> Result<(), BalanceError> {
-        let key = BalanceKey { user_id, asset_id };
-        let balance = match self.balances.get_mut(&key) {
-            Some(balance) => balance,
-            None => return Err(BalanceError::UserNotFound { user_id, asset_id }),
-        };
-
+        let balance = self.get_balance_mut(user_id, asset_id);
         if balance.available >= amount {
             balance.available -= amount;
             balance.locked += amount;
@@ -139,16 +106,11 @@ impl BalanceStore {
     // Unlock funds (move from locked to available)
     pub fn unlock_funds(
         &mut self,
-        user_id: UserId,
-        asset_id: MarketId,
+        user_id: u64,
+        asset_id: u16,
         amount: u64,
     ) -> Result<(), BalanceError> {
-        let key = BalanceKey { user_id, asset_id };
-        let balance = match self.balances.get_mut(&key) {
-            Some(balance) => balance,
-            None => return Err(BalanceError::UserNotFound { user_id, asset_id }),
-        };
-
+        let balance = self.get_balance_mut(user_id, asset_id);
         if balance.locked >= amount {
             balance.locked -= amount;
             balance.available += amount;
@@ -161,22 +123,51 @@ impl BalanceStore {
         }
     }
 
-    // Consume locked funds (remove from locked, e.g., after trade execution)
-    pub fn consume_locked(
+    // Add Funds
+    pub fn add_funds(
         &mut self,
-        user_id: UserId,
-        asset_id: MarketId,
+        user_id: u64,
+        asset_id: u16,
         amount: u64,
-    ) -> Result<(), BalanceError> {
-        let key = BalanceKey { user_id, asset_id };
-        let balance = match self.balances.get_mut(&key) {
-            Some(balance) => balance,
-            None => return Err(BalanceError::UserNotFound { user_id, asset_id }),
-        };
+    ) -> Result<UserBalance, BalanceError> {
+        let balance = self.get_balance_mut(user_id, asset_id);
+        balance.available = balance
+            .available
+            .checked_add(amount)
+            .ok_or(BalanceError::Overflow)?;
+        Ok(*balance)
+    }
 
+    // Subtract from available funds
+    pub fn subtract_funds(
+        &mut self,
+        user_id: u64,
+        asset_id: u16,
+        amount: u64,
+    ) -> Result<UserBalance, BalanceError> {
+        let balance = self.get_balance_mut(user_id, asset_id);
+        if balance.available >= amount {
+            balance.available -= amount;
+            Ok(*balance)
+        } else {
+            Err(BalanceError::InsufficientAvailableFunds {
+                available: balance.available,
+                needed: amount,
+            })
+        }
+    }
+
+    // Subtract from locked funds
+    pub fn subtract_locked_funds(
+        &mut self,
+        user_id: u64,
+        asset_id: u16,
+        amount: u64,
+    ) -> Result<UserBalance, BalanceError> {
+        let balance = self.get_balance_mut(user_id, asset_id);
         if balance.locked >= amount {
             balance.locked -= amount;
-            Ok(())
+            Ok(*balance)
         } else {
             Err(BalanceError::InsufficientLockedFunds {
                 locked: balance.locked,
@@ -189,23 +180,12 @@ impl BalanceStore {
 /// Represents an error related to balance operations.
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum BalanceError {
-    /// Occurs when there are not enough available funds to perform an operation.
     #[error("insufficient available funds: needed {needed}, but have {available}")]
     InsufficientAvailableFunds { available: u64, needed: u64 },
-
-    /// Occurs when there are not enough locked funds to perform an operation.
     #[error("insufficient locked funds: needed {needed}, but have {locked}")]
     InsufficientLockedFunds { locked: u64, needed: u64 },
-
-    /// Occurs when an operation would cause an overflow
-    #[error("operation would cause overflow")]
+    #[error("operation would cause numeric overflow")]
     Overflow,
-
-    /// Occurs when an operation would cause an underflow
-    #[error("operation would cause underflow")]
-    Underflow,
-
-    /// Occurs when user is not found
-    #[error("user not found")]
-    UserNotFound { user_id: UserId, asset_id: MarketId },
+    #[error("User asset not found: user_id={0}, asset_id={1}")]
+    UserAssetNotFound(u64, u16),
 }

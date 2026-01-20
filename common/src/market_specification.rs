@@ -9,19 +9,39 @@ pub struct CoreMarketSpecification {
     pub market_type: MarketType,
 
     // Currency pair specification
-    pub base_currency: u32,  // base currency
-    pub quote_currency: u32, // quote/counter currency (OR futures contract currency)
-    pub base_scale_k: u64,   // base currency amount multiplier (lot size in base currency units)
-    pub quote_scale_k: u64,  // quote currency amount multiplier (step size in quote currency units)
+    pub base_asset: u16,    // base currency
+    pub quote_asset: u16,   // quote/counter currency (OR futures contract currency)
+    pub base_scale_k: u64,  // base currency amount multiplier (lot size in base currency units)
+    pub quote_scale_k: u64, // quote currency amount multiplier (step size in quote currency units)
+
+    // Native scales for atomic calculations
+    pub base_native_scale: u64,  // e.g. 100,000,000
+    pub quote_native_scale: u64, // e.g. 1,000,000
 
     // Fees per lot in quote currency units
     pub taker_fee: u64, // taker fee (should be >= maker fee)
     pub maker_fee: u64, // maker fee
+
+    // slippage, in terms of 100x of a percent (e.g. 150 = 1.5%)
+    pub slippage: u32,
 }
 
 impl CoreMarketSpecification {
     pub fn builder() -> CoreMarketSpecificationBuilder {
         CoreMarketSpecificationBuilder::default()
+    }
+
+    // Normalizes Price*Size into Atomic Quote Units
+    #[inline]
+    pub fn calculate_quote_cost(&self, price: u64, size: u64) -> u64 {
+        // Formula: (P * V * S_quote) / (S_base * K_quote)
+        let numerator = (price as u128) * (size as u128) * (self.quote_native_scale as u128);
+        let denominator = (self.base_native_scale as u128) * (self.quote_scale_k as u128);
+
+        if denominator == 0 {
+            return 0;
+        }
+        (numerator / denominator) as u64
     }
 }
 
@@ -30,34 +50,27 @@ impl CoreMarketSpecification {
 pub struct CoreMarketSpecificationBuilder {
     market_id: Option<u32>,
     market_type: Option<MarketType>,
-    base_currency: Option<u32>,
-    quote_currency: Option<u32>,
+    base_asset: Option<u16>,
+    quote_asset: Option<u16>,
     base_scale_k: Option<u64>,
     quote_scale_k: Option<u64>,
+    base_native_scale: Option<u64>,
+    quote_native_scale: Option<u64>,
     taker_fee: Option<u64>,
     maker_fee: Option<u64>,
-    margin_buy: Option<u64>,
-    margin_sell: Option<u64>,
+    slippage: Option<u32>,
 }
 
 impl CoreMarketSpecificationBuilder {
     pub fn market_id(mut self, market_id: u32) -> Self {
         self.market_id = Some(market_id);
+        self.base_asset = Some(base_asset(market_id));
+        self.quote_asset = Some(quote_asset(market_id));
         self
     }
 
     pub fn market_type(mut self, market_type: MarketType) -> Self {
         self.market_type = Some(market_type);
-        self
-    }
-
-    pub fn base_currency(mut self, base_currency: u32) -> Self {
-        self.base_currency = Some(base_currency);
-        self
-    }
-
-    pub fn quote_currency(mut self, quote_currency: u32) -> Self {
-        self.quote_currency = Some(quote_currency);
         self
     }
 
@@ -71,6 +84,16 @@ impl CoreMarketSpecificationBuilder {
         self
     }
 
+    pub fn base_native_scale(mut self, scale: u64) -> Self {
+        self.base_native_scale = Some(scale);
+        self
+    }
+
+    pub fn quote_native_scale(mut self, scale: u64) -> Self {
+        self.quote_native_scale = Some(scale);
+        self
+    }
+
     pub fn taker_fee(mut self, taker_fee: u64) -> Self {
         self.taker_fee = Some(taker_fee);
         self
@@ -81,13 +104,8 @@ impl CoreMarketSpecificationBuilder {
         self
     }
 
-    pub fn margin_buy(mut self, margin_buy: u64) -> Self {
-        self.margin_buy = Some(margin_buy);
-        self
-    }
-
-    pub fn margin_sell(mut self, margin_sell: u64) -> Self {
-        self.margin_sell = Some(margin_sell);
+    pub fn slippage(mut self, slippage: u32) -> Self {
+        self.slippage = Some(slippage);
         self
     }
 
@@ -95,12 +113,30 @@ impl CoreMarketSpecificationBuilder {
         Ok(CoreMarketSpecification {
             market_id: self.market_id.ok_or("market_id is required")?,
             market_type: self.market_type.ok_or("market_type is required")?,
-            base_currency: self.base_currency.ok_or("base_currency is required")?,
-            quote_currency: self.quote_currency.ok_or("quote_currency is required")?,
-            base_scale_k: self.base_scale_k.ok_or("base_scale_k is required")?,
-            quote_scale_k: self.quote_scale_k.ok_or("quote_scale_k is required")?,
+            base_asset: self.base_asset.ok_or("base_asset is required")?,
+            quote_asset: self.quote_asset.ok_or("quote_asset is required")?,
+            base_scale_k: self.base_scale_k.unwrap_or(1),
+            quote_scale_k: self.quote_scale_k.unwrap_or(1),
+            base_native_scale: self.base_native_scale.unwrap_or(1),
+            quote_native_scale: self.quote_native_scale.unwrap_or(1),
             taker_fee: self.taker_fee.unwrap_or(0),
             maker_fee: self.maker_fee.unwrap_or(0),
+            slippage: self.slippage.unwrap_or(150), // 1.5% by default
         })
     }
+}
+
+/// Market ID Specification helper functions
+///
+/// Base And Quote asset extraction from market_id
+/// The Base asset is stored in the lower 16 bits of the market_id
+/// The Quote asset is stored in the upper 16 bits of the market_id
+#[inline]
+pub fn base_asset(market_id: u32) -> u16 {
+    (market_id & 0xFFFF) as u16
+}
+
+#[inline]
+pub fn quote_asset(market_id: u32) -> u16 {
+    (market_id >> 16) as u16
 }

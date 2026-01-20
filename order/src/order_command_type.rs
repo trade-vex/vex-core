@@ -3,6 +3,8 @@
 pub enum OrderCommandType {
     PlaceOrder = 0x0_u8,
     CancelOrder = 0x1_u8,
+    DepositFunds = 0x2_u8,
+    WithdrawFunds = 0x3_u8,
     #[default]
     NullVal = 0xff_u8,
 }
@@ -12,6 +14,8 @@ impl From<u8> for OrderCommandType {
         match v {
             0x0_u8 => Self::PlaceOrder,
             0x1_u8 => Self::CancelOrder,
+            0x2_u8 => Self::DepositFunds,
+            0x3_u8 => Self::WithdrawFunds,
             _ => Self::NullVal,
         }
     }
@@ -22,6 +26,8 @@ impl From<OrderCommandType> for u8 {
         match v {
             OrderCommandType::PlaceOrder => 0x0_u8,
             OrderCommandType::CancelOrder => 0x1_u8,
+            OrderCommandType::DepositFunds => 0x2_u8,
+            OrderCommandType::WithdrawFunds => 0x3_u8,
             OrderCommandType::NullVal => 0xff_u8,
         }
     }
@@ -34,6 +40,8 @@ impl core::str::FromStr for OrderCommandType {
         match v {
             "PlaceOrder" => Ok(Self::PlaceOrder),
             "CancelOrder" => Ok(Self::CancelOrder),
+            "DepositFunds" => Ok(Self::DepositFunds),
+            "WithdrawFunds" => Ok(Self::WithdrawFunds),
             _ => Ok(Self::NullVal),
         }
     }
@@ -44,6 +52,8 @@ impl core::fmt::Display for OrderCommandType {
         match self {
             Self::PlaceOrder => write!(f, "PlaceOrder"),
             Self::CancelOrder => write!(f, "CancelOrder"),
+            Self::DepositFunds => write!(f, "DepositFunds"),
+            Self::WithdrawFunds => write!(f, "WithdrawFunds"),
             Self::NullVal => write!(f, "NullVal"),
         }
     }

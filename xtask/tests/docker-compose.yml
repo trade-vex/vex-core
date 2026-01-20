@@ -1,4 +1,46 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: vex-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - vex-testing-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redpanda:
+    image: redpandadata/redpanda:v25.3.1
+    container_name: vex-redpanda
+    command:
+      - redpanda
+      - start
+      - --smp
+      - '1'
+      - --reserve-memory
+      - 0M
+      - --overprovisioned
+      - --node-id
+      - '0'
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:9092
+      - --set
+      - redpanda.auto_create_topics_enabled=true
+    ports:
+      - "9092:9092"
+    networks:
+      - vex-testing-net
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   media-driver:
     build:
       context: .
@@ -17,9 +59,16 @@ services:
     depends_on:
       media-driver:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
     environment:
       - VEX_SERVER_HOST=vex-server
       - VEX_SERVER_PORT=3521
+      - VEX_KAFKA_BROKER=redpanda:9092
+      - VEX_REDIS_URL=redis://redis:6379
+      - VEX_DISABLE_ARCHIVE=1
       - AERON_DIR=/dev/shm/aeron-test-server
       - AERON_RESERVED_SESSION_ID_LOW=1
       - AERON_RESERVED_SESSION_ID_HIGH=2147483647
