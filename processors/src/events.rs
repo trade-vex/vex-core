@@ -629,8 +629,8 @@ mod tests {
 
     const MARKET_ID: u32 = 100_000_010; // Example market_id encoding
 
-    #[tokio::test]
-    async fn test_kafka_events_handler_placed_order() {
+    #[test]
+    fn test_kafka_events_handler_placed_order() {
         let handler = KafkaEventsHandler::new(
             "localhost:9092",
             "http://localhost:8081",
@@ -653,11 +653,11 @@ mod tests {
         handler.handle_processed_command(&mut cmd);
 
         // Wait for async Kafka send to complete
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        std::thread::sleep(std::time::Duration::from_secs(2));
     }
 
-    #[tokio::test]
-    async fn test_kafka_events_handler_cancelled_order() {
+    #[test]
+    fn test_kafka_events_handler_cancelled_order() {
         let handler = KafkaEventsHandler::new(
             "localhost:9092",
             "http://localhost:8081",
@@ -679,11 +679,11 @@ mod tests {
 
         handler.handle_processed_command(&mut cmd);
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        std::thread::sleep(std::time::Duration::from_secs(2));
     }
 
-    #[tokio::test]
-    async fn test_kafka_events_handler_filled_order_with_trades() {
+    #[test]
+    fn test_kafka_events_handler_filled_order_with_trades() {
         let handler = KafkaEventsHandler::new(
             "localhost:9092",
             "http://localhost:8081",
@@ -731,11 +731,11 @@ mod tests {
 
         handler.handle_processed_command(&mut filled_cmd);
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        std::thread::sleep(std::time::Duration::from_secs(2));
     }
 
-    #[tokio::test]
-    async fn test_kafka_events_handler_deposit_funds() {
+    #[test]
+    fn test_kafka_events_handler_deposit_funds() {
         let handler = KafkaEventsHandler::new(
             "localhost:9092",
             "http://localhost:8081",
@@ -753,11 +753,11 @@ mod tests {
 
         handler.handle_processed_command(&mut cmd);
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        std::thread::sleep(std::time::Duration::from_secs(2));
     }
 
-    #[tokio::test]
-    async fn test_kafka_events_handler_withdraw_funds() {
+    #[test]
+    fn test_kafka_events_handler_withdraw_funds() {
         let handler = KafkaEventsHandler::new(
             "localhost:9092",
             "http://localhost:8081",
@@ -775,6 +775,6 @@ mod tests {
 
         handler.handle_processed_command(&mut cmd);
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        std::thread::sleep(std::time::Duration::from_secs(2));
     }
 }
