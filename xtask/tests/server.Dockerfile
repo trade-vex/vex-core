@@ -1,5 +1,5 @@
 # ---- Chef Planner Stage ----
-FROM --platform=$BUILDPLATFORM rust:1.88-slim-bookworm AS chef
+FROM --platform=$BUILDPLATFORM rust:1-slim-bookworm AS chef
 RUN cargo install cargo-chef
 WORKDIR /usr/src/app
 
