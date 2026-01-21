@@ -1,6 +1,6 @@
 # ---- Chef Planner Stage ----
-# Edition 2024 requires Rust 1.85+
-FROM --platform=$BUILDPLATFORM rust:1.85-slim-bookworm AS chef
+# Edition 2024 requires Rust 1.85+, use latest for full feature support
+FROM --platform=$BUILDPLATFORM rust:latest AS chef
 RUN cargo install cargo-chef
 WORKDIR /usr/src/app
 
