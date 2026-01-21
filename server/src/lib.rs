@@ -138,11 +138,11 @@ pub fn init_internal(
     let publications = Arc::new(Publications::new());
     let journaling_processor =
         JournalingProcessor::new(Arc::clone(&publications), replay_control.clone());
-    
+
     // Get schema registry URL from environment variable or use default
     let schema_registry_url = std::env::var("SCHEMA_REGISTRY_URL")
         .unwrap_or_else(|_| "http://localhost:8081".to_string());
-    
+
     let events_handler = KafkaEventsHandler::new(
         &kafka_broker,
         &schema_registry_url,

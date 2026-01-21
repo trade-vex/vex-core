@@ -16,10 +16,10 @@ use schema_registry_converter::async_impl::schema_registry::SrSettings;
 use schema_registry_converter::schema_registry_common::{
     SchemaType, SubjectNameStrategy, SuppliedSchema,
 };
+use serde::Serialize;
 use tokio::runtime::Runtime;
 use tracing::{debug, error, info};
 use vex_networking::server::Publications;
-use serde::Serialize;
 
 // Include generated protobuf code
 pub mod trading_proto {
@@ -119,13 +119,13 @@ impl KafkaEventsHandler {
             // Encode with schema registration (magic byte + schema ID)
             // Use TopicNameStrategyWithSchema so schema is registered as "<topic>-value"
             // This ensures Kafka Connect (JDBC Sink) can find the schema
-            let strategy =
-                SubjectNameStrategy::TopicNameStrategyWithSchema(topic.clone(), false, supplied_schema);
+            let strategy = SubjectNameStrategy::TopicNameStrategyWithSchema(
+                topic.clone(),
+                false,
+                supplied_schema,
+            );
 
-            let encoded_payload = match encoder
-                .encode(&payload_bytes, &full_name, strategy)
-                .await
-            {
+            let encoded_payload = match encoder.encode(&payload_bytes, &full_name, strategy).await {
                 Ok(bytes) => bytes,
                 Err(e) => {
                     error!(
@@ -186,7 +186,12 @@ impl KafkaEventsHandler {
 
             let topic_name = "balances";
             let composite_key = format!("{}:{}", user_id, asset_id);
-            self.publish_proto(topic_name, &composite_key, "trading.BalanceEvent", balance_event);
+            self.publish_proto(
+                topic_name,
+                &composite_key,
+                "trading.BalanceEvent",
+                balance_event,
+            );
             debug!(
                 target: "events",
                 component = "kafka_handler",
@@ -213,7 +218,12 @@ impl KafkaEventsHandler {
 
         let topic_name = "balances";
         let composite_key = format!("{}:{}", cmd.user_id(), asset_id);
-        self.publish_proto(topic_name, &composite_key, "trading.BalanceEvent", balance_event);
+        self.publish_proto(
+            topic_name,
+            &composite_key,
+            "trading.BalanceEvent",
+            balance_event,
+        );
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -264,7 +274,12 @@ impl KafkaEventsHandler {
         };
 
         let topic_name = "orders";
-        self.publish_proto(topic_name, &cmd.order_id().to_string(), "trading.OrderEvent", order_event);
+        self.publish_proto(
+            topic_name,
+            &cmd.order_id().to_string(),
+            "trading.OrderEvent",
+            order_event,
+        );
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -324,7 +339,12 @@ impl KafkaEventsHandler {
         };
 
         let topic_name = "cancels";
-        self.publish_proto(topic_name, &cmd.order_id().to_string(), "trading.CancelOrderEvent", cancel_event);
+        self.publish_proto(
+            topic_name,
+            &cmd.order_id().to_string(),
+            "trading.CancelOrderEvent",
+            cancel_event,
+        );
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -362,12 +382,17 @@ impl KafkaEventsHandler {
             let orderbook_event = trading_proto::OrderbookEvent {
                 market_id,
                 bids: bids_json,
-                asks: asks_json, 
+                asks: asks_json,
                 timestamp: snapshot.timestamp,
             };
 
             let topic_name = "orderbook";
-            self.publish_proto(topic_name, &market_id.to_string(), "trading.OrderbookEvent", orderbook_event);
+            self.publish_proto(
+                topic_name,
+                &market_id.to_string(),
+                "trading.OrderbookEvent",
+                orderbook_event,
+            );
 
             debug!(
                 target: "events",
@@ -388,7 +413,12 @@ impl KafkaEventsHandler {
         };
 
         let topic_name = "deposits";
-        self.publish_proto(topic_name, &cmd.user_id().to_string(), "trading.DepositEvent", deposit_event);
+        self.publish_proto(
+            topic_name,
+            &cmd.user_id().to_string(),
+            "trading.DepositEvent",
+            deposit_event,
+        );
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -409,7 +439,12 @@ impl KafkaEventsHandler {
         };
 
         let topic_name = "withdrawals";
-        self.publish_proto(topic_name, &cmd.user_id().to_string(), "trading.WithdrawEvent", withdraw_event);
+        self.publish_proto(
+            topic_name,
+            &cmd.user_id().to_string(),
+            "trading.WithdrawEvent",
+            withdraw_event,
+        );
         debug!(
             target: "events",
             component = "kafka_handler",
