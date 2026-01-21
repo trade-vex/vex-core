@@ -407,7 +407,7 @@ impl KafkaEventsHandler {
     fn publish_deposit_event(&self, cmd: &OrderCommand) {
         let deposit_event = trading_proto::DepositEvent {
             user_id: cmd.user_id(),
-            asset_id: cmd.market_id() as u32,
+            asset_id: cmd.market_id(),
             amount: cmd.size(),
             timestamp: cmd.timestamp(),
         };
@@ -433,7 +433,7 @@ impl KafkaEventsHandler {
     fn publish_withdraw_event(&self, cmd: &OrderCommand) {
         let withdraw_event = trading_proto::WithdrawEvent {
             user_id: cmd.user_id(),
-            asset_id: cmd.market_id() as u32,
+            asset_id: cmd.market_id(),
             amount: cmd.size(),
             timestamp: cmd.timestamp(),
         };

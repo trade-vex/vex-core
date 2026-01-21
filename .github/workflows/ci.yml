@@ -59,7 +59,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
           # Install CMake 3.30+ (required by rusteron)
           pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
           cmake --version
@@ -117,7 +117,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
           # Install CMake 3.30+ (required by rusteron)
           pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
           cmake --version
@@ -161,7 +161,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
           # Install CMake 3.30+ (required by rusteron)
           pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
           cmake --version
@@ -200,7 +200,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
           # Install CMake 3.30+ (required by rusteron)
           pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
           cmake --version
