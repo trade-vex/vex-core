@@ -278,10 +278,11 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
         }
 
         // For market sell orders, update cmd.price to actual execution price
-        if cmd.price == 0 && cmd.side == Side::Ask {
-            if let Some(event) = cmd.events() {
-                cmd.set_price(event.price);
-            }
+        if cmd.price == 0
+            && cmd.side == Side::Ask
+            && let Some(event) = cmd.events()
+        {
+            cmd.set_price(event.price);
         }
 
         self.record_snapshot(cmd);
