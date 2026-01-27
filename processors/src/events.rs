@@ -317,7 +317,7 @@ impl KafkaEventsHandler {
         let order = trading_proto::Order {
             order_id: event.matched_order_id,
             user_id: event.maker_user_id,
-            price: event.price,               // Maker's limit price = execution price
+            price: event.price, // Maker's limit price = execution price
             size: event.maker_remaining_size, // Remaining size after this trade
             side: maker_side as i32,
             time_in_force: time_in_force as i32,
