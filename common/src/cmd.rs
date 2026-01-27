@@ -342,6 +342,8 @@ pub struct MatcherTradeEvent {
     pub matched_order_completed: bool,
     pub price: u64,
     pub size: u64,
+    /// Remaining size of the maker order after this trade
+    pub maker_remaining_size: u64,
     pub next_event: Option<Box<MatcherTradeEvent>>,
     pub maker_balance: [UserBalance; 2], // [0] = base currency, [1] = quote currency
 }

@@ -722,6 +722,7 @@ mod tests {
             active_order_completed: false,
             matched_order_id: 2,
             matched_order_completed: true,
+            maker_remaining_size: 0, // Fully filled
             next_event: None,
             maker_balance: [UserBalance::default(); 2],
         };
@@ -939,6 +940,7 @@ mod tests {
             active_order_completed: true,
             matched_order_id: 99,
             matched_order_completed: true,
+            maker_remaining_size: 0, // Fully filled
             next_event: None,
             maker_balance: [UserBalance::default(); 2],
         };
