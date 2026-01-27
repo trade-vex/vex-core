@@ -78,6 +78,7 @@ impl PriceLevel {
             cmd.set_price(removed_order.price);
             cmd.set_size(removed_order.size);
             cmd.set_user_id(removed_order.user_id);
+            cmd.set_side(removed_order.side);
             cmd.set_status(Status::Cancelled);
         } else {
             cmd.set_status(Status::Rejected);
@@ -174,6 +175,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                     matched_order_completed: maker_order_completed,
                     price,
                     size: trade_size,
+                    maker_remaining_size: maker_order.size, // Remaining size after this trade
                     next_event: None,
                     maker_balance: [UserBalance::default(); 2], // filled by risk engine
                 };
@@ -275,6 +277,15 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 cmd.set_size(remaining);
             }
         }
+
+        // For market sell orders, update cmd.price to actual execution price
+        if cmd.price == 0
+            && cmd.side == Side::Ask
+            && let Some(event) = cmd.events()
+        {
+            cmd.set_price(event.price);
+        }
+
         self.record_snapshot(cmd);
         self.update_price_cache(price_cache);
     }

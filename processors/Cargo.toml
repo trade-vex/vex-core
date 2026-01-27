@@ -2,6 +2,7 @@
 name = "processors"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 
 [dependencies]
 common = { workspace = true }
@@ -17,6 +18,14 @@ rdkafka = { version = "0.36", features = ["tokio"] }
 vex-networking = { workspace = true }
 rusteron-archive = { workspace = true }
 parking_lot = "0.12.5"
+
+# Protobuf dependencies
+prost = "0.12"
+schema_registry_converter = { version = "4.7.0", features = ["easy", "proto_raw"] }
+tokio = { workspace = true }
+
+[build-dependencies]
+prost-build = "0.12"
 
 [dev-dependencies]
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread"] }

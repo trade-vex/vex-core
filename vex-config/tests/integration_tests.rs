@@ -315,6 +315,14 @@ fn test_logging_configuration() {
 
 #[test]
 fn test_environment_detection() {
+    // Clear all environment variables first to ensure clean test state
+    unsafe {
+        env::remove_var("VEX_ENV");
+        env::remove_var("ENVIRONMENT");
+        env::remove_var("ENV");
+        env::remove_var("NODE_ENV");
+    }
+
     // Test with VEX_ENV
     unsafe {
         env::set_var("VEX_ENV", "production");
@@ -322,6 +330,9 @@ fn test_environment_detection() {
     assert_eq!(Environment::detect(), Environment::Production);
     unsafe {
         env::remove_var("VEX_ENV");
+        env::remove_var("ENVIRONMENT");
+        env::remove_var("ENV");
+        env::remove_var("NODE_ENV");
     }
 
     // Test with ENVIRONMENT
@@ -330,7 +341,10 @@ fn test_environment_detection() {
     }
     assert_eq!(Environment::detect(), Environment::Test);
     unsafe {
+        env::remove_var("VEX_ENV");
         env::remove_var("ENVIRONMENT");
+        env::remove_var("ENV");
+        env::remove_var("NODE_ENV");
     }
 
     // Test with ENV
@@ -339,7 +353,10 @@ fn test_environment_detection() {
     }
     assert_eq!(Environment::detect(), Environment::Development);
     unsafe {
+        env::remove_var("VEX_ENV");
+        env::remove_var("ENVIRONMENT");
         env::remove_var("ENV");
+        env::remove_var("NODE_ENV");
     }
 
     // Test fallback to development

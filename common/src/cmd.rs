@@ -261,6 +261,10 @@ impl OrderCommand {
         self.user_id = user_id;
     }
 
+    pub fn set_side(&mut self, side: Side) {
+        self.side = side;
+    }
+
     pub fn attach_event(&mut self, event: Box<MatcherTradeEvent>) {
         if let Some(mut tail) = self.events.as_mut() {
             while tail.next_event.is_some() {
@@ -338,6 +342,8 @@ pub struct MatcherTradeEvent {
     pub matched_order_completed: bool,
     pub price: u64,
     pub size: u64,
+    /// Remaining size of the maker order after this trade
+    pub maker_remaining_size: u64,
     pub next_event: Option<Box<MatcherTradeEvent>>,
     pub maker_balance: [UserBalance; 2], // [0] = base currency, [1] = quote currency
 }
