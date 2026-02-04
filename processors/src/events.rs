@@ -546,8 +546,31 @@ impl EventsHandler for KafkaEventsHandler {
                     stage = "events",
                     handler = "kafka"
                 );
+                
+                // Check if there are trade events (for FOK orders that partially filled)
+                let mut curr_event = cmd.events();
+                if curr_event.is_some() {
+                    // This is a cancelled order that had trades (e.g., FOK partial fill)
+                    while let Some(event) = curr_event {
+                        // Trade Event
+                        self.publish_trade_event(event, cmd, market_id, taker_id, taker_order_id);
+                        
+                        // Balance Event for the maker
+                        self.publish_balance_event(event.maker_user_id, cmd, &event.maker_balance);
+                        
+                        curr_event = event.next_event.as_deref();
+                    }
+                    // Calculate original size: filled_size + remaining_size
+                    let original_size =
+                        cmd.events().map(|e| e.calc_filled_size()).unwrap_or(0) + cmd.size();
+                    // Publish taker order event with original size
+                    self.publish_order_event(cmd, Some(original_size));
+                } else {
+                    // Regular cancellation with no trades
+                    self.publish_order_event(cmd, None);
+                }
+                
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
-                self.publish_order_event(cmd, None);
                 self.publish_cancel_order_event(cmd);
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
