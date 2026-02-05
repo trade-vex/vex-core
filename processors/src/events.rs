@@ -560,11 +560,8 @@ impl EventsHandler for KafkaEventsHandler {
                         
                         curr_event = event.next_event.as_deref();
                     }
-                    // Calculate original size: filled_size + remaining_size
-                    let original_size =
-                        cmd.events().map(|e| e.calc_filled_size()).unwrap_or(0) + cmd.size();
-                    // Publish taker order event with original size
-                    self.publish_order_event(cmd, Some(original_size));
+                    // Publish with None to use cmd.size() which is the remaining size
+                    self.publish_order_event(cmd, None);
                 } else {
                     // Regular cancellation with no trades
                     self.publish_order_event(cmd, None);
@@ -591,13 +588,24 @@ impl EventsHandler for KafkaEventsHandler {
 
                     curr_event = event.next_event.as_deref();
                 }
-                // Calculate original size: filled_size + remaining_size
-                let original_size =
-                    cmd.events().map(|e| e.calc_filled_size()).unwrap_or(0) + cmd.size();
                 // Publish balance event for the taker
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
-                // Publish taker order event with original size
-                self.publish_order_event(cmd, Some(original_size));
+                
+                // For partially filled orders, publish remaining size
+                // For fully filled orders, publish original size (since remaining is 0)
+                match cmd.status() {
+                    Status::PartiallyFilled => {
+                        // Publish with None to use cmd.size() which is the remaining size
+                        self.publish_order_event(cmd, None);
+                    }
+                    Status::Filled => {
+                        // Calculate original size: filled_size + remaining_size
+                        let original_size =
+                            cmd.events().map(|e| e.calc_filled_size()).unwrap_or(0) + cmd.size();
+                        self.publish_order_event(cmd, Some(original_size));
+                    }
+                    _ => unreachable!(),
+                }
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
             Status::Processing => {
