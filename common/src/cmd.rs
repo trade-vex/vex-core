@@ -344,6 +344,7 @@ pub struct MatcherTradeEvent {
     pub size: u64,
     pub next_event: Option<Box<MatcherTradeEvent>>,
     pub maker_balance: [UserBalance; 2], // [0] = base currency, [1] = quote currency
+    pub maker_remaining_size: u64,       // Maker's remaining order size after this trade
 }
 
 impl MatcherTradeEvent {

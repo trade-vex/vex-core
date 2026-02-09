@@ -724,6 +724,7 @@ mod tests {
             matched_order_completed: true,
             next_event: None,
             maker_balance: [UserBalance::default(); 2],
+            maker_remaining_size: 0, // fully filled
         };
 
         // Settle for Taker (Buyer, Bid side) - buys base (BTC) with quote (USD)
@@ -941,6 +942,7 @@ mod tests {
             matched_order_completed: true,
             next_event: None,
             maker_balance: [UserBalance::default(); 2],
+            maker_remaining_size: 0, // fully filled
         };
         engine.handle_trade_event(
             user_id,

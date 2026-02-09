@@ -177,6 +177,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                     size: trade_size,
                     next_event: None,
                     maker_balance: [UserBalance::default(); 2], // filled by risk engine
+                    maker_remaining_size: maker_order.size,     // remaining size after this trade
                 };
                 cmd.attach_event(Box::new(event));
 

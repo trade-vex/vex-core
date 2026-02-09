@@ -290,6 +290,59 @@ impl KafkaEventsHandler {
         );
     }
 
+    fn publish_maker_order_event(
+        &self,
+        event: &MatcherTradeEvent,
+        cmd: &OrderCommand,
+        market_id: u32,
+    ) {
+        let maker_side = match cmd.side().op_side() {
+            common::Side::Bid => trading_proto::Side::Bid,
+            common::Side::Ask => trading_proto::Side::Ask,
+        };
+
+        let status = if event.matched_order_completed {
+            trading_proto::Status::Filled
+        } else {
+            trading_proto::Status::PartiallyFilled
+        };
+
+        let order = trading_proto::Order {
+            order_id: event.matched_order_id,
+            user_id: event.maker_user_id,
+            price: event.price,
+            size: event.maker_remaining_size,
+            side: maker_side as i32,
+            time_in_force: trading_proto::TimeInForce::TifGtc as i32, // resting orders are always GTC
+            status: status as i32,
+            timestamp: cmd.timestamp(),
+        };
+
+        let order_event = trading_proto::OrderEvent {
+            order: Some(order),
+            market_id,
+        };
+
+        let topic_name = "orders";
+        self.publish_proto(
+            topic_name,
+            &event.matched_order_id.to_string(),
+            "trading.OrderEvent",
+            order_event,
+        );
+        info!(
+            target: "events",
+            component = "kafka_handler",
+            action = "maker_order_event_published",
+            maker_order_id = event.matched_order_id,
+            maker_user_id = event.maker_user_id,
+            market_id,
+            status = ?if event.matched_order_completed { "Filled" } else { "PartiallyFilled" },
+            remaining_size = event.maker_remaining_size,
+            topic = %topic_name
+        );
+    }
+
     fn publish_trade_event(
         &self,
         event: &MatcherTradeEvent,
@@ -557,6 +610,9 @@ impl EventsHandler for KafkaEventsHandler {
                         
                         // Balance Event for the maker
                         self.publish_balance_event(event.maker_user_id, cmd, &event.maker_balance);
+
+                        // Order Event for the maker (update maker order status)
+                        self.publish_maker_order_event(event, cmd, market_id);
                         
                         curr_event = event.next_event.as_deref();
                     }
@@ -585,6 +641,9 @@ impl EventsHandler for KafkaEventsHandler {
 
                     // Balance Event for the maker
                     self.publish_balance_event(event.maker_user_id, cmd, &event.maker_balance);
+
+                    // Order Event for the maker (update maker order status)
+                    self.publish_maker_order_event(event, cmd, market_id);
 
                     curr_event = event.next_event.as_deref();
                 }
@@ -745,6 +804,7 @@ mod tests {
             size: 50,
             next_event: None,
             maker_balance: [UserBalance::default(); 2],
+            maker_remaining_size: 0, // fully filled
         };
         let trade1 = MatcherTradeEvent {
             active_order_completed: false,
@@ -755,6 +815,7 @@ mod tests {
             size: 150,
             next_event: Some(Box::new(trade2)),
             maker_balance: [UserBalance::default(); 2],
+            maker_remaining_size: 50, // partially filled, 50 remaining
         };
 
         // Use the correct method name (note the typo in the original)
