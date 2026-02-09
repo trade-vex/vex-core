@@ -80,6 +80,7 @@ impl PriceLevel {
             cmd.set_user_id(removed_order.user_id);
             cmd.set_side(removed_order.side);
             cmd.set_status(Status::Cancelled);
+            cmd.original_size = removed_order.original_size;
         } else {
             cmd.set_status(Status::Rejected);
         }
@@ -176,8 +177,9 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                     price,
                     size: trade_size,
                     next_event: None,
-                    maker_balance: [UserBalance::default(); 2], // filled by risk engine
-                    maker_remaining_size: maker_order.size,     // remaining size after this trade
+                    maker_balance: [UserBalance::default(); 2],
+                    maker_remaining_size: maker_order.size,
+                    maker_original_size: maker_order.original_size,
                 };
                 cmd.attach_event(Box::new(event));
 
@@ -351,6 +353,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             user_id: cmd.user_id,
             price: cmd.price,
             size: remaining_size,
+            original_size: cmd.size,
             side: cmd.side,
             time_in_force: cmd.time_in_force,
             status: cmd.status,

@@ -231,6 +231,7 @@ mod test {
             balance: [UserBalance::default(); 2],
             l2_data: None,
             route_gateway_id: 0,
+            original_size: 0,
         }
     }
 
@@ -1822,15 +1823,16 @@ mod test {
             timestamp: 101,
             user_id: 1001,
             market_id: 1,
-            price: 50, // Price needed for cancellation lookup
-            size: 0,   // Irrelevant for cancel
+            price: 50,
+            size: 0,
             side: Side::Bid,
-            time_in_force: TimeInForce::Gtc, // Irrelevant for cancel
+            time_in_force: TimeInForce::Gtc,
             status: Status::Processing,
             events: None,
             balance: [UserBalance::default(); 2],
             l2_data: None,
             route_gateway_id: 0,
+            original_size: 0,
         };
         book.cancel_order(&mut cancel_cmd, price_cache.clone());
         assert_eq!(cancel_cmd.status(), Status::Cancelled);
@@ -1998,6 +2000,7 @@ mod test {
                 balance: [UserBalance::default(); 2],
                 l2_data: None,
                 route_gateway_id: 0,
+                original_size: 0,
             }
         }
 
@@ -2009,15 +2012,16 @@ mod test {
                 timestamp: self.timestamp,
                 user_id: self.user_id,
                 market_id: self.market_id,
-                price: self.price,                 // Ignored for cancel
-                size: self.size,                   // Ignored for cancel
-                side: self.side,                   // Ignored for cancel
-                time_in_force: self.time_in_force, // Ignored for cancel
+                price: self.price,
+                size: self.size,
+                side: self.side,
+                time_in_force: self.time_in_force,
                 status: Status::Processing,
                 events: None,
                 balance: [UserBalance::default(); 2],
                 l2_data: None,
                 route_gateway_id: 0,
+                original_size: 0,
             }
         }
 
@@ -2716,6 +2720,7 @@ mod test {
                 balance: [UserBalance::default(); 2],
                 l2_data: None,
                 route_gateway_id: 0,
+                original_size: 0,
             }
         }
 
@@ -2737,14 +2742,15 @@ mod test {
                 user_id: order_to_cancel.user_id,
                 market_id: self.market_id,
                 price: order_to_cancel.price,
-                size: 0, // Not relevant for cancel
+                size: 0,
                 side: order_to_cancel.side,
-                time_in_force: TimeInForce::Gtc, // Not relevant
+                time_in_force: TimeInForce::Gtc,
                 status: Status::Processing,
                 events: None,
                 balance: [UserBalance::default(); 2],
                 l2_data: None,
                 route_gateway_id: 0,
+                original_size: 0,
             }
         }
     }

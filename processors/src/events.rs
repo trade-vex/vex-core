@@ -235,7 +235,7 @@ impl KafkaEventsHandler {
         );
     }
 
-    fn publish_order_event(&self, cmd: &OrderCommand, original_size: Option<u64>) {
+    fn publish_order_event(&self, cmd: &OrderCommand, size: u64, filled_size: u64) {
         let side = match cmd.side() {
             common::Side::Bid => trading_proto::Side::Bid,
             common::Side::Ask => trading_proto::Side::Ask,
@@ -261,7 +261,8 @@ impl KafkaEventsHandler {
             order_id: cmd.order_id(),
             user_id: cmd.user_id(),
             price: cmd.price(),
-            size: original_size.unwrap_or_else(|| cmd.size()),
+            size,
+            filled_size,
             side: side as i32,
             time_in_force: time_in_force as i32,
             status: status as i32,
@@ -307,13 +308,16 @@ impl KafkaEventsHandler {
             trading_proto::Status::PartiallyFilled
         };
 
+        let filled_size = event.maker_original_size - event.maker_remaining_size;
+
         let order = trading_proto::Order {
             order_id: event.matched_order_id,
             user_id: event.maker_user_id,
             price: event.price,
-            size: event.maker_remaining_size,
+            size: event.maker_original_size,
+            filled_size,
             side: maker_side as i32,
-            time_in_force: trading_proto::TimeInForce::TifGtc as i32, // resting orders are always GTC
+            time_in_force: trading_proto::TimeInForce::TifGtc as i32,
             status: status as i32,
             timestamp: cmd.timestamp(),
         };
@@ -330,15 +334,13 @@ impl KafkaEventsHandler {
             "trading.OrderEvent",
             order_event,
         );
-        info!(
+        debug!(
             target: "events",
             component = "kafka_handler",
             action = "maker_order_event_published",
             maker_order_id = event.matched_order_id,
             maker_user_id = event.maker_user_id,
             market_id,
-            status = ?if event.matched_order_completed { "Filled" } else { "PartiallyFilled" },
-            remaining_size = event.maker_remaining_size,
             topic = %topic_name
         );
     }
@@ -589,7 +591,7 @@ impl EventsHandler for KafkaEventsHandler {
                     handler = "kafka"
                 );
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
-                self.publish_order_event(cmd, None);
+                self.publish_order_event(cmd, cmd.size(), 0);
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
             Status::Cancelled => {
@@ -600,27 +602,22 @@ impl EventsHandler for KafkaEventsHandler {
                     handler = "kafka"
                 );
                 
-                // Check if there are trade events (for FOK orders that partially filled)
                 let mut curr_event = cmd.events();
                 if curr_event.is_some() {
-                    // This is a cancelled order that had trades (e.g., FOK partial fill)
                     while let Some(event) = curr_event {
-                        // Trade Event
                         self.publish_trade_event(event, cmd, market_id, taker_id, taker_order_id);
-                        
-                        // Balance Event for the maker
                         self.publish_balance_event(event.maker_user_id, cmd, &event.maker_balance);
-
-                        // Order Event for the maker (update maker order status)
                         self.publish_maker_order_event(event, cmd, market_id);
-                        
                         curr_event = event.next_event.as_deref();
                     }
-                    // Publish with None to use cmd.size() which is the remaining size
-                    self.publish_order_event(cmd, None);
+                    let filled_size = cmd.events().map(|e| e.calc_filled_size()).unwrap_or(0);
+                    let original_size = filled_size + cmd.size();
+                    self.publish_order_event(cmd, original_size, filled_size);
+                } else if cmd.command == OrderCommandType::CancelOrder {
+                    let filled_size = cmd.original_size - cmd.size();
+                    self.publish_order_event(cmd, cmd.original_size, filled_size);
                 } else {
-                    // Regular cancellation with no trades
-                    self.publish_order_event(cmd, None);
+                    self.publish_order_event(cmd, cmd.size(), 0);
                 }
                 
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
@@ -636,35 +633,15 @@ impl EventsHandler for KafkaEventsHandler {
                 );
                 let mut curr_event = cmd.events();
                 while let Some(event) = curr_event {
-                    // Trade Event
                     self.publish_trade_event(event, cmd, market_id, taker_id, taker_order_id);
-
-                    // Balance Event for the maker
                     self.publish_balance_event(event.maker_user_id, cmd, &event.maker_balance);
-
-                    // Order Event for the maker (update maker order status)
                     self.publish_maker_order_event(event, cmd, market_id);
-
                     curr_event = event.next_event.as_deref();
                 }
-                // Publish balance event for the taker
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
-                
-                // For partially filled orders, publish remaining size
-                // For fully filled orders, publish original size (since remaining is 0)
-                match cmd.status() {
-                    Status::PartiallyFilled => {
-                        // Publish with None to use cmd.size() which is the remaining size
-                        self.publish_order_event(cmd, None);
-                    }
-                    Status::Filled => {
-                        // Calculate original size: filled_size + remaining_size
-                        let original_size =
-                            cmd.events().map(|e| e.calc_filled_size()).unwrap_or(0) + cmd.size();
-                        self.publish_order_event(cmd, Some(original_size));
-                    }
-                    _ => unreachable!(),
-                }
+                let filled_size = cmd.events().map(|e| e.calc_filled_size()).unwrap_or(0);
+                let original_size = filled_size + cmd.size();
+                self.publish_order_event(cmd, original_size, filled_size);
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
             Status::Processing => {
@@ -804,7 +781,8 @@ mod tests {
             size: 50,
             next_event: None,
             maker_balance: [UserBalance::default(); 2],
-            maker_remaining_size: 0, // fully filled
+            maker_remaining_size: 0,
+            maker_original_size: 50,
         };
         let trade1 = MatcherTradeEvent {
             active_order_completed: false,
@@ -815,7 +793,8 @@ mod tests {
             size: 150,
             next_event: Some(Box::new(trade2)),
             maker_balance: [UserBalance::default(); 2],
-            maker_remaining_size: 50, // partially filled, 50 remaining
+            maker_remaining_size: 50,
+            maker_original_size: 200,
         };
 
         // Use the correct method name (note the typo in the original)

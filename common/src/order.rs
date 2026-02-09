@@ -14,6 +14,7 @@ pub struct Order {
     pub user_id: u64,
     pub price: u64,
     pub size: u64,
+    pub original_size: u64,
     pub side: Side,
     pub time_in_force: TimeInForce,
     pub status: Status,
