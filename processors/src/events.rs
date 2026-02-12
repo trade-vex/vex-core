@@ -601,7 +601,7 @@ impl EventsHandler for KafkaEventsHandler {
                     stage = "events",
                     handler = "kafka"
                 );
-                
+
                 let mut curr_event = cmd.events();
                 if curr_event.is_some() {
                     while let Some(event) = curr_event {
@@ -619,7 +619,7 @@ impl EventsHandler for KafkaEventsHandler {
                 } else {
                     self.publish_order_event(cmd, cmd.size(), 0);
                 }
-                
+
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
                 self.publish_cancel_order_event(cmd);
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
