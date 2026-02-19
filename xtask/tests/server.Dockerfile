@@ -45,6 +45,7 @@ RUN apt-get update && apt-get install -y \
     libstdc++6 \
     libgcc-s1 \
     iproute2 \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 # Copy the built test server binary
 COPY --from=builder /usr/src/app/target/release/test_server /usr/local/bin/test_server
