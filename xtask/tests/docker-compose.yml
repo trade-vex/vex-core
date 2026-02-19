@@ -74,6 +74,12 @@ services:
       - AERON_RESERVED_SESSION_ID_HIGH=2147483647
       - LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
       - RUST_LOG=debug
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -x test_server && test -f /dev/shm/aeron-test-server/cnc.dat"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
     ipc: shareable # Allows aeronmd and test_server to share memory.
     privileged: true
     shm_size: '512m'

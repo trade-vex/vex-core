@@ -525,7 +525,58 @@ impl DockerComposeEnv {
         .dir(root.clone())
         .run()?;
 
-        println!("Waiting for environment to stabilize...");
+        // Wait for vex-server to be healthy (has healthcheck in docker-compose.yml)
+        println!("Waiting for vex-server to be healthy...");
+        let start = Instant::now();
+        let timeout = std::time::Duration::from_secs(120);
+        loop {
+            if start.elapsed() > timeout {
+                // Print server logs for debugging before failing
+                eprintln!("=== vex-server logs ===");
+                if let Ok(logs) = cmd!("docker", "logs", "vex-server")
+                    .dir(root.clone())
+                    .read()
+                {
+                    eprintln!("{}", logs);
+                }
+                return Err(XTaskError::Unexpected(
+                    "Timed out waiting for vex-server to become healthy".to_string(),
+                ));
+            }
+
+            if let Ok(output) = cmd!(
+                "docker",
+                "inspect",
+                "--format",
+                "{{.State.Health.Status}}",
+                "vex-server"
+            )
+            .dir(root.clone())
+            .read()
+            {
+                let status = output.trim();
+                if status == "healthy" {
+                    println!("vex-server is healthy.");
+                    break;
+                }
+                if status == "unhealthy" {
+                    eprintln!("=== vex-server logs ===");
+                    if let Ok(logs) = cmd!("docker", "logs", "vex-server")
+                        .dir(root.clone())
+                        .read()
+                    {
+                        eprintln!("{}", logs);
+                    }
+                    return Err(XTaskError::Unexpected(
+                        "vex-server became unhealthy".to_string(),
+                    ));
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+
+        // Additional stabilization for Aeron subscriptions to be fully registered
+        println!("Waiting for Aeron subscriptions to stabilize...");
         std::thread::sleep(std::time::Duration::from_secs(5));
 
         let json_output = cmd!("docker", "compose", "ps", "--format", "json")
@@ -589,19 +640,23 @@ struct ComposeContainer {
 }
 
 // Helper function to apply network conditions
-fn apply_scenario_conditions(scenario: &str, clients: u32) -> Result<(), XTaskError> {
+fn apply_scenario_conditions(root: &Path, scenario: &str, clients: u32) -> Result<(), XTaskError> {
     if scenario == "basic-connectivity" {
         return Ok(()); // No network conditions to apply for basic connectivity
     }
     for i in 1..=clients {
         match scenario {
             "high-latency" => {
-                println!("Applying 100ms RTT latency...");
-                // Apply 50ms latency to traffic leaving the client
+                println!("Applying {NETWORK_DELAY_MS}ms latency...");
+                // Apply latency to traffic leaving the client
                 cmd!(
                     "docker",
+                    "compose",
                     "exec",
-                    format!("tests-vex-client-{i}"),
+                    "--index",
+                    i.to_string(),
+                    "-T",
+                    "vex-client",
                     "tc",
                     "qdisc",
                     "replace",
@@ -612,11 +667,14 @@ fn apply_scenario_conditions(scenario: &str, clients: u32) -> Result<(), XTaskEr
                     "delay",
                     format!("{NETWORK_DELAY_MS}ms")
                 )
+                .dir(root)
                 .run()?;
-                // Apply 50ms latency to traffic leaving the server
+                // Apply latency to traffic leaving the server
                 cmd!(
                     "docker",
+                    "compose",
                     "exec",
+                    "-T",
                     "vex-server",
                     "tc",
                     "qdisc",
@@ -628,14 +686,19 @@ fn apply_scenario_conditions(scenario: &str, clients: u32) -> Result<(), XTaskEr
                     "delay",
                     format!("{NETWORK_DELAY_MS}ms")
                 )
+                .dir(root)
                 .run()?;
             }
             "packet-loss" => {
-                println!("Applying 5% packet loss...");
+                println!("Applying {PACKET_LOSS_PERCENT}% packet loss...");
                 cmd!(
                     "docker",
+                    "compose",
                     "exec",
-                    format!("tests-vex-client-{i}"),
+                    "--index",
+                    i.to_string(),
+                    "-T",
+                    "vex-client",
                     "tc",
                     "qdisc",
                     "replace",
@@ -646,6 +709,7 @@ fn apply_scenario_conditions(scenario: &str, clients: u32) -> Result<(), XTaskEr
                     "loss",
                     format!("{PACKET_LOSS_PERCENT}%")
                 )
+                .dir(root)
                 .run()?;
             }
             _ => Err(XTaskError::Unexpected(format!(
@@ -682,7 +746,7 @@ fn run_correctness_task(
     let _env = DockerComposeEnv::new(project_root.join("xtask/tests").into_boxed_path(), clients)?;
 
     // --- Scenario-specific setup ---
-    apply_scenario_conditions(scenario, clients)?;
+    apply_scenario_conditions(&project_root.join("xtask/tests"), scenario, clients)?;
 
     let msg_count_per_client = DEFAULT_MSG_COUNT_PER_CLIENT;
     let total_msg_count = msg_count_per_client * clients as usize;
