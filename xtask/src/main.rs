@@ -341,8 +341,10 @@ async fn run_integration_tests(
     tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
 
     // Create test context with Docker server address
-    let mut config = xtask::test_framework::types::TestConfig::default();
-    config.core_address = DOCKER_SERVER_IP.to_string();
+    let config = xtask::test_framework::types::TestConfig {
+        core_address: DOCKER_SERVER_IP.to_string(),
+        ..Default::default()
+    };
 
     let mut ctx = match TestContext::with_config(config).await {
         Ok(ctx) => ctx,
