@@ -716,14 +716,16 @@ mod tests {
 
         // --- A trade occurs ---
         let mut trade_event = MatcherTradeEvent {
-            price, // price in quote asset (USD) per base asset (BTC)
-            size,  // size in base asset (BTC)
+            price,
+            size,
             maker_user_id: maker_id,
             active_order_completed: false,
             matched_order_id: 2,
             matched_order_completed: true,
             next_event: None,
             maker_balance: [UserBalance::default(); 2],
+            maker_remaining_size: 0,
+            maker_original_size: size,
         };
 
         // Settle for Taker (Buyer, Bid side) - buys base (BTC) with quote (USD)
@@ -935,12 +937,14 @@ mod tests {
         let mut btc_trade_event = MatcherTradeEvent {
             price: btc_price,
             size: btc_size,
-            maker_user_id: 200, // some other user
+            maker_user_id: 200,
             active_order_completed: true,
             matched_order_id: 99,
             matched_order_completed: true,
             next_event: None,
             maker_balance: [UserBalance::default(); 2],
+            maker_remaining_size: 0,
+            maker_original_size: btc_size,
         };
         engine.handle_trade_event(
             user_id,

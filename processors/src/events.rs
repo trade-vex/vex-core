@@ -1,24 +1,40 @@
 use std::sync::Arc;
-use std::thread;
 
 use crate::journaling::ReplayControl;
 use common::L2MarketData;
 use common::MatcherTradeEvent;
-use common::Order;
 use common::OrderCommand;
 use common::OrderCommandType;
 use common::Status;
 use common::UserBalance;
-use common::{
-    BalanceEvent, CancelOrderEvent, DepositEvent, OrderEvent, OrderbookEvent, OrderbookLevel,
-    TradeEvent, WithdrawEvent,
-};
 use common::{base_asset, order_debug, order_info, quote_asset};
+use prost::Message;
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
+use schema_registry_converter::async_impl::easy_proto_raw::EasyProtoRawEncoder;
+use schema_registry_converter::async_impl::schema_registry::SrSettings;
+use schema_registry_converter::schema_registry_common::{
+    SchemaType, SubjectNameStrategy, SuppliedSchema,
+};
 use serde::Serialize;
+use tokio::runtime::Runtime;
 use tracing::{debug, error, info};
 use vex_networking::server::Publications;
+
+// Include generated protobuf code
+pub mod trading_proto {
+    include!(concat!(env!("OUT_DIR"), "/trading.rs"));
+}
+
+// Embed the .proto file content for Schema Registry registration
+const TRADING_SCHEMA: &str = include_str!("protos/trading.proto");
+
+// Helper struct for JSON serialization of Orderbook Levels
+#[derive(Serialize)]
+struct JsonOrderbookLevel {
+    price: u64,
+    size: u64,
+}
 
 pub trait EventsHandler: Send + Sync + 'static {
     fn handle_processed_command(&self, cmd: &mut OrderCommand);
@@ -27,13 +43,16 @@ pub trait EventsHandler: Send + Sync + 'static {
 // Real Kafka Events Handler
 pub struct KafkaEventsHandler {
     producer: FutureProducer,
+    encoder: Arc<EasyProtoRawEncoder>,
     publications: Arc<Publications>,
     replay_control: ReplayControl,
+    rt: Arc<Runtime>,
 }
 
 impl KafkaEventsHandler {
     pub fn new(
         brokers: &str,
+        schema_registry_url: &str,
         publications: Arc<Publications>,
         replay_control: ReplayControl,
     ) -> Self {
@@ -45,63 +64,110 @@ impl KafkaEventsHandler {
             .create()
             .expect("Producer creation failed");
 
+        // Initialize Schema Registry Encoder
+        let sr_settings = SrSettings::new(schema_registry_url.to_string());
+        let encoder = Arc::new(EasyProtoRawEncoder::new(sr_settings));
+
+        // Create a dedicated runtime for async tasks
+        let rt = Arc::new(Runtime::new().expect("Failed to create tokio runtime"));
+
         info!(
             target: "events",
             component = "kafka_handler",
             action = "connected",
-            brokers = %brokers
+            brokers = %brokers,
+            schema_registry = %schema_registry_url
         );
 
         Self {
             producer,
+            encoder,
             publications,
             replay_control,
+            rt,
         }
     }
 
-    fn publish_event<T: Serialize>(&self, topic_name: &str, message_key: &str, payload: &T) {
-        match serde_json::to_string(payload) {
-            Ok(json_payload) => {
-                let producer = self.producer.clone();
-                let message_key = message_key.to_string();
-                let topic_name = topic_name.to_string();
+    fn publish_proto<T: Message + Send + Sync + 'static>(
+        &self,
+        topic_name: &str,
+        message_key: &str,
+        full_name: &str,
+        data: T,
+    ) {
+        let encoder = self.encoder.clone();
+        let producer = self.producer.clone();
+        let topic = topic_name.to_string();
+        let key_str = message_key.to_string();
+        let full_name = full_name.to_string();
 
-                // Spawn async task to send to Kafka
-                thread::spawn(move || {
-                    let record = FutureRecord::to(&topic_name)
-                        .payload(&json_payload)
-                        .key(&message_key);
+        // Spawn async task on the dedicated runtime
+        self.rt.spawn(async move {
+            // Serialize data to bytes using Prost
+            let payload_bytes = data.encode_to_vec();
 
-                    match producer.send_result(record) {
-                        Ok(_) => {
-                            debug!(
-                                target: "events",
-                                component = "kafka_handler",
-                                action = "event_sent",
-                                topic = %topic_name,
-                                key = %message_key
-                            );
-                        }
-                        Err((e, _)) => {
-                            error!(
-                                target: "events",
-                                component = "kafka_handler",
-                                action = "event_failed",
-                                topic = %topic_name,
-                                error = ?e
-                            );
-                        }
-                    }
-                });
+            // Create SuppliedSchema with the .proto content for Schema Registry
+            let supplied_schema = SuppliedSchema {
+                name: Some(full_name.clone()),
+                schema_type: SchemaType::Protobuf,
+                schema: TRADING_SCHEMA.to_string(),
+                references: vec![],
+                properties: None,
+                tags: None,
+            };
+
+            // Encode with schema registration (magic byte + schema ID)
+            // Use TopicNameStrategyWithSchema so schema is registered as "<topic>-value"
+            // This ensures Kafka Connect (JDBC Sink) can find the schema
+            let strategy = SubjectNameStrategy::TopicNameStrategyWithSchema(
+                topic.clone(),
+                false,
+                supplied_schema,
+            );
+
+            let encoded_payload = match encoder.encode(&payload_bytes, &full_name, strategy).await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    error!(
+                        target: "events",
+                        component = "kafka_handler",
+                        action = "protobuf_encoding_failed",
+                        topic = %topic,
+                        error = ?e
+                    );
+                    return;
+                }
+            };
+
+            // Send to Kafka
+            let record = FutureRecord::to(&topic)
+                .payload(&encoded_payload)
+                .key(&key_str);
+
+            match producer
+                .send(record, tokio::time::Duration::from_secs(5))
+                .await
+            {
+                Ok(_) => {
+                    debug!(
+                        target: "events",
+                        component = "kafka_handler",
+                        action = "event_sent",
+                        topic = %topic,
+                        key = %key_str
+                    );
+                }
+                Err((e, _)) => {
+                    error!(
+                        target: "events",
+                        component = "kafka_handler",
+                        action = "event_failed",
+                        topic = %topic,
+                        error = ?e
+                    );
+                }
             }
-            Err(e) => error!(
-                target: "events",
-                component = "kafka_handler",
-                action = "serialization_failed",
-                topic = %topic_name,
-                error = ?e
-            ),
-        }
+        });
     }
 
     fn publish_balance_event(&self, user_id: u64, cmd: &OrderCommand, balance: &[UserBalance; 2]) {
@@ -109,9 +175,9 @@ impl KafkaEventsHandler {
         let quote_asset_id = quote_asset(cmd.market_id);
 
         for (balance, asset_id) in balance.iter().zip([base_asset_id, quote_asset_id]) {
-            let balance_event = BalanceEvent {
+            let balance_event = trading_proto::BalanceEvent {
                 user_id,
-                asset_id,
+                asset_id: asset_id as u32,
                 available: balance.available(),
                 locked: balance.locked(),
                 total: balance.total(),
@@ -119,7 +185,13 @@ impl KafkaEventsHandler {
             };
 
             let topic_name = "balances";
-            self.publish_event(topic_name, &user_id.to_string(), &balance_event);
+            let composite_key = format!("{}:{}", user_id, asset_id);
+            self.publish_proto(
+                topic_name,
+                &composite_key,
+                "trading.BalanceEvent",
+                balance_event,
+            );
             debug!(
                 target: "events",
                 component = "kafka_handler",
@@ -135,9 +207,9 @@ impl KafkaEventsHandler {
     fn publish_deposit_withdrawal_event(&self, cmd: &OrderCommand) {
         let asset_id = cmd.market_id as u16;
 
-        let balance_event = BalanceEvent {
+        let balance_event = trading_proto::BalanceEvent {
             user_id: cmd.user_id(),
-            asset_id,
+            asset_id: asset_id as u32,
             available: cmd.balance[0].available(),
             locked: cmd.balance[0].locked(),
             total: cmd.balance[0].total(),
@@ -145,7 +217,13 @@ impl KafkaEventsHandler {
         };
 
         let topic_name = "balances";
-        self.publish_event(topic_name, &cmd.user_id.to_string(), &balance_event);
+        let composite_key = format!("{}:{}", cmd.user_id(), asset_id);
+        self.publish_proto(
+            topic_name,
+            &composite_key,
+            "trading.BalanceEvent",
+            balance_event,
+        );
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -157,33 +235,112 @@ impl KafkaEventsHandler {
         );
     }
 
-    fn publish_order_event(&self, cmd: &OrderCommand, original_size: Option<u64>) {
-        let order = Order {
+    fn publish_order_event(&self, cmd: &OrderCommand, size: u64, filled_size: u64) {
+        let side = match cmd.side() {
+            common::Side::Bid => trading_proto::Side::Bid,
+            common::Side::Ask => trading_proto::Side::Ask,
+        };
+
+        let time_in_force = match cmd.time_in_force {
+            common::TimeInForce::Gtc => trading_proto::TimeInForce::TifGtc,
+            common::TimeInForce::Ioc => trading_proto::TimeInForce::TifIoc,
+            common::TimeInForce::Fok => trading_proto::TimeInForce::TifFok,
+        };
+
+        let status = match cmd.status() {
+            Status::Rejected => trading_proto::Status::Rejected,
+            Status::Placed => trading_proto::Status::Placed,
+            Status::Cancelled => trading_proto::Status::Cancelled,
+            Status::PartiallyFilled => trading_proto::Status::PartiallyFilled,
+            Status::Filled => trading_proto::Status::Filled,
+            Status::Processing => trading_proto::Status::Processing,
+            Status::Processed => trading_proto::Status::Processed,
+        };
+
+        let order = trading_proto::Order {
             order_id: cmd.order_id(),
             user_id: cmd.user_id(),
             price: cmd.price(),
-            size: original_size.unwrap_or_else(|| cmd.size()),
-            side: cmd.side(),
-            time_in_force: cmd.time_in_force,
-            status: cmd.status(),
+            size,
+            filled_size,
+            side: side as i32,
+            time_in_force: time_in_force as i32,
+            status: status as i32,
             timestamp: cmd.timestamp(),
         };
 
-        let order_event = OrderEvent {
-            order,
+        let order_event = trading_proto::OrderEvent {
+            order: Some(order),
             market_id: cmd.market_id(),
-            time_in_force: cmd.time_in_force,
-            status: cmd.status(),
         };
 
         let topic_name = "orders";
-        self.publish_event(topic_name, &cmd.order_id().to_string(), &order_event);
+        self.publish_proto(
+            topic_name,
+            &cmd.order_id().to_string(),
+            "trading.OrderEvent",
+            order_event,
+        );
         debug!(
             target: "events",
             component = "kafka_handler",
             action = "order_event_published",
             order_id = cmd.order_id(),
             market_id = cmd.market_id(),
+            topic = %topic_name
+        );
+    }
+
+    fn publish_maker_order_event(
+        &self,
+        event: &MatcherTradeEvent,
+        cmd: &OrderCommand,
+        market_id: u32,
+    ) {
+        let maker_side = match cmd.side().op_side() {
+            common::Side::Bid => trading_proto::Side::Bid,
+            common::Side::Ask => trading_proto::Side::Ask,
+        };
+
+        let status = if event.matched_order_completed {
+            trading_proto::Status::Filled
+        } else {
+            trading_proto::Status::PartiallyFilled
+        };
+
+        let filled_size = event.maker_original_size - event.maker_remaining_size;
+
+        let order = trading_proto::Order {
+            order_id: event.matched_order_id,
+            user_id: event.maker_user_id,
+            price: event.price,
+            size: event.maker_original_size,
+            filled_size,
+            side: maker_side as i32,
+            time_in_force: trading_proto::TimeInForce::TifGtc as i32,
+            status: status as i32,
+            timestamp: cmd.timestamp(),
+        };
+
+        let order_event = trading_proto::OrderEvent {
+            order: Some(order),
+            market_id,
+        };
+
+        let topic_name = "orders";
+        self.publish_proto(
+            topic_name,
+            &event.matched_order_id.to_string(),
+            "trading.OrderEvent",
+            order_event,
+        );
+        debug!(
+            target: "events",
+            component = "kafka_handler",
+            action = "maker_order_event_published",
+            maker_order_id = event.matched_order_id,
+            maker_user_id = event.maker_user_id,
+            market_id,
             topic = %topic_name
         );
     }
@@ -196,7 +353,12 @@ impl KafkaEventsHandler {
         taker_id: u64,
         taker_order_id: u64,
     ) {
-        let trade_event = TradeEvent {
+        let taker_side = match cmd.side() {
+            common::Side::Bid => trading_proto::Side::Bid,
+            common::Side::Ask => trading_proto::Side::Ask,
+        };
+
+        let trade_event = trading_proto::TradeEvent {
             maker_user_id: event.maker_user_id,
             taker_user_id: taker_id,
             market_id,
@@ -204,13 +366,13 @@ impl KafkaEventsHandler {
             size: event.size,
             maker_order_id: event.matched_order_id,
             taker_order_id,
-            taker_side: cmd.side(),
+            taker_side: taker_side as i32,
             timestamp: cmd.timestamp(),
         };
 
         let topic_name = "trades";
         let trade_key = format!("{}:{}", taker_order_id, event.matched_order_id);
-        self.publish_event(topic_name, &trade_key, &trade_event);
+        self.publish_proto(topic_name, &trade_key, "trading.TradeEvent", trade_event);
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -224,7 +386,7 @@ impl KafkaEventsHandler {
     }
 
     fn publish_cancel_order_event(&self, cmd: &OrderCommand) {
-        let cancel_event = CancelOrderEvent {
+        let cancel_event = trading_proto::CancelOrderEvent {
             order_id: cmd.order_id(),
             market_id: cmd.market_id(),
             user_id: cmd.user_id(),
@@ -232,7 +394,12 @@ impl KafkaEventsHandler {
         };
 
         let topic_name = "cancels";
-        self.publish_event(topic_name, &cmd.order_id().to_string(), &cancel_event);
+        self.publish_proto(
+            topic_name,
+            &cmd.order_id().to_string(),
+            "trading.CancelOrderEvent",
+            cancel_event,
+        );
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -245,36 +412,42 @@ impl KafkaEventsHandler {
 
     fn publish_orderbook_event(&self, market_id: u32, orderbook_snapshot: &Option<L2MarketData>) {
         if let Some(snapshot) = orderbook_snapshot {
-            let mut bids = Vec::new();
-            let mut asks = Vec::new();
-
+            let mut bids_vec = Vec::new();
             for i in 0..snapshot.bid_depth() {
                 if snapshot.bid_prices[i] > 0 {
-                    bids.push(OrderbookLevel {
+                    bids_vec.push(JsonOrderbookLevel {
                         price: snapshot.bid_prices[i],
                         size: snapshot.bid_volumes[i],
                     });
                 }
             }
+            let bids_json = serde_json::to_string(&bids_vec).unwrap_or_else(|_| "[]".to_string());
 
+            let mut asks_vec = Vec::new();
             for i in 0..snapshot.ask_depth() {
                 if snapshot.ask_prices[i] > 0 {
-                    asks.push(OrderbookLevel {
+                    asks_vec.push(JsonOrderbookLevel {
                         price: snapshot.ask_prices[i],
                         size: snapshot.ask_volumes[i],
                     });
                 }
             }
+            let asks_json = serde_json::to_string(&asks_vec).unwrap_or_else(|_| "[]".to_string());
 
-            let orderbook_event = OrderbookEvent {
+            let orderbook_event = trading_proto::OrderbookEvent {
                 market_id,
-                bids,
-                asks,
+                bids: bids_json,
+                asks: asks_json,
                 timestamp: snapshot.timestamp,
             };
 
             let topic_name = "orderbook";
-            self.publish_event(topic_name, &market_id.to_string(), &orderbook_event);
+            self.publish_proto(
+                topic_name,
+                &market_id.to_string(),
+                "trading.OrderbookEvent",
+                orderbook_event,
+            );
 
             debug!(
                 target: "events",
@@ -287,15 +460,20 @@ impl KafkaEventsHandler {
     }
 
     fn publish_deposit_event(&self, cmd: &OrderCommand) {
-        let deposit_event = DepositEvent {
+        let deposit_event = trading_proto::DepositEvent {
             user_id: cmd.user_id(),
-            asset_id: cmd.market_id() as u16,
+            asset_id: cmd.market_id(),
             amount: cmd.size(),
             timestamp: cmd.timestamp(),
         };
 
         let topic_name = "deposits";
-        self.publish_event(topic_name, &cmd.user_id().to_string(), &deposit_event);
+        self.publish_proto(
+            topic_name,
+            &cmd.user_id().to_string(),
+            "trading.DepositEvent",
+            deposit_event,
+        );
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -308,15 +486,20 @@ impl KafkaEventsHandler {
     }
 
     fn publish_withdraw_event(&self, cmd: &OrderCommand) {
-        let withdraw_event = WithdrawEvent {
+        let withdraw_event = trading_proto::WithdrawEvent {
             user_id: cmd.user_id(),
-            asset_id: cmd.market_id() as u16,
+            asset_id: cmd.market_id(),
             amount: cmd.size(),
             timestamp: cmd.timestamp(),
         };
 
         let topic_name = "withdrawals";
-        self.publish_event(topic_name, &cmd.user_id().to_string(), &withdraw_event);
+        self.publish_proto(
+            topic_name,
+            &cmd.user_id().to_string(),
+            "trading.WithdrawEvent",
+            withdraw_event,
+        );
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -408,7 +591,7 @@ impl EventsHandler for KafkaEventsHandler {
                     handler = "kafka"
                 );
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
-                self.publish_order_event(cmd, None);
+                self.publish_order_event(cmd, cmd.size(), 0);
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
             Status::Cancelled => {
@@ -418,6 +601,25 @@ impl EventsHandler for KafkaEventsHandler {
                     stage = "events",
                     handler = "kafka"
                 );
+
+                let mut curr_event = cmd.events();
+                if curr_event.is_some() {
+                    while let Some(event) = curr_event {
+                        self.publish_trade_event(event, cmd, market_id, taker_id, taker_order_id);
+                        self.publish_balance_event(event.maker_user_id, cmd, &event.maker_balance);
+                        self.publish_maker_order_event(event, cmd, market_id);
+                        curr_event = event.next_event.as_deref();
+                    }
+                    let filled_size = cmd.events().map(|e| e.calc_filled_size()).unwrap_or(0);
+                    let original_size = filled_size + cmd.size();
+                    self.publish_order_event(cmd, original_size, filled_size);
+                } else if cmd.command == OrderCommandType::CancelOrder {
+                    let filled_size = cmd.original_size - cmd.size();
+                    self.publish_order_event(cmd, cmd.original_size, filled_size);
+                } else {
+                    self.publish_order_event(cmd, cmd.size(), 0);
+                }
+
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
                 self.publish_cancel_order_event(cmd);
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
@@ -431,21 +633,15 @@ impl EventsHandler for KafkaEventsHandler {
                 );
                 let mut curr_event = cmd.events();
                 while let Some(event) = curr_event {
-                    // Trade Event
                     self.publish_trade_event(event, cmd, market_id, taker_id, taker_order_id);
-
-                    // Balance Event for the maker
                     self.publish_balance_event(event.maker_user_id, cmd, &event.maker_balance);
-
+                    self.publish_maker_order_event(event, cmd, market_id);
                     curr_event = event.next_event.as_deref();
                 }
-                // Calculate original size: filled_size + remaining_size
-                let original_size =
-                    cmd.events().map(|e| e.calc_filled_size()).unwrap_or(0) + cmd.size();
-                // Publish balance event for the taker
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
-                // Publish taker order event with original size
-                self.publish_order_event(cmd, Some(original_size));
+                let filled_size = cmd.events().map(|e| e.calc_filled_size()).unwrap_or(0);
+                let original_size = filled_size + cmd.size();
+                self.publish_order_event(cmd, original_size, filled_size);
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
             Status::Processing => {
@@ -500,10 +696,11 @@ mod tests {
 
     const MARKET_ID: u32 = 100_000_010; // Example market_id encoding
 
-    #[tokio::test]
-    async fn test_kafka_events_handler_placed_order() {
+    #[test]
+    fn test_kafka_events_handler_placed_order() {
         let handler = KafkaEventsHandler::new(
             "localhost:9092",
+            "http://localhost:8081",
             Arc::new(Publications::new()),
             ReplayControl::disabled(),
         );
@@ -523,13 +720,14 @@ mod tests {
         handler.handle_processed_command(&mut cmd);
 
         // Wait for async Kafka send to complete
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        std::thread::sleep(std::time::Duration::from_secs(2));
     }
 
-    #[tokio::test]
-    async fn test_kafka_events_handler_cancelled_order() {
+    #[test]
+    fn test_kafka_events_handler_cancelled_order() {
         let handler = KafkaEventsHandler::new(
             "localhost:9092",
+            "http://localhost:8081",
             Arc::new(Publications::new()),
             ReplayControl::disabled(),
         );
@@ -548,13 +746,14 @@ mod tests {
 
         handler.handle_processed_command(&mut cmd);
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        std::thread::sleep(std::time::Duration::from_secs(2));
     }
 
-    #[tokio::test]
-    async fn test_kafka_events_handler_filled_order_with_trades() {
+    #[test]
+    fn test_kafka_events_handler_filled_order_with_trades() {
         let handler = KafkaEventsHandler::new(
             "localhost:9092",
+            "http://localhost:8081",
             Arc::new(Publications::new()),
             ReplayControl::disabled(),
         );
@@ -582,6 +781,8 @@ mod tests {
             size: 50,
             next_event: None,
             maker_balance: [UserBalance::default(); 2],
+            maker_remaining_size: 0,
+            maker_original_size: 50,
         };
         let trade1 = MatcherTradeEvent {
             active_order_completed: false,
@@ -592,6 +793,8 @@ mod tests {
             size: 150,
             next_event: Some(Box::new(trade2)),
             maker_balance: [UserBalance::default(); 2],
+            maker_remaining_size: 50,
+            maker_original_size: 200,
         };
 
         // Use the correct method name (note the typo in the original)
@@ -599,13 +802,14 @@ mod tests {
 
         handler.handle_processed_command(&mut filled_cmd);
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        std::thread::sleep(std::time::Duration::from_secs(2));
     }
 
-    #[tokio::test]
-    async fn test_kafka_events_handler_deposit_funds() {
+    #[test]
+    fn test_kafka_events_handler_deposit_funds() {
         let handler = KafkaEventsHandler::new(
             "localhost:9092",
+            "http://localhost:8081",
             Arc::new(Publications::new()),
             ReplayControl::disabled(),
         );
@@ -620,13 +824,14 @@ mod tests {
 
         handler.handle_processed_command(&mut cmd);
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        std::thread::sleep(std::time::Duration::from_secs(2));
     }
 
-    #[tokio::test]
-    async fn test_kafka_events_handler_withdraw_funds() {
+    #[test]
+    fn test_kafka_events_handler_withdraw_funds() {
         let handler = KafkaEventsHandler::new(
             "localhost:9092",
+            "http://localhost:8081",
             Arc::new(Publications::new()),
             ReplayControl::disabled(),
         );
@@ -641,6 +846,6 @@ mod tests {
 
         handler.handle_processed_command(&mut cmd);
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        std::thread::sleep(std::time::Duration::from_secs(2));
     }
 }

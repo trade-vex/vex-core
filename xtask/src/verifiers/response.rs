@@ -295,6 +295,7 @@ mod tests {
             balance: [common::UserBalance::default(); 2],
             l2_data: None,
             route_gateway_id: 0,
+            original_size: 0,
         }
     }
 

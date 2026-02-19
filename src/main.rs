@@ -20,8 +20,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok::<_, Box<dyn std::error::Error>>(VexConfig::new(Environment::Test))
     })?;
 
-    // config.core_networking.local_address = "0.0.0.0".to_string();
-    config.core_networking.context_dir = "/tmp/aeron".to_string();
+    config.core_networking.local_address = "0.0.0.0".to_string();
+    config.core_networking.context_dir = "/dev/shm/aeron".to_string();
     config.kafka_broker =
         std::env::var("KAFKA_BROKER").unwrap_or_else(|_| "localhost:9092".to_string());
 

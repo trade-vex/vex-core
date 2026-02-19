@@ -3,7 +3,7 @@ services:
     image: redis:7-alpine
     container_name: vex-redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
     networks:
       - vex-testing-net
     healthcheck:
@@ -74,6 +74,12 @@ services:
       - AERON_RESERVED_SESSION_ID_HIGH=2147483647
       - LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
       - RUST_LOG=debug
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -x test_server && test -f /dev/shm/aeron-test-server/cnc.dat"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
     ipc: shareable # Allows aeronmd and test_server to share memory.
     privileged: true
     shm_size: '512m'
@@ -92,8 +98,8 @@ services:
       media-driver:
         condition: service_completed_successfully
     environment:
-      # Config for the client to find the server.
-      - VEX_SERVER_HOST=vex-server
+      # Config for the client to find the server (use static IP; Aeron C driver can't resolve Docker DNS names)
+      - VEX_SERVER_HOST=172.28.1.10
       - VEX_SERVER_PORT=3521
       - AERON_DIR=/dev/shm/aeron-test-client
       - LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
