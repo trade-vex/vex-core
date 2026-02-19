@@ -3,7 +3,7 @@ services:
     image: redis:7-alpine
     container_name: vex-redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
     networks:
       - vex-testing-net
     healthcheck:

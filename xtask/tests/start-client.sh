@@ -1,9 +1,10 @@
 #!/bin/bash
 # This script starts the Aeron media driver in the background,
-# and then waits indefinitely.
+# waits for it to initialize, and then waits indefinitely.
 
 echo "Starting Aeron Media Driver for Client..."
 /usr/local/bin/aeronmd &
+sleep 2
 
 echo "Client container is ready and waiting for test commands..."
 

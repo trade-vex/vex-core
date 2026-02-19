@@ -72,7 +72,13 @@ impl TestContext {
         info!("  Quote asset: {}", config.quote_asset_id);
         info!("  Redis: {}:{}", config.redis_host, config.redis_port);
 
-        let client = TestClient::new(0, config.default_timeout)?;
+        let client = TestClient::new(
+            0,
+            config.default_timeout,
+            &config.core_address,
+            config.core_port,
+            config.core_control_port,
+        )?;
         let redis = RedisVerifier::new(&config.redis_host, config.redis_port).await?;
 
         Ok(Self {

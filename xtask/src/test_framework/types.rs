@@ -290,6 +290,10 @@ pub struct TestConfig {
     pub quote_asset_id: u16,
     pub default_timeout: Duration,
     pub redis_event_timeout: Duration,
+    /// VEX Core server address (defaults to 127.0.0.1 for local, use Docker IP for integration tests)
+    pub core_address: String,
+    pub core_port: u16,
+    pub core_control_port: u16,
 }
 
 impl Default for TestConfig {
@@ -302,6 +306,9 @@ impl Default for TestConfig {
             quote_asset_id: 1,
             default_timeout: Duration::from_secs(5),
             redis_event_timeout: Duration::from_secs(60), // reset
+            core_address: "127.0.0.1".to_string(),
+            core_port: 3521,
+            core_control_port: 3522,
         }
     }
 }

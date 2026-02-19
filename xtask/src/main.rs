@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use duct::cmd;
 use serde::Deserialize;
-use std::{collections::HashSet, env, fs, path::Path, time::Instant};
+use std::{collections::HashSet, env, fs, path::Path, process::Child, time::Instant};
 use thiserror::Error;
 use tracing::{error, info};
 use tracing_subscriber::FmtSubscriber;
@@ -242,6 +242,59 @@ async fn run_all_e2e_scenarios(project_root: Box<Path>) -> Result<(), XTaskError
     }
 }
 
+/// Docker server IP from the docker-compose vex-testing-net subnet
+const DOCKER_SERVER_IP: &str = "172.28.1.10";
+
+/// Start a host-side Aeron media driver process
+fn start_host_media_driver(root: &Path) -> Result<Child, XTaskError> {
+    let aeronmd_path = root.join("xtask/tests/bin/aeronmd");
+    let lib_path = root.join("xtask/tests/bin/lib");
+
+    if !aeronmd_path.exists() {
+        return Err(XTaskError::Unexpected(format!(
+            "aeronmd binary not found at {:?}. Run 'docker compose up media-driver --build' first.",
+            aeronmd_path
+        )));
+    }
+
+    println!("Starting host-side Aeron media driver...");
+    let child = std::process::Command::new(&aeronmd_path)
+        .env("AERON_DIR", "/dev/shm/aeron-test-client")
+        .env(
+            "LD_LIBRARY_PATH",
+            format!(
+                "{}:{}",
+                lib_path.display(),
+                env::var("LD_LIBRARY_PATH").unwrap_or_default()
+            ),
+        )
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| XTaskError::Unexpected(format!("Failed to start aeronmd: {}", e)))?;
+
+    Ok(child)
+}
+
+/// Wait for the Aeron CnC file to be created by the media driver
+fn wait_for_cnc_file(timeout: std::time::Duration) -> Result<(), XTaskError> {
+    let cnc_path = Path::new("/dev/shm/aeron-test-client/cnc.dat");
+    let start = Instant::now();
+
+    while !cnc_path.exists() {
+        if start.elapsed() > timeout {
+            return Err(XTaskError::Unexpected(
+                "Timed out waiting for Aeron CnC file at /dev/shm/aeron-test-client/cnc.dat"
+                    .to_string(),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    println!("Aeron media driver ready (CnC file created).");
+    Ok(())
+}
+
 /// Run integration tests directly (inlined from run_test_suite binary)
 async fn run_integration_tests(
     root: &Path,
@@ -266,20 +319,36 @@ async fn run_integration_tests(
     info!("Starting VEX-CORE Integration Test Suite");
     info!("========================================");
 
-    // Start docker-compose services
+    // Start host-side Aeron media driver for the test client
+    let mut media_driver = start_host_media_driver(root)?;
+    wait_for_cnc_file(std::time::Duration::from_secs(10))?;
+
+    // Start docker-compose services (redis, redpanda, vex-server)
     println!("Starting infrastructure services...");
-    cmd!("docker", "compose", "up", "-d")
-        .dir(root.join("xtask/tests"))
-        .run()?;
+    cmd!(
+        "docker",
+        "compose",
+        "up",
+        "-d",
+        "redis",
+        "redpanda",
+        "vex-server"
+    )
+    .dir(root.join("xtask/tests"))
+    .run()?;
 
     println!("Waiting for services to stabilize...");
     tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
 
-    // Create test context
-    let mut ctx = match TestContext::new().await {
+    // Create test context with Docker server address
+    let mut config = xtask::test_framework::types::TestConfig::default();
+    config.core_address = DOCKER_SERVER_IP.to_string();
+
+    let mut ctx = match TestContext::with_config(config).await {
         Ok(ctx) => ctx,
         Err(e) => {
             error!("Failed to initialize test context: {}", e);
+            let _ = media_driver.kill();
             cleanup_docker(root);
             return Err(XTaskError::IntegrationTest(format!(
                 "Failed to initialize test context: {}",
@@ -303,6 +372,7 @@ async fn run_integration_tests(
             error!("Test suite failed: {}", e);
             if fail_fast {
                 cleanup_ctx_and_docker(&mut ctx, root).await;
+                let _ = media_driver.kill();
                 return Err(XTaskError::IntegrationTest(e));
             }
         }
@@ -312,6 +382,7 @@ async fn run_integration_tests(
 
     // Cleanup
     cleanup_ctx_and_docker(&mut ctx, root).await;
+    let _ = media_driver.kill();
 
     // Print summary
     info!("");
