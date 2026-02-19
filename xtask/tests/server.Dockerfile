@@ -38,7 +38,7 @@ COPY . .
 RUN cargo build --release --bin test_server --package xtask
 
 # ---- Final Stage ----
-FROM --platform=$BUILDPLATFORM debian:bookworm-slim
+FROM --platform=$BUILDPLATFORM debian:trixie-slim
 # Install runtime dependencies for Aeron C++ libraries and iproute2 for tc (traffic control) in e2e tests
 RUN apt-get update && apt-get install -y \
     libbsd0 \
