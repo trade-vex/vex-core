@@ -129,15 +129,16 @@ balance_preload:
 
 1. Environment-specific config file (based on `VEX_ENV` / `ENVIRONMENT`)
 2. Environment variables with `VEX__` prefix (nested keys use `__`, e.g., `VEX__CORE_NETWORKING__INITIAL_PORT`)
-3. Hardcoded overrides in `main.rs` (e.g., `context_dir`, `local_address`)
+3. Optional runtime environment overrides in `main.rs` (e.g., `AERON_DIR`, `CORE_LOCAL_ADDRESS`, `KAFKA_BROKER`, `ENABLE_CORE_PINNING`)
 
-### Note on main.rs Overrides
+### Note on main.rs Runtime Overrides
 
-The `main` function overrides these values at runtime:
+The `main` function applies these overrides only when env vars are set:
 
-- `core_networking.local_address` → `0.0.0.0`
-- `core_networking.context_dir` → `/dev/shm/aeron`
-- `kafka_broker` → `$KAFKA_BROKER` or `localhost:9092`
+- `core_networking.local_address` → `$CORE_LOCAL_ADDRESS`
+- `core_networking.context_dir` → `$AERON_DIR`
+- `kafka_broker` → `$KAFKA_BROKER`
+- `core_networking.enable_core_pinning` → `$ENABLE_CORE_PINNING`
 
 Ensure the **Aeron Media Driver uses the same `context_dir`** as vex-core (or the directory vex-core is configured to use).
 
@@ -476,4 +477,3 @@ VEX Core is a **low-latency matching engine** with no HTTP API. It communicates 
 | `networking/src/server/` | Aeron server, gateway handshake, publications |
 | `vex-config/` | Configuration loading and validation |
 | `config.dev.yaml` | Example development config |
-

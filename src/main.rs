@@ -20,10 +20,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok::<_, Box<dyn std::error::Error>>(VexConfig::new(Environment::Test))
     })?;
 
-    config.core_networking.local_address = "0.0.0.0".to_string();
-    config.core_networking.context_dir = "/dev/shm/aeron".to_string();
-    config.kafka_broker =
-        std::env::var("KAFKA_BROKER").unwrap_or_else(|_| "localhost:9092".to_string());
+    if let Ok(local_address) = std::env::var("CORE_LOCAL_ADDRESS") {
+        config.core_networking.local_address = local_address;
+    }
+    if let Ok(aeron_dir) = std::env::var("AERON_DIR") {
+        config.core_networking.context_dir = aeron_dir;
+    }
+    if let Ok(kafka_broker) = std::env::var("KAFKA_BROKER") {
+        config.kafka_broker = kafka_broker;
+    }
 
     if let Ok(pinning_str) = std::env::var("ENABLE_CORE_PINNING") {
         if let Ok(pinning_value) = pinning_str.parse::<bool>() {
