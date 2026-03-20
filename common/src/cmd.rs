@@ -1,4 +1,7 @@
-use crate::{L2MarketData, OrderCommandType, Side, TimeInForce, UserBalance};
+use crate::{
+    CoreMarketSpecification, L2MarketData, MarketType, OrderCommandType, Side, TimeInForce,
+    UserBalance,
+};
 use borsh::{BorshDeserialize, BorshSerialize};
 use sbe_order::message_header_codec::{self, MessageHeaderDecoder};
 use sbe_order::order_command_message_codec::{
@@ -26,6 +29,9 @@ pub const ORDERCOMMANDSIZE: usize = 64;
 /// This is the size of each frame sent or received via Aeron.
 /// It is a nearest multiple of 32 bytes that can hold an OrderCommand.
 pub const FRAMESIZE: i64 = 96;
+
+const PACKED_U32_MASK: u64 = 0xFFFF_FFFF;
+const PACKED_U16_MASK: u64 = 0xFFFF;
 
 /// OrderCommand: OrderCommand Plays the central role throughout the processing of the Order.
 /// It is created in the Gateway, and processed in VexCore in different processors through the Disruptor
@@ -216,6 +222,68 @@ impl OrderCommand {
         }
     }
 
+    /// Creates an internal control command that dynamically registers a market.
+    ///
+    /// The market specification is packed into existing command fields to preserve
+    /// the wire format. This intentionally limits the scale fields to `u32::MAX`
+    /// and maker/taker fees to `u16::MAX`.
+    pub fn add_market(
+        requested_by: u64,
+        spec: &CoreMarketSpecification,
+    ) -> Result<Self, &'static str> {
+        Ok(Self {
+            command: OrderCommandType::AddMarket,
+            client_order_id: pack_fee_config(spec.maker_fee, spec.taker_fee, spec.slippage)?,
+            order_id: 0,
+            user_id: requested_by,
+            market_id: spec.market_id,
+            price: pack_u32_pair(
+                spec.base_scale_k,
+                spec.quote_scale_k,
+                "base_scale_k",
+                "quote_scale_k",
+            )?,
+            size: pack_u32_pair(
+                spec.base_native_scale,
+                spec.quote_native_scale,
+                "base_native_scale",
+                "quote_native_scale",
+            )?,
+            side: Side::Ask,
+            time_in_force: encode_market_type(spec.market_type),
+            timestamp: 0,
+            status: Status::Processing,
+            events: None,
+            balance: [UserBalance::default(); 2],
+            l2_data: None,
+            route_gateway_id: 0,
+            original_size: 0,
+        })
+    }
+
+    /// Decodes the market specification carried by an `AddMarket` command.
+    pub fn decode_add_market_spec(&self) -> Result<CoreMarketSpecification, &'static str> {
+        if self.command != OrderCommandType::AddMarket {
+            return Err("command is not AddMarket");
+        }
+
+        let (base_scale_k, quote_scale_k) = unpack_u32_pair(self.price);
+        let (base_native_scale, quote_native_scale) = unpack_u32_pair(self.size);
+        let (maker_fee, taker_fee, slippage) = unpack_fee_config(self.client_order_id);
+
+        CoreMarketSpecification::builder()
+            .market_id(self.market_id)
+            .market_type(decode_market_type(self.time_in_force))
+            .base_scale_k(base_scale_k)
+            .quote_scale_k(quote_scale_k)
+            .base_native_scale(base_native_scale)
+            .quote_native_scale(quote_native_scale)
+            .taker_fee(taker_fee)
+            .maker_fee(maker_fee)
+            .slippage(slippage)
+            .build()
+    }
+
     pub fn status(&self) -> Status {
         self.status
     }
@@ -285,6 +353,57 @@ impl OrderCommand {
 
     pub fn set_status(&mut self, status: Status) {
         self.status = status;
+    }
+}
+
+fn pack_u32_pair(high: u64, low: u64, high_name: &'static str, low_name: &'static str) -> Result<u64, &'static str> {
+    if high > u32::MAX as u64 {
+        return Err(high_name);
+    }
+    if low > u32::MAX as u64 {
+        return Err(low_name);
+    }
+
+    Ok((high << 32) | low)
+}
+
+fn unpack_u32_pair(packed: u64) -> (u64, u64) {
+    ((packed >> 32) & PACKED_U32_MASK, packed & PACKED_U32_MASK)
+}
+
+fn pack_fee_config(maker_fee: u64, taker_fee: u64, slippage: u32) -> Result<u64, &'static str> {
+    if maker_fee > u16::MAX as u64 {
+        return Err("maker_fee");
+    }
+    if taker_fee > u16::MAX as u64 {
+        return Err("taker_fee");
+    }
+
+    Ok(((taker_fee & PACKED_U16_MASK) << 48)
+        | ((maker_fee & PACKED_U16_MASK) << 32)
+        | slippage as u64)
+}
+
+fn unpack_fee_config(packed: u64) -> (u64, u64, u32) {
+    let taker_fee = (packed >> 48) & PACKED_U16_MASK;
+    let maker_fee = (packed >> 32) & PACKED_U16_MASK;
+    let slippage = (packed & PACKED_U32_MASK) as u32;
+    (maker_fee, taker_fee, slippage)
+}
+
+fn encode_market_type(market_type: MarketType) -> TimeInForce {
+    match market_type {
+        MarketType::Spot => TimeInForce::Gtc,
+        MarketType::FuturesContract => TimeInForce::Ioc,
+        MarketType::Option => TimeInForce::Fok,
+    }
+}
+
+fn decode_market_type(time_in_force: TimeInForce) -> MarketType {
+    match time_in_force {
+        TimeInForce::Gtc => MarketType::Spot,
+        TimeInForce::Ioc => MarketType::FuturesContract,
+        TimeInForce::Fok => MarketType::Option,
     }
 }
 

@@ -12,13 +12,15 @@ use common::UserBalance;
 use common::{base_asset, order_debug, order_warn, quote_asset};
 use hashbrown::HashMap;
 use parking_lot::Mutex;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tracing::{debug, error, info, warn};
+
+pub type SharedSymbolSpecs = Arc<RwLock<HashMap<u32, CoreMarketSpecification>>>;
 
 /// Manages all user profiles and performs risk checks as well as settlements
 pub struct RiskEngine {
     balances: Arc<Mutex<BalanceStore>>,
-    pub symbol_specs: HashMap<u32, CoreMarketSpecification>,
+    pub symbol_specs: SharedSymbolSpecs,
     shard_id: u32,
     shard_mask: u64,
 }
@@ -26,6 +28,14 @@ pub struct RiskEngine {
 impl RiskEngine {
     pub fn new(
         symbol_specs: HashMap<u32, CoreMarketSpecification>,
+        shard_id: u32,
+        num_shards: u32,
+    ) -> Self {
+        Self::with_shared_symbol_specs(Arc::new(RwLock::new(symbol_specs)), shard_id, num_shards)
+    }
+
+    pub fn with_shared_symbol_specs(
+        symbol_specs: SharedSymbolSpecs,
         shard_id: u32,
         num_shards: u32,
     ) -> Self {
@@ -40,6 +50,22 @@ impl RiskEngine {
         }
     }
 
+    fn get_market_spec(&self, market_id: u32) -> Option<CoreMarketSpecification> {
+        self.symbol_specs.read().unwrap().get(&market_id).cloned()
+    }
+
+    fn add_market_spec(&self, spec: CoreMarketSpecification) -> Result<()> {
+        let mut symbol_specs = self.symbol_specs.write().unwrap();
+        if symbol_specs.contains_key(&spec.market_id) {
+            return Err(RiskEngineError::InvalidArguments {
+                price: spec.market_id as u64,
+                size: spec.base_scale_k,
+            });
+        }
+        symbol_specs.insert(spec.market_id, spec);
+        Ok(())
+    }
+
     /// Checks if a user ID is handled by this risk engine instance.
     #[inline]
     fn user_id_for_this_handler(&self, user_id: u64) -> bool {
@@ -48,6 +74,46 @@ impl RiskEngine {
 
     /// Pre-processes a command to validate it and hold funds
     pub fn pre_process_command(&self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) {
+        if cmd.command == OrderCommandType::AddMarket {
+            if self.shard_id != 0 {
+                return;
+            }
+
+            match cmd.decode_add_market_spec() {
+                Ok(spec) => {
+                    if let Err(err) = self.add_market_spec(spec) {
+                        order_warn!(
+                            "risk_add_market_failed",
+                            cmd,
+                            stage = "risk_r1",
+                            shard_id = self.shard_id,
+                            error = ?err
+                        );
+                        cmd.set_status(Status::Rejected);
+                    } else {
+                        price_cache.add_market(cmd.market_id);
+                        order_debug!(
+                            "risk_add_market_registered",
+                            cmd,
+                            stage = "risk_r1",
+                            shard_id = self.shard_id
+                        );
+                    }
+                }
+                Err(err) => {
+                    order_warn!(
+                        "risk_add_market_invalid",
+                        cmd,
+                        stage = "risk_r1",
+                        shard_id = self.shard_id,
+                        error = %err
+                    );
+                    cmd.set_status(Status::Rejected);
+                }
+            }
+            return;
+        }
+
         // Process only if the command is for a user managed by this shard
         if !self.user_id_for_this_handler(cmd.user_id) {
             return; // Not for this shard, skip
@@ -62,7 +128,7 @@ impl RiskEngine {
         );
         match cmd.command {
             OrderCommandType::PlaceOrder => {
-                if self.symbol_specs.get(&cmd.market_id).is_none() {
+                if self.get_market_spec(cmd.market_id).is_none() {
                     order_warn!(
                         "risk_missing_market_spec",
                         cmd,
@@ -164,7 +230,7 @@ impl RiskEngine {
         );
 
         // Get market specification for fee calculations
-        let spec = match self.symbol_specs.get(&market_id) {
+        let spec = match self.get_market_spec(market_id) {
             Some(spec) => spec,
             None => {
                 warn!(
@@ -177,7 +243,8 @@ impl RiskEngine {
             }
         };
 
-        if let Err(err) = self.settle_trade(user_id, market_id, user_side, event, spec, taker_cmd) {
+        if let Err(err) = self.settle_trade(user_id, market_id, user_side, event, &spec, taker_cmd)
+        {
             error!(
                 target: "risk_engine",
                 event = "settlement_failed",
@@ -325,12 +392,11 @@ impl RiskEngine {
     #[inline]
     fn bid_amount(&self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) -> Result<u64> {
         // Get spec early
-        let spec =
-            self.symbol_specs
-                .get(&cmd.market_id)
-                .ok_or(RiskEngineError::MarketSpecNotFound {
-                    market_id: cmd.market_id,
-                })?;
+        let spec = self
+            .get_market_spec(cmd.market_id)
+            .ok_or(RiskEngineError::MarketSpecNotFound {
+                market_id: cmd.market_id,
+            })?;
 
         if cmd.price == u64::MAX {
             // Market buy order
@@ -374,8 +440,7 @@ impl RiskEngine {
         size: u64,
     ) -> Result<()> {
         let spec = self
-            .symbol_specs
-            .get(&market_id)
+            .get_market_spec(market_id)
             .ok_or(RiskEngineError::MarketSpecNotFound { market_id })?;
 
         let (asset_to_unlock, amount_to_unlock) = match side {
@@ -493,7 +558,7 @@ mod tests {
         assert!(engine_shard1.user_id_for_this_handler(1));
         assert!(engine_shard1.user_id_for_this_handler(5));
         assert!(!engine_shard1.user_id_for_this_handler(0));
-        let symbol_spec = HashMap::new();
+        let symbol_spec: HashMap<u32, CoreMarketSpecification> = HashMap::new();
         let price_cache = Arc::new(PriceCache::new(symbol_spec.keys()));
         let mut cmd = OrderCommand::place_order(TimeInForce::Gtc, 1, 100, 10, Side::Bid, 1, 1);
 

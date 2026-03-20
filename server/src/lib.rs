@@ -180,6 +180,7 @@ pub mod test {
     use common::{OrderCommand, Status};
     use engine::{RiskEngines, test::TestEngineBuilder};
     use std::sync::mpsc;
+    use std::sync::RwLock;
 
     /// Test engine instance with access to internals for testing
     pub struct TestEngine {
@@ -239,9 +240,16 @@ pub mod test {
 
         // Create risk engines manually for test access
         use processors::risk_engine::RiskEngine;
+        let shared_symbol_specs = Arc::new(RwLock::new(specs.clone()));
         let risk_engines = Arc::new(
             (0..4)
-                .map(|shard_id| RiskEngine::new(specs.clone(), shard_id as u32, 4))
+                .map(|shard_id| {
+                    RiskEngine::with_shared_symbol_specs(
+                        Arc::clone(&shared_symbol_specs),
+                        shard_id as u32,
+                        4,
+                    )
+                })
                 .collect::<Vec<_>>(),
         );
 
@@ -282,9 +290,13 @@ pub mod test {
 
 #[cfg(test)]
 mod tests {
+    use super::test::setup;
     use super::test::setup_tuple;
     use super::*;
-    use common::{MarketType, OrderCommand, PriceCache, Side, Status, TimeInForce, UserBalance};
+    use common::{
+        MarketType, OrderCommand, OrderCommandType, PriceCache, Side, Status, TimeInForce,
+        UserBalance,
+    };
     use disruptor::Producer;
     use processors::risk_engine::RiskEngine;
     use std::time::Duration;
@@ -351,6 +363,75 @@ mod tests {
                 UserBalance::new(available, locked),
             );
         }
+    }
+
+    #[test]
+    fn test_add_market_dynamically_enables_new_orders() {
+        let specs = HashMap::new();
+        let test_env = setup(specs);
+
+        let base_asset_id = 1;
+        let quote_asset_id = 2;
+        let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
+        let spec = CoreMarketSpecification::builder()
+            .market_id(market_id)
+            .market_type(MarketType::Spot)
+            .base_scale_k(1)
+            .quote_scale_k(1)
+            .base_native_scale(100_000_000)
+            .quote_native_scale(1_000_000)
+            .maker_fee(10)
+            .taker_fee(20)
+            .slippage(5)
+            .build()
+            .unwrap();
+
+        let mut producer = test_env.producer;
+        let risk_engines = test_env.risk_engines;
+        let rx = test_env.receiver;
+
+        producer.publish(|cmd| {
+            *cmd = OrderCommand::add_market(9001, &spec).expect("valid AddMarket payload");
+        });
+
+        let add_market_response = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Did not receive AddMarket response");
+        assert_eq!(add_market_response.command, OrderCommandType::AddMarket);
+        assert_eq!(add_market_response.status, Status::Processed);
+        assert_eq!(
+            add_market_response
+                .decode_add_market_spec()
+                .expect("spec should decode from response"),
+            spec
+        );
+
+        let user_id = 42;
+        let shard_mask = risk_engines.len() as u64 - 1;
+        let shard_id = (user_id & shard_mask) as usize;
+        risk_engines[shard_id].set_balance(
+            user_id,
+            base_asset_id,
+            UserBalance::new(1_000_000, 0),
+        );
+
+        producer.publish(|cmd| {
+            *cmd = OrderCommand::place_order(
+                TimeInForce::Gtc,
+                user_id,
+                10_000,
+                100,
+                Side::Ask,
+                market_id,
+                1,
+            );
+        });
+
+        let placed_order_response = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Did not receive placed order response");
+        assert_eq!(placed_order_response.market_id, market_id);
+        assert_eq!(placed_order_response.status, Status::Placed);
     }
 
     #[test]

@@ -14,8 +14,8 @@ pub use cmd::{
 };
 pub use core_arithmetic::CoreArithmetic;
 pub use events::{
-    BalanceEvent, CancelOrderEvent, DepositEvent, OrderEvent, OrderbookEvent, OrderbookLevel,
-    TradeEvent, WithdrawEvent,
+    BalanceEvent, CancelOrderEvent, DepositEvent, MarketCreatedEvent, OrderEvent, OrderbookEvent,
+    OrderbookLevel, TradeEvent, WithdrawEvent,
 };
 pub use l2_market_data::L2MarketData;
 pub use market_specification::{
@@ -98,6 +98,9 @@ pub enum OrderCommandType {
     DepositFunds,
     /// Withdraw funds from a user's account. Only `user_id` and `amount`, `market` are relevant, where market id is used as asset id.
     WithdrawFunds,
+    /// Dynamically adds a new market while the core is running.
+    /// The market specification is packed into the command payload by `OrderCommand::add_market`.
+    AddMarket,
 }
 
 impl TryFrom<SbeOrderCommandType> for OrderCommandType {
@@ -109,6 +112,7 @@ impl TryFrom<SbeOrderCommandType> for OrderCommandType {
             SbeOrderCommandType::CancelOrder => Ok(OrderCommandType::CancelOrder),
             SbeOrderCommandType::DepositFunds => Ok(OrderCommandType::DepositFunds),
             SbeOrderCommandType::WithdrawFunds => Ok(OrderCommandType::WithdrawFunds),
+            SbeOrderCommandType::AddMarket => Ok(OrderCommandType::AddMarket),
             SbeOrderCommandType::NullVal => Err(SerdeError::custom("NullVal")), // Maybe handle NullVal specially
         }
     }
@@ -121,6 +125,7 @@ impl From<OrderCommandType> for SbeOrderCommandType {
             OrderCommandType::CancelOrder => SbeOrderCommandType::CancelOrder,
             OrderCommandType::DepositFunds => SbeOrderCommandType::DepositFunds,
             OrderCommandType::WithdrawFunds => SbeOrderCommandType::WithdrawFunds,
+            OrderCommandType::AddMarket => SbeOrderCommandType::AddMarket,
         }
     }
 }

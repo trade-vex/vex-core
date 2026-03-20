@@ -1,10 +1,13 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc, RwLock,
+    atomic::{AtomicU64, Ordering},
+};
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use hashbrown::{HashMap, hash_map::Keys};
+use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::{CoreMarketSpecification, Side, Status, TimeInForce};
+use crate::{Side, Status, TimeInForce};
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
@@ -62,22 +65,35 @@ impl Default for MarketPrice {
 
 // The cache shared across vex-core
 pub struct PriceCache {
-    prices: HashMap<u32, MarketPrice>,
+    prices: RwLock<HashMap<u32, Arc<MarketPrice>>>,
 }
 
 impl PriceCache {
-    pub fn new(symbol_spec: Keys<u32, CoreMarketSpecification>) -> Self {
+    pub fn new<'a>(symbol_spec: impl IntoIterator<Item = &'a u32>) -> Self {
         let mut prices = HashMap::new();
         for symbol in symbol_spec {
-            prices.insert(*symbol, MarketPrice::default());
+            prices.insert(*symbol, Arc::new(MarketPrice::default()));
         }
-        Self { prices }
+        Self {
+            prices: RwLock::new(prices),
+        }
+    }
+
+    pub fn add_market(&self, symbol: u32) {
+        let mut prices = self.prices.write().unwrap();
+        prices
+            .entry(symbol)
+            .or_insert_with(|| Arc::new(MarketPrice::default()));
+    }
+
+    fn get_market_price(&self, symbol: u32) -> Option<Arc<MarketPrice>> {
+        self.prices.read().unwrap().get(&symbol).cloned()
     }
 
     /// Get the best bid price for a symbol
     /// Retruns u64::MAX if no bid price is available
     pub fn get_best_bid(&self, symbol: u32) -> u64 {
-        match self.prices.get(&symbol) {
+        match self.get_market_price(symbol) {
             Some(market_price) => market_price.best_bid.load(Ordering::Acquire),
             None => u64::MAX,
         }
@@ -86,7 +102,7 @@ impl PriceCache {
     /// Get the best ask price for a symbol    
     /// Returns 0 if no ask price is available
     pub fn get_best_ask(&self, symbol: u32) -> u64 {
-        match self.prices.get(&symbol) {
+        match self.get_market_price(symbol) {
             Some(market_price) => market_price.best_ask.load(Ordering::Acquire),
             None => 0,
         }
@@ -95,7 +111,10 @@ impl PriceCache {
     /// Update the best bid price for a symbol
     /// If the symbol does not exist, it will be created
     pub fn update_prices(&self, symbol: u32, best_bid: u64, best_ask: u64) {
-        let market_price = self.prices.get(&symbol).unwrap();
+        self.add_market(symbol);
+        let market_price = self
+            .get_market_price(symbol)
+            .expect("market entry must exist after add_market");
         market_price.best_bid.store(best_bid, Ordering::Release);
         market_price.best_ask.store(best_ask, Ordering::Release);
     }

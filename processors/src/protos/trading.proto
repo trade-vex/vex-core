@@ -29,6 +29,13 @@ enum Status {
   STATUS_PROCESSED = 7;
 }
 
+enum MarketType {
+  MARKET_TYPE_UNSPECIFIED = 0;
+  MARKET_TYPE_FUTURES_CONTRACT = 1;
+  MARKET_TYPE_SPOT = 2;
+  MARKET_TYPE_OPTION = 3;
+}
+
 // Common Order Structure
 message Order {
   uint64 order_id = 1;
@@ -103,3 +110,18 @@ message WithdrawEvent {
   uint64 timestamp = 4;
 }
 
+message MarketCreatedEvent {
+  uint32 market_id = 1;
+  uint64 requested_by = 2;
+  MarketType market_type = 3;
+  uint32 base_asset = 4;
+  uint32 quote_asset = 5;
+  uint64 base_scale_k = 6;
+  uint64 quote_scale_k = 7;
+  uint64 base_native_scale = 8;
+  uint64 quote_native_scale = 9;
+  uint64 taker_fee = 10;
+  uint64 maker_fee = 11;
+  uint32 slippage = 12;
+  uint64 timestamp = 13;
+}

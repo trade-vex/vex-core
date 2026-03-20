@@ -16,6 +16,7 @@ use processors::{
 use std::{
     sync::Arc,
     sync::atomic::AtomicBool,
+    sync::RwLock,
     thread::{self, JoinHandle},
 };
 use tracing::info;
@@ -216,9 +217,14 @@ impl CoreEngine {
         symbol_specs: &HashMap<u32, CoreMarketSpecification>,
         num_shards: usize,
     ) -> RiskEngines {
+        let shared_symbol_specs = Arc::new(RwLock::new(symbol_specs.clone()));
         let risk_engines: Vec<_> = (0..num_shards)
             .map(|shard_id| {
-                RiskEngine::new(symbol_specs.clone(), shard_id as u32, num_shards as u32)
+                RiskEngine::with_shared_symbol_specs(
+                    Arc::clone(&shared_symbol_specs),
+                    shard_id as u32,
+                    num_shards as u32,
+                )
             })
             .collect();
 

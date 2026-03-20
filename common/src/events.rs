@@ -1,4 +1,4 @@
-use super::{Order, Side};
+use super::{MarketType, Order, Side};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -65,5 +65,22 @@ pub struct WithdrawEvent {
     pub user_id: u64,
     pub asset_id: u16,
     pub amount: u64,
+    pub timestamp: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct MarketCreatedEvent {
+    pub market_id: u32,
+    pub requested_by: u64,
+    pub market_type: MarketType,
+    pub base_asset: u16,
+    pub quote_asset: u16,
+    pub base_scale_k: u64,
+    pub quote_scale_k: u64,
+    pub base_native_scale: u64,
+    pub quote_native_scale: u64,
+    pub taker_fee: u64,
+    pub maker_fee: u64,
+    pub slippage: u32,
     pub timestamp: u64,
 }

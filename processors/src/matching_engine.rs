@@ -64,27 +64,50 @@ impl MatchingEngineRouter {
     /// Main entry point for processing orders
     pub fn process_order(&mut self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) {
         if self.market_for_this_handler(cmd.market_id as u64) {
-            if let Some(order_book) = self.order_books.get_mut(&cmd.market_id) {
-                order_debug!(
-                    "matching_dispatch",
-                    cmd,
-                    stage = "matching",
-                    shard_id = self.shard_id
-                );
+            order_debug!(
+                "matching_dispatch",
+                cmd,
+                stage = "matching",
+                shard_id = self.shard_id
+            );
 
-                match cmd.command {
-                    OrderCommandType::PlaceOrder => order_book.place_order(cmd, price_cache),
-                    OrderCommandType::CancelOrder => order_book.cancel_order(cmd, price_cache),
-                    _ => {} // this should be unreachable as non-op commands are filtered out in routing macro.
+            match cmd.command {
+                OrderCommandType::AddMarket => {
+                    if self.order_books.contains_key(&cmd.market_id) {
+                        order_warn!(
+                            "matching_market_exists",
+                            cmd,
+                            stage = "matching",
+                            shard_id = self.shard_id
+                        );
+                        cmd.set_status(Status::Rejected);
+                        return;
+                    }
+
+                    self.add_market(cmd.market_id);
+                    price_cache.add_market(cmd.market_id);
+                    cmd.set_status(Status::Processed);
                 }
-            } else {
-                order_warn!(
-                    "matching_missing_orderbook",
-                    cmd,
-                    stage = "matching",
-                    shard_id = self.shard_id
-                );
-                cmd.set_status(Status::Rejected);
+                OrderCommandType::PlaceOrder | OrderCommandType::CancelOrder => {
+                    if let Some(order_book) = self.order_books.get_mut(&cmd.market_id) {
+                        match cmd.command {
+                            OrderCommandType::PlaceOrder => order_book.place_order(cmd, price_cache),
+                            OrderCommandType::CancelOrder => {
+                                order_book.cancel_order(cmd, price_cache)
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        order_warn!(
+                            "matching_missing_orderbook",
+                            cmd,
+                            stage = "matching",
+                            shard_id = self.shard_id
+                        );
+                        cmd.set_status(Status::Rejected);
+                    }
+                }
+                _ => {}
             }
         }
     }

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::journaling::ReplayControl;
 use common::L2MarketData;
+use common::MarketType;
 use common::MatcherTradeEvent;
 use common::OrderCommand;
 use common::OrderCommandType;
@@ -511,6 +512,59 @@ impl KafkaEventsHandler {
         );
     }
 
+    fn publish_market_created_event(&self, cmd: &OrderCommand) {
+        let spec = match cmd.decode_add_market_spec() {
+            Ok(spec) => spec,
+            Err(err) => {
+                error!(
+                    target: "events",
+                    component = "kafka_handler",
+                    action = "market_event_decode_failed",
+                    market_id = cmd.market_id(),
+                    error = %err
+                );
+                return;
+            }
+        };
+
+        let market_type = match spec.market_type {
+            MarketType::FuturesContract => trading_proto::MarketType::FuturesContract,
+            MarketType::Spot => trading_proto::MarketType::Spot,
+            MarketType::Option => trading_proto::MarketType::Option,
+        };
+
+        let market_event = trading_proto::MarketCreatedEvent {
+            market_id: spec.market_id,
+            requested_by: cmd.user_id(),
+            market_type: market_type as i32,
+            base_asset: spec.base_asset as u32,
+            quote_asset: spec.quote_asset as u32,
+            base_scale_k: spec.base_scale_k,
+            quote_scale_k: spec.quote_scale_k,
+            base_native_scale: spec.base_native_scale,
+            quote_native_scale: spec.quote_native_scale,
+            taker_fee: spec.taker_fee,
+            maker_fee: spec.maker_fee,
+            slippage: spec.slippage,
+            timestamp: cmd.timestamp(),
+        };
+
+        let topic_name = "markets";
+        self.publish_proto(
+            topic_name,
+            &spec.market_id.to_string(),
+            "trading.MarketCreatedEvent",
+            market_event,
+        );
+        debug!(
+            target: "events",
+            component = "kafka_handler",
+            action = "market_created_event_published",
+            market_id = spec.market_id,
+            topic = %topic_name
+        );
+    }
+
     fn publish_response(&self, cmd: &OrderCommand) {
         self.publications.publish_response(cmd);
     }
@@ -537,6 +591,19 @@ impl EventsHandler for KafkaEventsHandler {
 
         // Handle deposit and withdraw commands separately
         match cmd.command {
+            OrderCommandType::AddMarket => {
+                if cmd.status() == Status::Processed {
+                    order_debug!(
+                        "events_publish_market_created",
+                        cmd,
+                        stage = "events",
+                        handler = "kafka"
+                    );
+                    self.publish_market_created_event(cmd);
+                }
+                self.publish_response(cmd);
+                return;
+            }
             OrderCommandType::DepositFunds => {
                 if cmd.status() == Status::Processed {
                     order_debug!(
