@@ -84,6 +84,27 @@ impl RiskEngine {
         let mut asset_specs = self.asset_specs.write().unwrap();
         match asset_specs.get(&spec.asset_id) {
             Some(existing) if existing == &spec => Ok(()),
+            Some(existing)
+                if existing.native_scale == spec.native_scale
+                    && (existing.asset_name.is_empty()
+                        || spec.asset_name.is_empty()
+                        || existing.asset_name == spec.asset_name) =>
+            {
+                let merged_name = if existing.asset_name.is_empty() {
+                    spec.asset_name.clone()
+                } else {
+                    existing.asset_name.clone()
+                };
+                asset_specs.insert(
+                    spec.asset_id,
+                    AssetSpecification {
+                        asset_id: spec.asset_id,
+                        asset_name: merged_name,
+                        native_scale: spec.native_scale,
+                    },
+                );
+                Ok(())
+            }
             Some(existing) => Err(RiskEngineError::UnsupportedCommand {
                 command: format!(
                     "asset_id {} already exists with different spec: existing={:?}",

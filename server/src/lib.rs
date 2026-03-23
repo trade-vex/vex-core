@@ -241,7 +241,9 @@ pub mod test {
         // Create risk engines manually for test access
         use processors::risk_engine::RiskEngine;
         let shared_symbol_specs = Arc::new(RwLock::new(specs.clone()));
-        let shared_asset_specs = Arc::new(RwLock::new(HashMap::new()));
+        let shared_asset_specs = Arc::new(RwLock::new(
+            crate::engine::bootstrap_asset_specs_from_symbols(&specs),
+        ));
         let risk_engines = Arc::new(
             (0..4)
                 .map(|shard_id| {

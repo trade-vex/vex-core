@@ -1,7 +1,7 @@
 use crate::{create_risk_handler, create_risk_r2_handler};
 use common::{
-    CoreMarketSpecification, OrderCommand, OrderCommandType, PriceCache, Status, TimeInForce,
-    base_asset, quote_asset,
+    AssetSpecification, CoreMarketSpecification, OrderCommand, OrderCommandType, PriceCache,
+    Status, TimeInForce, base_asset, quote_asset,
 };
 use disruptor::{
     BusySpin, MultiProducer, ProcessorSettings, SingleConsumerBarrier, build_multi_producer,
@@ -97,6 +97,41 @@ impl Default for CorePinning {
             events: 14,
         }
     }
+}
+
+pub(crate) fn bootstrap_asset_specs_from_symbols(
+    symbol_specs: &HashMap<u32, CoreMarketSpecification>,
+) -> HashMap<u16, AssetSpecification> {
+    let mut asset_specs: HashMap<u16, AssetSpecification> = HashMap::new();
+
+    for spec in symbol_specs.values() {
+        for (asset_id, native_scale) in [
+            (spec.base_asset, spec.base_native_scale),
+            (spec.quote_asset, spec.quote_native_scale),
+        ] {
+            match asset_specs.get(&asset_id) {
+                Some(existing) if existing.native_scale == native_scale => {}
+                Some(existing) => {
+                    panic!(
+                        "Conflicting native_scale for asset_id {} while bootstrapping assets: existing={}, new={}",
+                        asset_id, existing.native_scale, native_scale
+                    );
+                }
+                None => {
+                    asset_specs.insert(
+                        asset_id,
+                        AssetSpecification {
+                            asset_id,
+                            asset_name: String::new(),
+                            native_scale,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    asset_specs
 }
 
 /// High-performance exchange core engine
@@ -219,7 +254,13 @@ impl CoreEngine {
         num_shards: usize,
     ) -> RiskEngines {
         let shared_symbol_specs = Arc::new(RwLock::new(symbol_specs.clone()));
-        let shared_asset_specs = Arc::new(RwLock::new(HashMap::new()));
+        let bootstrapped_asset_specs = bootstrap_asset_specs_from_symbols(symbol_specs);
+        info!(
+            asset_count = bootstrapped_asset_specs.len(),
+            market_count = symbol_specs.len(),
+            "Bootstrapped runtime asset registry from configured symbols"
+        );
+        let shared_asset_specs = Arc::new(RwLock::new(bootstrapped_asset_specs));
         let risk_engines: Vec<_> = (0..num_shards)
             .map(|shard_id| {
                 RiskEngine::with_shared_state(
