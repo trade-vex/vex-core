@@ -5,7 +5,8 @@ pub enum OrderCommandType {
     CancelOrder = 0x1_u8,
     DepositFunds = 0x2_u8,
     WithdrawFunds = 0x3_u8,
-    AddMarket = 0x4_u8,
+    AddAsset = 0x4_u8,
+    AddMarket = 0x5_u8,
     #[default]
     NullVal = 0xff_u8,
 }
@@ -17,7 +18,8 @@ impl From<u8> for OrderCommandType {
             0x1_u8 => Self::CancelOrder,
             0x2_u8 => Self::DepositFunds,
             0x3_u8 => Self::WithdrawFunds,
-            0x4_u8 => Self::AddMarket,
+            0x4_u8 => Self::AddAsset,
+            0x5_u8 => Self::AddMarket,
             _ => Self::NullVal,
         }
     }
@@ -30,7 +32,8 @@ impl From<OrderCommandType> for u8 {
             OrderCommandType::CancelOrder => 0x1_u8,
             OrderCommandType::DepositFunds => 0x2_u8,
             OrderCommandType::WithdrawFunds => 0x3_u8,
-            OrderCommandType::AddMarket => 0x4_u8,
+            OrderCommandType::AddAsset => 0x4_u8,
+            OrderCommandType::AddMarket => 0x5_u8,
             OrderCommandType::NullVal => 0xff_u8,
         }
     }
@@ -45,6 +48,7 @@ impl core::str::FromStr for OrderCommandType {
             "CancelOrder" => Ok(Self::CancelOrder),
             "DepositFunds" => Ok(Self::DepositFunds),
             "WithdrawFunds" => Ok(Self::WithdrawFunds),
+            "AddAsset" => Ok(Self::AddAsset),
             "AddMarket" => Ok(Self::AddMarket),
             _ => Ok(Self::NullVal),
         }
@@ -58,6 +62,7 @@ impl core::fmt::Display for OrderCommandType {
             Self::CancelOrder => write!(f, "CancelOrder"),
             Self::DepositFunds => write!(f, "DepositFunds"),
             Self::WithdrawFunds => write!(f, "WithdrawFunds"),
+            Self::AddAsset => write!(f, "AddAsset"),
             Self::AddMarket => write!(f, "AddMarket"),
             Self::NullVal => write!(f, "NullVal"),
         }

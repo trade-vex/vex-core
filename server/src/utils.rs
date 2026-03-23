@@ -177,6 +177,7 @@ macro_rules! create_matching_handler {
             // Non-op commands for order book processing
             if cmd.command == OrderCommandType::DepositFunds
                 || cmd.command == OrderCommandType::WithdrawFunds
+                || cmd.command == OrderCommandType::AddAsset
                 || cmd.status == Status::Rejected
             {
                 return;

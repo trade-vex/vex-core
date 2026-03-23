@@ -565,6 +565,45 @@ impl KafkaEventsHandler {
         );
     }
 
+    fn publish_asset_created_event(&self, cmd: &OrderCommand) {
+        let spec = match cmd.decode_add_asset_spec() {
+            Ok(spec) => spec,
+            Err(err) => {
+                error!(
+                    target: "events",
+                    component = "kafka_handler",
+                    action = "asset_event_decode_failed",
+                    asset_id = cmd.market_id(),
+                    error = %err
+                );
+                return;
+            }
+        };
+
+        let asset_event = trading_proto::AssetCreatedEvent {
+            asset_id: spec.asset_id as u32,
+            asset_name: spec.asset_name,
+            native_scale: spec.native_scale,
+            requested_by: cmd.user_id(),
+            timestamp: cmd.timestamp(),
+        };
+
+        let topic_name = "assets";
+        self.publish_proto(
+            topic_name,
+            &cmd.market_id().to_string(),
+            "trading.AssetCreatedEvent",
+            asset_event,
+        );
+        debug!(
+            target: "events",
+            component = "kafka_handler",
+            action = "asset_created_event_published",
+            asset_id = cmd.market_id(),
+            topic = %topic_name
+        );
+    }
+
     fn publish_response(&self, cmd: &OrderCommand) {
         self.publications.publish_response(cmd);
     }
@@ -591,6 +630,19 @@ impl EventsHandler for KafkaEventsHandler {
 
         // Handle deposit and withdraw commands separately
         match cmd.command {
+            OrderCommandType::AddAsset => {
+                if cmd.status() == Status::Processed {
+                    order_debug!(
+                        "events_publish_asset_created",
+                        cmd,
+                        stage = "events",
+                        handler = "kafka"
+                    );
+                    self.publish_asset_created_event(cmd);
+                }
+                self.publish_response(cmd);
+                return;
+            }
             OrderCommandType::AddMarket => {
                 if cmd.status() == Status::Processed {
                     order_debug!(

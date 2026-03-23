@@ -183,6 +183,7 @@ impl CoreEngine {
             move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
                 if cmd.command == OrderCommandType::DepositFunds
                     || cmd.command == OrderCommandType::WithdrawFunds
+                    || cmd.command == OrderCommandType::AddAsset
                     || cmd.status == Status::Rejected
                 {
                     return;
@@ -218,10 +219,12 @@ impl CoreEngine {
         num_shards: usize,
     ) -> RiskEngines {
         let shared_symbol_specs = Arc::new(RwLock::new(symbol_specs.clone()));
+        let shared_asset_specs = Arc::new(RwLock::new(HashMap::new()));
         let risk_engines: Vec<_> = (0..num_shards)
             .map(|shard_id| {
-                RiskEngine::with_shared_symbol_specs(
+                RiskEngine::with_shared_state(
                     Arc::clone(&shared_symbol_specs),
+                    Arc::clone(&shared_asset_specs),
                     shard_id as u32,
                     num_shards as u32,
                 )
@@ -664,6 +667,7 @@ pub mod test {
                 move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
                     if cmd.command == OrderCommandType::DepositFunds
                         || cmd.command == OrderCommandType::WithdrawFunds
+                        || cmd.command == OrderCommandType::AddAsset
                         || cmd.status == Status::Rejected
                     {
                         return;

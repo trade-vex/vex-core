@@ -2,6 +2,15 @@ use super::{MarketType, Order, Side};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AssetCreatedEvent {
+    pub asset_id: u16,
+    pub asset_name: String,
+    pub native_scale: u64,
+    pub requested_by: u64,
+    pub timestamp: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BalanceEvent {
     pub user_id: u64,
     pub asset_id: u16,

@@ -1,4 +1,5 @@
 use crate::error::{Result, RiskEngineError};
+use common::AssetSpecification;
 use common::BalanceError;
 use common::BalanceStore;
 use common::CoreMarketSpecification;
@@ -16,11 +17,13 @@ use std::sync::{Arc, RwLock};
 use tracing::{debug, error, info, warn};
 
 pub type SharedSymbolSpecs = Arc<RwLock<HashMap<u32, CoreMarketSpecification>>>;
+pub type SharedAssetSpecs = Arc<RwLock<HashMap<u16, AssetSpecification>>>;
 
 /// Manages all user profiles and performs risk checks as well as settlements
 pub struct RiskEngine {
     balances: Arc<Mutex<BalanceStore>>,
     pub symbol_specs: SharedSymbolSpecs,
+    pub asset_specs: SharedAssetSpecs,
     shard_id: u32,
     shard_mask: u64,
 }
@@ -31,11 +34,17 @@ impl RiskEngine {
         shard_id: u32,
         num_shards: u32,
     ) -> Self {
-        Self::with_shared_symbol_specs(Arc::new(RwLock::new(symbol_specs)), shard_id, num_shards)
+        Self::with_shared_state(
+            Arc::new(RwLock::new(symbol_specs)),
+            Arc::new(RwLock::new(HashMap::new())),
+            shard_id,
+            num_shards,
+        )
     }
 
-    pub fn with_shared_symbol_specs(
+    pub fn with_shared_state(
         symbol_specs: SharedSymbolSpecs,
+        asset_specs: SharedAssetSpecs,
         shard_id: u32,
         num_shards: u32,
     ) -> Self {
@@ -45,6 +54,7 @@ impl RiskEngine {
         Self {
             balances: Arc::new(Mutex::new(BalanceStore::new())),
             symbol_specs,
+            asset_specs,
             shard_id,
             shard_mask: (num_shards - 1) as u64,
         }
@@ -66,6 +76,27 @@ impl RiskEngine {
         Ok(())
     }
 
+    fn get_asset_spec(&self, asset_id: u16) -> Option<AssetSpecification> {
+        self.asset_specs.read().unwrap().get(&asset_id).cloned()
+    }
+
+    fn add_asset_spec(&self, spec: AssetSpecification) -> Result<()> {
+        let mut asset_specs = self.asset_specs.write().unwrap();
+        match asset_specs.get(&spec.asset_id) {
+            Some(existing) if existing == &spec => Ok(()),
+            Some(existing) => Err(RiskEngineError::UnsupportedCommand {
+                command: format!(
+                    "asset_id {} already exists with different spec: existing={:?}",
+                    spec.asset_id, existing
+                ),
+            }),
+            None => {
+                asset_specs.insert(spec.asset_id, spec);
+                Ok(())
+            }
+        }
+    }
+
     /// Checks if a user ID is handled by this risk engine instance.
     #[inline]
     fn user_id_for_this_handler(&self, user_id: u64) -> bool {
@@ -74,6 +105,46 @@ impl RiskEngine {
 
     /// Pre-processes a command to validate it and hold funds
     pub fn pre_process_command(&self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) {
+        if cmd.command == OrderCommandType::AddAsset {
+            if self.shard_id != 0 {
+                return;
+            }
+
+            match cmd.decode_add_asset_spec() {
+                Ok(spec) => {
+                    if let Err(err) = self.add_asset_spec(spec) {
+                        order_warn!(
+                            "risk_add_asset_failed",
+                            cmd,
+                            stage = "risk_r1",
+                            shard_id = self.shard_id,
+                            error = ?err
+                        );
+                        cmd.set_status(Status::Rejected);
+                    } else {
+                        cmd.set_status(Status::Processed);
+                        order_debug!(
+                            "risk_add_asset_registered",
+                            cmd,
+                            stage = "risk_r1",
+                            shard_id = self.shard_id
+                        );
+                    }
+                }
+                Err(err) => {
+                    order_warn!(
+                        "risk_add_asset_invalid",
+                        cmd,
+                        stage = "risk_r1",
+                        shard_id = self.shard_id,
+                        error = %err
+                    );
+                    cmd.set_status(Status::Rejected);
+                }
+            }
+            return;
+        }
+
         if cmd.command == OrderCommandType::AddMarket {
             if self.shard_id != 0 {
                 return;
@@ -81,6 +152,19 @@ impl RiskEngine {
 
             match cmd.decode_add_market_spec() {
                 Ok(spec) => {
+                    if self.get_asset_spec(spec.base_asset).is_none()
+                        || self.get_asset_spec(spec.quote_asset).is_none()
+                    {
+                        order_warn!(
+                            "risk_add_market_missing_assets",
+                            cmd,
+                            stage = "risk_r1",
+                            shard_id = self.shard_id
+                        );
+                        cmd.set_status(Status::Rejected);
+                        return;
+                    }
+
                     if let Err(err) = self.add_market_spec(spec) {
                         order_warn!(
                             "risk_add_market_failed",

@@ -21,7 +21,8 @@
             <validValue name="CancelOrder" value="1">1</validValue>
             <validValue name="DepositFunds" value="2">2</validValue>
             <validValue name="WithdrawFunds" value="3">3</validValue>
-            <validValue name="AddMarket" value="4">4</validValue>
+            <validValue name="AddAsset" value="4">4</validValue>
+            <validValue name="AddMarket" value="5">5</validValue>
         </enum>
 
         <enum name="Side" encodingType="uint8" description="Order Side types">

@@ -110,6 +110,14 @@ message WithdrawEvent {
   uint64 timestamp = 4;
 }
 
+message AssetCreatedEvent {
+  uint32 asset_id = 1;
+  string asset_name = 2;
+  uint64 native_scale = 3;
+  uint64 requested_by = 4;
+  uint64 timestamp = 5;
+}
+
 message MarketCreatedEvent {
   uint32 market_id = 1;
   uint64 requested_by = 2;

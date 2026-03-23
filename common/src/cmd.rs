@@ -1,6 +1,6 @@
 use crate::{
-    CoreMarketSpecification, L2MarketData, MarketType, OrderCommandType, Side, TimeInForce,
-    UserBalance,
+    AssetSpecification, CoreMarketSpecification, L2MarketData, MarketType, OrderCommandType,
+    Side, TimeInForce, UserBalance,
 };
 use borsh::{BorshDeserialize, BorshSerialize};
 use sbe_order::message_header_codec::{self, MessageHeaderDecoder};
@@ -32,6 +32,7 @@ pub const FRAMESIZE: i64 = 96;
 
 const PACKED_U32_MASK: u64 = 0xFFFF_FFFF;
 const PACKED_U16_MASK: u64 = 0xFFFF;
+const MAX_PACKED_ASSET_NAME_LEN: usize = 8;
 
 /// OrderCommand: OrderCommand Plays the central role throughout the processing of the Order.
 /// It is created in the Gateway, and processed in VexCore in different processors through the Disruptor
@@ -222,6 +223,30 @@ impl OrderCommand {
         }
     }
 
+    /// Creates an internal control command that dynamically registers an asset.
+    ///
+    /// `asset_name` is packed as an ASCII string up to 8 bytes.
+    pub fn add_asset(requested_by: u64, spec: &AssetSpecification) -> Result<Self, &'static str> {
+        Ok(Self {
+            command: OrderCommandType::AddAsset,
+            client_order_id: pack_asset_name(&spec.asset_name)?,
+            order_id: 0,
+            user_id: requested_by,
+            market_id: spec.asset_id as u32,
+            price: spec.native_scale,
+            size: 0,
+            side: Side::Ask,
+            time_in_force: TimeInForce::Gtc,
+            timestamp: 0,
+            status: Status::Processing,
+            events: None,
+            balance: [UserBalance::default(); 2],
+            l2_data: None,
+            route_gateway_id: 0,
+            original_size: 0,
+        })
+    }
+
     /// Creates an internal control command that dynamically registers a market.
     ///
     /// The market specification is packed into existing command fields to preserve
@@ -282,6 +307,18 @@ impl OrderCommand {
             .maker_fee(maker_fee)
             .slippage(slippage)
             .build()
+    }
+
+    pub fn decode_add_asset_spec(&self) -> Result<AssetSpecification, &'static str> {
+        if self.command != OrderCommandType::AddAsset {
+            return Err("command is not AddAsset");
+        }
+
+        Ok(AssetSpecification {
+            asset_id: self.market_id as u16,
+            asset_name: unpack_asset_name(self.client_order_id)?,
+            native_scale: self.price,
+        })
     }
 
     pub fn status(&self) -> Status {
@@ -405,6 +442,35 @@ fn decode_market_type(time_in_force: TimeInForce) -> MarketType {
         TimeInForce::Ioc => MarketType::FuturesContract,
         TimeInForce::Fok => MarketType::Option,
     }
+}
+
+fn pack_asset_name(asset_name: &str) -> Result<u64, &'static str> {
+    if asset_name.is_empty() {
+        return Err("asset_name");
+    }
+    if asset_name.len() > MAX_PACKED_ASSET_NAME_LEN {
+        return Err("asset_name");
+    }
+    if !asset_name.is_ascii() {
+        return Err("asset_name");
+    }
+
+    let mut bytes = [0u8; MAX_PACKED_ASSET_NAME_LEN];
+    let source = asset_name.as_bytes();
+    bytes[..source.len()].copy_from_slice(source);
+    Ok(u64::from_le_bytes(bytes))
+}
+
+fn unpack_asset_name(packed: u64) -> Result<String, &'static str> {
+    let bytes = packed.to_le_bytes();
+    let len = bytes
+        .iter()
+        .position(|b| *b == 0)
+        .unwrap_or(MAX_PACKED_ASSET_NAME_LEN);
+    let slice = &bytes[..len];
+    std::str::from_utf8(slice)
+        .map(|s| s.to_string())
+        .map_err(|_| "asset_name")
 }
 
 /// Status Of The Order Command.

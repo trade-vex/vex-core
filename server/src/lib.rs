@@ -241,11 +241,13 @@ pub mod test {
         // Create risk engines manually for test access
         use processors::risk_engine::RiskEngine;
         let shared_symbol_specs = Arc::new(RwLock::new(specs.clone()));
+        let shared_asset_specs = Arc::new(RwLock::new(HashMap::new()));
         let risk_engines = Arc::new(
             (0..4)
                 .map(|shard_id| {
-                    RiskEngine::with_shared_symbol_specs(
+                    RiskEngine::with_shared_state(
                         Arc::clone(&shared_symbol_specs),
+                        Arc::clone(&shared_asset_specs),
                         shard_id as u32,
                         4,
                     )
@@ -294,8 +296,8 @@ mod tests {
     use super::test::setup_tuple;
     use super::*;
     use common::{
-        MarketType, OrderCommand, OrderCommandType, PriceCache, Side, Status, TimeInForce,
-        UserBalance,
+        AssetSpecification, MarketType, OrderCommand, OrderCommandType, PriceCache, Side, Status,
+        TimeInForce, UserBalance,
     };
     use disruptor::Producer;
     use processors::risk_engine::RiskEngine;
@@ -389,6 +391,35 @@ mod tests {
         let mut producer = test_env.producer;
         let risk_engines = test_env.risk_engines;
         let rx = test_env.receiver;
+
+        let base_asset = AssetSpecification {
+            asset_id: base_asset_id,
+            asset_name: "BTC".to_string(),
+            native_scale: 100_000_000,
+        };
+        let quote_asset = AssetSpecification {
+            asset_id: quote_asset_id,
+            asset_name: "USD".to_string(),
+            native_scale: 1_000_000,
+        };
+
+        producer.publish(|cmd| {
+            *cmd = OrderCommand::add_asset(9001, &base_asset).expect("valid AddAsset payload");
+        });
+        let base_asset_response = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Did not receive base AddAsset response");
+        assert_eq!(base_asset_response.command, OrderCommandType::AddAsset);
+        assert_eq!(base_asset_response.status, Status::Processed);
+
+        producer.publish(|cmd| {
+            *cmd = OrderCommand::add_asset(9001, &quote_asset).expect("valid AddAsset payload");
+        });
+        let quote_asset_response = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Did not receive quote AddAsset response");
+        assert_eq!(quote_asset_response.command, OrderCommandType::AddAsset);
+        assert_eq!(quote_asset_response.status, Status::Processed);
 
         producer.publish(|cmd| {
             *cmd = OrderCommand::add_market(9001, &spec).expect("valid AddMarket payload");
