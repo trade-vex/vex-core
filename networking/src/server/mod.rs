@@ -348,7 +348,7 @@ impl VexCoreServer {
             aeron,
             &config.request_control_channel,
             &config.response_control_channel,
-            RECORDING_CHANNEL,
+            &config.recording_events_channel,
         )?;
 
         let archive_async_connect = AeronArchiveAsyncConnect::new_with_aeron(&archive_ctx, aeron)?;

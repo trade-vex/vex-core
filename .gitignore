@@ -17,3 +17,5 @@
 
 *.service
 config.prod.toml
+
+docs/
