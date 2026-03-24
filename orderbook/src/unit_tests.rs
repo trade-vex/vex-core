@@ -3305,18 +3305,20 @@ mod test {
         assert!(snapshot1.ask_volumes.is_empty());
 
         // --- Scenario 2: Build a book with more than L2SIZE levels ---
-        // Place 12 bid levels (99 down to 88)
-        for i in 0..12 {
-            let price = 99 - i;
+        let deep_book_levels = L2SIZE as u64 + 2;
+
+        // Place more bid levels than the snapshot can hold.
+        for i in 0..deep_book_levels {
+            let price = 1_000 - i;
             let size = (i + 1) * 10;
             let mut bid_cmd =
                 harness.create_place_order_cmd(200 + i, Side::Bid, price, size, TimeInForce::Gtc);
             book.place_order(&mut bid_cmd, price_cache.clone());
         }
 
-        // Place 12 ask levels (101 up to 112)
-        for i in 0..12 {
-            let price = 101 + i;
+        // Place more ask levels than the snapshot can hold.
+        for i in 0..deep_book_levels {
+            let price = 1_001 + i;
             let size = (i + 1) * 10;
             let mut ask_cmd =
                 harness.create_place_order_cmd(300 + i, Side::Ask, price, size, TimeInForce::Gtc);
@@ -3329,13 +3331,13 @@ mod test {
 
         let snapshot2 = cmd2.l2_data.as_ref().unwrap();
 
-        // Snapshot should contain exactly L2SIZE (10) levels
+        // Snapshot should contain exactly L2SIZE levels.
         assert_eq!(snapshot2.bid_prices.len(), L2SIZE);
         assert_eq!(snapshot2.ask_prices.len(), L2SIZE);
 
         // Verify bids (descending price)
         for i in 0..L2SIZE {
-            let expected_price = 99 - i as u64;
+            let expected_price = 1_000 - i as u64;
             let expected_volume = (i as u64 + 1) * 10;
             assert_eq!(snapshot2.bid_prices[i], expected_price);
             assert_eq!(snapshot2.bid_volumes[i], expected_volume);
@@ -3343,29 +3345,29 @@ mod test {
 
         // Verify asks (ascending price)
         for i in 0..L2SIZE {
-            let expected_price = 101 + i as u64;
+            let expected_price = 1_001 + i as u64;
             let expected_volume = (i as u64 + 1) * 10;
             assert_eq!(snapshot2.ask_prices[i], expected_price);
             assert_eq!(snapshot2.ask_volumes[i], expected_volume);
         }
 
         // --- Scenario 4: Snapshot after a trade that clears levels ---
-        // A large market buy that clears the first 3 ask levels
+        // A large market buy that clears the first 3 ask levels.
         let mut market_buy_cmd = harness.create_market_order_cmd(103, Side::Bid, 70); // 10+20+30=60, so this clears 3 levels and takes 10 from the 4th
         book.place_order(&mut market_buy_cmd, price_cache.clone());
 
         let snapshot3 = market_buy_cmd.l2_data.as_ref().unwrap();
 
-        // The new best ask should be 104 (since 101, 102, 103 are gone)
-        assert_eq!(snapshot3.ask_prices[0], 104);
-        // Original volume at 104 was 40, 10 was taken. 30 should remain.
+        // The new best ask should be 1004 (since 1001, 1002, 1003 are gone).
+        assert_eq!(snapshot3.ask_prices[0], 1_004);
+        // Original volume at 1004 was 40, 10 was taken. 30 should remain.
         assert_eq!(snapshot3.ask_volumes[0], 30);
-        // The next ask should be 105 with volume 50
-        assert_eq!(snapshot3.ask_prices[1], 105);
+        // The next ask should be 1005 with volume 50.
+        assert_eq!(snapshot3.ask_prices[1], 1_005);
         assert_eq!(snapshot3.ask_volumes[1], 50);
 
-        // Bid side should be unchanged
-        assert_eq!(snapshot3.bid_prices[0], 99); // The one we added in Scenario 3
+        // Bid side should be unchanged.
+        assert_eq!(snapshot3.bid_prices[0], 1_000);
 
         // --- Scenario 5: Snapshot on a rejected command should be None ---
         let mut rejected_cmd =

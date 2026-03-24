@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_GATEWAYS: usize = 16;
 
-pub const L2SIZE: usize = 10;
+pub const L2SIZE: usize = 50;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AssetSpecification {
