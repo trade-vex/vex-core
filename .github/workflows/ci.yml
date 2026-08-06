@@ -59,7 +59,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
           # Install CMake 3.30+ (required by rusteron)
           pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
           cmake --version
@@ -117,7 +117,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
           # Install CMake 3.30+ (required by rusteron)
           pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
           cmake --version
@@ -161,7 +161,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
           # Install CMake 3.30+ (required by rusteron)
           pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
           cmake --version
@@ -200,7 +200,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
           # Install CMake 3.30+ (required by rusteron)
           pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
           cmake --version
@@ -230,14 +230,9 @@ jobs:
           export BUILDX_CACHE_FROM="type=local,src=/tmp/.buildx-cache"
           export BUILDX_CACHE_TO="type=local,dest=/tmp/.buildx-cache-new,mode=max"
 
-          output=$(docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml up media-driver --build)
-          echo "$output"
-          output=$(cargo xtask build-docker)
-          echo "$output"
-          if ! echo "$output" | grep -q "Docker images built successfully."; then
-            echo "Docker image build failed!"
-            exit 1
-          fi
+          docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml up media-driver --build
+          # Build with plain progress to see full compilation output
+          docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml build --progress=plain
 
       - name: Run xtask unit tests
         run: cargo test --package xtask --lib

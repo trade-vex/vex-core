@@ -97,6 +97,8 @@ pub struct OrderCommand {
     pub l2_data: Option<L2MarketData>,
     /// Internal-only routing field: gateway that sent THIS command (not serialized)
     pub route_gateway_id: u8,
+    /// Original order size before any fills (set from book order during cancel)
+    pub original_size: u64,
 }
 
 impl Default for OrderCommand {
@@ -117,6 +119,7 @@ impl Default for OrderCommand {
             balance: [UserBalance::default(); 2],
             l2_data: None,
             route_gateway_id: 0,
+            original_size: 0,
         }
     }
 }
@@ -146,6 +149,7 @@ impl OrderCommand {
             balance: [UserBalance::default(); 2],
             l2_data: None,
             route_gateway_id: 0,
+            original_size: 0,
         }
     }
 
@@ -166,6 +170,7 @@ impl OrderCommand {
             events: None,
             l2_data: None,
             route_gateway_id: 0,
+            original_size: 0,
         }
     }
 
@@ -186,6 +191,7 @@ impl OrderCommand {
             events: None,
             l2_data: None,
             route_gateway_id: 0,
+            original_size: 0,
         }
     }
 
@@ -206,6 +212,7 @@ impl OrderCommand {
             events: None,
             l2_data: None,
             route_gateway_id: 0,
+            original_size: 0,
         }
     }
 
@@ -259,6 +266,10 @@ impl OrderCommand {
 
     pub fn set_user_id(&mut self, user_id: u64) {
         self.user_id = user_id;
+    }
+
+    pub fn set_side(&mut self, side: Side) {
+        self.side = side;
     }
 
     pub fn attach_event(&mut self, event: Box<MatcherTradeEvent>) {
@@ -339,7 +350,9 @@ pub struct MatcherTradeEvent {
     pub price: u64,
     pub size: u64,
     pub next_event: Option<Box<MatcherTradeEvent>>,
-    pub maker_balance: [UserBalance; 2], // [0] = base currency, [1] = quote currency
+    pub maker_balance: [UserBalance; 2],
+    pub maker_remaining_size: u64,
+    pub maker_original_size: u64,
 }
 
 impl MatcherTradeEvent {
@@ -389,10 +402,11 @@ pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
         side: decoder.side().try_into()?,
         time_in_force: decoder.time_in_force().try_into()?,
         timestamp: decoder.timestamp(),
-        status: decoder.status().try_into()?, // Default status since decoder doesn't have status method
+        status: decoder.status().try_into()?,
         events: None,
         balance: [UserBalance::default(); 2],
         l2_data: None,
         route_gateway_id: 0,
+        original_size: 0,
     })
 }

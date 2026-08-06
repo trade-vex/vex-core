@@ -25,9 +25,21 @@ impl TestClient {
     /// # Arguments
     /// * `client_id` - Unique client identifier (0-255)
     /// * `timeout` - Default timeout for receive operations
-    pub fn new(client_id: u8, timeout: Duration) -> TestResult<Self> {
+    /// * `core_address` - VEX Core server address
+    /// * `core_port` - VEX Core server port
+    /// * `core_control_port` - VEX Core server control port
+    pub fn new(
+        client_id: u8,
+        timeout: Duration,
+        core_address: &str,
+        core_port: u16,
+        core_control_port: u16,
+    ) -> TestResult<Self> {
         let mut config = GatewayNetworkingConfig::test_defaults();
         config.gateway_id = client_id;
+        config.core_address = core_address.to_string();
+        config.core_port = core_port;
+        config.core_control_port = core_control_port;
 
         let mut gateway = VexGateway::new(config).map_err(|e| TestError::Network(e.to_string()))?;
 
