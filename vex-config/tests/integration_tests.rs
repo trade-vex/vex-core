@@ -72,6 +72,18 @@ fn test_configuration_validation() {
     assert!(config.validate().is_err());
 }
 
+#[cfg(feature = "balance-preload")]
+#[test]
+fn production_configuration_rejects_balance_preload() {
+    let mut production = VexConfig::new(Environment::Production);
+    production.balance_preload.enabled = true;
+    assert!(production.validate().is_err());
+
+    let mut development = VexConfig::new(Environment::Development);
+    development.balance_preload.enabled = true;
+    assert!(development.validate().is_ok());
+}
+
 #[test]
 fn test_file_loading_and_saving() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;

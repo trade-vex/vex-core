@@ -127,7 +127,7 @@ impl CoreNetworkingConfig {
     }
 
     /// Validate the configuration
-    pub fn validate(&self) -> Result<()> {
+    pub fn validate(&self, environment: &Environment) -> Result<()> {
         if self.initial_port == 0 {
             return Err(ConfigError::network("Initial port cannot be 0"));
         }
@@ -162,6 +162,12 @@ impl CoreNetworkingConfig {
 
         if self.context_dir.is_empty() {
             return Err(ConfigError::network("Context directory cannot be empty"));
+        }
+
+        if environment.is_production() && self.request_control_channel.is_empty() {
+            return Err(ConfigError::network(
+                "Archive request control channel cannot be empty in production",
+            ));
         }
 
         Ok(())
@@ -345,14 +351,24 @@ mod tests {
     #[test]
     fn test_core_networking_validation() {
         let mut config = CoreNetworkingConfig::development_defaults();
-        assert!(config.validate().is_ok());
+        assert!(config.validate(&Environment::Development).is_ok());
 
         config.initial_port = 0;
-        assert!(config.validate().is_err());
+        assert!(config.validate(&Environment::Development).is_err());
 
         config.initial_port = 8080;
         config.initial_control_port = 8080;
-        assert!(config.validate().is_err());
+        assert!(config.validate(&Environment::Development).is_err());
+    }
+
+    #[test]
+    fn empty_archive_channel_is_only_valid_outside_production() {
+        let mut config = CoreNetworkingConfig::development_defaults();
+        config.request_control_channel.clear();
+
+        assert!(config.validate(&Environment::Development).is_ok());
+        assert!(config.validate(&Environment::Test).is_ok());
+        assert!(config.validate(&Environment::Production).is_err());
     }
 
     #[test]
