@@ -41,7 +41,7 @@ impl CoreMarketSpecification {
         if denominator == 0 {
             return 0;
         }
-        (numerator / denominator) as u64
+        u64::try_from(numerator / denominator).unwrap_or(u64::MAX)
     }
 }
 
