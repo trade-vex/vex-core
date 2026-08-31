@@ -1360,15 +1360,19 @@ mod tests {
         // gets equivalent base - taker fee
         assert_eq!(taker_d_cmd.balance[0].locked, 0);
         let gross_base_recv = 30;
+        let taker_fee = [10u64, 15, 5]
+            .map(|fill_size| (fill_size * 20).div_ceil(10000))
+            .into_iter()
+            .sum::<u64>();
         assert_eq!(
             taker_d_cmd.balance[0].available,
-            gross_base_recv - (gross_base_recv * 20 / 10000)
+            gross_base_recv - taker_fee
         ); // base after 20bp fee
 
         // Verify balances after Taker D's trade
         // Maker A (fully filled)
-        let maker_a_quote_recv = 10 * 1010;
-        let maker_a_fee = (maker_a_quote_recv * 10) / 10000; // 10bp on quote
+        let maker_a_quote_recv = 10u64 * 1010;
+        let maker_a_fee = (maker_a_quote_recv * 10).div_ceil(10000); // 10bp on quote
         assert_eq!(
             risk_engines[maker_a_shard].get_balance(maker_a_id, base_asset_id),
             UserBalance::new(90, 0)
@@ -1379,8 +1383,8 @@ mod tests {
         );
 
         // Maker B (fully filled)
-        let maker_b_quote_recv = 15 * 1020;
-        let maker_b_fee = (maker_b_quote_recv * 10) / 10000; // 10bp on quote
+        let maker_b_quote_recv = 15u64 * 1020;
+        let maker_b_fee = (maker_b_quote_recv * 10).div_ceil(10000); // 10bp on quote
         assert_eq!(
             risk_engines[maker_b_shard].get_balance(maker_b_id, base_asset_id),
             UserBalance::new(85, 0)
@@ -1391,9 +1395,9 @@ mod tests {
         );
 
         // Maker C (partially filled, 5 remaining)
-        let maker_c_base_sold = 5; // Out of 20, 5 sold
+        let maker_c_base_sold = 5u64; // Out of 20, 5 sold
         let maker_c_quote_recv = maker_c_base_sold * 1020;
-        let maker_c_fee = (maker_c_quote_recv * 10) / 10000; // 10bp on quote
+        let maker_c_fee = (maker_c_quote_recv * 10).div_ceil(10000); // 10bp on quote
         assert_eq!(
             risk_engines[maker_c_shard].get_balance(maker_c_id, quote_asset_id),
             UserBalance::new(maker_c_quote_recv - maker_c_fee, 0)
@@ -1449,18 +1453,17 @@ mod tests {
             UserBalance::new(0, 0)
         );
 
-        // Taker D (buyer, was both taker and maker)
+        // Taker D (taker buyer)
         let taker_d_final_base = risk_engines[taker_d_shard].get_balance(taker_d_id, base_asset_id);
         let taker_d_final_quote =
             risk_engines[taker_d_shard].get_balance(taker_d_id, quote_asset_id);
 
         // Taker D received:
-        // As taker: 10 (from A) + 15 (from B). Fee is 20bp on base. Fee = (25*20)/10000 = 0. Net = 25.
-        // As maker: 5 (from E). Fee is 10bp on base. Fee = (5*10)/10000 = 0. Net = 5.
-        // Total base received: 25 + 5 = 30.
+        // As taker: 10 (from A) + 15 (from B) + 5 (from C). Fee is 20bp on base,
+        // rounded up per fill. Each fill pays 1 BASE in fees, so the net is 27.
         assert_eq!(
             taker_d_final_base.total(),
-            30,
+            27,
             "Taker D final base balance is wrong"
         );
 
