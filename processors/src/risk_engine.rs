@@ -73,6 +73,20 @@ impl RiskEngine {
                     return;
                 }
 
+                // A market order can never rest. Reject Market + GTC here, before any funds are
+                // locked and before bid_amount() rewrites a market buy's sentinel to its slippage
+                // cap, after which the book can no longer tell it from a limit order.
+                if cmd.time_in_force == common::TimeInForce::Gtc && cmd.is_market_order() {
+                    order_warn!(
+                        "risk_market_gtc_rejected",
+                        cmd,
+                        stage = "risk_r1",
+                        shard_id = self.shard_id
+                    );
+                    cmd.set_status(Status::Rejected);
+                    return;
+                }
+
                 // Note: Fees are always in the receiving asset, hence are cut on post-processing (settlement)
                 if let Err(err) = self.reserve_funds_for_order(cmd, price_cache) {
                     order_warn!(
@@ -332,7 +346,7 @@ impl RiskEngine {
                     market_id: cmd.market_id,
                 })?;
 
-        if cmd.price == u64::MAX {
+        if cmd.is_market_order() {
             // Market buy order
             let slippage = spec.slippage;
             let best_ask = price_cache.get_best_ask(cmd.market_id);
@@ -505,6 +519,53 @@ mod tests {
         // it will be rejected because no market spec
         engine_shard1.pre_process_command(&mut cmd, price_cache);
         assert_eq!(cmd.status, Status::Rejected);
+    }
+
+    #[test]
+    fn market_gtc_orders_are_rejected_before_locking() {
+        let user_id = 1;
+        let market_id = (2_u32 << 16) | 1_u32;
+        let mut specs = HashMap::new();
+        specs.insert(market_id, get_spec(market_id));
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        // A best ask exists, so without the GTC check the buy would be capped and funded.
+        price_cache.update_prices(market_id, 90, 100);
+        let engine = RiskEngine::new(specs, 0, 1);
+        let funded = UserBalance::new(1_000_000, 0);
+        engine.set_balance(user_id, base_asset(market_id), funded);
+        engine.set_balance(user_id, quote_asset(market_id), funded);
+
+        for (side, sentinel) in [(Side::Bid, u64::MAX), (Side::Ask, 0)] {
+            let mut cmd = OrderCommand::place_order(
+                TimeInForce::Gtc,
+                user_id,
+                sentinel,
+                10,
+                side,
+                market_id,
+                1,
+            );
+            engine.pre_process_command(&mut cmd, Arc::clone(&price_cache));
+
+            assert_eq!(cmd.status, Status::Rejected, "{side:?} market GTC");
+            assert_eq!(cmd.price, sentinel, "the sentinel must not be rewritten");
+        }
+        assert_eq!(engine.get_balance(user_id, base_asset(market_id)), funded);
+        assert_eq!(engine.get_balance(user_id, quote_asset(market_id)), funded);
+
+        // The same market buy as IOC is still accepted and capped.
+        let mut ioc = OrderCommand::place_order(
+            TimeInForce::Ioc,
+            user_id,
+            u64::MAX,
+            10,
+            Side::Bid,
+            market_id,
+            1,
+        );
+        engine.pre_process_command(&mut ioc, price_cache);
+        assert_ne!(ioc.status, Status::Rejected);
+        assert_eq!(ioc.price, 100);
     }
 
     #[test]
