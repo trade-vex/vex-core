@@ -21,17 +21,27 @@ pub use engine::EngineError;
 pub struct RunningEngine {
     thread: JoinHandle<Result<(), EngineError>>,
     shutdown_flag: Arc<AtomicBool>,
+    engine: CoreEngine,
 }
 
 impl RunningEngine {
     /// Returns on panic or error during server execution
+    ///
+    /// After a graceful stop the pipeline has drained, so this logs the final trading fees
+    /// accrued per asset across all risk shards; nothing else reports them yet.
     pub fn join(self) -> Result<(), EngineError> {
-        self.thread.join().unwrap_or_else(|e| {
+        let result = self.thread.join().unwrap_or_else(|e| {
             Err(EngineError::ServerRuntime(format!(
                 "Server thread panicked: {:?}",
                 e
             )))
-        })
+        });
+        if result.is_ok() {
+            for (asset_id, amount) in self.engine.accrued_fees() {
+                tracing::info!(target: "risk_engine", event = "accrued_fees", asset_id, amount);
+            }
+        }
+        result
     }
 
     /// Returns a clone of the shutdown flag for external signalling
@@ -128,6 +138,7 @@ pub fn start(mut config: VexConfig, replay: bool) -> Result<RunningEngine, Engin
     Ok(RunningEngine {
         thread: thread_handle,
         shutdown_flag,
+        engine,
     })
 }
 
