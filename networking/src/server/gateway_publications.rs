@@ -13,7 +13,8 @@ use tracing::{debug, error};
 use super::ServerError;
 
 const ARCHIVE_OFFER_RETRY_LIMIT: usize = 5_000;
-const ARCHIVE_OFFER_RETRY_BACKOFF: Duration = Duration::from_millis(1);
+const OFFER_RETRY_BACKOFF: Duration = Duration::from_millis(1);
+const RESPONSE_OFFER_RETRY_LIMIT: usize = 10;
 
 #[derive(Debug, PartialEq, Eq)]
 enum OfferResult {
@@ -32,6 +33,14 @@ fn classify_offer_result(result: i64) -> OfferResult {
         OfferResult::Retryable
     } else {
         OfferResult::Fatal
+    }
+}
+
+fn classify_response_offer_result(result: i64) -> OfferResult {
+    if result == i64::from(AERON_PUBLICATION_NOT_CONNECTED) {
+        OfferResult::Fatal
+    } else {
+        classify_offer_result(result)
     }
 }
 
@@ -111,19 +120,33 @@ impl Publications {
         match encode_order_command(cmd, &mut response_buffer) {
             Ok(_) => {
                 // Send the processed command back
-                let result =
-                    publication.offer::<AeronReservedValueSupplierLogger>(&response_buffer, None);
+                for retry in 0..=RESPONSE_OFFER_RETRY_LIMIT {
+                    let result = publication
+                        .offer::<AeronReservedValueSupplierLogger>(&response_buffer, None);
 
-                if result < 0 {
-                    error!(
-                        "gateway-{}: Failed to send processed OrderCommand, result: {}",
-                        gateway_id, result
-                    );
-                } else {
-                    debug!(
-                        "gateway-{}: Successfully sent processed OrderCommand",
-                        gateway_id
-                    );
+                    match classify_response_offer_result(result) {
+                        OfferResult::Success => {
+                            debug!(
+                                "gateway-{}: Successfully sent processed OrderCommand",
+                                gateway_id
+                            );
+                            return;
+                        }
+                        OfferResult::Retryable if retry < RESPONSE_OFFER_RETRY_LIMIT => {
+                            std::thread::sleep(OFFER_RETRY_BACKOFF);
+                        }
+                        OfferResult::Retryable | OfferResult::Fatal => {
+                            error!(
+                                gateway_id,
+                                client_order_id = cmd.client_order_id,
+                                order_id = cmd.order_id,
+                                final_status = ?cmd.status,
+                                last_result_code = result,
+                                "Failed to send processed OrderCommand"
+                            );
+                            return;
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -165,7 +188,7 @@ impl Publications {
                             return;
                         }
                         OfferResult::Retryable if retry < ARCHIVE_OFFER_RETRY_LIMIT => {
-                            std::thread::sleep(ARCHIVE_OFFER_RETRY_BACKOFF);
+                            std::thread::sleep(OFFER_RETRY_BACKOFF);
                         }
                         OfferResult::Retryable | OfferResult::Fatal => {
                             error!(
@@ -231,6 +254,44 @@ mod tests {
                 classify_offer_result(i64::from(result)),
                 OfferResult::Retryable
             );
+        }
+    }
+
+    #[test]
+    fn classifies_response_and_archive_offer_results() {
+        assert_eq!(
+            classify_response_offer_result(i64::from(AERON_PUBLICATION_NOT_CONNECTED)),
+            OfferResult::Fatal
+        );
+        assert_eq!(
+            classify_offer_result(i64::from(AERON_PUBLICATION_NOT_CONNECTED)),
+            OfferResult::Retryable
+        );
+
+        for result in [
+            AERON_PUBLICATION_BACK_PRESSURED,
+            AERON_PUBLICATION_ADMIN_ACTION,
+        ] {
+            assert_eq!(
+                classify_response_offer_result(i64::from(result)),
+                OfferResult::Retryable
+            );
+            assert_eq!(
+                classify_offer_result(i64::from(result)),
+                OfferResult::Retryable
+            );
+        }
+
+        for result in [
+            AERON_PUBLICATION_CLOSED,
+            AERON_PUBLICATION_MAX_POSITION_EXCEEDED,
+            AERON_PUBLICATION_ERROR,
+        ] {
+            assert_eq!(
+                classify_response_offer_result(i64::from(result)),
+                OfferResult::Fatal
+            );
+            assert_eq!(classify_offer_result(i64::from(result)), OfferResult::Fatal);
         }
     }
 
