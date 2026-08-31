@@ -5,6 +5,10 @@ use crate::utils::{
 use common::ORDERCOMMANDSIZE;
 use common::{OrderCommand, encode_order_command, order_debug};
 use rand;
+use rusteron_archive::bindings::{
+    AERON_PUBLICATION_ADMIN_ACTION, AERON_PUBLICATION_BACK_PRESSURED,
+    AERON_PUBLICATION_NOT_CONNECTED,
+};
 use rusteron_archive::{
     Aeron, AeronCError, AeronContext, AeronFragmentHandlerCallback, AeronHeader, AeronPublication,
     AeronReservedValueSupplierLogger, AeronSubscription, Handler,
@@ -238,6 +242,10 @@ pub enum GatewayError {
     CoreError(String),
     #[error("Failed to send message: {0}")]
     SendError(String),
+    /// Publication is temporarily unavailable due to Aeron `NOT_CONNECTED`, `BACK_PRESSURED`, or
+    /// `ADMIN_ACTION`.
+    #[error("Aeron publication is temporarily unavailable")]
+    Unavailable,
     #[error("Protocol error: {0}")]
     ProtocolError(String),
     #[error("Configuration error: {0}")]
@@ -285,7 +293,6 @@ impl Publisher {
 
     /// Sends an OrderCommand to the core
     pub fn send_order_command(&self, order_command: &OrderCommand) -> Result<(), GatewayError> {
-        // Send the binary message directly
         order_debug!(
             "gateway_send_attempt",
             order_command,
@@ -293,19 +300,15 @@ impl Publisher {
         );
 
         let mut message_buffer = [0u8; ORDERCOMMANDSIZE];
-
         encode_order_command(order_command, &mut message_buffer).map_err(|e| {
             GatewayError::ProtocolError(format!("Failed to encode OrderCommand: {e:?}"))
         })?;
 
-        // Send using the buffer directly
         for attempt in 0..MESSAGE_RETRY_COUNT {
-            let result = self
-                .publication
-                .offer::<AeronReservedValueSupplierLogger>(&message_buffer, None);
-
-            if result >= 0 {
-                return Ok(());
+            match self.offer_order_command(&message_buffer) {
+                Ok(()) => return Ok(()),
+                Err(error @ GatewayError::ProtocolError(_)) => return Err(error),
+                Err(_) => {}
             }
 
             // Wait before retrying with exponential backoff
@@ -315,6 +318,40 @@ impl Publisher {
 
         Err(GatewayError::SendError(format!(
             "Failed to send OrderCommand after {MESSAGE_RETRY_COUNT} attempts",
+        )))
+    }
+
+    /// Attempts to send an OrderCommand to the core without retrying
+    pub fn try_send_order_command(&self, order_command: &OrderCommand) -> Result<(), GatewayError> {
+        let mut message_buffer = [0u8; ORDERCOMMANDSIZE];
+
+        encode_order_command(order_command, &mut message_buffer).map_err(|e| {
+            GatewayError::ProtocolError(format!("Failed to encode OrderCommand: {e:?}"))
+        })?;
+
+        self.offer_order_command(&message_buffer)
+    }
+
+    fn offer_order_command(&self, message_buffer: &[u8]) -> Result<(), GatewayError> {
+        let result = self
+            .publication
+            .offer::<AeronReservedValueSupplierLogger>(message_buffer, None);
+
+        classify_order_offer_result(result)
+    }
+}
+
+fn classify_order_offer_result(result: i64) -> Result<(), GatewayError> {
+    if result >= 0 {
+        Ok(())
+    } else if result == i64::from(AERON_PUBLICATION_NOT_CONNECTED)
+        || result == i64::from(AERON_PUBLICATION_BACK_PRESSURED)
+        || result == i64::from(AERON_PUBLICATION_ADMIN_ACTION)
+    {
+        Err(GatewayError::Unavailable)
+    } else {
+        Err(GatewayError::SendError(format!(
+            "Failed to send OrderCommand, result: {result}",
         )))
     }
 }
@@ -730,6 +767,45 @@ impl VexGateway {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn order_offer_result_classifies_success() {
+        assert!(classify_order_offer_result(0).is_ok());
+    }
+
+    #[test]
+    fn order_offer_result_classifies_transient_codes_as_unavailable() {
+        for result in [
+            AERON_PUBLICATION_NOT_CONNECTED,
+            AERON_PUBLICATION_BACK_PRESSURED,
+            AERON_PUBLICATION_ADMIN_ACTION,
+        ] {
+            assert!(matches!(
+                classify_order_offer_result(i64::from(result)),
+                Err(GatewayError::Unavailable)
+            ));
+        }
+    }
+
+    #[test]
+    fn order_offer_result_classifies_closed_publication_as_failure() {
+        assert!(matches!(
+            classify_order_offer_result(i64::from(
+                rusteron_archive::AeronErrorType::PublicationClosed.code()
+            )),
+            Err(GatewayError::SendError(message))
+                if message == "Failed to send OrderCommand, result: -4"
+        ));
+    }
+
+    #[test]
+    fn order_offer_result_classifies_unrecognised_negative_code_as_failure() {
+        assert!(matches!(
+            classify_order_offer_result(-99),
+            Err(GatewayError::SendError(message))
+                if message == "Failed to send OrderCommand, result: -99"
+        ));
+    }
 
     #[test]
     fn test_parse_core_response_accept() {
