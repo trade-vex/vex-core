@@ -381,7 +381,7 @@ impl RiskEngine {
         // PR #178 made get_balance_mut fallible so a REJECTED operation can no longer insert
         // an empty row. This is the commit point: every validation above has passed, so the
         // write must succeed even for an asset the user is receiving for the first time.
-        // set_balance inserts-or-updates, keeping PR #153's all-or-nothing commit intact.
+        // set_balance inserts-or-updates, which keeps #153's all-or-nothing commit intact.
         if asset_to_add == asset_to_subtract {
             store.set_balance(user_id, asset_to_add, balance_add);
         } else {
