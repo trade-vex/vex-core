@@ -149,7 +149,7 @@ The system maintains an append-only journal via Aeron Archive. State reconstruct
 - Each slot contains a full OrderCommand
 - Total ring buffer size determined by: `buffer_slots * sizeof(OrderCommand)`
 
-**Backpressure**: When the ring buffer is full, publishers spin-wait (BusySpin strategy) rather than blocking. This sacrifices CPU for latency predictability.
+**Backpressure**: Gateway ingress never waits for a slot. A command that finds the ring buffer full is not enqueued; the originating gateway gets it back with `Status::Busy` (wire value 7): nothing was executed, retry. `Rejected` is reserved for commands the engine processed and refused.
 
 #### 3. Journaling Processor
 
@@ -1278,8 +1278,11 @@ Fixed 64-byte OrderCommand structure serialized via SBE (Simple Binary Encoding)
 
 ```rust
 fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) {
-    let cmd = decode_order_command(buffer);
-    self.producer.publish(|target| { *target = cmd; });
+    let cmd = decode_order_command(buffer)?;
+    if self.producer.try_publish(|target| { *target = cmd.clone(); }).is_err() {
+        // Ring full: nothing enqueued, so tell the gateway to retry.
+        self.publications.publish_response(&busy_response(cmd));
+    }
 }
 ```
 
@@ -1425,8 +1428,8 @@ Performance characteristics vary based on workload, system configuration, and ha
 **Ring Buffer Saturation**: Occurs when publishers produce faster than consumers process.
 
 **Saturation Behavior**:
-- Publishers busy-spin on `publish()` until slot available
-- No dropped orders (backpressure propagates to gateway)
+- Ingress does not wait for a slot: a command that finds the ring full is answered `Status::Busy` and not executed
+- No silently dropped orders: the gateway is told the command was not executed and can retry it
 - Latency increases with queue depth
 
 ### Compiler Optimizations

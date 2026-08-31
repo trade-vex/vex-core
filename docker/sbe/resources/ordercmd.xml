@@ -42,6 +42,8 @@
             <validValue name="Filled" value="4">4</validValue>
             <validValue name="Processing" value="5">5</validValue>
             <validValue name="Processed" value="6">6</validValue>
+            <!-- Additive enumerant: same block length and offsets, schema version unchanged. -->
+            <validValue name="Busy" value="7" description="Not accepted: engine ingress was full; nothing executed, retry">7</validValue>
         </enum>
     </types>
 
