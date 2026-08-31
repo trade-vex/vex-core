@@ -78,9 +78,20 @@ impl BalanceStore {
             .ok_or(BalanceError::UserAssetNotFound(user_id, asset_id))
     }
 
-    pub fn get_balance_mut(&mut self, user_id: u64, asset_id: u16) -> &mut UserBalance {
+    pub fn get_balance_mut(
+        &mut self,
+        user_id: u64,
+        asset_id: u16,
+    ) -> Result<&mut UserBalance, BalanceError> {
         let key = BalanceKey { user_id, asset_id };
-        self.balances.entry(key).or_default()
+        self.balances
+            .get_mut(&key)
+            .ok_or(BalanceError::UserAssetNotFound(user_id, asset_id))
+    }
+
+    pub fn set_balance(&mut self, user_id: u64, asset_id: u16, balance: UserBalance) {
+        let key = BalanceKey { user_id, asset_id };
+        self.balances.insert(key, balance);
     }
 
     // Lock funds (move from available to locked)
@@ -90,10 +101,15 @@ impl BalanceStore {
         asset_id: u16,
         amount: u64,
     ) -> Result<(), BalanceError> {
-        let balance = self.get_balance_mut(user_id, asset_id);
+        let balance = self.get_balance_mut(user_id, asset_id)?;
         if balance.available >= amount {
-            balance.available -= amount;
-            balance.locked += amount;
+            let available = balance.available - amount;
+            let locked = balance
+                .locked
+                .checked_add(amount)
+                .ok_or(BalanceError::Overflow)?;
+            balance.available = available;
+            balance.locked = locked;
             Ok(())
         } else {
             Err(BalanceError::InsufficientAvailableFunds {
@@ -110,10 +126,15 @@ impl BalanceStore {
         asset_id: u16,
         amount: u64,
     ) -> Result<(), BalanceError> {
-        let balance = self.get_balance_mut(user_id, asset_id);
+        let balance = self.get_balance_mut(user_id, asset_id)?;
         if balance.locked >= amount {
-            balance.locked -= amount;
-            balance.available += amount;
+            let locked = balance.locked - amount;
+            let available = balance
+                .available
+                .checked_add(amount)
+                .ok_or(BalanceError::Overflow)?;
+            balance.locked = locked;
+            balance.available = available;
             Ok(())
         } else {
             Err(BalanceError::InsufficientLockedFunds {
@@ -130,7 +151,8 @@ impl BalanceStore {
         asset_id: u16,
         amount: u64,
     ) -> Result<UserBalance, BalanceError> {
-        let balance = self.get_balance_mut(user_id, asset_id);
+        let key = BalanceKey { user_id, asset_id };
+        let balance = self.balances.entry(key).or_default();
         balance.available = balance
             .available
             .checked_add(amount)
@@ -145,7 +167,7 @@ impl BalanceStore {
         asset_id: u16,
         amount: u64,
     ) -> Result<UserBalance, BalanceError> {
-        let balance = self.get_balance_mut(user_id, asset_id);
+        let balance = self.get_balance_mut(user_id, asset_id)?;
         if balance.available >= amount {
             balance.available -= amount;
             Ok(*balance)
@@ -164,7 +186,7 @@ impl BalanceStore {
         asset_id: u16,
         amount: u64,
     ) -> Result<UserBalance, BalanceError> {
-        let balance = self.get_balance_mut(user_id, asset_id);
+        let balance = self.get_balance_mut(user_id, asset_id)?;
         if balance.locked >= amount {
             balance.locked -= amount;
             Ok(*balance)
@@ -174,6 +196,51 @@ impl BalanceStore {
                 needed: amount,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejected_lock_does_not_insert_balance() {
+        let mut store = BalanceStore::new();
+
+        assert_eq!(
+            store.lock_funds(7, 3, 1),
+            Err(BalanceError::UserAssetNotFound(7, 3))
+        );
+        assert!(store.balances.is_empty());
+    }
+
+    #[test]
+    fn rejected_unlock_does_not_insert_balance() {
+        let mut store = BalanceStore::new();
+
+        assert_eq!(
+            store.unlock_funds(7, 3, 1),
+            Err(BalanceError::UserAssetNotFound(7, 3))
+        );
+        assert!(store.balances.is_empty());
+    }
+
+    #[test]
+    fn lock_funds_checks_locked_overflow_without_mutation() {
+        let mut store = BalanceStore::new();
+        store.set_balance(7, 3, UserBalance::new(1, u64::MAX));
+
+        assert_eq!(store.lock_funds(7, 3, 1), Err(BalanceError::Overflow));
+        assert_eq!(store.get_balance(7, 3), UserBalance::new(1, u64::MAX));
+    }
+
+    #[test]
+    fn unlock_funds_checks_available_overflow_without_mutation() {
+        let mut store = BalanceStore::new();
+        store.set_balance(7, 3, UserBalance::new(u64::MAX, 1));
+
+        assert_eq!(store.unlock_funds(7, 3, 1), Err(BalanceError::Overflow));
+        assert_eq!(store.get_balance(7, 3), UserBalance::new(u64::MAX, 1));
     }
 }
 
