@@ -122,6 +122,11 @@ impl VexConfig {
         self.gateway_networking.validate()?;
         self.logging.validate()?;
         self.symbols.validate()?;
+        if self.is_production() && self.symbols.is_empty() {
+            return Err(ConfigError::ValidationError(
+                "Symbol configuration cannot be empty in production".to_string(),
+            ));
+        }
         #[cfg(feature = "balance-preload")]
         if self.balance_preload.enabled {
             self.balance_preload.validate()?;
@@ -176,5 +181,29 @@ impl Default for VexConfig {
 impl Display for VexConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:#?}", self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_empty_symbols_rejected_in_production_but_accepted_in_development() {
+        let production = VexConfig::new(Environment::Production);
+        assert!(matches!(
+            production.validate(),
+            Err(ConfigError::ValidationError(message))
+                if message == "Symbol configuration cannot be empty in production"
+        ));
+
+        let mut development = VexConfig::new(Environment::Development);
+        development.symbols.symbols.clear();
+        assert!(development.validate().is_ok());
+    }
+
+    #[test]
+    fn test_valid_configuration_accepted() {
+        assert!(VexConfig::new(Environment::Development).validate().is_ok());
     }
 }
