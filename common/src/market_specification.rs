@@ -31,17 +31,30 @@ impl CoreMarketSpecification {
         CoreMarketSpecificationBuilder::default()
     }
 
-    // Normalizes Price*Size into Atomic Quote Units
+    /// Normalizes `price * size` into atomic quote units: `(P * V * S_quote) / (S_base * K_quote)`.
+    ///
+    /// Returns `None` when the notional cannot be represented. That covers three cases, all of
+    /// which must reject the order rather than produce a number:
+    ///
+    /// * the intermediate `price * size * quote_native_scale` product overflows `u128` — the
+    ///   release profile disables overflow checks, so an unchecked multiply wraps **silently**
+    ///   and yields a small, entirely plausible cost. An order could then reserve far less
+    ///   collateral than it can actually owe, rest on the book, and half-settle.
+    /// * the result does not fit in `u64`. Saturating to `u64::MAX` here is equally unsafe: it
+    ///   is indistinguishable from a legitimate cost to every caller.
+    /// * the denominator is zero (a misconfigured market); returning `0` would hand out base
+    ///   assets for free.
     #[inline]
-    pub fn calculate_quote_cost(&self, price: u64, size: u64) -> u64 {
-        // Formula: (P * V * S_quote) / (S_base * K_quote)
-        let numerator = (price as u128) * (size as u128) * (self.quote_native_scale as u128);
-        let denominator = (self.base_native_scale as u128) * (self.quote_scale_k as u128);
-
+    pub fn calculate_quote_cost(&self, price: u64, size: u64) -> Option<u64> {
+        let denominator =
+            (self.base_native_scale as u128).checked_mul(self.quote_scale_k as u128)?;
         if denominator == 0 {
-            return 0;
+            return None;
         }
-        (numerator / denominator) as u64
+        let numerator = (price as u128)
+            .checked_mul(size as u128)?
+            .checked_mul(self.quote_native_scale as u128)?;
+        u64::try_from(numerator / denominator).ok()
     }
 }
 
