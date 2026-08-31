@@ -242,8 +242,9 @@ impl RiskEngine {
             Side::Bid => {
                 let quote_spent = spec.calculate_quote_cost(event.price, event.size);
                 // Fee is on the base asset received. Assuming fee is in basis points (e.g., 20bp = 0.2%)
-                let fee_in_base = (event.size * fee) / 10000;
-                let base_received_net = event.size - fee_in_base;
+                let fee_in_base =
+                    u64::try_from((event.size as u128 * fee as u128) / 10000).unwrap_or(u64::MAX);
+                let base_received_net = event.size.saturating_sub(fee_in_base);
                 (
                     quote_asset(market_id),
                     quote_spent,
@@ -257,8 +258,10 @@ impl RiskEngine {
                 let base_spent = event.size;
                 let quote_received_gross = spec.calculate_quote_cost(event.price, event.size);
                 // Fee is on the quote asset received. Assuming fee is in basis points.
-                let fee_in_quote = (quote_received_gross * fee) / 10000;
-                let quote_received_net = quote_received_gross - fee_in_quote;
+                let fee_in_quote =
+                    u64::try_from((quote_received_gross as u128 * fee as u128) / 10000)
+                        .unwrap_or(u64::MAX);
+                let quote_received_net = quote_received_gross.saturating_sub(fee_in_quote);
                 (
                     base_asset(market_id),
                     base_spent,
@@ -1056,6 +1059,43 @@ mod tests {
             ],
             balances_before
         );
+    }
+
+    #[test]
+    fn test_trade_settlement_fee_at_18_decimal_scale() {
+        let base_asset_id = 2u16;
+        let quote_asset_id = 1u16;
+        let market_id = ((quote_asset_id as u32) << 16) | base_asset_id as u32;
+        let user_id = 102;
+        let price = 1;
+        let size = 1_000_000_000_000_000_000;
+
+        let mut specs = HashMap::new();
+        specs.insert(market_id, get_spec(market_id));
+        let engine = RiskEngine::new(specs, 0, 1);
+        engine.set_balance(user_id, quote_asset_id, UserBalance::new(0, size));
+
+        let mut trade_event = MatcherTradeEvent {
+            price,
+            size,
+            maker_user_id: 101,
+            active_order_completed: false,
+            matched_order_id: 1,
+            matched_order_completed: true,
+            next_event: None,
+            maker_balance: [UserBalance::default(); 2],
+            maker_remaining_size: 0,
+            maker_original_size: size,
+        };
+
+        engine.handle_trade_event(user_id, market_id, Side::Bid, &mut trade_event, Some(price));
+
+        let expected_fee = 2_000_000_000_000_000;
+        assert_eq!(
+            engine.get_balance(user_id, base_asset_id).total(),
+            size - expected_fee
+        );
+        assert_eq!(engine.get_balance(user_id, quote_asset_id).total(), 0);
     }
 
     #[test]
