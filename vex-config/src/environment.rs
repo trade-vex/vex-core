@@ -18,9 +18,9 @@ pub enum Environment {
 }
 
 impl Environment {
-    /// Detect environment from environment variables
-    /// Checks VEX_ENV, ENVIRONMENT, ENV, and NODE_ENV in that order
-    pub fn detect() -> Self {
+    /// Detect an explicitly selected environment from environment variables.
+    /// Checks VEX_ENV, ENVIRONMENT, ENV, and NODE_ENV in that order.
+    pub fn detect_explicit() -> Option<Self> {
         let env_vars = ["VEX_ENV", "ENVIRONMENT", "ENV", "NODE_ENV"];
 
         for var in &env_vars {
@@ -33,8 +33,18 @@ impl Environment {
                     environment = %env,
                     source = *var
                 );
-                return env;
+                return Some(env);
             }
+        }
+
+        None
+    }
+
+    /// Detect environment from environment variables
+    /// Checks VEX_ENV, ENVIRONMENT, ENV, and NODE_ENV in that order
+    pub fn detect() -> Self {
+        if let Some(environment) = Self::detect_explicit() {
+            return environment;
         }
 
         tracing::warn!(
