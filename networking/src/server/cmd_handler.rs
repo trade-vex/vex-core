@@ -24,17 +24,20 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
                     "received order command"
                 );
 
-                if let Err(e) = self.producer.try_publish(|cmd| {
+                match self.producer.try_publish(|cmd| {
                     *cmd = order_command.clone();
                 }) {
-                    error!(
-                        target: "gateway_fragment",
-                        gateway_id = self.gateway_id,
-                        error = %e,
-                        "failed to publish order command to ring buffer"
-                    );
-                    order_command.status = Status::Rejected;
-                    self.publications.publish_response(&order_command);
+                    Ok(sequence) => self.publications.submitted(sequence),
+                    Err(e) => {
+                        error!(
+                            target: "gateway_fragment",
+                            gateway_id = self.gateway_id,
+                            error = %e,
+                            "failed to publish order command to ring buffer"
+                        );
+                        order_command.status = Status::Rejected;
+                        self.publications.publish_response(&order_command);
+                    }
                 }
             }
             Err(e) => {
