@@ -368,6 +368,113 @@ mod test {
     }
 
     #[test]
+    fn test_gtc_market_sell_on_empty_book_is_cancelled_without_resting() {
+        let (mut book, price_cache) = create_test_orderbook();
+        let mut cmd = create_order_command(
+            OrderCommandType::PlaceOrder,
+            1,
+            100,
+            1001,
+            1,
+            0,
+            100,
+            Side::Ask,
+            TimeInForce::Gtc,
+        );
+
+        book.place_order(&mut cmd, price_cache);
+
+        assert_eq!(cmd.status(), Status::Cancelled);
+        assert_eq!(cmd.size(), 100);
+        assert_eq!(book.get_level_order_count(Side::Ask, 0), 0);
+        assert_eq!(book.best_ask(), None);
+        assert_eq!(book.total_order_count(), 0);
+    }
+
+    #[test]
+    fn test_gtc_limit_order_still_rests_with_sentinel_guard() {
+        let (mut book, price_cache) = create_test_orderbook();
+        let mut cmd = create_order_command(
+            OrderCommandType::PlaceOrder,
+            1,
+            100,
+            1001,
+            1,
+            55,
+            100,
+            Side::Ask,
+            TimeInForce::Gtc,
+        );
+
+        book.place_order(&mut cmd, price_cache);
+
+        assert_eq!(cmd.status(), Status::Placed);
+        assert_eq!(cmd.size(), 100);
+        assert_eq!(book.best_ask(), Some((55, 100)));
+        assert_eq!(book.total_order_count(), 1);
+    }
+
+    #[test]
+    fn test_gtc_opposite_side_sentinel_price_does_not_rest() {
+        let (mut book, price_cache) = create_test_orderbook();
+        let mut cmd = create_order_command(
+            OrderCommandType::PlaceOrder,
+            1,
+            100,
+            1001,
+            1,
+            0,
+            100,
+            Side::Bid,
+            TimeInForce::Gtc,
+        );
+
+        book.place_order(&mut cmd, price_cache);
+
+        assert_eq!(cmd.status(), Status::Cancelled);
+        assert_eq!(cmd.size(), 100);
+        assert_eq!(book.get_level_order_count(Side::Bid, 0), 0);
+        assert_eq!(book.best_bid(), None);
+        assert_eq!(book.total_order_count(), 0);
+    }
+
+    #[test]
+    fn test_ioc_and_fok_market_sell_behaviour_is_unchanged() {
+        let (mut book, price_cache) = create_test_orderbook();
+        let mut ioc_cmd = create_order_command(
+            OrderCommandType::PlaceOrder,
+            1,
+            100,
+            1001,
+            1,
+            0,
+            100,
+            Side::Ask,
+            TimeInForce::Ioc,
+        );
+        let mut fok_cmd = create_order_command(
+            OrderCommandType::PlaceOrder,
+            2,
+            101,
+            1002,
+            1,
+            0,
+            100,
+            Side::Ask,
+            TimeInForce::Fok,
+        );
+
+        book.place_order(&mut ioc_cmd, price_cache.clone());
+        book.place_order(&mut fok_cmd, price_cache);
+
+        assert_eq!(ioc_cmd.status(), Status::Cancelled);
+        assert_eq!(ioc_cmd.size(), 100);
+        assert_eq!(fok_cmd.status(), Status::Cancelled);
+        assert_eq!(fok_cmd.size(), 100);
+        assert_eq!(book.total_order_count(), 0);
+    }
+
+    #[test]
     fn test_multiple_orders_same_price_level() {
         let (mut book, price_cache) = create_test_orderbook();
 
