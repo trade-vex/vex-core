@@ -54,7 +54,7 @@ use rusteron_media_driver::AeronIdleStrategy;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{debug, error, info, warn};
 use vex_config::{CoreNetworkingConfig, GatewayAuthenticationKey};
@@ -70,6 +70,7 @@ const RECORDING_STREAM_ID: i32 = 2001;
 pub const REPLAY_STREAM_ID: i32 = 2002;
 /// Channel for Aeron Recording also known as Aeron Control Channel
 const RECORDING_CHANNEL: &str = "aeron:ipc";
+const STARTUP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Error types for VEX Core server operations
 #[derive(Error, Debug)]
@@ -90,6 +91,54 @@ pub enum ServerError {
     CapacityExceededError(String),
     #[error("Configuration error: {0}")]
     ConfigurationError(String),
+    #[error("{0} did not connect within 10 seconds")]
+    StartupConnectionTimeout(&'static str),
+}
+
+fn wait_for_startup_connection(
+    resource: &'static str,
+    mut is_connected: impl FnMut() -> bool,
+) -> Result<(), ServerError> {
+    let start = Instant::now();
+    while !is_connected() {
+        if start.elapsed() >= STARTUP_CONNECTION_TIMEOUT {
+            return Err(ServerError::StartupConnectionTimeout(resource));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+fn should_log_poll_error(last_error: &mut Option<String>, error: impl std::fmt::Display) -> bool {
+    let error = error.to_string();
+    if last_error.as_ref() == Some(&error) {
+        false
+    } else {
+        *last_error = Some(error);
+        true
+    }
+}
+
+/// Runs `undo` when dropped unless [`UndoOnError::disarm`] is called first, so a completed
+/// startup step is reverted on every early `?` return that follows it.
+struct UndoOnError<F: FnOnce()>(Option<F>);
+
+impl<F: FnOnce()> UndoOnError<F> {
+    fn new(undo: F) -> Self {
+        Self(Some(undo))
+    }
+
+    fn disarm(mut self) {
+        self.0 = None;
+    }
+}
+
+impl<F: FnOnce()> Drop for UndoOnError<F> {
+    fn drop(&mut self) {
+        if let Some(undo) = self.0.take() {
+            undo();
+        }
+    }
 }
 
 /// Enhanced VEX Core server for handling gateway connections
@@ -141,6 +190,8 @@ impl VexCoreServer {
 
         // Initialize Aeron context
         let aeron = Self::initialize_aeron(&config)?;
+        // Armed once recording starts, disarmed only when construction succeeds.
+        let mut stop_recording_on_error = None;
 
         // Initialize Aeron Archive (only if archive channels are configured)
         let (archive, subscription_id) = if !config.request_control_channel.is_empty() {
@@ -155,6 +206,20 @@ impl VexCoreServer {
 
             // Start recording
             let (subscription_id, channel) = Self::start_recording(&archive, recording)?;
+            // If startup fails from here on, stop the recording explicitly: a publication that
+            // never connected leaves no image for `auto_stop`, and the archive would then refuse
+            // the next non-replay start with "recording exists".
+            let recording_archive = archive.clone();
+            stop_recording_on_error = Some(UndoOnError::new(move || {
+                if let Err(error) = recording_archive.stop_recording_subscription(subscription_id) {
+                    warn!(
+                        target: "core_server",
+                        action = "failed_startup_recording_stop_failed",
+                        subscription_id,
+                        error = %error
+                    );
+                }
+            }));
 
             // Publisher for Recording the incoming messages
             let archive_publication = aeron.add_publication(
@@ -163,15 +228,9 @@ impl VexCoreServer {
                 Duration::from_secs(1),
             )?;
 
-            // wait for publication to be connected
-            while !archive_publication.is_connected() {
-                std::thread::sleep(Duration::from_millis(100));
-                info!(
-                    target: "core_server",
-                    action = "archive_publication_wait",
-                    core_id = %config.core_id
-                );
-            }
+            wait_for_startup_connection("archive publication", || {
+                archive_publication.is_connected()
+            })?;
 
             publications.set_archive_publication(archive_publication);
 
@@ -224,6 +283,9 @@ impl VexCoreServer {
         // Create handshake handler
         let handshake_handler = HandshakeMessageHandler::new(Rc::clone(&gateways), publication);
 
+        if let Some(stop_recording_on_error) = stop_recording_on_error {
+            stop_recording_on_error.disarm();
+        }
         Ok(Self {
             gateways,
             config,
@@ -248,27 +310,39 @@ impl VexCoreServer {
         // Main Message Polling Loop
         // 1. Listens for new handshakes
         // 2. Listens for new orders
+        let mut last_subscription_poll_error = None;
+        let mut last_gateway_poll_error = None;
         loop {
             if self.shutdown.load(Ordering::Acquire) {
                 return self.shutdown();
             }
 
-            if let Err(e) = self.subscription.poll(Some(&self.handshake_handler), 10) {
-                error!(
-                    target: "core_server",
-                    action = "poll_subscription_failed",
-                    core_id = %self.config.core_id,
-                    error = %e
-                );
+            match self.subscription.poll(Some(&self.handshake_handler), 10) {
+                Ok(_) => last_subscription_poll_error = None,
+                Err(e) => {
+                    if should_log_poll_error(&mut last_subscription_poll_error, &e) {
+                        error!(
+                            target: "core_server",
+                            action = "poll_subscription_failed",
+                            core_id = %self.config.core_id,
+                            error = %e
+                        );
+                    }
+                }
             }
 
-            if let Err(e) = self.gateways.poll() {
-                error!(
-                    target: "core_server",
-                    action = "poll_gateways_failed",
-                    core_id = %self.config.core_id,
-                    error = %e
-                );
+            match self.gateways.poll() {
+                Ok(()) => last_gateway_poll_error = None,
+                Err(e) => {
+                    if should_log_poll_error(&mut last_gateway_poll_error, &e) {
+                        error!(
+                            target: "core_server",
+                            action = "poll_gateways_failed",
+                            core_id = %self.config.core_id,
+                            error = %e
+                        );
+                    }
+                }
             }
 
             AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
@@ -536,13 +610,7 @@ impl VexCoreServer {
                 Duration::from_secs(5),
             )?;
 
-            while !subscription.is_connected() {
-                std::thread::sleep(Duration::from_millis(100));
-                debug!(
-                    target: "replay",
-                    action = "subscription_wait",
-                );
-            }
+            wait_for_startup_connection("replay subscription", || subscription.is_connected())?;
 
             let mut position = record.start_position;
             loop {
@@ -600,5 +668,52 @@ impl VexCoreServer {
     /// Gets core configuration
     pub fn config(&self) -> &CoreNetworkingConfig {
         &self.config
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ServerError, UndoOnError, should_log_poll_error};
+    use std::cell::Cell;
+
+    #[test]
+    fn poll_error_deduplication_keeps_first_occurrence_and_resets() {
+        let mut last_error = None;
+
+        assert!(should_log_poll_error(&mut last_error, "persistent error"));
+        assert!(!should_log_poll_error(&mut last_error, "persistent error"));
+        last_error = None;
+        assert!(should_log_poll_error(&mut last_error, "persistent error"));
+    }
+
+    /// Mirrors `VexCoreServer::new`: arm after the step, `?` out on a later failure, disarm last.
+    fn startup(undos: &Cell<u32>, later_step: Result<(), ServerError>) -> Result<(), ServerError> {
+        let undo = UndoOnError::new(|| undos.set(undos.get() + 1));
+        later_step?;
+        undo.disarm();
+        Ok(())
+    }
+
+    #[test]
+    fn startup_step_is_undone_exactly_once_when_a_later_step_fails() {
+        let undos = Cell::new(0);
+        let error = startup(
+            &undos,
+            Err(ServerError::StartupConnectionTimeout("archive publication")),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ServerError::StartupConnectionTimeout("archive publication")
+        ));
+        assert_eq!(undos.get(), 1);
+    }
+
+    #[test]
+    fn successful_startup_keeps_its_steps() {
+        let undos = Cell::new(0);
+        startup(&undos, Ok(())).unwrap();
+        assert_eq!(undos.get(), 0);
     }
 }
