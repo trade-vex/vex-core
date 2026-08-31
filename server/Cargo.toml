@@ -21,6 +21,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 hashbrown = { workspace = true }
 disruptor = { workspace = true }
+core_affinity = { workspace = true }
 thiserror = { workspace = true }
 tikv-jemallocator = { workspace = true }
 
