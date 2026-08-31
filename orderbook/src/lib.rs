@@ -239,15 +239,18 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             TimeInForce::Gtc => {
                 // Handle GTC (Good 'Til Canceled) orders
                 let remaining = self.match_order(cmd);
-                if remaining == cmd.size {
-                    self.add_to_book(cmd, remaining);
-                    cmd.set_status(Status::Placed);
-                } else if remaining > 0 {
-                    // Add remaining to book
-                    self.add_to_book(cmd, remaining);
-                    cmd.set_status(Status::PartiallyFilled);
-                } else {
+                if remaining == 0 && cmd.size != 0 {
                     cmd.set_status(Status::Filled);
+                } else if Self::is_market_order(cmd) {
+                    cmd.set_status(Status::Cancelled);
+                } else if self.add_to_book(cmd, remaining) {
+                    cmd.set_status(if remaining == cmd.size {
+                        Status::Placed
+                    } else {
+                        Status::PartiallyFilled
+                    });
+                } else {
+                    cmd.set_status(Status::Cancelled);
                 }
                 cmd.set_size(remaining);
             }
@@ -347,7 +350,11 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     }
 
     /// Add order to the book
-    fn add_to_book(&mut self, cmd: &OrderCommand, remaining_size: u64) {
+    fn add_to_book(&mut self, cmd: &OrderCommand, remaining_size: u64) -> bool {
+        if cmd.price == 0 || cmd.price == u64::MAX {
+            return false;
+        }
+
         let order = Order {
             order_id: cmd.order_id,
             user_id: cmd.user_id,
@@ -365,6 +372,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
         };
         level.add_order(order);
         self.orders.insert(cmd.order_id, cmd.price);
+        true
     }
 
     /// Check if an order can be filled completely
