@@ -61,7 +61,7 @@ VEX_ENV=development ./target/release/vex-core --replay
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `VEX_ENV` | Environment: exactly `development`, `test` or `production`; any other value is a startup error | Required |
-| `KAFKA_BROKER` | Kafka broker address | `localhost:9092` |
+| `VEX__KAFKA_BROKER` | Kafka broker address; overrides the configured `kafka_broker` like any `VEX__*` key | config `kafka_broker` (`localhost:9092` in the dev/test defaults) |
 | `ENABLE_CORE_PINNING` | Enable CPU core pinning for processor threads | `false` (dev/test), `true` (prod) |
 | `RUST_LOG` | Log level (trace, debug, info, warn, error) | `info` |
 | `VEX__*` | Configuration overrides (e.g., `VEX__CORE_NETWORKING__CONTEXT_DIR`) | - |
@@ -139,7 +139,6 @@ The `main` function overrides these values at runtime:
 
 - `core_networking.local_address` → `0.0.0.0`
 - `core_networking.context_dir` → `/dev/shm/aeron`
-- `kafka_broker` → `$KAFKA_BROKER` or `localhost:9092`
 
 Ensure the **Aeron Media Driver uses the same `context_dir`** as vex-core (or the directory vex-core is configured to use).
 
@@ -228,7 +227,7 @@ ls -la config.dev.yaml config.test.yaml config.prod.yaml 2>/dev/null
 **Solutions**:
 - Set `VEX_ENV` to the intended environment (`development`, `test` or `production`)
 - Ensure a config file exists for the selected environment, or that development/test defaults are acceptable
-- Verify `KAFKA_BROKER` is reachable if Kafka is required
+- Verify the configured `kafka_broker` (or `VEX__KAFKA_BROKER`) is reachable if Kafka is required
 - Check that `/dev/shm` has sufficient space for Aeron
 - Verify symbol configuration is valid (market_id, assets, fees)
 
@@ -264,15 +263,15 @@ netstat -tuln | grep -E "40001|40002|3521|3522|8010"
 **Diagnosis**:
 ```bash
 # Test Kafka connectivity
-kafka-topics.sh --bootstrap-server $KAFKA_BROKER --list
+kafka-topics.sh --bootstrap-server $VEX__KAFKA_BROKER --list
 
-# Check KAFKA_BROKER is set
-echo $KAFKA_BROKER
+# Check VEX__KAFKA_BROKER is set (otherwise the configured kafka_broker is used)
+echo $VEX__KAFKA_BROKER
 ```
 
 **Solutions**:
 - Verify Kafka is running and reachable
-- Set `KAFKA_BROKER` correctly (e.g., `localhost:9092`)
+- Set `kafka_broker` in the config, or `VEX__KAFKA_BROKER`, correctly (e.g., `localhost:9092`)
 - Check network connectivity to Kafka
 
 ### Gateway Connection Failures

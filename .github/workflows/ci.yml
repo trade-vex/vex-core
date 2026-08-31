@@ -84,7 +84,6 @@ jobs:
         run: cargo test --workspace --all-features --all-targets
         env:
           RUSTFLAGS: "-D warnings -C link-arg=-fuse-ld=mold"
-          VEX_KAFKA_BROKER: localhost:9092
           VEX_ENV: development
 
   fmt:
@@ -189,7 +188,6 @@ jobs:
         run: |
           cargo llvm-cov --workspace --all-features --all-targets --exclude rusteron_client --text
         env:
-          VEX_KAFKA_BROKER: localhost:9092
           VEX_ENV: development
 
   audit:

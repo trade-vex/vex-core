@@ -1497,7 +1497,7 @@ The Makefile provides high-level orchestration for complex workflows involving A
 ```bash
 RUST_LOG=info               # Logging level
 AERON_DIR=/dev/shm/aeron    # Aeron shared memory location
-KAFKA_BROKERS=localhost:9092  # Kafka cluster
+VEX__KAFKA_BROKER=localhost:9092  # Kafka broker (overrides the configured kafka_broker)
 ```
 
 **Static Configuration** (vex-config crate):

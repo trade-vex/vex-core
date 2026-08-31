@@ -73,6 +73,12 @@ impl RunningEngine {
 /// # }
 /// ```
 pub fn start(config: VexConfig, replay: bool) -> Result<RunningEngine, EngineError> {
+    config
+        .validate()
+        .map_err(|error| EngineError::Configuration(error.to_string()))?;
+
+    report_disabled_journaling(&config);
+
     #[allow(unused_mut)] // mut needed when balance-preload feature is enabled
     let ((engine, mut producer), replay_control) = init_internal(
         config.symbols.symbols.clone(),
@@ -117,6 +123,18 @@ pub fn start(config: VexConfig, replay: bool) -> Result<RunningEngine, EngineErr
         thread: thread_handle,
         shutdown_flag,
     })
+}
+
+fn report_disabled_journaling(config: &VexConfig) {
+    if config.core_networking.request_control_channel.is_empty() {
+        tracing::error!(
+            target: "server",
+            action = "journaling_disabled",
+            archive_recording = false,
+            environment = %config.environment,
+            "JOURNALING IS DISABLED: commands will not be recoverable by replay"
+        );
+    }
 }
 
 /// Internal initialization function
@@ -287,7 +305,64 @@ mod tests {
     use common::{MarketType, OrderCommand, PriceCache, Side, Status, TimeInForce, UserBalance};
     use disruptor::Producer;
     use processors::risk_engine::RiskEngine;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
+    use tracing::field::{Field, Visit};
+    use tracing::{Event, Level, Subscriber};
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+    use tracing_subscriber::{Layer, Registry};
+
+    struct ActionVisitor {
+        journaling_disabled: bool,
+    }
+
+    impl Visit for ActionVisitor {
+        fn record_debug(&mut self, _field: &Field, _value: &dyn std::fmt::Debug) {}
+
+        fn record_str(&mut self, field: &Field, value: &str) {
+            if field.name() == "action" && value == "journaling_disabled" {
+                self.journaling_disabled = true;
+            }
+        }
+    }
+
+    struct DisabledJournalLayer(Arc<AtomicBool>);
+
+    impl<S: Subscriber> Layer<S> for DisabledJournalLayer {
+        fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
+            let mut visitor = ActionVisitor {
+                journaling_disabled: false,
+            };
+            event.record(&mut visitor);
+            if visitor.journaling_disabled && *event.metadata().level() == Level::ERROR {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
+    #[test]
+    fn non_production_config_loudly_reports_disabled_journaling() {
+        let mut config = VexConfig::new(vex_config::Environment::Development);
+        config.core_networking.request_control_channel.clear();
+        let saw_error = Arc::new(AtomicBool::new(false));
+        let subscriber = Registry::default().with(DisabledJournalLayer(Arc::clone(&saw_error)));
+
+        assert!(config.validate().is_ok());
+        tracing::subscriber::with_default(subscriber, || report_disabled_journaling(&config));
+        assert!(saw_error.load(Ordering::Relaxed));
+    }
+
+    #[cfg(feature = "balance-preload")]
+    #[test]
+    fn production_balance_preload_is_rejected_before_startup() {
+        let mut config = VexConfig::new(vex_config::Environment::Production);
+        config.balance_preload.enabled = true;
+
+        assert!(matches!(
+            start(config, false),
+            Err(EngineError::Configuration(_))
+        ));
+    }
 
     /// Helper function to add a market specification to the specs map
     pub fn add_spec(market_id: u32, specs: &mut HashMap<u32, CoreMarketSpecification>) {
