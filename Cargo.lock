@@ -558,7 +558,7 @@ dependencies = [
 [[package]]
 name = "disruptor"
 version = "3.6.0"
-source = "git+https://github.com/trade-vex/disruptor-rs.git?rev=19ef2a9#19ef2a9a04de0fb97bc09d852ce5da98396efb57"
+source = "git+https://github.com/trade-vex/disruptor-rs.git?rev=7e07a8b0218d767d021925e58c5ff20fd5c30d70#7e07a8b0218d767d021925e58c5ff20fd5c30d70"
 dependencies = [
  "core_affinity",
  "crossbeam-utils",
