@@ -33,6 +33,12 @@ enum GatewaySlotState {
     Live,
 }
 
+const PORTS_PER_GATEWAY: usize = 2;
+
+fn gateway_port_capacity(max_gateways: u16) -> usize {
+    usize::from(max_gateways) * PORTS_PER_GATEWAY
+}
+
 pub struct Session {
     slots: [Option<GatewaySlot>; MAX_GATEWAYS],
 }
@@ -285,7 +291,7 @@ impl GatewayManager {
             aeron,
             port_allocator: PortAllocator::new(
                 config.base_gateway_port,
-                config.max_gateways.into(),
+                gateway_port_capacity(config.max_gateways),
             )
             .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?,
             session_allocator: SessionAllocator::new(
@@ -817,7 +823,7 @@ impl GatewayManager {
                         .take()
                         .expect("checked dedicated publication"),
                 ),
-            );
+            )?;
             pending.session_attached = true;
 
             debug!(
@@ -908,7 +914,7 @@ impl GatewayManager {
         };
 
         // remove publication
-        self.publications.remove(gateway_id);
+        self.publications.remove(gateway_id)?;
 
         // close subscription
         if let Some(mut session) = slot.duologue
@@ -1026,5 +1032,16 @@ mod tests {
 
         assert!(authenticate_gateway(&key, 987654321).is_err());
         assert!(!sessions.is_gateway_connected(1));
+    }
+
+    #[test]
+    fn port_allocator_has_two_ports_for_every_gateway() {
+        let allocator = PortAllocator::new(
+            10_000,
+            gateway_port_capacity(MAX_GATEWAYS.try_into().unwrap()),
+        )
+        .unwrap();
+
+        assert_eq!(allocator.total_ports(), MAX_GATEWAYS * PORTS_PER_GATEWAY);
     }
 }

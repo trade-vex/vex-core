@@ -355,6 +355,15 @@ pub struct MatcherTradeEvent {
     pub maker_original_size: u64,
 }
 
+impl Drop for MatcherTradeEvent {
+    fn drop(&mut self) {
+        let mut next = self.next_event.take();
+        while let Some(mut event) = next {
+            next = event.next_event.take();
+        }
+    }
+}
+
 impl MatcherTradeEvent {
     pub fn calc_filled_size(&self) -> u64 {
         let mut size = 0;
@@ -409,4 +418,21 @@ pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
         route_gateway_id: 0,
         original_size: 0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deep_matcher_trade_event_chain_drops_iteratively() {
+        let mut chain = None;
+        for _ in 0..100_000 {
+            let mut event = MatcherTradeEvent::default();
+            event.next_event = chain;
+            chain = Some(Box::new(event));
+        }
+
+        drop(chain);
+    }
 }

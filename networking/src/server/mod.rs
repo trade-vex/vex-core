@@ -54,7 +54,7 @@ use rusteron_media_driver::AeronIdleStrategy;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{debug, error, info, warn};
 use vex_config::{CoreNetworkingConfig, GatewayAuthenticationKey};
@@ -70,6 +70,7 @@ const RECORDING_STREAM_ID: i32 = 2001;
 pub const REPLAY_STREAM_ID: i32 = 2002;
 /// Channel for Aeron Recording also known as Aeron Control Channel
 const RECORDING_CHANNEL: &str = "aeron:ipc";
+const STARTUP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Error types for VEX Core server operations
 #[derive(Error, Debug)]
@@ -90,6 +91,32 @@ pub enum ServerError {
     CapacityExceededError(String),
     #[error("Configuration error: {0}")]
     ConfigurationError(String),
+    #[error("{0} did not connect within 10 seconds")]
+    StartupConnectionTimeout(&'static str),
+}
+
+fn wait_for_startup_connection(
+    resource: &'static str,
+    mut is_connected: impl FnMut() -> bool,
+) -> Result<(), ServerError> {
+    let start = Instant::now();
+    while !is_connected() {
+        if start.elapsed() >= STARTUP_CONNECTION_TIMEOUT {
+            return Err(ServerError::StartupConnectionTimeout(resource));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+fn should_log_poll_error(last_error: &mut Option<String>, error: impl std::fmt::Display) -> bool {
+    let error = error.to_string();
+    if last_error.as_ref() == Some(&error) {
+        false
+    } else {
+        *last_error = Some(error);
+        true
+    }
 }
 
 /// Enhanced VEX Core server for handling gateway connections
@@ -159,15 +186,9 @@ impl VexCoreServer {
                 Duration::from_secs(1),
             )?;
 
-            // wait for publication to be connected
-            while !archive_publication.is_connected() {
-                std::thread::sleep(Duration::from_millis(100));
-                info!(
-                    target: "core_server",
-                    action = "archive_publication_wait",
-                    core_id = %config.core_id
-                );
-            }
+            wait_for_startup_connection("archive publication", || {
+                archive_publication.is_connected()
+            })?;
 
             publications.set_archive_publication(archive_publication);
 
@@ -244,27 +265,39 @@ impl VexCoreServer {
         // Main Message Polling Loop
         // 1. Listens for new handshakes
         // 2. Listens for new orders
+        let mut last_subscription_poll_error = None;
+        let mut last_gateway_poll_error = None;
         loop {
             if self.shutdown.load(Ordering::Acquire) {
                 return self.shutdown();
             }
 
-            if let Err(e) = self.subscription.poll(Some(&self.handshake_handler), 10) {
-                error!(
-                    target: "core_server",
-                    action = "poll_subscription_failed",
-                    core_id = %self.config.core_id,
-                    error = %e
-                );
+            match self.subscription.poll(Some(&self.handshake_handler), 10) {
+                Ok(_) => last_subscription_poll_error = None,
+                Err(e) => {
+                    if should_log_poll_error(&mut last_subscription_poll_error, &e) {
+                        error!(
+                            target: "core_server",
+                            action = "poll_subscription_failed",
+                            core_id = %self.config.core_id,
+                            error = %e
+                        );
+                    }
+                }
             }
 
-            if let Err(e) = self.gateways.poll() {
-                error!(
-                    target: "core_server",
-                    action = "poll_gateways_failed",
-                    core_id = %self.config.core_id,
-                    error = %e
-                );
+            match self.gateways.poll() {
+                Ok(()) => last_gateway_poll_error = None,
+                Err(e) => {
+                    if should_log_poll_error(&mut last_gateway_poll_error, &e) {
+                        error!(
+                            target: "core_server",
+                            action = "poll_gateways_failed",
+                            core_id = %self.config.core_id,
+                            error = %e
+                        );
+                    }
+                }
             }
 
             AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
@@ -532,13 +565,7 @@ impl VexCoreServer {
                 Duration::from_secs(5),
             )?;
 
-            while !subscription.is_connected() {
-                std::thread::sleep(Duration::from_millis(100));
-                debug!(
-                    target: "replay",
-                    action = "subscription_wait",
-                );
-            }
+            wait_for_startup_connection("replay subscription", || subscription.is_connected())?;
 
             let mut position = record.start_position;
             loop {
@@ -596,5 +623,20 @@ impl VexCoreServer {
     /// Gets core configuration
     pub fn config(&self) -> &CoreNetworkingConfig {
         &self.config
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_log_poll_error;
+
+    #[test]
+    fn poll_error_deduplication_keeps_first_occurrence_and_resets() {
+        let mut last_error = None;
+
+        assert!(should_log_poll_error(&mut last_error, "persistent error"));
+        assert!(!should_log_poll_error(&mut last_error, "persistent error"));
+        last_error = None;
+        assert!(should_log_poll_error(&mut last_error, "persistent error"));
     }
 }
