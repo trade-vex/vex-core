@@ -11,7 +11,7 @@ pub struct CoreMarketSpecification {
     // Currency pair specification
     pub base_asset: u16,    // base currency
     pub quote_asset: u16,   // quote/counter currency (OR futures contract currency)
-    pub base_scale_k: u64,  // base currency amount multiplier (lot size in base currency units)
+    pub base_scale_k: u64,  // reserved compatibility field; unused by current spot calculations
     pub quote_scale_k: u64, // quote currency amount multiplier (step size in quote currency units)
 
     // Native scales for atomic calculations

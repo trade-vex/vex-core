@@ -659,24 +659,15 @@ impl EventsHandler for KafkaEventsHandler {
                 self.publish_order_event(cmd, original_size, filled_size);
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
             }
-            Status::Processing => {
-                // this should ideally be unreachable
+            _ => {
                 error!(
                     target: "events",
                     component = "kafka_handler",
-                    action = "unexpected_processing_status",
-                    order_id = cmd.order_id()
+                    action = "unexpected_status",
+                    order_id = cmd.order_id(),
+                    status = ?cmd.status()
                 );
                 self.publish_orderbook_event(market_id, &cmd.l2_data);
-            }
-            Status::Processed => {
-                order_debug!(
-                    "events_publish_balance_update",
-                    cmd,
-                    stage = "events",
-                    handler = "kafka"
-                );
-                self.publish_deposit_withdrawal_event(cmd);
             }
         }
         // Always publish the response back to the gateway

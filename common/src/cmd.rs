@@ -31,7 +31,7 @@ pub const FRAMESIZE: i64 = 96;
 
 /// OrderCommand: OrderCommand Plays the central role throughout the processing of the Order.
 /// It is created in the Gateway, and processed in VexCore in different processors through the Disruptor
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[repr(C)]
 pub struct OrderCommand {
     // --- Universal Fields (Relevant for all command types) ---
@@ -335,7 +335,7 @@ impl From<Status> for SbeStatus {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MatcherTradeEvent {
     pub active_order_completed: bool,
     pub matched_order_id: u64,
@@ -357,6 +357,30 @@ impl Drop for MatcherTradeEvent {
         }
     }
 }
+
+impl PartialEq for MatcherTradeEventChain {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare the linked events, not the cached tail pointer (PR #177's `tail` is a
+        // derived cache and is deliberately not part of the value's identity).
+        let mut left = Some(self.head.as_ref());
+        let mut right = Some(other.head.as_ref());
+        loop {
+            match (left, right) {
+                (None, None) => return true,
+                (Some(l), Some(r)) => {
+                    if l != r {
+                        return false;
+                    }
+                    left = l.next_event.as_deref();
+                    right = r.next_event.as_deref();
+                }
+                _ => return false,
+            }
+        }
+    }
+}
+
+impl Eq for MatcherTradeEventChain {}
 
 pub struct MatcherTradeEventChain {
     head: Box<MatcherTradeEvent>,
@@ -697,5 +721,82 @@ mod tests {
         command.attach_event(event_chain(&[5]));
 
         assert_eq!(matched_order_ids(&command), [1, 2, 3, 4, 5]);
+    }
+
+    fn assert_round_trip(expected: OrderCommand) {
+        let mut buffer = [0; ORDERCOMMANDSIZE];
+        encode_order_command(&expected, &mut buffer).expect("encoding must succeed");
+        let decoded = decode_order_command(&buffer).expect("decoding must succeed");
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn order_command_wire_codec_round_trips_every_field_and_boundaries() {
+        assert_round_trip(OrderCommand {
+            command: OrderCommandType::PlaceOrder,
+            client_order_id: 0,
+            order_id: 0,
+            user_id: 0,
+            market_id: 0,
+            price: 0,
+            size: 0,
+            side: Side::Ask,
+            time_in_force: TimeInForce::Gtc,
+            timestamp: 0,
+            status: Status::Rejected,
+            ..OrderCommand::default()
+        });
+        assert_round_trip(OrderCommand {
+            command: OrderCommandType::WithdrawFunds,
+            client_order_id: u64::MAX,
+            order_id: u64::MAX,
+            user_id: u64::MAX,
+            market_id: u32::MAX,
+            price: u64::MAX,
+            size: u64::MAX,
+            side: Side::Bid,
+            time_in_force: TimeInForce::Fok,
+            timestamp: u64::MAX,
+            status: Status::Processed,
+            ..OrderCommand::default()
+        });
+
+        for command in [
+            OrderCommandType::PlaceOrder,
+            OrderCommandType::CancelOrder,
+            OrderCommandType::DepositFunds,
+            OrderCommandType::WithdrawFunds,
+        ] {
+            assert_round_trip(OrderCommand {
+                command,
+                ..OrderCommand::default()
+            });
+        }
+        for side in [Side::Ask, Side::Bid] {
+            assert_round_trip(OrderCommand {
+                side,
+                ..OrderCommand::default()
+            });
+        }
+        for time_in_force in [TimeInForce::Gtc, TimeInForce::Ioc, TimeInForce::Fok] {
+            assert_round_trip(OrderCommand {
+                time_in_force,
+                ..OrderCommand::default()
+            });
+        }
+        for status in [
+            Status::Rejected,
+            Status::Placed,
+            Status::Cancelled,
+            Status::PartiallyFilled,
+            Status::Filled,
+            Status::Processing,
+            Status::Processed,
+        ] {
+            assert_round_trip(OrderCommand {
+                status,
+                ..OrderCommand::default()
+            });
+        }
     }
 }

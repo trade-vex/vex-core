@@ -25,16 +25,20 @@
 //!         -   Matching: O(M * N), where M is the number of price levels crossed and N is the average
 //!             number of orders at each level. In practice, this is very fast.
 //!         -   Resting a new limit order: O(log P), where P is the number of price levels on that side of the book.
-//!     -   **Canceling an order:** O(log P + Q), where P is the number of price levels and Q is the
-//!         number of orders at the specific price level of the canceled order. The `+ Q` is due
-//!         to the linear scan required to find the order in the `VecDeque`. For extreme performance,
-//!         this `VecDeque` could be replaced with an intrusive doubly-linked list (see suggestions below).
+//!     -   **Canceling an order:** O(log P + log Q + Q), where P is the number of price levels and Q
+//!         is the number of orders at the canceled order's price. The order is found by binary
+//!         search; removing it from the `VecDeque` can shift O(Q) elements.
 //!
 //! 3.  **State Management:**
 //!     -   The order book is self-contained and mutates its state through the `place_order` and
 //!         `cancel_order` methods.
 //!     -   It generates `MatcherTradeEvent`s and attaches them to the `OrderCommand` for downstream
 //!         processors (risk engines and event handlers) to consume.
+//!
+//! 4.  **FOK Matching:**
+//!     -   FOK matching still makes two traversals: one to check capacity and one to fill.
+//!         Removing the second traversal is a performance change that belongs with #142, not a
+//!         cleanup.
 use crate::tree::BookSide;
 use common::{
     L2MarketData, L2SIZE, MatcherTradeEvent, Order, OrderCommand, PriceCache, Side, Status,
@@ -87,6 +91,13 @@ impl PriceLevel {
 
     #[inline]
     fn add_order(&mut self, order: Order) {
+        debug_assert!(
+            self.orders
+                .back()
+                .map(|last| last.order_id < order.order_id)
+                .unwrap_or(true),
+            "orders at a price level must have strictly increasing IDs"
+        );
         let existing_total = self.total_volume;
         self.total_volume = existing_total.saturating_add(order.size);
         if existing_total.checked_add(order.size).is_none() {
@@ -321,14 +332,9 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 if !self.can_fill_completely(cmd) {
                     cmd.set_status(Status::Cancelled);
                 } else {
-                    let remaining = self.match_order(cmd);
-                    // Double-check in case self-trade prevention caused incomplete fill
-                    cmd.set_status(if remaining == 0 {
-                        Status::Filled
-                    } else {
-                        Status::Cancelled
-                    });
-                    cmd.set_size(remaining);
+                    self.match_order(cmd);
+                    cmd.set_status(Status::Filled);
+                    cmd.set_size(0);
                 }
             }
             TimeInForce::Ioc => {
@@ -518,15 +524,14 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
 
     /// Create a snapshot of the orderbook data with specified depth
     pub fn record_snapshot(&self, cmd: &mut OrderCommand) {
+        // PR #182 removed the unused ask_orders/bid_orders/reference_seq fields; PR #177's
+        // pre-sizing of the price/volume vectors is kept.
         let mut l2_data = L2MarketData {
             ask_prices: Vec::with_capacity(L2SIZE),
             ask_volumes: Vec::with_capacity(L2SIZE),
-            ask_orders: Vec::new(),
             bid_prices: Vec::with_capacity(L2SIZE),
             bid_volumes: Vec::with_capacity(L2SIZE),
-            bid_orders: Vec::new(),
             timestamp: 0,
-            reference_seq: 0,
         };
 
         // Fill bid levels (highest price first)
