@@ -36,6 +36,16 @@ pub enum ConfigError {
     #[error("Merge error: {0}")]
     MergeError(String),
 
+    /// Configuration load error with search-path context
+    #[error("Configuration load failed after trying paths {paths:?}: {source}")]
+    LoadError {
+        /// Paths searched for configuration files
+        paths: Vec<String>,
+        /// Underlying load failure
+        #[source]
+        source: Box<ConfigError>,
+    },
+
     /// Network configuration error
     #[error("Network configuration error: {0}")]
     NetworkError(String),
@@ -64,6 +74,14 @@ impl ConfigError {
     /// Create a new not found error
     pub fn not_found<S: Into<String>>(msg: S) -> Self {
         ConfigError::NotFound(msg.into())
+    }
+
+    /// Add searched paths to a configuration load error
+    pub fn load(paths: Vec<String>, source: ConfigError) -> Self {
+        ConfigError::LoadError {
+            paths,
+            source: Box::new(source),
+        }
     }
 
     /// Create a new network error

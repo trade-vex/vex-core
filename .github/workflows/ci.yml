@@ -85,7 +85,7 @@ jobs:
         env:
           RUSTFLAGS: "-D warnings -C link-arg=-fuse-ld=mold"
           VEX_KAFKA_BROKER: localhost:9092
-          VEX_ENV: dev
+          VEX_ENV: development
 
   fmt:
     name: Rustfmt
@@ -190,7 +190,7 @@ jobs:
           cargo llvm-cov --workspace --all-features --all-targets --exclude rusteron_client --text
         env:
           VEX_KAFKA_BROKER: localhost:9092
-          VEX_ENV: dev
+          VEX_ENV: development
 
   audit:
     name: Security audit
@@ -272,7 +272,7 @@ jobs:
       - name: Run integration tests
         run: cargo xtask test integration --fail-fast
         env:
-          VEX_ENV: dev
+          VEX_ENV: development
 
       - name: Show failed test infrastructure
         if: failure()
