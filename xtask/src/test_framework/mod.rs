@@ -10,7 +10,7 @@ pub mod types;
 use self::client::TestClient;
 use self::redis::RedisVerifier;
 use self::types::*;
-use common::OrderCommand;
+use common::{CoreMarketSpecification, OrderCommand};
 use hashbrown::HashMap;
 use std::time::Duration;
 use tracing::{debug, info};
@@ -52,6 +52,8 @@ pub struct TestContext {
     pub base_asset_id: u16,
     /// Quote asset ID
     pub quote_asset_id: u16,
+    /// Market specification used by the development test server
+    market_spec: CoreMarketSpecification,
     /// User state tracker
     users: HashMap<u64, UserState>,
     /// Test configuration
@@ -80,6 +82,17 @@ impl TestContext {
             config.core_control_port,
         )?;
         let redis = RedisVerifier::new(&config.redis_host, config.redis_port).await?;
+        let market_spec = vex_config::VexConfig::new(vex_config::Environment::Development)
+            .symbols
+            .symbols
+            .get(&config.market_id)
+            .cloned()
+            .ok_or_else(|| TestError::Configuration {
+                message: format!(
+                    "No development market specification for {}",
+                    config.market_id
+                ),
+            })?;
 
         Ok(Self {
             client,
@@ -87,6 +100,7 @@ impl TestContext {
             market_id: config.market_id,
             base_asset_id: config.base_asset_id,
             quote_asset_id: config.quote_asset_id,
+            market_spec,
             users: HashMap::new(),
             config,
         })
@@ -172,6 +186,11 @@ impl TestContext {
     /// Get configuration
     pub fn config(&self) -> &TestConfig {
         &self.config
+    }
+
+    /// Get the market specification used by the test server
+    pub fn market_spec(&self) -> &CoreMarketSpecification {
+        &self.market_spec
     }
 
     /// Cleanup test data
