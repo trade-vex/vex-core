@@ -31,7 +31,7 @@ tracing = { workspace = true }
 disruptor = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-ctrlc = "3.4"
+ctrlc = { version = "3.4", features = ["termination"] }
 tikv-jemallocator = { workspace = true }
 redis = { version = "0.27", features = ["aio", "tokio-comp", "connection-manager"] }
 tokio = { version = "1", features = ["full"] }
