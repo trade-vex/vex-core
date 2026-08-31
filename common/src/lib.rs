@@ -1,6 +1,4 @@
 mod cmd;
-mod core_arithmetic;
-mod events;
 mod l2_market_data;
 mod logging;
 mod market_specification;
@@ -11,11 +9,6 @@ mod user_profile;
 pub use cmd::{
     FRAMESIZE, MatcherTradeEvent, MatcherTradeEventChain, ORDERCOMMANDSIZE, OrderCommand, Status,
     decode_order_command, encode_order_command,
-};
-pub use core_arithmetic::CoreArithmetic;
-pub use events::{
-    BalanceEvent, CancelOrderEvent, DepositEvent, OrderEvent, OrderbookEvent, OrderbookLevel,
-    TradeEvent, WithdrawEvent,
 };
 pub use l2_market_data::L2MarketData;
 pub use market_specification::{
@@ -64,23 +57,6 @@ impl MarketType {
     pub fn code(&self) -> u8 {
         *self as u8
     }
-}
-
-#[derive(
-    Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
-)]
-#[borsh(use_discriminant = true)]
-pub enum MatcherEventType {
-    // Trade event
-    // Can be triggered by place ORDER or for MOVE order command.
-    Trade,
-    // Reject event
-    // Can happen only when MARKET order has to be rejected by Matcher Engine due lack of liquser_idity
-    // That basically means no ASK (or BID) orders left in the order book for any price.
-    // Before being rejected active order can be partially filled.
-    Rejected,
-    Cancelled,
-    Placed, // New event type for order placement
 }
 
 /// The specific action the command represents.
