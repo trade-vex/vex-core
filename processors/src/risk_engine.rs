@@ -467,6 +467,13 @@ impl RiskEngine {
         Ok(())
     }
 
+    /// Applies the R1 funding bound to market BUY orders.
+    ///
+    /// Market BUY orders are capped, not swept: the `u64::MAX` market sentinel is replaced with
+    /// `best_ask + floor(best_ask * slippage_bps / 10_000)`. The matching engine then uses that
+    /// effective price as a limit, so liquidity above the cap remains unfilled. The response keeps
+    /// the ordinary matching status (`PartiallyFilled` after any fill, otherwise `Cancelled` for
+    /// IOC) and returns the effective cap in `price`.
     #[inline]
     fn bid_amount(&self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) -> Result<u64> {
         // Get spec early

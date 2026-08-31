@@ -1486,6 +1486,84 @@ mod tests {
     }
 
     #[test]
+    fn test_market_buy_stops_at_slippage_cap_with_liquidity_beyond_it() {
+        let mut specs = HashMap::new();
+        let base_asset_id = 1;
+        let quote_asset_id = 2;
+        let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
+        specs.insert(
+            market_id,
+            CoreMarketSpecification::builder()
+                .market_id(market_id)
+                .market_type(MarketType::Spot)
+                .maker_fee(10)
+                .taker_fee(20)
+                .slippage(500)
+                .build()
+                .unwrap(),
+        );
+
+        let (mut producer, risk_engines, rx) = setup_tuple(specs);
+        let maker_id = 101;
+        let taker_id = 42;
+        let maker_shard = 1;
+        let taker_shard = 2;
+
+        risk_engines[maker_shard].set_balance(maker_id, base_asset_id, UserBalance::new(30, 0));
+        risk_engines[taker_shard].set_balance(taker_id, quote_asset_id, UserBalance::new(3_150, 0));
+
+        for (client_order_id, price) in [(1, 100), (2, 110), (3, 120)] {
+            producer.publish(|cmd| {
+                *cmd = OrderCommand::place_order(
+                    TimeInForce::Gtc,
+                    maker_id,
+                    price,
+                    10,
+                    Side::Ask,
+                    market_id,
+                    client_order_id,
+                );
+            });
+            let response = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert_eq!(response.status, Status::Placed);
+        }
+
+        producer.publish(|cmd| {
+            *cmd = OrderCommand::place_order(
+                TimeInForce::Ioc,
+                taker_id,
+                u64::MAX,
+                30,
+                Side::Bid,
+                market_id,
+                4,
+            );
+        });
+        let response = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        assert_eq!(response.status, Status::PartiallyFilled);
+        assert_eq!(
+            response.price, 105,
+            "response must expose the effective cap"
+        );
+        assert_eq!(
+            response.size, 20,
+            "quantity above the cap must remain unfilled"
+        );
+
+        let fill = response.events().unwrap();
+        assert_eq!((fill.price, fill.size), (100, 10));
+        assert!(
+            fill.next_event.is_none(),
+            "levels above the cap must not trade"
+        );
+
+        let l2 = response.l2_data.as_ref().unwrap();
+        assert_eq!(l2.ask_prices, [110, 120]);
+        assert_eq!(l2.ask_volumes, [10, 10]);
+    }
+
+    #[test]
     fn test_fok_limit_order_rejection_and_success() {
         // 1. Setup
         let mut specs = HashMap::new();
