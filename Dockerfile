@@ -62,14 +62,14 @@ COPY --from=builder /app/runtime-libs/ /usr/local/lib/
 RUN ldconfig
 
 # Create shared volume for Aeron IPC
-VOLUME ["/tmp/aeron"]
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD pgrep -f vex-core || exit 1
+VOLUME ["/dev/shm/aeron"]
 
 # Set environment variables
 ENV RUST_LOG=info
-ENV AERON_DIR=/tmp/aeron
+
+# Health check. vex-core always uses /dev/shm/aeron (src/main.rs) and ignores AERON_DIR, so
+# probe that path rather than an environment variable the binary never reads.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD test -s /dev/shm/aeron/cnc.dat || exit 1
 
 CMD ["vex-core"]
