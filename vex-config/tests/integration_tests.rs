@@ -97,7 +97,8 @@ fn test_file_loading_and_saving() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_different_file_formats() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
-    let config = VexConfig::new(Environment::Development);
+    let mut config = VexConfig::new(Environment::Production);
+    config.symbols = VexConfig::new(Environment::Development).symbols;
 
     let toml_path = temp_dir.path().join("config.toml");
     let json_path = temp_dir.path().join("config.json");
@@ -114,9 +115,9 @@ fn test_different_file_formats() -> Result<(), Box<dyn std::error::Error>> {
     let yaml_config = VexConfig::load_from_file(&yaml_path)?;
 
     // All should have the same core values
-    assert_eq!(toml_config.environment, Environment::Development);
-    assert_eq!(json_config.environment, Environment::Development);
-    assert_eq!(yaml_config.environment, Environment::Development);
+    assert_eq!(toml_config.environment, Environment::Production);
+    assert_eq!(json_config.environment, Environment::Production);
+    assert_eq!(yaml_config.environment, Environment::Production);
 
     assert_eq!(
         toml_config.core_networking.core_id,
