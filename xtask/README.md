@@ -140,16 +140,6 @@ cargo xtask test unit
 cargo xtask test unit --filter parse
 ```
 
-## Legacy Commands (Deprecated)
-
-The following commands are deprecated but still functional for backwards compatibility. They will print a deprecation warning and suggest the new command:
-
-| Old Command | New Command |
-|------------|-------------|
-| `cargo xtask test-e2e --scenario X` | `cargo xtask test e2e --scenario X` |
-| `cargo xtask benchmark` | `cargo xtask test benchmark` |
-| `cargo xtask test-suite` | `cargo xtask test integration` |
-
 ## Test Artifacts and Logs
 
 After running tests or benchmarks, the following artifacts are generated:

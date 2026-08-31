@@ -1506,7 +1506,7 @@ The Makefile provides high-level orchestration for complex workflows involving A
 **Environment Variables**:
 ```bash
 RUST_LOG=info               # Logging level
-AERON_DIR=/dev/shm/aeron    # Aeron shared memory location
+VEX_ENV=development         # Required: development | test | production
 VEX__KAFKA_BROKER=localhost:9092  # Kafka broker (overrides the configured kafka_broker)
 ```
 

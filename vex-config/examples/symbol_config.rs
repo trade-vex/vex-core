@@ -56,12 +56,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         market_type: MarketType::Spot,
         base_asset: 3762,               // BTC (satoshi)
         quote_asset: 840,               // USD
-        base_scale_k: 100_000,          // 1 lot = 0.001 BTC
         quote_scale_k: 100,             // 1 step = $0.01
         base_native_scale: 100_000_000, // BTC has 8 decimals
         quote_native_scale: 100,        // USD has 2 decimals (cents)
-        taker_fee: 25,                  // 0.25 USD per lot
-        maker_fee: 10,                  // 0.10 USD per lot
+        taker_fee: 25,                  // 25 bp (0.25%) of the asset received
+        maker_fee: 10,                  // 10 bp (0.10%) of the asset received
         slippage: 150,                  // 1.5% slippage
     };
 

@@ -96,20 +96,25 @@ impl PriceCache {
     }
 
     /// Get the best bid price for a symbol
-    /// Retruns u64::MAX if no bid price is available
+    /// Returns 0 for an empty book and `u64::MAX` for an unknown symbol.
     pub fn get_best_bid(&self, symbol: u32) -> u64 {
         self.get_prices(symbol)
             .map_or(u64::MAX, |(best_bid, _)| best_bid)
     }
 
-    /// Get the best ask price for a symbol    
-    /// Returns 0 if no ask price is available
+    /// Get the best ask price for a symbol
+    /// Returns `u64::MAX` for an empty book and 0 for an unknown symbol.
     pub fn get_best_ask(&self, symbol: u32) -> u64 {
         self.get_prices(symbol).map_or(0, |(_, best_ask)| best_ask)
     }
 
-    /// Update the best bid price for a symbol
+    /// Update the best bid and ask for a symbol.
     /// Missing symbols are ignored.
+    ///
+    /// Single writer: exactly one matching handler owns each market and is the only caller, via
+    /// `OrderBook::update_price_cache`. The seqlock relies on that. Two concurrent writers could
+    /// interleave their increments, leave the sequence even mid-write, and let a reader take a
+    /// torn pair.
     pub fn update_prices(&self, symbol: u32, best_bid: u64, best_ask: u64) {
         let Some(market_price) = self.prices.get(&symbol) else {
             return;

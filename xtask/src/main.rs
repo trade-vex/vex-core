@@ -34,30 +34,6 @@ enum Commands {
         #[command(subcommand)]
         command: TestCommands,
     },
-
-    // Legacy commands (hidden, kept for backwards compatibility)
-    /// [DEPRECATED] Use `test e2e` instead. Run End-to-End tests using a specified scenario.
-    #[command(hide = true)]
-    TestE2e {
-        #[arg(short, long, default_value = "basic-connectivity")]
-        scenario: String,
-        #[arg(short, long, default_value_t = 1)]
-        clients: u32,
-    },
-
-    /// [DEPRECATED] Use `test benchmark` instead. Run performance benchmarks.
-    #[command(hide = true)]
-    Benchmark {
-        #[arg(short, long, default_value_t = 1)]
-        clients: u32,
-    },
-
-    /// [DEPRECATED] Use `test integration` instead. Run integration test suite in Docker.
-    #[command(hide = true)]
-    TestSuite {
-        #[arg(short, long, default_value = "all")]
-        suite: String,
-    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -175,41 +151,6 @@ async fn main() -> Result<(), XTaskError> {
             }
             TestCommands::Unit { filter } => run_unit_tests(&project_root, filter),
         },
-
-        // Legacy commands with deprecation warnings
-        Commands::TestE2e { scenario, clients } => {
-            eprintln!("⚠️  DEPRECATED: `cargo xtask test-e2e` is deprecated.");
-            eprintln!(
-                "   Use `cargo xtask test e2e --scenario {} --clients {}` instead.",
-                scenario, clients
-            );
-            eprintln!();
-            run_correctness_task(project_root.into_boxed_path(), &scenario, clients)
-        }
-        Commands::Benchmark { clients } => {
-            eprintln!("⚠️  DEPRECATED: `cargo xtask benchmark` is deprecated.");
-            eprintln!(
-                "   Use `cargo xtask test benchmark --clients {}` instead.",
-                clients
-            );
-            eprintln!();
-            run_benchmark(project_root.into_boxed_path(), clients)
-        }
-        Commands::TestSuite { suite } => {
-            eprintln!("⚠️  DEPRECATED: `cargo xtask test-suite` is deprecated.");
-            eprintln!("   Use `cargo xtask test integration {}` instead.", suite);
-            eprintln!();
-            let suite_enum = match suite.to_lowercase().as_str() {
-                "all" => IntegrationSuite::All,
-                "balance" => IntegrationSuite::Balance,
-                "gtc" => IntegrationSuite::Gtc,
-                "ioc" => IntegrationSuite::Ioc,
-                "fok" => IntegrationSuite::Fok,
-                "cancellation" => IntegrationSuite::Cancellation,
-                _ => IntegrationSuite::All,
-            };
-            run_integration_tests(&project_root, suite_enum, false, false).await
-        }
     }
 }
 

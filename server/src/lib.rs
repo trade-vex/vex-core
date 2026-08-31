@@ -285,21 +285,6 @@ pub mod test {
         pub receiver: mpsc::Receiver<OrderCommand>,
     }
 
-    /// Sets up a test environment with the given market specifications (tuple form)
-    ///
-    /// Returns a tuple of (producer, risk_engines, receiver) for backwards compatibility.
-    /// For new code, prefer using `setup()` which returns a `TestEngine` struct.
-    pub fn setup_tuple(
-        specs: HashMap<u32, CoreMarketSpecification>,
-    ) -> (OrderProducer, RiskEngines, mpsc::Receiver<OrderCommand>) {
-        let test_engine = setup(specs);
-        (
-            test_engine.producer,
-            test_engine.risk_engines,
-            test_engine.receiver,
-        )
-    }
-
     /// Sets up a test environment with the given market specifications
     ///
     /// This creates a complete engine instance configured for testing, with
@@ -371,7 +356,7 @@ pub mod test {
 
 #[cfg(test)]
 mod tests {
-    use super::test::{TestEngine, setup, setup_tuple};
+    use super::test::{TestEngine, setup};
     use super::*;
     use common::{
         MarketType, OrderCommand, PriceCache, Side, Status, TimeInForce, UserBalance, base_asset,
@@ -1035,7 +1020,11 @@ mod tests {
         let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
         add_spec(market_id, &mut specs);
 
-        let (mut producer, risk_engines, rx) = setup_tuple(specs);
+        let TestEngine {
+            mut producer,
+            risk_engines,
+            receiver: rx,
+        } = setup(specs);
 
         // 2. Pre-fund user account
         let user_id = 42;
@@ -1112,7 +1101,11 @@ mod tests {
         let spec = specs.get_mut(&market_id).unwrap();
         spec.quote_scale_k = 10;
 
-        let (mut producer, risk_engines, rx) = setup_tuple(specs);
+        let TestEngine {
+            mut producer,
+            risk_engines,
+            receiver: rx,
+        } = setup(specs);
         let shard_mask = risk_engines.len() as u64 - 1;
 
         // 2. Define users and order details
@@ -1244,7 +1237,11 @@ mod tests {
         let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
         add_spec(market_id, &mut specs);
 
-        let (mut producer, risk_engines, rx) = setup_tuple(specs);
+        let TestEngine {
+            mut producer,
+            risk_engines,
+            receiver: rx,
+        } = setup(specs);
         let shard_mask = risk_engines.len() as u64 - 1;
         let get_shard_id = |user_id: u64| (user_id & shard_mask) as usize;
 
@@ -1579,7 +1576,11 @@ mod tests {
         let quote_asset_id = 2;
         let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
         add_spec(market_id, &mut specs);
-        let (mut producer, risk_engines, rx) = setup_tuple(specs.clone());
+        let TestEngine {
+            mut producer,
+            risk_engines,
+            receiver: rx,
+        } = setup(specs.clone());
 
         let price_cache = Arc::new(PriceCache::new(specs.keys()));
 
@@ -1761,7 +1762,11 @@ mod tests {
         let quote_asset_id = 2;
         let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
         add_spec(market_id, &mut specs);
-        let (mut producer, risk_engines, rx) = setup_tuple(specs);
+        let TestEngine {
+            mut producer,
+            risk_engines,
+            receiver: rx,
+        } = setup(specs);
 
         let maker_id = 101;
         let taker_id = 42;
@@ -1898,7 +1903,11 @@ mod tests {
         // Market ID: base asset in lower 16 bits, quote in upper 16
         let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
         add_spec(market_id, &mut specs);
-        let (mut producer, risk_engines, rx) = setup_tuple(specs);
+        let TestEngine {
+            mut producer,
+            risk_engines,
+            receiver: rx,
+        } = setup(specs);
 
         let shard_mask = risk_engines.len() as u64 - 1;
         let get_shard_id = |user_id: u64| (user_id & shard_mask) as usize;
@@ -2224,7 +2233,11 @@ mod tests {
         add_spec(market_eth_usd, &mut specs);
         add_spec(market_sol_btc, &mut specs);
 
-        let (mut producer, risk_engines, rx) = setup_tuple(specs);
+        let TestEngine {
+            mut producer,
+            risk_engines,
+            receiver: rx,
+        } = setup(specs);
         let checker = BalanceChecker::new(&risk_engines);
 
         // Define users with clear roles

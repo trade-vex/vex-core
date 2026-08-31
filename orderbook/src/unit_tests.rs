@@ -291,7 +291,6 @@ mod test {
             CoreMarketSpecification::builder()
                 .market_id(10)
                 .market_type(MarketType::Spot)
-                .base_scale_k(1)
                 .quote_scale_k(1)
                 .build()
                 .unwrap(),
@@ -431,11 +430,11 @@ mod test {
         assert_eq!(snapshot.bid_volumes, [25]);
         assert_eq!(snapshot.ask_prices, [101]);
         assert_eq!(snapshot.ask_volumes, [40]);
-        assert!(snapshot.bid_orders.is_empty());
-        assert!(snapshot.ask_orders.is_empty());
-        assert_eq!(snapshot.bid_orders.capacity(), 0);
-        assert_eq!(snapshot.ask_orders.capacity(), 0);
-        assert_eq!(snapshot.reference_seq, 0);
+        // PR #182 removed the unused bid_orders/ask_orders/reference_seq fields, so PR #177's
+        // assertions that they stay empty no longer apply. The pre-sizing PR #177 added is
+        // asserted on the vectors that survived.
+        assert_eq!(snapshot.bid_prices.capacity(), common::L2SIZE);
+        assert_eq!(snapshot.ask_prices.capacity(), common::L2SIZE);
         assert_ne!(snapshot.timestamp, 0);
     }
 

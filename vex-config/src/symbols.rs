@@ -79,7 +79,6 @@ impl SymbolSpecificationConfig {
                 market_type: MarketType::Spot,
                 base_asset: eth_asset_id,
                 quote_asset: usdt_asset_id,
-                base_scale_k: 100_000,
                 quote_scale_k: 10,
                 base_native_scale: 1_000_000_000_000_000_000, // ETH has 18 decimals
                 quote_native_scale: 1_000_000,                // USDT has 6 decimals
@@ -97,7 +96,6 @@ impl SymbolSpecificationConfig {
                 market_type: MarketType::FuturesContract,
                 base_asset: btc_asset_id,
                 quote_asset: usdt_asset_id,
-                base_scale_k: 1,
                 quote_scale_k: 1,
                 base_native_scale: 100_000_000, // BTC has 8 decimals
                 quote_native_scale: 1_000_000,  // USDT has 6 decimals
@@ -130,7 +128,6 @@ impl SymbolSpecificationConfig {
                 market_type: MarketType::Spot,
                 base_asset: eth_asset_id,
                 quote_asset: usdt_asset_id,
-                base_scale_k: 100_000,
                 quote_scale_k: 10,
                 base_native_scale: 1_000_000_000_000_000_000, // ETH has 18 decimals
                 quote_native_scale: 1_000_000,                // USDT has 6 decimals
@@ -148,7 +145,6 @@ impl SymbolSpecificationConfig {
                 market_type: MarketType::FuturesContract,
                 base_asset: btc_asset_id,
                 quote_asset: usdt_asset_id,
-                base_scale_k: 1,
                 quote_scale_k: 1,
                 base_native_scale: 100_000_000, // BTC has 8 decimals
                 quote_native_scale: 1_000_000,  // USDT has 6 decimals
@@ -189,12 +185,6 @@ impl SymbolSpecificationConfig {
             }
 
             // Validate scale factors are non-zero
-            if spec.base_scale_k == 0 {
-                return Err(ConfigError::ValidationError(format!(
-                    "Symbol {market_id}: base_scale_k cannot be zero"
-                )));
-            }
-
             if spec.quote_scale_k == 0 {
                 return Err(ConfigError::ValidationError(format!(
                     "Symbol {market_id}: quote_scale_k cannot be zero"
@@ -329,17 +319,17 @@ mod tests {
     }
 
     #[test]
-    fn test_validation_zero_scale() {
-        let mut symbols = HashMap::new();
-        let spec = CoreMarketSpecification {
-            market_id: 123,
-            base_scale_k: 0,
-            ..Default::default()
-        }; // Invalid: base_scale_k = 0
-        symbols.insert(123, spec);
+    fn test_validation_zero_quote_scale_k() {
+        let mut config = SymbolSpecificationConfig::development_defaults();
+        let spec = config.symbols.values_mut().next().unwrap();
+        let market_id = spec.market_id;
+        spec.quote_scale_k = 0;
 
-        let config = SymbolSpecificationConfig { symbols };
-        assert!(config.validate().is_err());
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::ValidationError(message))
+                if message == format!("Symbol {market_id}: quote_scale_k cannot be zero")
+        ));
     }
 
     #[test]
@@ -375,7 +365,6 @@ mod tests {
         let mut symbols = HashMap::new();
         let spec = CoreMarketSpecification {
             market_id: 123,
-            base_scale_k: 1,
             quote_scale_k: 1,
             taker_fee: 100,
             maker_fee: 200,

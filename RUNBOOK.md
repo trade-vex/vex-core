@@ -84,11 +84,12 @@ Configuration is loaded from YAML, TOML, or JSON files. Search order (first foun
 
 The environment must be selected explicitly with `VEX_ENV`. Development and test selections use the environment defaults in place of a file if none is present; production does not. `VEX__*` overrides and validation apply to those defaults exactly as they do to a file.
 
-- `./config.dev.yaml`, `./config.test.yaml`, `./config.prod.yaml`
-- `./config/config.dev.yaml`, etc.
-- `/etc/vex/config.dev.toml`, etc.
+1. `./config.<env>.{toml,yaml,yml,json}`
+2. `./config/config.<env>.{toml,yaml,yml,json}`
+3. `/etc/vex/config.<env>.{toml,yaml,yml,json}`
 
-Environment-specific file names: `config.dev`, `config.test`, `config.prod` (with `.yaml`, `.yml`, `.toml`, or `.json` extension).
+`<env>` is `dev`, `test` or `prod`; within each directory the extensions are tried in the order shown
+(`vex-config/src/environment.rs` `default_config_paths`).
 
 ### Example Configuration (config.dev.yaml)
 
@@ -108,7 +109,6 @@ symbols:
       market_id: 65538
       base_asset: 2
       quote_asset: 1
-      base_scale_k: 100000000
       quote_scale_k: 1000000
       maker_fee: 10
       taker_fee: 20
@@ -283,8 +283,8 @@ echo $VEX__KAFKA_BROKER
 # Check vex-core is listening
 netstat -tuln | grep -E "40001|3521"
 
-# Verify gateway config matches core
-# Gateway: core_address, core_port, core_control_port
+# Verify the gateway's [core] section matches core
+# Gateway: core.address, core.port, core.control_port (override: APP__CORE__<KEY>)
 # Core: initial_port, initial_control_port (from config)
 
 # Check session ID limits
@@ -293,12 +293,12 @@ netstat -tuln | grep -E "40001|3521"
 
 **Solutions**:
 - Ensure vex-core is running and media driver is up
-- Verify gateway `core_address`, `core_port`, `core_control_port` match vex-core `initial_port` and `initial_control_port`
+- Verify the gateway's `[core]` `address`, `port` and `control_port` (`APP__CORE__ADDRESS`, `APP__CORE__PORT`, `APP__CORE__CONTROL_PORT`) match vex-core's address, `initial_port` and `initial_control_port`
 - Check `max_gateways` is not exceeded
 - Gateway authentication (required in production, which refuses to start without both):
   `VEX__CORE_NETWORKING__ENABLE_AUTHENTICATION=true` and
   `VEX__GATEWAY_NETWORKING__GATEWAY_AUTHENTICATION_KEY=<signed 32-bit integer>` on vex-core; every
-  gateway must be given the same value (vex-gateway `GATEWAY_AUTHENTICATION_KEY`). Without a key,
+  gateway must be given the same value (vex-gateway `[core]` `auth_key`, or `APP__CORE__AUTH_KEY`). Without a key,
   dev/test run the handshake unauthenticated. `Connection rejected: Handshake rejected` on the
   gateway together with `action="handshake_rejected"` and
   `reason=Authentication failed: Invalid credentials` in the vex-core log means
@@ -431,7 +431,7 @@ top -p $(pgrep vex-core)
    ```
 
 3. **Check Config**
-   - Gateway `core_address`, `core_port`, `core_control_port` must match vex-core
+   - The gateway's `[core]` `address`, `port` and `control_port` must match vex-core
    - Ensure `max_gateways` and session ID limits are not exceeded
 
 ### Need to Recover from Journal

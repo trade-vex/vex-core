@@ -39,21 +39,6 @@ impl JournalingProcessor {
         self.publications.publish_to_archive(cmd);
         order_debug!("command_ingested", cmd, stage = "journal");
     }
-
-    pub fn journal_event(&self, cmd: &mut OrderCommand) {
-        order_debug!("command_written", cmd, stage = "journal");
-
-        // Also journal any trade events if they exist
-        if let Some(event) = cmd.events() {
-            tracing::debug!(
-                target: "order_pipeline",
-                event = "trade_snapshot",
-                order_id = cmd.order_id,
-                price = event.price,
-                size = event.size
-            );
-        }
-    }
 }
 
 /// Control structure to enable/disable replay mode
