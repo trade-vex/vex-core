@@ -2,10 +2,10 @@ use crate::{L2MarketData, OrderCommandType, Side, TimeInForce, UserBalance};
 use borsh::{BorshDeserialize, BorshSerialize};
 use sbe_order::message_header_codec::{self, MessageHeaderDecoder};
 use sbe_order::order_command_message_codec::{
-    OrderCommandMessageDecoder, OrderCommandMessageEncoder,
+    OrderCommandMessageDecoder, OrderCommandMessageEncoder, SBE_BLOCK_LENGTH, SBE_TEMPLATE_ID,
 };
 use sbe_order::status::Status as SbeStatus;
-use sbe_order::{ReadBuf, SbeResult, WriteBuf};
+use sbe_order::{ReadBuf, SBE_SCHEMA_ID, SbeResult, WriteBuf};
 use serde::de::Error;
 use serde::de::value::Error as SerdeError;
 use serde::{Deserialize, Serialize};
@@ -391,9 +391,27 @@ pub fn encode_order_command(order_command: &OrderCommand, buf: &mut [u8]) -> Sbe
 }
 
 pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
+    if buf.len() < ORDERCOMMANDSIZE {
+        return Err(SerdeError::custom(format!(
+            "OrderCommand buffer is too short: expected at least {ORDERCOMMANDSIZE} bytes, got {}",
+            buf.len()
+        )));
+    }
+
     let buf = ReadBuf::new(buf);
     let mut decoder = OrderCommandMessageDecoder::default();
     let header = MessageHeaderDecoder::default().wrap(buf, 0);
+    if header.block_length() != SBE_BLOCK_LENGTH
+        || header.template_id() != SBE_TEMPLATE_ID
+        || header.schema_id() != SBE_SCHEMA_ID
+    {
+        return Err(SerdeError::custom(format!(
+            "Invalid OrderCommand SBE header: expected block length {SBE_BLOCK_LENGTH}, template id {SBE_TEMPLATE_ID}, schema id {SBE_SCHEMA_ID}; got block length {}, template id {}, schema id {}",
+            header.block_length(),
+            header.template_id(),
+            header.schema_id()
+        )));
+    }
     decoder = decoder.header(header, 0);
     Ok(OrderCommand {
         command: decoder.command().try_into()?,
@@ -429,5 +447,62 @@ mod tests {
         }
 
         drop(chain);
+    }
+
+    fn encoded_command() -> [u8; ORDERCOMMANDSIZE] {
+        let command = OrderCommand {
+            command: OrderCommandType::CancelOrder,
+            client_order_id: 11,
+            order_id: 22,
+            user_id: 33,
+            market_id: 44,
+            price: 55,
+            size: 66,
+            side: Side::Bid,
+            time_in_force: TimeInForce::Fok,
+            timestamp: 77,
+            status: Status::Cancelled,
+            ..OrderCommand::default()
+        };
+        let mut buf = [0; ORDERCOMMANDSIZE];
+        encode_order_command(&command, &mut buf).unwrap();
+        buf
+    }
+
+    #[test]
+    fn rejects_every_short_buffer_without_panicking() {
+        for len in 0..ORDERCOMMANDSIZE {
+            assert!(
+                decode_order_command(&vec![0; len]).is_err(),
+                "buffer length {len} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_message_round_trips() {
+        let decoded = decode_order_command(&encoded_command()).unwrap();
+
+        assert_eq!(decoded.command, OrderCommandType::CancelOrder);
+        assert_eq!(decoded.client_order_id, 11);
+        assert_eq!(decoded.order_id, 22);
+        assert_eq!(decoded.user_id, 33);
+        assert_eq!(decoded.market_id, 44);
+        assert_eq!(decoded.price, 55);
+        assert_eq!(decoded.size, 66);
+        assert_eq!(decoded.side, Side::Bid);
+        assert_eq!(decoded.time_in_force, TimeInForce::Fok);
+        assert_eq!(decoded.timestamp, 77);
+        assert_eq!(decoded.status, Status::Cancelled);
+    }
+
+    #[test]
+    fn rejects_invalid_sbe_header() {
+        for offset in [0, 2, 4] {
+            let mut buf = encoded_command();
+            buf[offset..offset + 2].copy_from_slice(&0_u16.to_le_bytes());
+
+            assert!(decode_order_command(&buf).is_err());
+        }
     }
 }
