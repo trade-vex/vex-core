@@ -258,9 +258,14 @@ impl RiskEngine {
                 let quote_spent = spec
                     .calculate_quote_cost(event.price, event.size)
                     .ok_or(BalanceError::Overflow)?;
-                // Fee is on the base asset received. Assuming fee is in basis points (e.g., 20bp = 0.2%)
-                let fee_in_base =
-                    u64::try_from((event.size as u128 * fee as u128) / 10000).unwrap_or(u64::MAX);
+                // Fee is on the base asset received, in basis points (20 bp = 0.2%). It is rounded
+                // UP per fill: each fill pays its exact share plus less than one atomic unit, so
+                // splitting an order into many fills can never pay less than a single fill would
+                // (floor rounding made sub-10_000/fee-unit fills free). The cost of that is a
+                // bounded overcharge: at most one unit per fill, i.e. N fills of one order pay at
+                // most N - 1 units more than one fill of the same total.
+                let fee_in_base = u64::try_from((event.size as u128 * fee as u128).div_ceil(10000))
+                    .unwrap_or(u64::MAX);
                 let base_received_net = event.size.saturating_sub(fee_in_base);
                 (
                     quote_asset(market_id),
@@ -276,9 +281,10 @@ impl RiskEngine {
                 let quote_received_gross = spec
                     .calculate_quote_cost(event.price, event.size)
                     .ok_or(BalanceError::Overflow)?;
-                // Fee is on the quote asset received. Assuming fee is in basis points.
+                // Fee is on the quote asset received, rounded up per fill with the same bound as
+                // the bid fee above.
                 let fee_in_quote =
-                    u64::try_from((quote_received_gross as u128 * fee as u128) / 10000)
+                    u64::try_from((quote_received_gross as u128 * fee as u128).div_ceil(10000))
                         .unwrap_or(u64::MAX);
                 let quote_received_net = quote_received_gross.saturating_sub(fee_in_quote);
                 (
@@ -583,6 +589,67 @@ mod tests {
             .slippage(5)
             .build()
             .unwrap()
+    }
+
+    fn settled_bid_fees(
+        maker_fee: u64,
+        taker_fee: u64,
+        is_maker: bool,
+        fill_sizes: &[u64],
+    ) -> Vec<u64> {
+        let base_asset_id = 2u16;
+        let quote_asset_id = 1u16;
+        let market_id = ((quote_asset_id as u32) << 16) | base_asset_id as u32;
+        let user_id = 102;
+        let locked_quote = fill_sizes.iter().sum();
+
+        let spec = CoreMarketSpecification::builder()
+            .market_id(market_id)
+            .market_type(MarketType::Spot)
+            .maker_fee(maker_fee)
+            .taker_fee(taker_fee)
+            .slippage(5)
+            .build()
+            .unwrap();
+        let mut specs = HashMap::new();
+        specs.insert(market_id, spec);
+        let engine = RiskEngine::new(specs, 0, 1);
+        engine.set_balance(user_id, quote_asset_id, UserBalance::new(0, locked_quote));
+
+        let mut previous_base_balance = 0;
+        let fees = fill_sizes
+            .iter()
+            .map(|&size| {
+                let mut trade_event = MatcherTradeEvent {
+                    price: 1,
+                    size,
+                    maker_user_id: if is_maker { user_id } else { user_id - 1 },
+                    active_order_completed: false,
+                    matched_order_id: 1,
+                    matched_order_completed: true,
+                    next_event: None,
+                    maker_balance: [UserBalance::default(); 2],
+                    maker_remaining_size: 0,
+                    maker_original_size: size,
+                };
+
+                engine.handle_trade_event(
+                    user_id,
+                    market_id,
+                    Side::Bid,
+                    &mut trade_event,
+                    (!is_maker).then_some(1),
+                );
+
+                let base_balance = engine.get_balance(user_id, base_asset_id).total();
+                let fee = size - (base_balance - previous_base_balance);
+                previous_base_balance = base_balance;
+                fee
+            })
+            .collect();
+
+        assert_eq!(engine.get_balance(user_id, quote_asset_id).total(), 0);
+        fees
     }
 
     #[test]
@@ -1202,6 +1269,58 @@ mod tests {
             size - expected_fee
         );
         assert_eq!(engine.get_balance(user_id, quote_asset_id).total(), 0);
+    }
+
+    #[test]
+    fn test_sliced_fills_each_pay_a_fee() {
+        let fees = settled_bid_fees(0, 20, false, &[499; 20]);
+
+        assert_eq!(fees, vec![1; 20]);
+        assert_eq!(fees.iter().sum::<u64>(), 20);
+    }
+
+    #[test]
+    fn test_zero_maker_fee_stays_zero() {
+        assert_eq!(settled_bid_fees(0, 20, true, &[499]), vec![0]);
+    }
+
+    #[test]
+    fn test_exact_multiple_fee_is_unchanged() {
+        assert_eq!(settled_bid_fees(0, 20, false, &[1_000]), vec![2]);
+    }
+
+    #[test]
+    fn test_one_unit_fill_pays_one_unit_fee() {
+        assert_eq!(settled_bid_fees(0, 20, false, &[1]), vec![1]);
+    }
+
+    /// Pins the documented per-fill rounding bound: every fill pays at least its exact share and
+    /// less than one unit more, so slicing is never cheaper than a single fill.
+    #[test]
+    fn test_per_fill_fee_overcharge_is_below_one_unit() {
+        let fill_sizes = [1, 49, 50, 499, 500, 501, 4_999, 10_000, 123_457];
+        let total_size: u64 = fill_sizes.iter().sum();
+        for fee_bps in [1, 20, 9_999] {
+            let fees = settled_bid_fees(0, fee_bps, false, &fill_sizes);
+            for (&size, &fee) in fill_sizes.iter().zip(&fees) {
+                // Compare in units of 1/10_000 so the exact share needs no rounding.
+                let exact = u128::from(size) * u128::from(fee_bps);
+                let charged = u128::from(fee) * 10_000;
+                assert!(charged >= exact, "{fee_bps} bp on {size}: under-charged");
+                assert!(
+                    charged < exact + 10_000,
+                    "{fee_bps} bp on {size}: over-charged by a unit or more"
+                );
+            }
+
+            let single_fill_fee = settled_bid_fees(0, fee_bps, false, &[total_size])[0];
+            let sliced_fee: u64 = fees.iter().sum();
+            assert!(
+                sliced_fee >= single_fill_fee,
+                "{fee_bps} bp: slicing was cheaper"
+            );
+            assert!(sliced_fee - single_fill_fee < fill_sizes.len() as u64);
+        }
     }
 
     #[test]
