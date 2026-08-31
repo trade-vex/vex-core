@@ -285,16 +285,7 @@ pub mod test {
                 .collect::<Vec<_>>(),
         );
 
-        // Check VEX_ENV to determine if CPU pinning should be disabled
-        let mut builder = TestEngineBuilder::new();
-        if matches!(
-            std::env::var("VEX_ENV"),
-            Ok(env) if env.to_lowercase() == "dev" || env.to_lowercase() == "development"
-        ) {
-            builder = builder.without_cpu_pinning();
-        }
-
-        let (_engine, producer) = builder
+        let (_engine, producer) = TestEngineBuilder::new()
             .with_symbol_specs(specs)
             .with_journaling_processor(JournalingProcessor::new(
                 Arc::clone(&publications),
@@ -977,6 +968,9 @@ mod tests {
         let quote_asset_id = 2;
         let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
         add_spec(market_id, &mut specs);
+        let spec = specs.get_mut(&market_id).unwrap();
+        spec.base_scale_k = 100_000;
+        spec.quote_scale_k = 10;
 
         let (mut producer, risk_engines, rx) = setup_tuple(specs);
         let shard_mask = risk_engines.len() as u64 - 1;
@@ -990,7 +984,7 @@ mod tests {
 
         // 3. Pre-fund accounts
         // Taker (buyer, BID) needs QUOTE asset to buy the BASE asset.
-        let taker_initial_quote = order_price * order_size;
+        let taker_initial_quote = 5_000_000;
         let taker_shard_id = (taker_id & shard_mask) as usize;
         risk_engines[taker_shard_id].set_balance(
             taker_id,
@@ -1059,13 +1053,10 @@ mod tests {
             .expect("Taker command should have a trade event");
 
         // --- Taker (Buyer, BID) Balance Verification ---
-        // Spends `price * size` of quote. Receives `size` of base, minus taker fee (20bp on base).
-        let taker_fee_in_base = (order_size * 20) / 10000;
-        let net_base_received = order_size - taker_fee_in_base;
-
+        // Spends 5,000,000 scaled quote units. Receives 10,000 base units minus a 20-unit fee.
         assert_eq!(
             taker_filled_cmd.balance[0].total(), // base asset
-            net_base_received,
+            9_980,
             "Taker's base balance is incorrect"
         );
         assert_eq!(
@@ -1083,11 +1074,7 @@ mod tests {
         );
 
         // --- Maker (Seller, ASK) Balance Verification ---
-        // Spends `size` of base. Receives `price * size` of quote, minus maker fee (10bp on quote).
-        let gross_quote_received = order_price * order_size;
-        let maker_fee_in_quote = (gross_quote_received * 10) / 10000;
-        let net_quote_received = gross_quote_received - maker_fee_in_quote;
-
+        // Spends 10,000 base units. Receives 5,000,000 scaled quote units minus a 5,000-unit fee.
         assert_eq!(
             trade_event.maker_balance[0].total(), // base asset
             0,
@@ -1095,7 +1082,7 @@ mod tests {
         );
         assert_eq!(
             trade_event.maker_balance[1].total(),
-            net_quote_received,
+            4_995_000,
             "Maker's quote balance is incorrect"
         );
         assert_eq!(
@@ -1222,10 +1209,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("Did not receive taker's filled command");
         // balances should be updated correctly for both taker and makers
-        assert_eq!(
-            taker_filled_cmd.balance[0].total(),
-            taker_trade_size - (taker_trade_size * 20 / 10000)
-        ); // base after 20bp fee
+        assert_eq!(taker_filled_cmd.balance[0].total(), 44_910); // base after 20bp fee
         assert_eq!(taker_filled_cmd.balance[1].total(), 0);
         // no balance must be locked for the taker after the trade
         assert_eq!(taker_filled_cmd.balance[1].locked, 0);
@@ -1247,9 +1231,7 @@ mod tests {
         assert!(event1.matched_order_completed);
         assert!(!event1.active_order_completed);
         assert_eq!(event1.maker_balance[0].available(), 0); // Maker 1 sold all base
-        let expected_maker1_quote =
-            (order_price * maker1_size) - (order_price * maker1_size * 10 / 10000); // 10bp fee
-        assert_eq!(event1.maker_balance[1].available(), expected_maker1_quote);
+        assert_eq!(event1.maker_balance[1].available(), 49_950_000);
         assert_eq!(event1.maker_balance[1].locked, 0);
         assert_eq!(event1.maker_balance[0].locked, 0);
         assert_eq!(
@@ -1269,9 +1251,7 @@ mod tests {
         assert!(event2.matched_order_completed);
         assert!(!event2.active_order_completed);
         assert_eq!(event2.maker_balance[0].available(), 0); // Maker
-        let expected_maker2_quote =
-            (order_price * maker2_size) - (order_price * maker2_size * 10 / 10000); // 10bp fee
-        assert_eq!(event2.maker_balance[1].available(), expected_maker2_quote);
+        assert_eq!(event2.maker_balance[1].available(), 99_900_000);
         assert_eq!(event2.maker_balance[1].locked, 0);
         assert_eq!(event2.maker_balance[0].locked, 0);
         assert_eq!(
@@ -1302,9 +1282,7 @@ mod tests {
             maker3_size - maker3_trade_size
         ); // Maker 3 partially sold
         assert_eq!(event3.maker_balance[0].available(), 0); // the rest is in locked
-        let expected_maker3_quote =
-            (order_price * maker3_trade_size) - (order_price * maker3_trade_size * 10 / 10000); // 10bp fee
-        assert_eq!(event3.maker_balance[1].available(), expected_maker3_quote);
+        assert_eq!(event3.maker_balance[1].available(), 74_925_000);
         assert_eq!(event3.maker_balance[1].locked(), 0);
         assert_eq!(
             risk_engines[maker3_shard].get_balance(maker3_id, base_asset_id),
@@ -1317,26 +1295,14 @@ mod tests {
         assert!(event3.next_event.is_none(), "There should be only 3 events");
 
         // --- Verify Maker Balances from Events and Risk Engine State ---
-        let maker_fee_rate = 10; // 0.1% on quote asset
-        for (event, maker_id, maker_shard, initial_size) in [
-            (event1, maker1_id, maker1_shard, maker1_size),
-            (event2, maker2_id, maker2_shard, maker2_size),
-            (event3, maker3_id, maker3_shard, maker3_size),
+        for (event, maker_id, maker_shard, expected_base_locked, expected_quote) in [
+            (event1, maker1_id, maker1_shard, 0, 49_950_000),
+            (event2, maker2_id, maker2_shard, 0, 99_900_000),
+            (event3, maker3_id, maker3_shard, 15_000, 74_925_000),
         ] {
-            let trade_size = event.size;
-            let quote_recv = order_price * trade_size;
-            let fee = (quote_recv * maker_fee_rate) / 10000;
-            let net_quote_recv = quote_recv - fee;
-
-            let (final_base_avail, final_base_locked) = if event.matched_order_completed {
-                (0, 0)
-            } else {
-                (0, initial_size - trade_size)
-            };
-
-            assert_eq!(event.maker_balance[0].available, final_base_avail);
-            assert_eq!(event.maker_balance[0].locked, final_base_locked);
-            assert_eq!(event.maker_balance[1].available, net_quote_recv);
+            assert_eq!(event.maker_balance[0].available, 0);
+            assert_eq!(event.maker_balance[0].locked, expected_base_locked);
+            assert_eq!(event.maker_balance[1].available, expected_quote);
             assert_eq!(event.maker_balance[1].locked, 0);
 
             assert_eq!(
@@ -1350,13 +1316,9 @@ mod tests {
         }
 
         // --- Final Taker Balance Verification ---
-        let total_base_received = taker_trade_size;
-        let taker_fee = (total_base_received * 20) / 10000; // 0.2% on base
-        let net_base_received = total_base_received - taker_fee;
-
         assert_eq!(
             taker_filled_cmd.balance[0].total(), // base
-            net_base_received,
+            44_910,
             "Taker's base balance is incorrect"
         );
         assert_eq!(
@@ -1457,14 +1419,12 @@ mod tests {
 
         // --- Verify Balances ---
         // Taker (Buyer, BID)
-        let taker_fee_in_base = (maker_ask_size * 20) / 10000; // 0.2% on base
-        let taker_net_base_received = maker_ask_size - taker_fee_in_base;
         let taker_quote_spent = maker_ask_price * maker_ask_size;
 
         let taker_final_base = risk_engines[taker_shard].get_balance(taker_id, base_asset_id);
         let taker_final_quote = risk_engines[taker_shard].get_balance(taker_id, quote_asset_id);
 
-        assert_eq!(taker_final_base.total(), taker_net_base_received);
+        assert_eq!(taker_final_base.total(), 4_990);
         assert_eq!(
             taker_final_quote.total(),
             taker_initial_quote - taker_quote_spent
@@ -1475,15 +1435,11 @@ mod tests {
         );
 
         // Maker (Seller, ASK)
-        let maker_gross_quote_received = maker_ask_price * maker_ask_size;
-        let maker_fee_in_quote = (maker_gross_quote_received * 10) / 10000; // 0.1% on quote
-        let maker_net_quote_received = maker_gross_quote_received - maker_fee_in_quote;
-
         let maker_final_base = risk_engines[maker_shard].get_balance(maker_id, base_asset_id);
         let maker_final_quote = risk_engines[maker_shard].get_balance(maker_id, quote_asset_id);
 
         assert_eq!(maker_final_base.total(), 0);
-        assert_eq!(maker_final_quote.total(), maker_net_quote_received);
+        assert_eq!(maker_final_quote.total(), 249_750_000);
     }
 
     #[test]
@@ -1900,6 +1856,7 @@ mod tests {
         );
         assert_eq!(
             risk_engines[maker_a_shard].get_balance(maker_a_id, quote_asset_id),
+            // 10_090 pre-#163 (floor fee 10); #163's div_ceil makes the 10 bp fee 11.
             UserBalance::new(maker_a_quote_recv - maker_a_fee, 0)
         );
 
@@ -1912,6 +1869,7 @@ mod tests {
         );
         assert_eq!(
             risk_engines[maker_b_shard].get_balance(maker_b_id, quote_asset_id),
+            // 15_285 pre-#163 (floor fee 15); #163's div_ceil makes it 16.
             UserBalance::new(maker_b_quote_recv - maker_b_fee, 0)
         );
 
@@ -1921,6 +1879,7 @@ mod tests {
         let maker_c_fee = (maker_c_quote_recv * 10).div_ceil(10000); // 10bp on quote
         assert_eq!(
             risk_engines[maker_c_shard].get_balance(maker_c_id, quote_asset_id),
+            // 5_095 pre-#163 (floor fee 5); #163's div_ceil makes it 6.
             UserBalance::new(maker_c_quote_recv - maker_c_fee, 0)
         );
         assert_eq!(
@@ -2207,31 +2166,27 @@ mod tests {
         );
 
         // Check balances post-IOC. Charlie's locked USD for the unfilled 5000 ETH should be free.
-        let charlie_eth_cost = 20000 * 3000;
-        let charlie_eth_fee = (20000 * 20) / 10000; // Taker fee is on base (ETH)
         checker.check(
             charlie_fok_ioc_id,
             usd_asset,
-            100_000_000 - charlie_eth_cost,
+            40_000_000,
             0,
             "Charlie's USD spent on ETH",
         );
         checker.check(
             charlie_fok_ioc_id,
             eth_asset,
-            20000 - charlie_eth_fee,
+            19_960,
             0,
             "Charlie received ETH minus taker fee",
         );
 
         // Alice's ETH ask was fully filled
-        let alice_usd_gain = charlie_eth_cost;
-        let alice_usd_fee = (alice_usd_gain * 10) / 10000; // Maker fee is on quote (USD)
         checker.check(alice_mm_id, eth_asset, 30000, 0, "Alice's ETH ask is gone");
         checker.check(
             alice_mm_id,
             usd_asset,
-            100_000_000 - (1000 * 49900) + (alice_usd_gain - alice_usd_fee),
+            110_040_000,
             1000 * 49900,
             "Alice received USD minus maker fee",
         );
@@ -2293,25 +2248,22 @@ mod tests {
         );
 
         // Check balances after successful FOK
-        let bob_btc_cost = 40000 * 30;
-        let bob_sol_fee = (40000 * 20) / 10000;
+        let bob_btc_cost = 1_200_000;
         checker.check(
             bob_taker_id,
             btc_asset,
-            5_000_000 - bob_btc_cost,
+            3_800_000,
             0,
             "Bob spent BTC on SOL",
         );
         checker.check(
             bob_taker_id,
             sol_asset,
-            40000 - bob_sol_fee,
+            39_920,
             0,
             "Bob received SOL minus fee",
         );
 
-        let david_btc_gain = bob_btc_cost;
-        let david_btc_fee = (david_btc_gain * 10) / 10000;
         checker.check(
             david_sol_mm_id,
             sol_asset,
@@ -2322,7 +2274,7 @@ mod tests {
         checker.check(
             david_sol_mm_id,
             btc_asset,
-            5_000_000 - (50000 * 29) + (david_btc_gain - david_btc_fee),
+            4_748_800,
             50000 * 29,
             "David received BTC for SOL minus fee",
         );

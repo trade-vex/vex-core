@@ -353,7 +353,7 @@ impl RiskEngine {
         // PR #178 made get_balance_mut fallible so a REJECTED operation can no longer insert
         // an empty row. This is the commit point: every validation above has passed, so the
         // write must succeed even for an asset the user is receiving for the first time.
-        // set_balance inserts-or-updates, keeping PR #153's all-or-nothing commit intact.
+        // set_balance inserts-or-updates, which keeps #153's all-or-nothing commit intact.
         if asset_to_add == asset_to_subtract {
             store.set_balance(user_id, asset_to_add, balance_add);
         } else {
@@ -1182,7 +1182,7 @@ mod tests {
         // collateral record is deliberately NOT an error (see
         // test_bid_cancel_without_collateral_record_is_safe). The ASK path still unlocks base
         // directly, so it is the case that genuinely fails and must surface as Rejected --
-        // which is the guarantee PR #178 is about.
+        // which is what PR #178's guarantee is about.
         let mut cmd =
             OrderCommand::place_order(TimeInForce::Gtc, user_id, 100, 10, Side::Ask, market_id, 1);
         cmd.set_status(Status::Cancelled);
