@@ -18,6 +18,7 @@ use tracing::{debug, error, info, warn};
 /// Manages all user profiles and performs risk checks as well as settlements
 pub struct RiskEngine {
     balances: Arc<Mutex<BalanceStore>>,
+    accrued_fees: Mutex<HashMap<u16, u64>>,
     pub symbol_specs: HashMap<u32, CoreMarketSpecification>,
     shard_id: u32,
     shard_mask: u64,
@@ -34,6 +35,7 @@ impl RiskEngine {
         }
         Self {
             balances: Arc::new(Mutex::new(BalanceStore::new())),
+            accrued_fees: Mutex::new(HashMap::new()),
             symbol_specs,
             shard_id,
             shard_mask: (num_shards - 1) as u64,
@@ -236,7 +238,14 @@ impl RiskEngine {
             0
         };
 
-        let (asset_to_subtract, amount_to_subtract, asset_to_add, amount_to_add) = match user_side {
+        let (
+            asset_to_subtract,
+            amount_to_subtract,
+            asset_to_add,
+            amount_to_add,
+            fee_asset,
+            fee_amount,
+        ) = match user_side {
             // User is BUYING base asset with quote asset.
             // Spends quote, receives base. Fee is on base asset received.
             Side::Bid => {
@@ -250,6 +259,8 @@ impl RiskEngine {
                     quote_spent,
                     base_asset(market_id),
                     base_received_net,
+                    base_asset(market_id),
+                    fee_in_base,
                 )
             }
             // User is SELLING base asset for quote asset.
@@ -267,12 +278,34 @@ impl RiskEngine {
                     base_spent,
                     quote_asset(market_id),
                     quote_received_net,
+                    quote_asset(market_id),
+                    fee_in_quote,
                 )
             }
         };
 
         // Compute and validate every mutation against copies before changing the store.
         let mut store = self.balances.lock();
+
+        // Fee accrual is computed and overflow-checked BEFORE any balance mutation, so a
+        // saturated accumulator can never leave a half-settled trade (PR #173 accounting
+        // inside PR #153's copy-then-commit). Lock order stays balances -> accrued_fees.
+        let mut accrued_fees = if fee_amount == 0 {
+            None
+        } else {
+            Some(self.accrued_fees.lock())
+        };
+        let accrued_fee_total = accrued_fees
+            .as_ref()
+            .map(|fees| {
+                fees.get(&fee_asset)
+                    .copied()
+                    .unwrap_or_default()
+                    .checked_add(fee_amount)
+                    .ok_or(BalanceError::Overflow)
+            })
+            .transpose()?;
+
         let mut balance_sub = store.get_balance(user_id, asset_to_subtract);
 
         if balance_sub.locked < refund_amount {
@@ -312,6 +345,10 @@ impl RiskEngine {
         } else {
             *store.get_balance_mut(user_id, asset_to_subtract) = balance_sub;
             *store.get_balance_mut(user_id, asset_to_add) = balance_add;
+        }
+
+        if let (Some(fees), Some(total)) = (accrued_fees.as_mut(), accrued_fee_total) {
+            fees.insert(fee_asset, total);
         }
 
         if is_maker {
@@ -486,6 +523,15 @@ impl RiskEngine {
         Ok(store.try_get_balance(user_id, asset_id)?)
     }
 
+    /// Returns fees accrued for an asset by this risk-engine shard.
+    pub fn get_accrued_fee(&self, asset_id: u16) -> u64 {
+        self.accrued_fees
+            .lock()
+            .get(&asset_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
     pub fn set_balance(&self, user_id: u64, asset_id: u16, balance: UserBalance) {
         let mut store = self.balances.lock();
         *store.get_balance_mut(user_id, asset_id) = balance;
@@ -617,6 +663,139 @@ mod tests {
 
         assert_eq!(engine.get_balance(user_id, quote_asset_id).total(), 0);
         fees
+    }
+
+    fn system_asset_total(engine: &RiskEngine, users: &[u64], asset_id: u16) -> u128 {
+        users
+            .iter()
+            .map(|&user_id| engine.get_balance(user_id, asset_id).total() as u128)
+            .sum::<u128>()
+            + engine.get_accrued_fee(asset_id) as u128
+    }
+
+    fn settle_trade_and_assert_conservation(
+        spec: CoreMarketSpecification,
+        price: u64,
+        size: u64,
+    ) -> RiskEngine {
+        let market_id = spec.market_id;
+        let base_asset_id = base_asset(market_id);
+        let quote_asset_id = quote_asset(market_id);
+        let gross_quote = spec.calculate_quote_cost(price, size);
+        let taker_fee = u64::try_from((size as u128 * spec.taker_fee as u128) / 10000).unwrap();
+        let maker_fee =
+            u64::try_from((gross_quote as u128 * spec.maker_fee as u128) / 10000).unwrap();
+
+        let mut specs = HashMap::new();
+        specs.insert(market_id, spec);
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let engine = RiskEngine::new(specs, 0, 1);
+        let maker_id = 101;
+        let taker_id = 102;
+        let users = [maker_id, taker_id];
+
+        engine.set_balance(taker_id, quote_asset_id, UserBalance::new(gross_quote, 0));
+        engine.set_balance(maker_id, base_asset_id, UserBalance::new(size, 0));
+
+        let base_total_before = system_asset_total(&engine, &users, base_asset_id);
+        let quote_total_before = system_asset_total(&engine, &users, quote_asset_id);
+
+        let mut taker_cmd = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            taker_id,
+            price,
+            size,
+            Side::Bid,
+            market_id,
+            1,
+        );
+        engine
+            .reserve_funds_for_order(&mut taker_cmd, price_cache.clone())
+            .unwrap();
+
+        let mut maker_cmd = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            maker_id,
+            price,
+            size,
+            Side::Ask,
+            market_id,
+            2,
+        );
+        engine
+            .reserve_funds_for_order(&mut maker_cmd, price_cache)
+            .unwrap();
+
+        let mut trade_event = MatcherTradeEvent {
+            price,
+            size,
+            maker_user_id: maker_id,
+            active_order_completed: false,
+            matched_order_id: 2,
+            matched_order_completed: true,
+            next_event: None,
+            maker_balance: [UserBalance::default(); 2],
+            maker_remaining_size: 0,
+            maker_original_size: size,
+        };
+
+        engine.handle_trade_event(
+            taker_id,
+            market_id,
+            Side::Bid,
+            &mut trade_event,
+            Some(price),
+        );
+        engine.handle_trade_event(maker_id, market_id, Side::Ask, &mut trade_event, None);
+
+        assert_eq!(
+            system_asset_total(&engine, &users, base_asset_id),
+            base_total_before
+        );
+        assert_eq!(
+            system_asset_total(&engine, &users, quote_asset_id),
+            quote_total_before
+        );
+        assert_eq!(engine.get_accrued_fee(base_asset_id), taker_fee);
+        assert_eq!(engine.get_accrued_fee(quote_asset_id), maker_fee);
+
+        engine
+    }
+
+    #[test]
+    fn test_trade_conserves_assets_at_unit_scale() {
+        let market_id = (1_u32 << 16) | 3_u32;
+        settle_trade_and_assert_conservation(get_spec(market_id), 1_000, 10_000);
+    }
+
+    #[test]
+    fn test_trade_conserves_assets_at_shipped_eth_usdt_scale() {
+        let market_id = (1_u32 << 16) | 3_u32;
+        let spec = CoreMarketSpecification::builder()
+            .market_id(market_id)
+            .market_type(MarketType::Spot)
+            .base_scale_k(100_000)
+            .quote_scale_k(10)
+            .base_native_scale(1_000_000_000_000_000_000)
+            .quote_native_scale(1_000_000)
+            .maker_fee(10)
+            .taker_fee(20)
+            .slippage(150)
+            .build()
+            .unwrap();
+
+        settle_trade_and_assert_conservation(spec, 20_000, 1_000_000_000_000_000_000);
+    }
+
+    #[test]
+    fn test_zero_fees_do_not_create_accumulator_entries() {
+        let market_id = (1_u32 << 16) | 3_u32;
+        let mut spec = get_spec(market_id);
+        spec.maker_fee = 0;
+        spec.taker_fee = 0;
+
+        let engine = settle_trade_and_assert_conservation(spec, 1_000, 10_000);
+        assert!(engine.accrued_fees.lock().is_empty());
     }
 
     #[test]
