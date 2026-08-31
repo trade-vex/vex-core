@@ -125,6 +125,59 @@ impl Default for CorePinning {
     }
 }
 
+impl CorePinning {
+    fn core_ids(self) -> [usize; 14] {
+        [
+            self.journaling,
+            self.risk_engines[0],
+            self.risk_engines[1],
+            self.risk_engines[2],
+            self.risk_engines[3],
+            self.matching_engines[0],
+            self.matching_engines[1],
+            self.matching_engines[2],
+            self.matching_engines[3],
+            self.risk_r2_engines[0],
+            self.risk_r2_engines[1],
+            self.risk_r2_engines[2],
+            self.risk_r2_engines[3],
+            self.events,
+        ]
+    }
+
+    fn validate_available_cores(self, available_cores: &[usize]) -> EngineResult<()> {
+        let required_cores = self.core_ids();
+        let missing_cores: Vec<_> = required_cores
+            .iter()
+            .copied()
+            .filter(|core| !available_cores.contains(core))
+            .collect();
+
+        if missing_cores.is_empty() {
+            return Ok(());
+        }
+
+        Err(EngineError::Configuration(format!(
+            "Core pinning requires CPU cores {required_cores:?}, but the process CPU affinity mask allows {available_cores:?}; missing required cores {missing_cores:?}. Adjust the process cpuset or set ENABLE_CORE_PINNING=false to start without pinning"
+        )))
+    }
+
+    fn validate_process_affinity(self) -> EngineResult<()> {
+        let required_cores = self.core_ids();
+        let available_cores = core_affinity::get_core_ids()
+            .ok_or_else(|| {
+                EngineError::Configuration(format!(
+                    "Core pinning requires CPU cores {required_cores:?}, but the process CPU affinity mask could not be read. Set ENABLE_CORE_PINNING=false to start without pinning"
+                ))
+            })?
+            .into_iter()
+            .map(|core| core.id)
+            .collect::<Vec<_>>();
+
+        self.validate_available_cores(&available_cores)
+    }
+}
+
 /// High-performance exchange core engine
 ///
 /// This follows the exact same architecture as ExchangeCore:
@@ -162,7 +215,8 @@ impl CoreEngine {
     ///
     /// # Errors
     ///
-    /// Currently does not return errors, but signature allows for future error handling
+    /// Returns [`EngineError::Configuration`] when core pinning is enabled but the process CPU
+    /// affinity mask does not contain every configured core.
     pub fn new(
         symbol_specs: HashMap<u32, CoreMarketSpecification>,
         journaling_processor: JournalingProcessor,
@@ -171,6 +225,10 @@ impl CoreEngine {
         core_pinning: CorePinning,
         enable_pinning: bool,
     ) -> EngineResult<(Self, OrderProducer)> {
+        if enable_pinning {
+            core_pinning.validate_process_affinity()?;
+        }
+
         let (engine, producer) = Self::build_engine(
             symbol_specs,
             journaling_processor,
@@ -537,6 +595,46 @@ impl CoreEngine {
     #[must_use]
     pub fn publications(&self) -> &Arc<Publications> {
         &self.publications
+    }
+}
+
+#[cfg(test)]
+mod core_pinning_tests {
+    use super::*;
+
+    #[test]
+    fn exact_available_core_match_passes() {
+        let pinning = CorePinning::default();
+
+        assert!(
+            pinning
+                .validate_available_cores(&pinning.core_ids())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn missing_available_core_fails_and_names_it() {
+        let error = CorePinning::default()
+            .validate_available_cores(&[1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14])
+            .expect_err("core 8 should be required");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("requires CPU cores [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]")
+        );
+        assert!(message.contains("affinity mask allows [1, 2, 3, 4, 5, 6, 7, 9"));
+        assert!(message.contains("missing required cores [8]"));
+        assert!(message.contains("ENABLE_CORE_PINNING=false"));
+    }
+
+    #[test]
+    fn available_core_superset_passes() {
+        assert!(
+            CorePinning::default()
+                .validate_available_cores(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+                .is_ok()
+        );
     }
 }
 
