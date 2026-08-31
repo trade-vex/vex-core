@@ -9,8 +9,8 @@ mod snowflake;
 mod user_profile;
 
 pub use cmd::{
-    FRAMESIZE, MatcherTradeEvent, ORDERCOMMANDSIZE, OrderCommand, Status, decode_order_command,
-    encode_order_command,
+    FRAMESIZE, MatcherTradeEvent, MatcherTradeEventChain, ORDERCOMMANDSIZE, OrderCommand, Status,
+    decode_order_command, encode_order_command,
 };
 pub use core_arithmetic::CoreArithmetic;
 pub use events::{

@@ -297,6 +297,142 @@ mod test {
     }
 
     #[test]
+    fn price_level_volume_tracks_add_and_remove() {
+        let mut level = PriceLevel::new();
+        level.add_order(Order {
+            order_id: 1,
+            user_id: 1,
+            price: 100,
+            size: 25,
+            original_size: 25,
+            side: Side::Bid,
+            time_in_force: TimeInForce::Gtc,
+            status: Status::Placed,
+            timestamp: 0,
+        });
+        level.add_order(Order {
+            order_id: 2,
+            user_id: 2,
+            price: 100,
+            size: 75,
+            original_size: 75,
+            side: Side::Bid,
+            time_in_force: TimeInForce::Gtc,
+            status: Status::Placed,
+            timestamp: 0,
+        });
+        assert_eq!(level.get_total_volume(), 100);
+
+        // PR #148 makes remove_order owner-checked; these volume tests must claim the owner.
+        let mut command = OrderCommand {
+            user_id: 1,
+            ..Default::default()
+        };
+        level.remove_order(1, &mut command);
+        assert_eq!(level.get_total_volume(), 75);
+        assert_eq!(level.get_order_count(), 1);
+    }
+
+    #[test]
+    fn price_level_volume_overflow_saturates_without_panicking() {
+        let mut level = PriceLevel::new();
+        level.add_order(Order {
+            order_id: 1,
+            user_id: 1,
+            price: 100,
+            size: u64::MAX,
+            original_size: u64::MAX,
+            side: Side::Bid,
+            time_in_force: TimeInForce::Gtc,
+            status: Status::Placed,
+            timestamp: 0,
+        });
+        level.add_order(Order {
+            order_id: 2,
+            user_id: 2,
+            price: 100,
+            size: 1,
+            original_size: 1,
+            side: Side::Bid,
+            time_in_force: TimeInForce::Gtc,
+            status: Status::Placed,
+            timestamp: 0,
+        });
+
+        assert_eq!(level.get_total_volume(), u64::MAX);
+        assert_eq!(level.get_order_count(), 2);
+    }
+
+    #[test]
+    fn price_level_volume_underflow_saturates_without_panicking() {
+        let mut level = PriceLevel::new();
+        level.orders.push_back(Order {
+            order_id: 1,
+            user_id: 1,
+            price: 100,
+            size: 1,
+            original_size: 1,
+            side: Side::Bid,
+            time_in_force: TimeInForce::Gtc,
+            status: Status::Placed,
+            timestamp: 0,
+        });
+
+        // PR #148 makes remove_order owner-checked; these volume tests must claim the owner.
+        let mut command = OrderCommand {
+            user_id: 1,
+            ..Default::default()
+        };
+        level.remove_order(1, &mut command);
+
+        assert_eq!(level.get_total_volume(), 0);
+        assert_eq!(level.get_order_count(), 0);
+        assert_eq!(command.status, Status::Cancelled);
+    }
+
+    #[test]
+    fn record_snapshot_preserves_contents_without_unused_allocations() {
+        let (mut book, price_cache) = create_test_orderbook();
+        let mut bid = create_order_command(
+            OrderCommandType::PlaceOrder,
+            1,
+            100,
+            101,
+            10,
+            99,
+            25,
+            Side::Bid,
+            TimeInForce::Gtc,
+        );
+        book.place_order(&mut bid, Arc::clone(&price_cache));
+
+        let mut ask = create_order_command(
+            OrderCommandType::PlaceOrder,
+            2,
+            101,
+            102,
+            10,
+            101,
+            40,
+            Side::Ask,
+            TimeInForce::Gtc,
+        );
+        book.place_order(&mut ask, price_cache);
+
+        let snapshot = ask.l2_data.as_ref().unwrap();
+        assert_eq!(snapshot.bid_prices, [99]);
+        assert_eq!(snapshot.bid_volumes, [25]);
+        assert_eq!(snapshot.ask_prices, [101]);
+        assert_eq!(snapshot.ask_volumes, [40]);
+        assert!(snapshot.bid_orders.is_empty());
+        assert!(snapshot.ask_orders.is_empty());
+        assert_eq!(snapshot.bid_orders.capacity(), 0);
+        assert_eq!(snapshot.ask_orders.capacity(), 0);
+        assert_eq!(snapshot.reference_seq, 0);
+        assert_ne!(snapshot.timestamp, 0);
+    }
+
+    #[test]
     fn test_empty_orderbook_creation() {
         let (mut book, _) = create_test_orderbook();
         assert_eq!(book.total_order_count(), 0);

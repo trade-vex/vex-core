@@ -684,7 +684,7 @@ mod tests {
         );
         engine.handle_trade_event(seller_id, market_id, Side::Ask, &mut event, None);
 
-        // PR #163 rounds fees UP per fill (div_ceil), so this remainder costs one more
+        // PR #163 rounds fees UP per fill (div_ceil), so the remainder below costs one more
         // atomic unit than the pre-#163 floor of 666_666.
         let taker_fee_in_base = 666_667;
         assert_eq!((size * 20) % 10_000, 6_680);
@@ -702,7 +702,7 @@ mod tests {
         );
         // Gross quote here is one atomic unit. Pre-#163 the 10 bp maker fee floored to zero
         // and the seller kept the unit; with #163's per-fill div_ceil the fee is a whole unit,
-        // so the maker nets nothing. This is the ceil-per-fill overcharge tracked against #163.
+        // so the maker nets nothing. Same ceil-per-fill overcharge as the ask round-trip test.
         let maker_fee_in_quote = (quote_cost * 10).div_ceil(10_000);
         assert_eq!(
             engine.get_balance(seller_id, quote_asset_id),
@@ -755,7 +755,8 @@ mod tests {
         );
         // Gross quote is one atomic unit. Pre-#163 the 10 bp fee floored to zero and the
         // seller kept the unit; with #163's per-fill div_ceil the fee is one unit, i.e. the
-        // whole proceeds. Asserted explicitly so it cannot regress silently either way.
+        // whole proceeds. This is the ceil-per-fill overcharge tracked against #163 -- the
+        // stacked behaviour is asserted here so it cannot regress silently either way.
         assert_eq!(
             engine.get_balance(user_id, quote_asset_id),
             UserBalance::new(0, 0)

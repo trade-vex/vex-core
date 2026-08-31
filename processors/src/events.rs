@@ -7,7 +7,7 @@ use common::OrderCommand;
 use common::OrderCommandType;
 use common::Status;
 use common::UserBalance;
-use common::{base_asset, order_debug, order_info, quote_asset};
+use common::{base_asset, order_debug, quote_asset};
 use prost::Message;
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
@@ -543,7 +543,7 @@ impl EventsHandler for KafkaEventsHandler {
             return;
         }
 
-        order_info!(
+        order_debug!(
             "command_processed",
             cmd,
             stage = "events",

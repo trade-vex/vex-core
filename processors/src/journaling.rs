@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use common::{OrderCommand, OrderCommandType, Snowflake, order_debug, order_info};
+use common::{OrderCommand, OrderCommandType, Snowflake, order_debug};
 use vex_networking::server::Publications;
 
 pub struct JournalingProcessor {
@@ -37,7 +37,7 @@ impl JournalingProcessor {
         }
         cmd.timestamp = self.snowflake.timestamp();
         self.publications.publish_to_archive(cmd);
-        order_info!("command_ingested", cmd, stage = "journal");
+        order_debug!("command_ingested", cmd, stage = "journal");
     }
 
     pub fn journal_event(&self, cmd: &mut OrderCommand) {
