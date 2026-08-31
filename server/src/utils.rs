@@ -88,6 +88,7 @@ macro_rules! create_risk_r2_handler {
             let market_id = cmd.market_id();
             let taker_side = cmd.side();
             let taker_price = cmd.price();
+            let taker_order_id = cmd.order_id();
 
             // Determine shard ownership for taker
             let is_taker_shard = ((taker_id & shard_mask) as usize) == $shard_id;
@@ -103,7 +104,7 @@ macro_rules! create_risk_r2_handler {
                     let maker_side = taker_side.op_side();
                     risk_engine.handle_trade_event(
                         maker_id, market_id, maker_side, event,
-                        None, // Maker uses matched price, not limit price
+                        None, // Maker order ID is carried by the trade event
                     );
                 }
 
@@ -114,7 +115,7 @@ macro_rules! create_risk_r2_handler {
                         market_id,
                         taker_side,
                         event,
-                        Some(taker_price),
+                        Some((taker_order_id, taker_price)),
                     );
                 }
 
