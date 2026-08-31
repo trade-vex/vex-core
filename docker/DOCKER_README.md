@@ -1,6 +1,6 @@
-# Docker Setup Guser_ide
+# Docker Setup Guide
 
-This guser_ide explains how to use the Docker setup for the VEX Core project, including the media driver and SBE code generation.
+This guide explains how to use the Docker setup for the VEX Core project, including the media driver and SBE code generation.
 
 ## Overview
 
