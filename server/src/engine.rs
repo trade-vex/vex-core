@@ -14,6 +14,7 @@ use processors::{
     risk_engine::RiskEngine,
 };
 use std::{
+    cell::UnsafeCell,
     sync::Arc,
     sync::atomic::AtomicBool,
     thread::{self, JoinHandle},
@@ -168,7 +169,11 @@ impl CoreEngine {
         let order_factory = OrderCommand::default;
 
         let journaling_handler =
-            move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
+            move |cell: &UnsafeCell<OrderCommand>, _sequence: i64, _end_of_batch: bool| {
+                // SAFETY: Journaling is the sole handler in this barrier group, so creating
+                // an exclusive reference to the command cannot alias another handler's
+                // reference.
+                let cmd = unsafe { &mut *cell.get() };
                 journaling_processor.journal_command(cmd);
             };
 
@@ -179,7 +184,16 @@ impl CoreEngine {
 
         let router_handlers = matching_engine_routers.into_iter().map(|mut router| {
             let price_cache_clone = Arc::clone(&price_cache);
-            move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
+            move |cell: &UnsafeCell<OrderCommand>, _sequence: i64, _end_of_batch: bool| {
+                // SAFETY: This is a shared scalar read; peer matching handlers may read
+                // market_id concurrently, and none of them mutates it.
+                let market_id = unsafe { (*cell.get()).market_id };
+                if !router.market_for_this_handler(market_id as u64) {
+                    return;
+                }
+                // SAFETY: The market predicate above is exclusive, so this router alone in
+                // the matching barrier group creates a mutable reference for this sequence.
+                let cmd = unsafe { &mut *cell.get() };
                 if cmd.command == OrderCommandType::DepositFunds
                     || cmd.command == OrderCommandType::WithdrawFunds
                     || cmd.status == Status::Rejected
@@ -190,9 +204,14 @@ impl CoreEngine {
             }
         });
 
-        let events_handler = move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
-            events_handler.handle_processed_command(cmd);
-        };
+        let events_handler =
+            move |cell: &UnsafeCell<OrderCommand>, _sequence: i64, _end_of_batch: bool| {
+                // SAFETY: This events handler is the sole handler in this barrier group, so
+                // creating an exclusive reference to the command cannot alias another
+                // handler's reference.
+                let cmd = unsafe { &mut *cell.get() };
+                events_handler.handle_processed_command(cmd);
+            };
 
         // Build the disruptor pipeline with proper stage dependencies
         let producer = Self::build_disruptor_pipeline(
@@ -265,9 +284,9 @@ impl CoreEngine {
         enable_pinning: bool,
     ) -> OrderProducer
     where
-        X: FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
-        Y: FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
-        Z: FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
+        X: FnMut(&UnsafeCell<OrderCommand>, i64, bool) + Send + 'static,
+        Y: FnMut(&UnsafeCell<OrderCommand>, i64, bool) + Send + 'static,
+        Z: FnMut(&UnsafeCell<OrderCommand>, i64, bool) + Send + 'static,
     {
         // Build the entire pipeline in one chain to maintain proper types
         info!(
@@ -470,7 +489,7 @@ pub mod test {
     use super::*;
 
     /// Type alias for test handler that intercepts order commands during testing
-    pub type TestHandler = Box<dyn FnMut(&mut OrderCommand, i64, bool) + Send + 'static>;
+    pub type TestHandler = Box<dyn FnMut(&UnsafeCell<OrderCommand>, i64, bool) + Send + 'static>;
 
     /// Test-specific core pinning configuration
     /// Uses higher core numbers to avoid conflicts with system processes
@@ -580,7 +599,7 @@ pub mod test {
         #[must_use]
         pub fn with_test_handler<F>(mut self, handler: F) -> Self
         where
-            F: FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
+            F: FnMut(&UnsafeCell<OrderCommand>, i64, bool) + Send + 'static,
         {
             self.test_handler = Some(Box::new(handler));
             self
@@ -646,7 +665,11 @@ pub mod test {
             let order_factory = OrderCommand::default;
 
             let journaling_handler =
-                move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
+                move |cell: &UnsafeCell<OrderCommand>, _sequence: i64, _end_of_batch: bool| {
+                    // SAFETY: Test journaling is the sole handler in this barrier group, so
+                    // creating an exclusive reference to the command cannot alias another
+                    // handler's reference.
+                    let cmd = unsafe { &mut *cell.get() };
                     journaling_processor.journal_command(cmd);
                 };
 
@@ -660,7 +683,16 @@ pub mod test {
 
             let router_handlers = matching_engine_routers.into_iter().map(|mut router| {
                 let price_cache_clone = Arc::clone(&price_cache);
-                move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
+                move |cell: &UnsafeCell<OrderCommand>, _sequence: i64, _end_of_batch: bool| {
+                    // SAFETY: This is a shared scalar read; peer matching handlers may read
+                    // market_id concurrently, and none of them mutates it.
+                    let market_id = unsafe { (*cell.get()).market_id };
+                    if !router.market_for_this_handler(market_id as u64) {
+                        return;
+                    }
+                    // SAFETY: The market predicate above is exclusive, so this test router
+                    // alone creates a mutable reference for this sequence.
+                    let cmd = unsafe { &mut *cell.get() };
                     if cmd.command == OrderCommandType::DepositFunds
                         || cmd.command == OrderCommandType::WithdrawFunds
                         || cmd.status == Status::Rejected
@@ -674,7 +706,11 @@ pub mod test {
             let mut router_handlers_iter = router_handlers.into_iter();
 
             let events_handler =
-                move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
+                move |cell: &UnsafeCell<OrderCommand>, _sequence: i64, _end_of_batch: bool| {
+                    // SAFETY: The test events handler is the sole handler in this barrier
+                    // group, so creating this exclusive reference cannot alias another
+                    // handler's reference.
+                    let cmd = unsafe { &mut *cell.get() };
                     events_handler.handle_processed_command(cmd);
                 };
 
@@ -742,13 +778,13 @@ pub mod test {
             &self,
             buffer_size: usize,
             order_factory: fn() -> OrderCommand,
-            journaling_handler: impl FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
+            journaling_handler: impl FnMut(&UnsafeCell<OrderCommand>, i64, bool) + Send + 'static,
             risk_engines: &RiskEngines,
             price_cache: &Arc<PriceCache>,
             router_handlers_iter: &mut impl Iterator<
-                Item = impl FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
+                Item = impl FnMut(&UnsafeCell<OrderCommand>, i64, bool) + Send + 'static,
             >,
-            events_handler: impl FnMut(&mut OrderCommand, i64, bool) + Send + 'static,
+            events_handler: impl FnMut(&UnsafeCell<OrderCommand>, i64, bool) + Send + 'static,
             test_handler: TestHandler,
             core_pinning: TestCorePinning,
             enable_pinning: bool,

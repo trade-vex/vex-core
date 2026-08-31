@@ -215,7 +215,7 @@ pub mod test {
     use super::*;
     use common::{OrderCommand, Status};
     use engine::{RiskEngines, test::TestEngineBuilder};
-    use std::sync::mpsc;
+    use std::{cell::UnsafeCell, sync::mpsc};
 
     /// Test engine instance with access to internals for testing
     pub struct TestEngine {
@@ -265,7 +265,11 @@ pub mod test {
     /// ```
     pub fn setup(specs: HashMap<u32, CoreMarketSpecification>) -> TestEngine {
         let (tx, rx) = mpsc::channel::<OrderCommand>();
-        let test_handler = move |cmd: &mut OrderCommand, _: i64, _: bool| {
+        let test_handler = move |cell: &UnsafeCell<OrderCommand>, _: i64, _: bool| {
+            // SAFETY: This test capture handler is alone after the events and_then()
+            // barrier, so creating this exclusive reference cannot alias another handler's
+            // reference.
+            let cmd = unsafe { &mut *cell.get() };
             if cmd.status != Status::Processing {
                 let _ = tx.send(cmd.clone());
             }

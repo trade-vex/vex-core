@@ -42,7 +42,7 @@ thiserror = "2.0.12"
 rusteron-client = "=0.1.157"
 rusteron-media-driver = "=0.1.157"
 rusteron-archive = "=0.1.157"
-disruptor = {git="https://github.com/trade-vex/disruptor-rs.git" , rev="19ef2a9"}
+disruptor = {git="https://github.com/trade-vex/disruptor-rs.git" , rev="7e07a8b0218d767d021925e58c5ff20fd5c30d70"}
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tracing = "0.1"
