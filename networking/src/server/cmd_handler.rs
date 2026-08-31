@@ -1,11 +1,14 @@
+use crate::server::gateway_publications::Publications;
 use common::{OrderCommand, Status, decode_order_command};
 use disruptor::{MultiProducer, Producer, SingleConsumerBarrier};
 use rusteron_archive::{AeronFragmentHandlerCallback, AeronHeader};
+use std::sync::Arc;
 use tracing::{debug, error, info};
 
 pub struct FragmentHandler {
     pub gateway_id: u8,
     pub producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
+    pub publications: Arc<Publications>,
 }
 
 impl AeronFragmentHandlerCallback for FragmentHandler {
@@ -30,6 +33,8 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
                         error = %e,
                         "failed to publish order command to ring buffer"
                     );
+                    order_command.status = Status::Rejected;
+                    self.publications.publish_response(&order_command);
                 }
             }
             Err(e) => {
