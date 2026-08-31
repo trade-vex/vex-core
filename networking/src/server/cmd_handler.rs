@@ -52,6 +52,8 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
 pub struct ReplayFragmentHandler {
     pub gateway_id: u8,
     pub producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
+    pub commands_published: i64,
+    pub replay_error: Option<String>,
 }
 
 impl AeronFragmentHandlerCallback for ReplayFragmentHandler {
@@ -60,6 +62,7 @@ impl AeronFragmentHandlerCallback for ReplayFragmentHandler {
             let values = match header.get_values() {
                 Ok(values) => values,
                 Err(e) => {
+                    self.replay_error = Some(format!("failed to decode replay header: {e}"));
                     error!(
                         target: "replay_fragment",
                         gateway_id = self.gateway_id,
@@ -92,18 +95,15 @@ impl AeronFragmentHandlerCallback for ReplayFragmentHandler {
                     "processing replay order command"
                 );
 
-                if let Err(e) = self.producer.try_publish(|cmd| {
+                // Replay runs before live traffic is served, so blocking for ring-buffer capacity
+                // is safe and prevents recovery from silently dropping journal commands.
+                self.producer.publish(|cmd| {
                     *cmd = order_command.clone();
-                }) {
-                    error!(
-                        target: "replay_fragment",
-                        gateway_id = self.gateway_id,
-                        error = %e,
-                        "failed to publish replay order command to ring buffer"
-                    );
-                }
+                });
+                self.commands_published += 1;
             }
             Err(e) => {
+                self.replay_error = Some(format!("failed to decode replay order command: {e:?}"));
                 error!(
                     target: "replay_fragment",
                     gateway_id = self.gateway_id,
