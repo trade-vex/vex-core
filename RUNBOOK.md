@@ -295,7 +295,15 @@ netstat -tuln | grep -E "40001|3521"
 - Ensure vex-core is running and media driver is up
 - Verify gateway `core_address`, `core_port`, `core_control_port` match vex-core `initial_port` and `initial_control_port`
 - Check `max_gateways` is not exceeded
-- If `enable_authentication` is true, ensure gateway credentials are valid
+- Gateway authentication (required in production, which refuses to start without both):
+  `VEX__CORE_NETWORKING__ENABLE_AUTHENTICATION=true` and
+  `VEX__GATEWAY_NETWORKING__GATEWAY_AUTHENTICATION_KEY=<signed 32-bit integer>` on vex-core; every
+  gateway must be given the same value (vex-gateway `GATEWAY_AUTHENTICATION_KEY`). Without a key,
+  dev/test run the handshake unauthenticated. `Connection rejected: Handshake rejected` on the
+  gateway together with `action="handshake_rejected"` and
+  `reason=Authentication failed: Invalid credentials` in the vex-core log means
+  the keys differ. The key travels in cleartext in the HELLO message, so keep gateway ↔ core
+  traffic on a trusted network segment
 
 ### Order Processing Delays or Backpressure
 

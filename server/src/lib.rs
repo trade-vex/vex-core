@@ -72,12 +72,13 @@ impl RunningEngine {
 /// # Ok(())
 /// # }
 /// ```
-pub fn start(config: VexConfig, replay: bool) -> Result<RunningEngine, EngineError> {
+pub fn start(mut config: VexConfig, replay: bool) -> Result<RunningEngine, EngineError> {
     config
         .validate()
         .map_err(|error| EngineError::Configuration(error.to_string()))?;
 
     report_disabled_journaling(&config);
+    resolve_gateway_authentication(&mut config);
 
     #[allow(unused_mut)] // mut needed when balance-preload feature is enabled
     let ((engine, mut producer), replay_control) = init_internal(
@@ -85,7 +86,7 @@ pub fn start(config: VexConfig, replay: bool) -> Result<RunningEngine, EngineErr
         config.kafka_broker.clone(),
         replay,
         config.core_networking.enable_core_pinning,
-        config.environment,
+        config.environment.clone(),
     )?;
 
     // Balance preload for test/local environments
@@ -116,8 +117,13 @@ pub fn start(config: VexConfig, replay: bool) -> Result<RunningEngine, EngineErr
         info!("Balance preload complete");
     }
 
-    let (thread_handle, shutdown_flag) =
-        engine.run(producer, replay_control, config.core_networking);
+    let gateway_authentication_key = config.gateway_networking.gateway_authentication_key.clone();
+    let (thread_handle, shutdown_flag) = engine.run(
+        producer,
+        replay_control,
+        config.core_networking,
+        gateway_authentication_key,
+    );
 
     Ok(RunningEngine {
         thread: thread_handle,
@@ -133,6 +139,27 @@ fn report_disabled_journaling(config: &VexConfig) {
             archive_recording = false,
             environment = %config.environment,
             "JOURNALING IS DISABLED: commands will not be recoverable by replay"
+        );
+    }
+}
+
+/// The networking layer refuses enabled authentication without a key, so state the dev/test
+/// choice explicitly: no key means no handshake authentication. `validate` has already refused
+/// that combination in production.
+fn resolve_gateway_authentication(config: &mut VexConfig) {
+    if config
+        .gateway_networking
+        .gateway_authentication_key
+        .is_empty()
+    {
+        config.core_networking.enable_authentication = false;
+    }
+    if !config.core_networking.enable_authentication {
+        tracing::warn!(
+            target: "core_server",
+            action = "gateway_authentication_disabled",
+            environment = %config.environment,
+            "GATEWAY HANDSHAKE AUTHENTICATION IS DISABLED; DEVELOPMENT/TEST USE ONLY"
         );
     }
 }
@@ -350,6 +377,21 @@ mod tests {
         assert!(config.validate().is_ok());
         tracing::subscriber::with_default(subscriber, || report_disabled_journaling(&config));
         assert!(saw_error.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn missing_gateway_key_disables_authentication_explicitly_outside_production() {
+        let mut config = VexConfig::new(vex_config::Environment::Test);
+        assert!(config.core_networking.enable_authentication);
+        assert!(config.validate().is_ok());
+
+        resolve_gateway_authentication(&mut config);
+        assert!(!config.core_networking.enable_authentication);
+
+        let mut keyed = VexConfig::new(vex_config::Environment::Test);
+        keyed.gateway_networking.gateway_authentication_key = "123456789".into();
+        resolve_gateway_authentication(&mut keyed);
+        assert!(keyed.core_networking.enable_authentication);
     }
 
     #[cfg(feature = "balance-preload")]

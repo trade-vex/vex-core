@@ -60,6 +60,15 @@ pub enum GatewayState {
     Error(String),
 }
 
+/// Builds the handshake request `HELLO gateway-<id> <credential> <encryption key>`.
+///
+/// The core authenticates `credential`; `encryption_key` is a fresh random value per handshake
+/// that only masks the dedicated session id in the core's ACCEPT reply. Keeping the two apart
+/// means ACCEPT (published on a dynamic MDC channel) and its logs never reveal the credential.
+fn hello_message(gateway_id: u8, credential: i32, encryption_key: i32) -> String {
+    format!("HELLO gateway-{gateway_id} {credential} {encryption_key}")
+}
+
 /// Parses a VEX Core response message
 fn parse_core_response(
     message: &str,
@@ -328,6 +337,15 @@ impl VexGateway {
             ));
         }
 
+        // Fail at startup rather than as an opaque handshake REJECT (only the core logs why).
+        if !config.gateway_authentication_key.is_empty()
+            && config.gateway_authentication_key.as_i32().is_none()
+        {
+            return Err(GatewayError::ConfigError(
+                "Gateway authentication key must be a signed 32-bit integer".to_string(),
+            ));
+        }
+
         // Initialize Aeron context
         let ctx = AeronContext::new()?;
         let context_dir = CString::new(config.context_dir.clone())?;
@@ -423,13 +441,20 @@ impl VexGateway {
             ALL_GATEWAYS_STREAM_ID,
         )?;
 
-        // Wait for publication to be connected
-        self.wait_for_publication_connection(&publication, "handshake")?;
+        // The core answers HELLO exactly once, over MDC; a reply sent before this subscription
+        // is registered as a destination is lost and the handshake times out.
+        self.wait_for_channel_connections(&publication, &subscription, "handshake")?;
 
         let session_id = publication.session_id();
         self.session_id = Some(session_id);
 
-        // Generate encryption key for secure session establishment
+        // An empty key means the core runs without authentication and ignores the credential;
+        // `new` has already rejected a malformed one.
+        let credential = self
+            .config
+            .gateway_authentication_key
+            .as_i32()
+            .unwrap_or_else(rand::random::<i32>);
         let encryption_key = rand::random::<i32>();
         self.encryption_key = Some(encryption_key);
 
@@ -441,10 +466,7 @@ impl VexGateway {
         );
 
         // Send HELLO message with gateway identification
-        let hello_msg = format!(
-            "HELLO gateway-{} {}",
-            self.config.gateway_id, encryption_key
-        );
+        let hello_msg = hello_message(self.config.gateway_id, credential, encryption_key);
         self.send_message_with_retries(&publication, &hello_msg)?;
 
         // Wait for VEX Core response
@@ -513,7 +535,7 @@ impl VexGateway {
         self.core_publication = Some(publication.clone());
 
         // Wait for connections
-        self.wait_for_channel_connections(&publication, &subscription)?;
+        self.wait_for_channel_connections(&publication, &subscription, "dedicated")?;
 
         debug!(
             target: "gateway_client",
@@ -596,36 +618,19 @@ impl VexGateway {
         ))
     }
 
-    /// Waits for publication connection with timeout
-    fn wait_for_publication_connection(
-        &self,
-        publication: &AeronPublication,
-        context: &str,
-    ) -> Result<(), GatewayError> {
-        let start = Instant::now();
-        while !publication.is_connected() {
-            if start.elapsed() > CONNECT_TIMEOUT {
-                return Err(GatewayError::Timeout(format!(
-                    "Connecting {context} publication timed out",
-                )));
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        Ok(())
-    }
-
     /// Waits for both publication and subscription connections
     fn wait_for_channel_connections(
         &self,
         publication: &AeronPublication,
         subscription: &AeronSubscription,
+        context: &str,
     ) -> Result<(), GatewayError> {
         let start = Instant::now();
         while !publication.is_connected() || !subscription.is_connected() {
             if start.elapsed() > CONNECT_TIMEOUT {
-                return Err(GatewayError::Timeout(
-                    "Connecting to dedicated channel timed out".to_string(),
-                ));
+                return Err(GatewayError::Timeout(format!(
+                    "Connecting to {context} channel timed out",
+                )));
             }
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -642,7 +647,7 @@ impl VexGateway {
             target: "gateway_client",
             action = "send_message",
             gateway_id = self.config.gateway_id,
-            payload = %text
+            bytes = text.len()
         );
 
         let value = text.as_bytes();
@@ -755,5 +760,29 @@ mod tests {
     fn test_parse_core_response_ignore_wrong_session() {
         let response = parse_core_response("99999 gateway-1 ACCEPT 40003 40004 98765", 12345, 1);
         assert_eq!(response, CoreResponse::Ignore);
+    }
+
+    #[test]
+    fn hello_sends_the_session_mask_separately_from_the_credential() {
+        assert_eq!(
+            hello_message(3, 123_456_789, -42),
+            "HELLO gateway-3 123456789 -42"
+        );
+    }
+
+    #[test]
+    fn malformed_authentication_key_is_rejected_before_aeron_starts() {
+        for key in ["not-a-number", "0x1234", "2147483648"] {
+            let mut config = GatewayNetworkingConfig::test_defaults();
+            config.gateway_authentication_key = key.into();
+            // The context dir does not exist: reaching Aeron would fail with a different error.
+            config.context_dir = "/nonexistent/vex-gateway-key-check".to_string();
+
+            assert!(matches!(
+                VexGateway::new(config),
+                Err(GatewayError::ConfigError(message))
+                    if message == "Gateway authentication key must be a signed 32-bit integer"
+            ));
+        }
     }
 }

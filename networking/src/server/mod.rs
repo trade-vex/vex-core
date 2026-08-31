@@ -56,8 +56,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use thiserror::Error;
-use tracing::{debug, error, info};
-use vex_config::CoreNetworkingConfig;
+use tracing::{debug, error, info, warn};
+use vex_config::{CoreNetworkingConfig, GatewayAuthenticationKey};
 
 pub use gateway_publications::Publications;
 
@@ -118,6 +118,7 @@ impl VexCoreServer {
     /// Creates a new VEX Core instance
     pub fn new(
         config: CoreNetworkingConfig,
+        authentication_key: GatewayAuthenticationKey,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
         publications: Arc<Publications>,
         replay: bool,
@@ -125,6 +126,18 @@ impl VexCoreServer {
     ) -> Result<Self, ServerError> {
         // Validate configuration
         Self::validate_config(&config)?;
+        gateway_manager::validate_authentication_config(
+            config.enable_authentication,
+            &authentication_key,
+        )?;
+
+        if !config.enable_authentication {
+            warn!(
+                target: "core_server",
+                action = "gateway_authentication_disabled",
+                "GATEWAY HANDSHAKE AUTHENTICATION IS DISABLED; DEVELOPMENT/TEST USE ONLY"
+            );
+        }
 
         // Initialize Aeron context
         let aeron = Self::initialize_aeron(&config)?;
@@ -202,6 +215,7 @@ impl VexCoreServer {
 
         let gateways = Rc::new(GatewayManager::new(
             config.clone(),
+            authentication_key,
             aeron,
             producer,
             publications,
