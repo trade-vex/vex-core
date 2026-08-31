@@ -1,8 +1,11 @@
 //! Integration tests for VEX configuration
 
 use std::env;
+use std::sync::Mutex;
 use tempfile::TempDir;
 use vex_config::{ConfigError, ConfigLoader, Environment, VexConfig};
+
+static ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_basic_configuration_loading() {
@@ -94,7 +97,7 @@ fn test_file_loading_and_saving() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_different_file_formats() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
-    let config = VexConfig::new(Environment::Production);
+    let config = VexConfig::new(Environment::Development);
 
     let toml_path = temp_dir.path().join("config.toml");
     let json_path = temp_dir.path().join("config.json");
@@ -111,9 +114,9 @@ fn test_different_file_formats() -> Result<(), Box<dyn std::error::Error>> {
     let yaml_config = VexConfig::load_from_file(&yaml_path)?;
 
     // All should have the same core values
-    assert_eq!(toml_config.environment, Environment::Production);
-    assert_eq!(json_config.environment, Environment::Production);
-    assert_eq!(yaml_config.environment, Environment::Production);
+    assert_eq!(toml_config.environment, Environment::Development);
+    assert_eq!(json_config.environment, Environment::Development);
+    assert_eq!(yaml_config.environment, Environment::Development);
 
     assert_eq!(
         toml_config.core_networking.core_id,
@@ -127,6 +130,38 @@ fn test_different_file_formats() -> Result<(), Box<dyn std::error::Error>> {
         yaml_config.core_networking.core_id,
         config.core_networking.core_id
     );
+
+    Ok(())
+}
+
+#[test]
+fn test_shipped_development_config_matches_defaults() -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../config.dev.yaml");
+    let loaded = VexConfig::load_from_file(config_path)?;
+    let defaults = VexConfig::new(Environment::Development);
+
+    assert_eq!(
+        serde_json::to_value(loaded)?,
+        serde_json::to_value(defaults)?
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_load_error_names_path_and_parse_cause() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let config_path = temp_dir.path().join("config.prod.yaml");
+    std::fs::write(&config_path, "invalid: [yaml")?;
+
+    let error = ConfigLoader::new()
+        .with_search_paths(vec![config_path.display().to_string()])
+        .load_for_environment(Environment::Production)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains(&config_path.display().to_string()));
+    assert!(error.contains("Parse error"));
 
     Ok(())
 }
@@ -315,6 +350,8 @@ fn test_logging_configuration() {
 
 #[test]
 fn test_environment_detection() {
+    let _guard = ENVIRONMENT_LOCK.lock().unwrap();
+
     // Clear all environment variables first to ensure clean test state
     unsafe {
         env::remove_var("VEX_ENV");
@@ -359,7 +396,7 @@ fn test_environment_detection() {
         env::remove_var("NODE_ENV");
     }
 
-    // Test fallback to development
+    // An unset environment is not an explicit selection and auto-loading must fail.
     unsafe {
         env::remove_var("VEX_ENV");
     }
@@ -372,30 +409,27 @@ fn test_environment_detection() {
     unsafe {
         env::remove_var("NODE_ENV");
     }
-    assert_eq!(Environment::detect(), Environment::Development);
+    assert_eq!(Environment::detect_explicit(), None);
+    let error = VexConfig::load_auto().unwrap_err().to_string();
+    assert!(error.contains("VEX_ENV"));
+    assert!(error.contains("ENVIRONMENT"));
+    assert!(error.contains("ENV"));
+    assert!(error.contains("NODE_ENV"));
+    assert!(error.contains("development, test, or production"));
 }
 
 #[test]
 fn test_auto_loading() {
-    // Set environment and test auto loading
+    let _guard = ENVIRONMENT_LOCK.lock().unwrap();
+
+    // Explicit development selects and loads the shipped config.dev.yaml.
     unsafe {
-        env::set_var("VEX_ENV", "test");
+        env::set_var("VEX_ENV", "development");
     }
 
-    let result = VexConfig::load_auto();
-
-    // Should either succeed or fail with NotFound (no config files)
-    match result {
-        Ok(config) => {
-            assert_eq!(config.environment, Environment::Test);
-        }
-        Err(ConfigError::NotFound(_)) => {
-            // Expected when no config files exist
-        }
-        Err(e) => {
-            panic!("Unexpected error during auto loading: {e}");
-        }
-    }
+    let config = VexConfig::load_auto().unwrap();
+    assert_eq!(config.environment, Environment::Development);
+    assert!(!config.symbols.is_empty());
 
     unsafe {
         env::remove_var("VEX_ENV");

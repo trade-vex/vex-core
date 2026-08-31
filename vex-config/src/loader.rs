@@ -45,10 +45,40 @@ impl ConfigLoader {
         self
     }
 
-    /// Load configuration using auto-detection of environment
+    /// Load configuration using an explicitly selected environment
     pub fn load_auto(self) -> Result<VexConfig> {
-        let environment = Environment::detect();
-        self.load_for_environment(environment)
+        self.load_auto_for_environment(Environment::detect_explicit())
+    }
+
+    fn load_auto_for_environment(
+        self,
+        explicit_environment: Option<Environment>,
+    ) -> Result<VexConfig> {
+        let environment = explicit_environment.ok_or_else(|| {
+            ConfigError::EnvironmentError(
+                "No environment selected. Set one of VEX_ENV, ENVIRONMENT, ENV, or NODE_ENV to development, test, or production"
+                    .to_string(),
+            )
+        })?;
+
+        match self.load_for_environment(environment.clone()) {
+            Ok(config) => Ok(config),
+            Err(error) if environment.is_development() || environment.is_test() => {
+                tracing::warn!(
+                    target: "config",
+                    action = "config_load_failed",
+                    environment = %environment,
+                    error = %error
+                );
+                tracing::info!(
+                    target: "config",
+                    action = "using_environment_defaults",
+                    environment = %environment
+                );
+                Ok(VexConfig::new(environment))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Load configuration for a specific environment
@@ -90,7 +120,12 @@ impl ConfigLoader {
 
     /// Load configuration with optional environment and custom settings
     pub fn load_with_environment(self, environment: Option<Environment>) -> Result<VexConfig> {
-        let env = environment.unwrap_or_else(Environment::detect);
+        let env = environment.or_else(Environment::detect_explicit).ok_or_else(|| {
+            ConfigError::EnvironmentError(
+                "No environment selected. Set one of VEX_ENV, ENVIRONMENT, ENV, or NODE_ENV to development, test, or production"
+                    .to_string(),
+            )
+        })?;
 
         let mut builder = Config::builder();
 
@@ -107,7 +142,9 @@ impl ConfigLoader {
             let config_path = Path::new(path);
             if config_path.exists() {
                 files_found = true;
-                let format = self.detect_file_format(config_path)?;
+                let format = self
+                    .detect_file_format(config_path)
+                    .map_err(|error| ConfigError::load(search_paths.clone(), error))?;
                 builder = builder.add_source(File::from(config_path).format(format));
                 tracing::debug!(
                     target: "config",
@@ -154,13 +191,19 @@ impl ConfigLoader {
             );
         }
 
-        let config = builder.build()?;
-        let mut vex_config: VexConfig = config.try_deserialize()?;
+        let config = builder
+            .build()
+            .map_err(|error| ConfigError::load(search_paths.clone(), error.into()))?;
+        let mut vex_config: VexConfig = config
+            .try_deserialize()
+            .map_err(|error| ConfigError::load(search_paths.clone(), error.into()))?;
 
         // Ensure environment matches what we expect
         vex_config.environment = env;
 
-        vex_config.validate()?;
+        vex_config
+            .validate()
+            .map_err(|error| ConfigError::load(search_paths, error))?;
         Ok(vex_config)
     }
 
@@ -252,6 +295,64 @@ mod tests {
         let result = loader.load_from_file("nonexistent.toml");
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ConfigError::NotFound(_)));
+    }
+
+    #[test]
+    fn test_explicit_test_environment_allows_missing_file_defaults() {
+        let config = ConfigLoader::new()
+            .with_search_paths(vec!["/missing/config.test.yaml".to_string()])
+            .load_auto_for_environment(Some(Environment::Test))
+            .unwrap();
+
+        assert_eq!(config.environment, Environment::Test);
+    }
+
+    #[test]
+    fn test_explicit_development_environment_allows_missing_file_defaults() {
+        let config = ConfigLoader::new()
+            .with_search_paths(vec!["/missing/config.dev.yaml".to_string()])
+            .load_auto_for_environment(Some(Environment::Development))
+            .unwrap();
+
+        assert_eq!(config.environment, Environment::Development);
+    }
+
+    #[test]
+    fn test_explicit_environment_loads_present_config_file() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../config.dev.yaml");
+        let config = ConfigLoader::new()
+            .with_search_paths(vec![path.display().to_string()])
+            .load_auto_for_environment(Some(Environment::Development))
+            .unwrap();
+
+        assert_eq!(config.environment, Environment::Development);
+        assert!(!config.symbols.is_empty());
+    }
+
+    #[test]
+    fn test_explicit_production_environment_rejects_missing_files() {
+        let path = "/missing/config.prod.yaml";
+        let error = ConfigLoader::new()
+            .with_search_paths(vec![path.to_string()])
+            .load_auto_for_environment(Some(Environment::Production))
+            .unwrap_err();
+
+        assert!(error.to_string().contains(path));
+        assert!(error.to_string().contains("No configuration files found"));
+    }
+
+    #[test]
+    fn test_unset_environment_is_fatal() {
+        let error = ConfigLoader::new()
+            .load_auto_for_environment(None)
+            .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("VEX_ENV"));
+        assert!(message.contains("ENVIRONMENT"));
+        assert!(message.contains("ENV"));
+        assert!(message.contains("NODE_ENV"));
+        assert!(message.contains("development, test, or production"));
     }
 
     // #[test]

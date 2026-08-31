@@ -43,7 +43,7 @@ This will:
 To run the complete application (media driver + vex-core):
 
 ```bash
-./docker-scripts.sh start-full
+VEX_ENV=development ./docker-scripts.sh start-full
 ```
 
 ## Docker Files
@@ -103,7 +103,7 @@ docker-compose up --build sbe-generator
 
 ### Start Full Application
 ```bash
-docker-compose up --build
+VEX_ENV=development docker-compose up --build
 ```
 
 ## SBE Code Generation
@@ -176,7 +176,7 @@ The generated code includes:
 
 3. **Run full application**:
    ```bash
-   ./docker-scripts.sh start-full
+   VEX_ENV=development ./docker-scripts.sh start-full
    ```
 
 ## Environment Variables
@@ -186,6 +186,7 @@ The generated code includes:
 - `AERON_EVENT_LOG=all` - Enable all event logging
 
 ### VEX Core
+- `VEX_ENV=development|test|production` - Required explicit environment selection
 - `RUST_LOG=info` - Rust logging level
 - `AERON_DIR=/tmp/aeron` - Aeron IPC directory (must match media driver)
 

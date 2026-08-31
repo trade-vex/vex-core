@@ -38,6 +38,7 @@ services:
       sbe-generator:
         condition: service_completed_successfully
     environment:
+      - VEX_ENV
       - RUST_LOG=info
       - AERON_DIR=/tmp/aeron
     volumes:
