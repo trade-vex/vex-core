@@ -3,6 +3,42 @@
 use crate::{ConfigError, Environment, Result};
 use common::{MAX_GATEWAYS, ORDERCOMMANDSIZE};
 use serde::{Deserialize, Serialize};
+use std::fmt;
+
+/// Shared numeric key used to authenticate gateway handshakes.
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct GatewayAuthenticationKey(String);
+
+impl GatewayAuthenticationKey {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn as_i32(&self) -> Option<i32> {
+        self.0.parse().ok()
+    }
+}
+
+impl From<&str> for GatewayAuthenticationKey {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl fmt::Debug for GatewayAuthenticationKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(if self.is_empty() {
+            "<empty>"
+        } else {
+            "<redacted>"
+        })
+    }
+}
 
 /// Core networking configuration for VEX Core server
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +233,12 @@ pub struct GatewayNetworkingConfig {
     pub core_control_port: u16,
     /// Gateway identifier for this instance
     pub gateway_id: u8,
+    /// Shared bearer credential used to authenticate with VEX Core.
+    ///
+    /// This credential is carried in cleartext over `aeron:udp` and is meaningful
+    /// only on a trusted or private network segment.
+    #[serde(default)]
+    pub gateway_authentication_key: GatewayAuthenticationKey,
     /// Maximum message size in bytes, 64 for OrderCommand
     pub max_message_size: usize,
     /// Enable heartbeat mechanism
@@ -232,6 +274,7 @@ impl GatewayNetworkingConfig {
             core_port: 3521,
             core_control_port: 3522,
             gateway_id: 1,
+            gateway_authentication_key: GatewayAuthenticationKey::default(),
             max_message_size: ORDERCOMMANDSIZE,
             enable_heartbeat: true,
             heartbeat_interval_seconds: 10,
@@ -251,6 +294,7 @@ impl GatewayNetworkingConfig {
             core_port: 3521,
             core_control_port: 3522,
             gateway_id: 1,
+            gateway_authentication_key: GatewayAuthenticationKey::default(),
             max_message_size: ORDERCOMMANDSIZE,
             enable_heartbeat: true,
             heartbeat_interval_seconds: 5,
@@ -270,6 +314,7 @@ impl GatewayNetworkingConfig {
             core_port: 3521,
             core_control_port: 3522,
             gateway_id: 1,
+            gateway_authentication_key: GatewayAuthenticationKey::default(),
             max_message_size: ORDERCOMMANDSIZE,
             enable_heartbeat: true,
             heartbeat_interval_seconds: 5,
@@ -301,6 +346,14 @@ impl GatewayNetworkingConfig {
                 "Gateway ID must be between 0 and {} (exclusive)",
                 MAX_GATEWAYS
             )));
+        }
+
+        if !self.gateway_authentication_key.is_empty()
+            && self.gateway_authentication_key.as_i32().is_none()
+        {
+            return Err(ConfigError::network(
+                "Gateway authentication key must be a signed 32-bit integer",
+            ));
         }
 
         if self.max_message_size == 0 {

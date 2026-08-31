@@ -40,11 +40,20 @@ impl AeronFragmentHandlerCallback for HandshakeMessageHandler {
                 return;
             }
         };
+        let source = if header.context().is_null() {
+            None
+        } else {
+            AeronImage::from(header.context().cast())
+                .get_constants()
+                .ok()
+                .map(|constants| constants.source_identity().to_string())
+        }
+        .unwrap_or_else(|| format!("aeron-session-{session_id}"));
 
         // Process the handshake message
         if let Err(e) =
             self.gateways
-                .process_handshake_message(&self.publication, session_id, buffer)
+                .process_handshake_message(&self.publication, session_id, &source, buffer)
         {
             error!(
                 target: "gateway_handler",

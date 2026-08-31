@@ -18,7 +18,7 @@ pub use environment::Environment;
 pub use error::{ConfigError, Result};
 pub use loader::ConfigLoader;
 pub use logging::LoggingConfig;
-pub use networking::{CoreNetworkingConfig, GatewayNetworkingConfig};
+pub use networking::{CoreNetworkingConfig, GatewayAuthenticationKey, GatewayNetworkingConfig};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 pub use symbols::SymbolSpecificationConfig;
@@ -120,6 +120,17 @@ impl VexConfig {
     pub fn validate(&self) -> Result<()> {
         self.core_networking.validate(&self.environment)?;
         self.gateway_networking.validate()?;
+        if self.is_production()
+            && (!self.core_networking.enable_authentication
+                || self
+                    .gateway_networking
+                    .gateway_authentication_key
+                    .is_empty())
+        {
+            return Err(ConfigError::validation(
+                "Production requires gateway authentication and a nonempty gateway authentication key",
+            ));
+        }
         self.logging.validate()?;
         self.symbols.validate()?;
         if self.is_production() && self.symbols.is_empty() {
@@ -195,7 +206,12 @@ mod tests {
 
     #[test]
     fn test_empty_symbols_rejected_in_production_but_accepted_in_development() {
-        let production = VexConfig::new(Environment::Production);
+        let mut production = VexConfig::new(Environment::Production);
+        // PR #176 added an earlier production gate (authentication + key). Satisfy it so this
+        // test still exercises PR #151's symbols rule rather than tripping on the auth rule.
+        production.core_networking.enable_authentication = true;
+        production.gateway_networking.gateway_authentication_key =
+            GatewayAuthenticationKey::from("123456789");
         assert!(matches!(
             production.validate(),
             Err(ConfigError::ValidationError(message))

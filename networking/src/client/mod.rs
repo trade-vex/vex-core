@@ -429,8 +429,13 @@ impl VexGateway {
         let session_id = publication.session_id();
         self.session_id = Some(session_id);
 
-        // Generate encryption key for secure session establishment
-        let encryption_key = rand::random::<i32>();
+        // Use the shared authentication key when configured; otherwise retain the
+        // development/test session mask behavior.
+        let encryption_key = self
+            .config
+            .gateway_authentication_key
+            .as_i32()
+            .unwrap_or_else(rand::random::<i32>);
         self.encryption_key = Some(encryption_key);
 
         debug!(
@@ -642,7 +647,7 @@ impl VexGateway {
             target: "gateway_client",
             action = "send_message",
             gateway_id = self.config.gateway_id,
-            payload = %text
+            bytes = text.len()
         );
 
         let value = text.as_bytes();
