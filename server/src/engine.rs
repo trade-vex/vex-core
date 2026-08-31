@@ -286,6 +286,9 @@ impl CoreEngine {
         };
         let pipeline = pipeline.handle_events_with(journaling_handler);
 
+        // Dependency barrier: risk engines wait for journaling
+        let pipeline = pipeline.and_then();
+
         // Stage 2: Risk Engine R1 - parallel risk hold/pre-processing
         let pipeline = if enable_pinning {
             pipeline.pin_at_core(core_pinning.risk_engines[0])
@@ -765,6 +768,9 @@ pub mod test {
                 pipeline
             };
             let pipeline = pipeline.handle_events_with(journaling_handler);
+
+            // Dependency barrier: risk engines wait for journaling
+            let pipeline = pipeline.and_then();
 
             // Stage 2: Risk Engine R1
             let pipeline = if enable_pinning {
