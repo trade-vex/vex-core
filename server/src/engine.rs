@@ -15,11 +15,12 @@ use processors::{
 };
 use std::{
     cell::UnsafeCell,
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::Arc,
     sync::atomic::AtomicBool,
     thread::{self, JoinHandle},
 };
-use tracing::info;
+use tracing::{error, info};
 use vex_config::{CoreNetworkingConfig, GatewayAuthenticationKey};
 use vex_networking::server::Publications;
 use vex_networking::server::VexCoreServer;
@@ -38,6 +39,31 @@ pub type RiskEngines = Arc<Vec<RiskEngine>>;
 
 /// Result type for engine operations
 pub type EngineResult<T> = Result<T, EngineError>;
+
+fn abort_on_handler_panic<H>(
+    stage: &'static str,
+    mut handler: H,
+) -> impl FnMut(&UnsafeCell<OrderCommand>, i64, bool) + Send + 'static
+where
+    H: FnMut(&UnsafeCell<OrderCommand>, i64, bool) + Send + 'static,
+{
+    move |cmd, sequence, end_of_batch| {
+        if catch_unwind(AssertUnwindSafe(|| {
+            handler(cmd, sequence, end_of_batch);
+        }))
+        .is_err()
+        {
+            error!(
+                target: "engine",
+                action = "pipeline_handler_panicked",
+                stage,
+                sequence,
+                "Disruptor pipeline handler panicked; shutting down exchange"
+            );
+            std::process::abort();
+        }
+    }
+}
 
 /// Errors that can occur during engine initialization and operation
 #[derive(Debug, thiserror::Error)]
@@ -303,7 +329,8 @@ impl CoreEngine {
         } else {
             pipeline
         };
-        let pipeline = pipeline.handle_events_with(journaling_handler);
+        let pipeline =
+            pipeline.handle_events_with(abort_on_handler_panic("journaling", journaling_handler));
 
         // Dependency barrier: risk engines wait for journaling
         let pipeline = pipeline.and_then();
@@ -314,29 +341,37 @@ impl CoreEngine {
         } else {
             pipeline
         };
-        let pipeline =
-            pipeline.handle_events_with(create_risk_handler!(0, risk_engines, price_cache));
+        let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+            "risk_r1_0",
+            create_risk_handler!(0, risk_engines, price_cache),
+        ));
         let pipeline = if enable_pinning {
             pipeline.pin_at_core(core_pinning.risk_engines[1])
         } else {
             pipeline
         };
-        let pipeline =
-            pipeline.handle_events_with(create_risk_handler!(1, risk_engines, price_cache));
+        let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+            "risk_r1_1",
+            create_risk_handler!(1, risk_engines, price_cache),
+        ));
         let pipeline = if enable_pinning {
             pipeline.pin_at_core(core_pinning.risk_engines[2])
         } else {
             pipeline
         };
-        let pipeline =
-            pipeline.handle_events_with(create_risk_handler!(2, risk_engines, price_cache));
+        let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+            "risk_r1_2",
+            create_risk_handler!(2, risk_engines, price_cache),
+        ));
         let pipeline = if enable_pinning {
             pipeline.pin_at_core(core_pinning.risk_engines[3])
         } else {
             pipeline
         };
-        let pipeline =
-            pipeline.handle_events_with(create_risk_handler!(3, risk_engines, price_cache));
+        let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+            "risk_r1_3",
+            create_risk_handler!(3, risk_engines, price_cache),
+        ));
 
         // Dependency barrier: matching engines wait for risk engines
         let pipeline = pipeline.and_then();
@@ -347,29 +382,37 @@ impl CoreEngine {
         } else {
             pipeline
         };
-        let pipeline = pipeline
-            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"));
+        let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+            "matching_0",
+            router_handlers_iter.next().expect("Missing router handler"),
+        ));
         let pipeline = if enable_pinning {
             pipeline.pin_at_core(core_pinning.matching_engines[1])
         } else {
             pipeline
         };
-        let pipeline = pipeline
-            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"));
+        let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+            "matching_1",
+            router_handlers_iter.next().expect("Missing router handler"),
+        ));
         let pipeline = if enable_pinning {
             pipeline.pin_at_core(core_pinning.matching_engines[2])
         } else {
             pipeline
         };
-        let pipeline = pipeline
-            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"));
+        let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+            "matching_2",
+            router_handlers_iter.next().expect("Missing router handler"),
+        ));
         let pipeline = if enable_pinning {
             pipeline.pin_at_core(core_pinning.matching_engines[3])
         } else {
             pipeline
         };
-        let pipeline = pipeline
-            .handle_events_with(router_handlers_iter.next().expect("Missing router handler"));
+        let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+            "matching_3",
+            router_handlers_iter.next().expect("Missing router handler"),
+        ));
 
         // Dependency barrier: R2 engines wait for matching
         let pipeline = pipeline.and_then();
@@ -380,25 +423,37 @@ impl CoreEngine {
         } else {
             pipeline
         };
-        let pipeline = pipeline.handle_events_with(create_risk_r2_handler!(0, risk_engines));
+        let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+            "risk_r2_0",
+            create_risk_r2_handler!(0, risk_engines),
+        ));
         let pipeline = if enable_pinning {
             pipeline.pin_at_core(core_pinning.risk_r2_engines[1])
         } else {
             pipeline
         };
-        let pipeline = pipeline.handle_events_with(create_risk_r2_handler!(1, risk_engines));
+        let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+            "risk_r2_1",
+            create_risk_r2_handler!(1, risk_engines),
+        ));
         let pipeline = if enable_pinning {
             pipeline.pin_at_core(core_pinning.risk_r2_engines[2])
         } else {
             pipeline
         };
-        let pipeline = pipeline.handle_events_with(create_risk_r2_handler!(2, risk_engines));
+        let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+            "risk_r2_2",
+            create_risk_r2_handler!(2, risk_engines),
+        ));
         let pipeline = if enable_pinning {
             pipeline.pin_at_core(core_pinning.risk_r2_engines[3])
         } else {
             pipeline
         };
-        let pipeline = pipeline.handle_events_with(create_risk_r2_handler!(3, risk_engines));
+        let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+            "risk_r2_3",
+            create_risk_r2_handler!(3, risk_engines),
+        ));
 
         // Dependency barrier: event handlers wait for settlement
         let pipeline = pipeline.and_then();
@@ -409,7 +464,8 @@ impl CoreEngine {
         } else {
             pipeline
         };
-        let pipeline = pipeline.handle_events_with(events_handler);
+        let pipeline =
+            pipeline.handle_events_with(abort_on_handler_panic("events", events_handler));
 
         pipeline.build()
     }
@@ -803,7 +859,8 @@ pub mod test {
             } else {
                 pipeline
             };
-            let pipeline = pipeline.handle_events_with(journaling_handler);
+            let pipeline = pipeline
+                .handle_events_with(abort_on_handler_panic("journaling", journaling_handler));
 
             // Dependency barrier: risk engines wait for journaling
             let pipeline = pipeline.and_then();
@@ -814,29 +871,37 @@ pub mod test {
             } else {
                 pipeline
             };
-            let pipeline =
-                pipeline.handle_events_with(create_risk_handler!(0, risk_engines, price_cache));
+            let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+                "risk_r1_0",
+                create_risk_handler!(0, risk_engines, price_cache),
+            ));
             let pipeline = if enable_pinning {
                 pipeline.pin_at_core(core_pinning.risk_engines[1])
             } else {
                 pipeline
             };
-            let pipeline =
-                pipeline.handle_events_with(create_risk_handler!(1, risk_engines, price_cache));
+            let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+                "risk_r1_1",
+                create_risk_handler!(1, risk_engines, price_cache),
+            ));
             let pipeline = if enable_pinning {
                 pipeline.pin_at_core(core_pinning.risk_engines[2])
             } else {
                 pipeline
             };
-            let pipeline =
-                pipeline.handle_events_with(create_risk_handler!(2, risk_engines, price_cache));
+            let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+                "risk_r1_2",
+                create_risk_handler!(2, risk_engines, price_cache),
+            ));
             let pipeline = if enable_pinning {
                 pipeline.pin_at_core(core_pinning.risk_engines[3])
             } else {
                 pipeline
             };
-            let pipeline =
-                pipeline.handle_events_with(create_risk_handler!(3, risk_engines, price_cache));
+            let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+                "risk_r1_3",
+                create_risk_handler!(3, risk_engines, price_cache),
+            ));
             let pipeline = pipeline.and_then();
 
             // Stage 3: Matching Engine
@@ -845,29 +910,37 @@ pub mod test {
             } else {
                 pipeline
             };
-            let pipeline = pipeline
-                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"));
+            let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+                "matching_0",
+                router_handlers_iter.next().expect("Missing router handler"),
+            ));
             let pipeline = if enable_pinning {
                 pipeline.pin_at_core(core_pinning.matching_engines[1])
             } else {
                 pipeline
             };
-            let pipeline = pipeline
-                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"));
+            let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+                "matching_1",
+                router_handlers_iter.next().expect("Missing router handler"),
+            ));
             let pipeline = if enable_pinning {
                 pipeline.pin_at_core(core_pinning.matching_engines[2])
             } else {
                 pipeline
             };
-            let pipeline = pipeline
-                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"));
+            let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+                "matching_2",
+                router_handlers_iter.next().expect("Missing router handler"),
+            ));
             let pipeline = if enable_pinning {
                 pipeline.pin_at_core(core_pinning.matching_engines[3])
             } else {
                 pipeline
             };
-            let pipeline = pipeline
-                .handle_events_with(router_handlers_iter.next().expect("Missing router handler"));
+            let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+                "matching_3",
+                router_handlers_iter.next().expect("Missing router handler"),
+            ));
             let pipeline = pipeline.and_then();
 
             // Stage 4: Risk Engine R2
@@ -876,25 +949,37 @@ pub mod test {
             } else {
                 pipeline
             };
-            let pipeline = pipeline.handle_events_with(create_risk_r2_handler!(0, risk_engines));
+            let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+                "risk_r2_0",
+                create_risk_r2_handler!(0, risk_engines),
+            ));
             let pipeline = if enable_pinning {
                 pipeline.pin_at_core(core_pinning.risk_r2_engines[1])
             } else {
                 pipeline
             };
-            let pipeline = pipeline.handle_events_with(create_risk_r2_handler!(1, risk_engines));
+            let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+                "risk_r2_1",
+                create_risk_r2_handler!(1, risk_engines),
+            ));
             let pipeline = if enable_pinning {
                 pipeline.pin_at_core(core_pinning.risk_r2_engines[2])
             } else {
                 pipeline
             };
-            let pipeline = pipeline.handle_events_with(create_risk_r2_handler!(2, risk_engines));
+            let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+                "risk_r2_2",
+                create_risk_r2_handler!(2, risk_engines),
+            ));
             let pipeline = if enable_pinning {
                 pipeline.pin_at_core(core_pinning.risk_r2_engines[3])
             } else {
                 pipeline
             };
-            let pipeline = pipeline.handle_events_with(create_risk_r2_handler!(3, risk_engines));
+            let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+                "risk_r2_3",
+                create_risk_r2_handler!(3, risk_engines),
+            ));
             let pipeline = pipeline.and_then();
 
             // Stage 5: Event Handlers
@@ -903,7 +988,8 @@ pub mod test {
             } else {
                 pipeline
             };
-            let pipeline = pipeline.handle_events_with(events_handler);
+            let pipeline =
+                pipeline.handle_events_with(abort_on_handler_panic("events", events_handler));
             let pipeline = pipeline.and_then();
 
             // Test Handler
@@ -912,7 +998,8 @@ pub mod test {
             } else {
                 pipeline
             };
-            let pipeline = pipeline.handle_events_with(test_handler);
+            let pipeline =
+                pipeline.handle_events_with(abort_on_handler_panic("test", test_handler));
 
             pipeline.build()
         }
@@ -922,5 +1009,50 @@ pub mod test {
         fn default() -> Self {
             Self::new()
         }
+    }
+
+    #[test]
+    fn panicking_handler_aborts_process() {
+        const CHILD_PROCESS: &str = "VEX_ABORT_HANDLER_TEST_CHILD";
+
+        if std::env::var_os(CHILD_PROCESS).is_some() {
+            let _ = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .with_writer(std::io::stderr)
+                .try_init();
+            let mut handler = abort_on_handler_panic(
+                "test_stage",
+                |_cmd: &UnsafeCell<OrderCommand>, _sequence, _end_of_batch| {
+                    panic!("handler failed")
+                },
+            );
+            handler(&UnsafeCell::new(OrderCommand::default()), 5, false);
+            unreachable!("panicking handler must abort the process");
+        }
+
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("panicking_handler_aborts_process")
+            .arg("--nocapture")
+            .env(CHILD_PROCESS, "1")
+            .current_dir(std::env::temp_dir())
+            .output()
+            .unwrap();
+
+        assert!(
+            !child.status.success(),
+            "panicking handler must kill process"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert!(
+                child.status.signal().is_some(),
+                "panicking handler must terminate by signal"
+            );
+        }
+        assert!(
+            String::from_utf8_lossy(&child.stderr).contains("test_stage"),
+            "panic log must identify the failed stage"
+        );
     }
 }
