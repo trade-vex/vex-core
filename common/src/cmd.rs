@@ -46,14 +46,9 @@ pub struct OrderCommand {
     pub order_id: u64,
 
     /// The unique identifier of the user initiating the command.
-    /// For 'PlaceOrder' : This is the actual user id
-    /// For 'CancelOrder': this is set to the gateway id inside the OrderCommand Field
-    /// This is required because, in the existing scenarior the gateway id(required to send
-    /// back the response to gateway with gateway_id in the events handler) not present in
-    /// the OrderCommand Field, so it is encoded in the order_id by the snowflake algorithm
-    /// Everything works correctly untill the order_id is itself wrong that is sent the gateway
-    /// and user_id is not essential for the CancelOrder hence it is the best choice to place
-    /// gateway id to send response correctly.
+    /// For `PlaceOrder`, this is the owner of the new order.
+    /// For `CancelOrder`, this is the caller whose ownership of the existing order is checked.
+    /// Gateway response routing uses `route_gateway_id`, not this field.
     pub user_id: u64,
 
     /// The identifier for the market this command targets.
@@ -153,12 +148,12 @@ impl OrderCommand {
         }
     }
 
-    pub fn cancel_order(order_id: u64, side: Side, market_id: u32) -> Self {
+    pub fn cancel_order(order_id: u64, user_id: u64, side: Side, market_id: u32) -> Self {
         Self {
             command: OrderCommandType::CancelOrder,
             order_id,
             market_id,
-            user_id: 0,
+            user_id,
             price: 0,
             size: 0,
             side,
