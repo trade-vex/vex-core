@@ -1022,8 +1022,8 @@ mod tests {
             engine.get_balance(maker_id, base_asset_id),
             engine.get_balance(maker_id, quote_asset_id),
         ];
-        // MatcherTradeEvent implements Drop (PR #179): assign the fields
-        // instead of functional-update syntax, which moves out of a Drop type.
+        // MatcherTradeEvent implements Drop (iterative chain teardown, PR #179), so the
+        // functional-update form would move out of a Drop type. Assign the fields instead.
         let mut trade_event = MatcherTradeEvent::default();
         trade_event.price = execution_price;
         trade_event.size = size;
