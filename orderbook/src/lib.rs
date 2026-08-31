@@ -70,23 +70,30 @@ impl PriceLevel {
 
     #[inline]
     fn remove_order(&mut self, order_id: u64, cmd: &mut OrderCommand) -> bool {
+        let requesting_user_id = cmd.user_id;
         if let Ok(pos) = self
             .orders
             .binary_search_by_key(&order_id, |order| order.order_id)
-            && let Some(removed_order) = self.orders.remove(pos)
         {
-            self.total_volume -= removed_order.size;
-            cmd.set_price(removed_order.price);
-            cmd.set_size(removed_order.size);
-            cmd.set_user_id(removed_order.user_id);
-            cmd.set_side(removed_order.side);
-            cmd.set_status(Status::Cancelled);
-            cmd.original_size = removed_order.original_size;
-            true
-        } else {
-            cmd.set_status(Status::Rejected);
-            false
+            if self.orders[pos].user_id != requesting_user_id {
+                cmd.set_status(Status::Rejected);
+                return false;
+            }
+
+            if let Some(removed_order) = self.orders.remove(pos) {
+                self.total_volume -= removed_order.size;
+                cmd.set_price(removed_order.price);
+                cmd.set_size(removed_order.size);
+                cmd.set_user_id(removed_order.user_id);
+                cmd.set_side(removed_order.side);
+                cmd.set_status(Status::Cancelled);
+                cmd.original_size = removed_order.original_size;
+                return true;
+            }
         }
+
+        cmd.set_status(Status::Rejected);
+        false
     }
 
     /// Get the total volume at this price level
