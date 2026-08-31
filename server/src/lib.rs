@@ -556,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "documents calculate_quote_cost wrapping when the shipped BTC result exceeds u64"]
+    // Fixed in this stack by PR #146 (calculate_quote_cost saturates instead of wrapping).
     fn test_shipped_btc_quote_cost_is_monotonic_past_largest_in_range() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::BtcUsdt, &mut specs);
@@ -665,8 +665,8 @@ mod tests {
         engine.pre_process_command(&mut bid, Arc::clone(&price_cache));
         engine.pre_process_command(&mut ask, price_cache);
 
-        // MatcherTradeEvent implements Drop (PR #179): assign the fields
-        // instead of functional-update syntax, which moves out of a Drop type.
+        // MatcherTradeEvent implements Drop (PR #179): the functional-update form
+        // would move out of a Drop type, so assign the fields instead.
         let mut event = common::MatcherTradeEvent::default();
         event.price = price;
         event.size = size;
@@ -675,7 +675,13 @@ mod tests {
         event.matched_order_completed = true;
         event.active_order_completed = true;
         event.maker_original_size = size;
-        engine.handle_trade_event(buyer_id, market_id, Side::Bid, &mut event, Some(price));
+        engine.handle_trade_event(
+            buyer_id,
+            market_id,
+            Side::Bid,
+            &mut event,
+            Some((bid.order_id, price)),
+        );
         engine.handle_trade_event(seller_id, market_id, Side::Ask, &mut event, None);
 
         // PR #163 rounds fees UP per fill (div_ceil), so this remainder costs one more
@@ -730,8 +736,8 @@ mod tests {
         );
         engine.pre_process_command(&mut ask, price_cache);
 
-        // MatcherTradeEvent implements Drop (PR #179): assign the fields
-        // instead of functional-update syntax, which moves out of a Drop type.
+        // MatcherTradeEvent implements Drop (PR #179): the functional-update form
+        // would move out of a Drop type, so assign the fields instead.
         let mut event = common::MatcherTradeEvent::default();
         event.price = price;
         event.size = fill_size;
@@ -757,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "documents missing issue #111 zero-collateral BID rejection in this revision"]
+    // Fixed in this stack by PR #146 (zero-collateral BID rejection).
     fn test_shipped_eth_bid_with_zero_quote_cost_is_rejected() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
@@ -780,7 +786,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "documents one-atomic-unit BID collateral residue after partial fill and cancel"]
+    // Fixed in this stack by PR #171 (bid_collateral releases exactly what was locked).
     fn test_shipped_eth_bid_partial_fill_cancel_has_no_collateral_residue() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
@@ -807,19 +813,26 @@ mod tests {
         );
         engine.pre_process_command(&mut bid, price_cache);
 
-        // MatcherTradeEvent implements Drop (PR #179): assign the fields
-        // instead of functional-update syntax, which moves out of a Drop type.
+        // MatcherTradeEvent implements Drop (PR #179): the functional-update form
+        // would move out of a Drop type, so assign the fields instead.
         let mut event = common::MatcherTradeEvent::default();
         event.price = price;
         event.size = fill_size;
         event.maker_user_id = user_id + 1;
         event.matched_order_id = 2;
         event.maker_original_size = fill_size;
-        engine.handle_trade_event(user_id, market_id, Side::Bid, &mut event, Some(price));
+        engine.handle_trade_event(
+            user_id,
+            market_id,
+            Side::Bid,
+            &mut event,
+            Some((bid.order_id, price)),
+        );
         bid.set_size(remaining_size);
         engine.handle_cancellation(&mut bid);
 
-        let fee = (fill_size * 20) / 10_000;
+        // PR #163 rounds per-fill fees UP; this expectation predated it.
+        let fee = (fill_size * 20).div_ceil(10_000);
         assert_eq!(
             engine.get_balance(user_id, base_asset_id),
             UserBalance::new(fill_size - fee, 0)
@@ -832,7 +845,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "documents u64 fee multiplication overflow for a one-ETH shipped-scale fill"]
+    // Fixed in this stack by PR #154 (fee arithmetic in u128).
     fn test_shipped_eth_one_token_fee_arithmetic_does_not_overflow() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
@@ -855,15 +868,21 @@ mod tests {
         );
         engine.pre_process_command(&mut bid, price_cache);
 
-        // MatcherTradeEvent implements Drop (PR #179): assign the fields
-        // instead of functional-update syntax, which moves out of a Drop type.
+        // MatcherTradeEvent implements Drop (PR #179): the functional-update form
+        // would move out of a Drop type, so assign the fields instead.
         let mut event = common::MatcherTradeEvent::default();
         event.price = price;
         event.size = one_eth;
         event.maker_user_id = user_id + 1;
         event.matched_order_id = 2;
         event.maker_original_size = one_eth;
-        engine.handle_trade_event(user_id, market_id, Side::Bid, &mut event, Some(price));
+        engine.handle_trade_event(
+            user_id,
+            market_id,
+            Side::Bid,
+            &mut event,
+            Some((bid.order_id, price)),
+        );
 
         assert_eq!(
             engine
