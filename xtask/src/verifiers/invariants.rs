@@ -10,11 +10,22 @@ use tracing::debug;
 /// Verifier for system-wide invariants
 ///
 /// These invariants are fundamental properties that must always hold true:
-/// - Balance consistency: available + locked = total
-/// - Balance conservation: total system balance = deposits - withdrawals - fees
-/// - Trade-balance coupling: every trade has corresponding balance updates
-/// - Orderbook consistency: snapshot matches active orders
+/// - Balance consistency and overflow safety
+/// - Orderbook price ordering and non-crossing
+/// - Trade timestamp ordering, positive sizes, and valid prices
 pub struct InvariantVerifier;
+
+fn checked_balance_total(balance: &RedisBalance) -> TestResult<u64> {
+    balance
+        .available
+        .checked_add(balance.locked)
+        .ok_or_else(|| TestError::Verification {
+            message: format!(
+                "Balance overflow detected for user {} asset {}: available={} + locked={}",
+                balance.user_id, balance.asset_id, balance.available, balance.locked
+            ),
+        })
+}
 
 impl InvariantVerifier {
     /// Verify balance invariant for all specified users and assets
@@ -29,11 +40,19 @@ impl InvariantVerifier {
             for &asset_id in assets {
                 match redis.get_balance(user_id, asset_id).await {
                     Ok(balance) => {
-                        balance
-                            .verify_invariant()
-                            .map_err(|e| TestError::Verification {
-                                message: format!("Balance invariant violated: {}", e),
-                            })?;
+                        let computed_total = checked_balance_total(&balance)?;
+                        if computed_total != balance.total {
+                            return Err(TestError::Verification {
+                                message: format!(
+                                    "Balance invariant violated for user {} asset {}: available({}) + locked({}) != total({})",
+                                    user_id,
+                                    asset_id,
+                                    balance.available,
+                                    balance.locked,
+                                    balance.total
+                                ),
+                            });
+                        }
                     }
                     Err(TestError::Verification { .. }) => {
                         // Balance not found, skip (user may not have this asset)
@@ -53,10 +72,11 @@ impl InvariantVerifier {
         Ok(())
     }
 
-    /// Verify that no balance is negative
+    /// Verify that adding unsigned balance components cannot overflow
     ///
-    /// This is a critical safety invariant - users should never have negative balances.
-    pub async fn verify_no_negative_balances(
+    /// Redis balances are unsigned, so negative values cannot be represented. This check detects
+    /// values whose `available + locked` sum would wrap around.
+    pub async fn verify_no_balance_overflow(
         redis: &mut RedisVerifier,
         users: &[u64],
         assets: &[u16],
@@ -65,23 +85,7 @@ impl InvariantVerifier {
             for &asset_id in assets {
                 match redis.get_balance(user_id, asset_id).await {
                     Ok(balance) => {
-                        // Balances are u64, but we check for wraparound indicators
-                        if balance.available > balance.total {
-                            return Err(TestError::Verification {
-                                message: format!(
-                                    "Balance wraparound detected for user {} asset {}: available={} > total={}",
-                                    user_id, asset_id, balance.available, balance.total
-                                ),
-                            });
-                        }
-                        if balance.locked > balance.total {
-                            return Err(TestError::Verification {
-                                message: format!(
-                                    "Balance wraparound detected for user {} asset {}: locked={} > total={}",
-                                    user_id, asset_id, balance.locked, balance.total
-                                ),
-                            });
-                        }
+                        checked_balance_total(&balance)?;
                     }
                     Err(TestError::Verification { .. }) => {
                         // Balance not found, skip
@@ -93,7 +97,7 @@ impl InvariantVerifier {
         }
 
         debug!(
-            "No negative balances found for {} users and {} assets",
+            "Balance arithmetic verified for {} users and {} assets",
             users.len(),
             assets.len()
         );
@@ -268,7 +272,7 @@ impl InvariantVerifier {
 
         // Balance invariants
         Self::verify_balance_consistency(redis, users, assets).await?;
-        Self::verify_no_negative_balances(redis, users, assets).await?;
+        Self::verify_no_balance_overflow(redis, users, assets).await?;
 
         // Orderbook invariants
         match Self::verify_orderbook_ordering(redis, market_id).await {
@@ -302,5 +306,35 @@ impl InvariantVerifier {
         debug!("All invariants verified successfully");
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn balance(available: u64, locked: u64) -> RedisBalance {
+        RedisBalance {
+            user_id: 7,
+            asset_id: 3,
+            available,
+            locked,
+            total: available.saturating_add(locked),
+            timestamp: 0,
+        }
+    }
+
+    #[test]
+    fn checked_balance_total_accepts_maximum_non_overflowing_sum() {
+        assert_eq!(
+            checked_balance_total(&balance(u64::MAX - 1, 1)).unwrap(),
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn checked_balance_total_rejects_overflow() {
+        let error = checked_balance_total(&balance(u64::MAX, 1)).unwrap_err();
+        assert!(error.to_string().contains("Balance overflow detected"));
     }
 }

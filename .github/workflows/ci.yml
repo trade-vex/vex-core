@@ -75,7 +75,9 @@ jobs:
           RUSTFLAGS: "-D warnings -C link-arg=-fuse-ld=mold"
 
       - name: Run tests
-        run: cargo test --workspace --all-features --all-targets
+        run: |
+          cargo test --workspace --all-targets
+          cargo test --workspace --all-features --all-targets
         env:
           RUSTFLAGS: "-D warnings -C link-arg=-fuse-ld=mold"
           VEX_KAFKA_BROKER: localhost:9092
