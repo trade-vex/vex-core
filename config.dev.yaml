@@ -55,7 +55,9 @@ symbols:
       market_type: Spot
       base_asset: 3
       quote_asset: 1
-      base_scale_k: 100000
+      # PR #182 re-valued this default to 1 (base_scale_k drives no arithmetic); the shipped
+      # config must track the code default, which test_shipped_development_config_matches_defaults asserts.
+      base_scale_k: 1
       quote_scale_k: 10
       base_native_scale: 1000000000000000000
       quote_native_scale: 1000000

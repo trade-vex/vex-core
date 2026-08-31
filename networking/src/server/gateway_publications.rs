@@ -181,14 +181,15 @@ impl Publications {
 
     // Publisher (event handler thread)
     pub fn publish_to_archive(&self, cmd: &OrderCommand) {
-        let gateway_id = cmd.order_id;
+        // PR #182: this is an ORDER id, not a gateway id — label it accordingly.
+        let order_id = cmd.order_id;
         let ptr = self.gateways[MAX_GATEWAYS].load_full();
         let publication = ptr.as_ref();
         if publication.is_none() {
             // None means archive recording is not configured; see server/mod.rs.
             debug!(
-                "gateway-{}: Archive recording not configured, skipping command, client order_id: {}",
-                gateway_id, cmd.client_order_id
+                "order-{}: Archive recording not configured, skipping command, client order_id: {}",
+                order_id, cmd.client_order_id
             );
             return;
         }
@@ -203,8 +204,8 @@ impl Publications {
                     match classify_offer_result(result) {
                         OfferResult::Success => {
                             debug!(
-                                "gateway-{}: successfully published to archive, client order_id: {}",
-                                gateway_id, cmd.client_order_id
+                                "order-{}: successfully published to archive, client order_id: {}",
+                                order_id, cmd.client_order_id
                             );
                             return;
                         }
@@ -213,8 +214,8 @@ impl Publications {
                         }
                         OfferResult::Retryable | OfferResult::Fatal => {
                             error!(
-                                "gateway-{}: Failed to archive OrderCommand, client order_id: {}, result: {}",
-                                gateway_id, cmd.client_order_id, result
+                                "order-{}: Failed to archive OrderCommand, client order_id: {}, result: {}",
+                                order_id, cmd.client_order_id, result
                             );
                             std::process::abort();
                         }
@@ -223,8 +224,8 @@ impl Publications {
             }
             Err(e) => {
                 error!(
-                    "gateway-{}: Failed to encode archive OrderCommand, client order_id: {}, error: {:?}",
-                    gateway_id, cmd.client_order_id, e
+                    "order-{}: Failed to encode archive OrderCommand, client order_id: {}, error: {:?}",
+                    order_id, cmd.client_order_id, e
                 );
                 std::process::abort();
             }

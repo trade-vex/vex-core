@@ -56,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         market_type: MarketType::Spot,
         base_asset: 3762,               // BTC (satoshi)
         quote_asset: 840,               // USD
-        base_scale_k: 100_000,          // 1 lot = 0.001 BTC
+        base_scale_k: 1,                // Reserved compatibility field; currently unused
         quote_scale_k: 100,             // 1 step = $0.01
         base_native_scale: 100_000_000, // BTC has 8 decimals
         quote_native_scale: 100,        // USD has 2 decimals (cents)
