@@ -645,6 +645,7 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
     let best_ask_price = 53_000;
     let second_ask_price = 54_000;
     let buy_size = 4;
+    let market_spec = ctx.market_spec().clone();
 
     // Clear the leftover 3 BTC @ 52k from Section 5 to get clean orderbook
     let clear_order = OrderBuilder::place_limit()
@@ -770,13 +771,14 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
 
         // Calculate expected costs
-        let actual_cost = best_ask_price * buy_size; // Executed at best ask
-        let conservative_cost = expected_conservative_price * buy_size; // Locked amount
+        let actual_cost = market_spec.calculate_quote_cost(best_ask_price, buy_size);
+        let conservative_cost =
+            market_spec.calculate_quote_cost(expected_conservative_price, buy_size);
         let expected_refund = conservative_cost - actual_cost; // Price improvement refund
 
-        // Taker fee (10 bps = 0.1%)
-        let taker_fee_bps = 10;
-        let taker_fee_btc = (buy_size * taker_fee_bps) / 10_000;
+        // Bid taker fee is charged on the received base asset.
+        let taker_fee_bps = market_spec.taker_fee;
+        let taker_fee_btc = (buy_size * taker_fee_bps).div_ceil(10_000);
 
         let final_usd_balance = balance_verifier
             .get_balance(users::ALICE, assets::USD)
@@ -862,6 +864,7 @@ async fn test_market_sell_section(ctx: &mut TestContext) -> TestResult<()> {
     let best_bid_price = 52_000;
     let second_bid_price = 51_000;
     let sell_size = 10;
+    let market_spec = ctx.market_spec().clone();
 
     // Setup: Create orderbook with bids
     // Alice places bid @ 52,000 (best bid)
@@ -963,13 +966,10 @@ async fn test_market_sell_section(ctx: &mut TestContext) -> TestResult<()> {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
 
         // Calculate expected revenue
-        let gross_revenue = best_bid_price * sell_size;
-
-        // Taker fee (10 bps = 0.1%) is taken from BTC, not USD
-        // For sell_size = 10: fee_btc = (10 * 10) / 10000 = 0 (rounds down)
-        // in real scenario all amt, balances must be scaled, to avoid this.
-        let taker_fee_bps = 10;
-        let taker_fee_btc = (sell_size * taker_fee_bps) / 10_000;
+        let gross_revenue = market_spec.calculate_quote_cost(best_bid_price, sell_size);
+        let taker_fee_bps = market_spec.taker_fee;
+        let taker_fee_usd = (gross_revenue * taker_fee_bps).div_ceil(10_000);
+        let expected_usd = gross_revenue.saturating_sub(taker_fee_usd);
 
         let final_usd_balance = balance_verifier
             .get_balance(users::CHARLIE, assets::USD)
@@ -978,32 +978,35 @@ async fn test_market_sell_section(ctx: &mut TestContext) -> TestResult<()> {
             .get_balance(users::CHARLIE, assets::BTC)
             .await?;
 
-        // Verify BTC sold (including fee if non-zero)
+        // Ask taker fee is charged on the received quote asset, not the base asset.
         let btc_sold = initial_btc_balance.available - final_btc_balance.available;
-        let expected_btc_total = sell_size + taker_fee_btc;
-        if btc_sold != expected_btc_total {
+        if btc_sold != sell_size {
             return Err(TestError::Verification {
                 message: format!(
-                    "BTC sold mismatch: expected={} (size={} + fee={}), actual={}",
-                    expected_btc_total, sell_size, taker_fee_btc, btc_sold
+                    "BTC sold mismatch: expected={} (no base-side fee), actual={}",
+                    sell_size, btc_sold
                 ),
             });
         }
 
-        // Verify USD received (full gross - fee is NOT deducted from USD)
+        // Verify USD received (gross quote revenue minus quote-side taker fee)
         let usd_received = final_usd_balance.available - initial_usd_balance.available;
-        if usd_received != gross_revenue {
+        if usd_received != expected_usd {
             return Err(TestError::Verification {
                 message: format!(
-                    "USD received mismatch: expected={} (full gross), actual={}. Fee is in BTC, not USD.",
-                    gross_revenue, usd_received
+                    "USD received mismatch: expected={} (gross={} - fee={}), actual={}",
+                    expected_usd, gross_revenue, taker_fee_usd, usd_received
                 ),
             });
         }
 
         info!(
-            "  → Charlie final: {} USD (received full gross), {} BTC (sold {} + fee {})",
-            final_usd_balance.available, final_btc_balance.available, sell_size, taker_fee_btc
+            "  → Charlie final: {} USD (received {}, fee {}), {} BTC (sold {})",
+            final_usd_balance.available,
+            expected_usd,
+            taker_fee_usd,
+            final_btc_balance.available,
+            sell_size
         );
     }
 
