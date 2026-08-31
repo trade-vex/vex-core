@@ -1,10 +1,39 @@
 use arc_swap::ArcSwapOption;
 use common::{MAX_GATEWAYS, ORDERCOMMANDSIZE, OrderCommand, encode_order_command};
-use rusteron_archive::{AeronPublication, AeronReservedValueSupplierLogger};
-use std::sync::Arc;
+use rusteron_archive::{
+    AeronPublication, AeronReservedValueSupplierLogger,
+    bindings::{
+        AERON_PUBLICATION_ADMIN_ACTION, AERON_PUBLICATION_BACK_PRESSURED,
+        AERON_PUBLICATION_NOT_CONNECTED,
+    },
+};
+use std::{sync::Arc, time::Duration};
 use tracing::{debug, error};
 
 use super::ServerError;
+
+const ARCHIVE_OFFER_RETRY_LIMIT: usize = 5_000;
+const ARCHIVE_OFFER_RETRY_BACKOFF: Duration = Duration::from_millis(1);
+
+#[derive(Debug, PartialEq, Eq)]
+enum OfferResult {
+    Success,
+    Retryable,
+    Fatal,
+}
+
+fn classify_offer_result(result: i64) -> OfferResult {
+    if result >= 0 {
+        OfferResult::Success
+    } else if result == i64::from(AERON_PUBLICATION_BACK_PRESSURED)
+        || result == i64::from(AERON_PUBLICATION_ADMIN_ACTION)
+        || result == i64::from(AERON_PUBLICATION_NOT_CONNECTED)
+    {
+        OfferResult::Retryable
+    } else {
+        OfferResult::Fatal
+    }
+}
 
 /// Manages Gateway Publications from gateway id 0 to MAX_GATEWAYS - 1
 /// Index MAX_GATEWAYS is reserved for archival publication
@@ -112,8 +141,9 @@ impl Publications {
         let ptr = self.gateways[MAX_GATEWAYS].load_full();
         let publication = ptr.as_ref();
         if publication.is_none() {
-            error!(
-                "gateway-{}: Archive publication not set, cannot archive command, client order_id: {}",
+            // None means archive recording is not configured; see server/mod.rs.
+            debug!(
+                "gateway-{}: Archive recording not configured, skipping command, client order_id: {}",
                 gateway_id, cmd.client_order_id
             );
             return;
@@ -122,26 +152,37 @@ impl Publications {
         let mut response_buffer = [0; ORDERCOMMANDSIZE];
         match encode_order_command(cmd, &mut response_buffer) {
             Ok(_) => {
-                let result =
-                    publication.offer::<AeronReservedValueSupplierLogger>(&response_buffer, None);
+                for retry in 0..=ARCHIVE_OFFER_RETRY_LIMIT {
+                    let result = publication
+                        .offer::<AeronReservedValueSupplierLogger>(&response_buffer, None);
 
-                if result < 0 {
-                    error!(
-                        "gateway-{}: Failed to archive OrderCommand, client order_id: {}, result: {}",
-                        gateway_id, cmd.client_order_id, result
-                    );
-                } else {
-                    debug!(
-                        "gateway-{}: successfully published to archive, client order_id: {}",
-                        gateway_id, cmd.client_order_id
-                    );
+                    match classify_offer_result(result) {
+                        OfferResult::Success => {
+                            debug!(
+                                "gateway-{}: successfully published to archive, client order_id: {}",
+                                gateway_id, cmd.client_order_id
+                            );
+                            return;
+                        }
+                        OfferResult::Retryable if retry < ARCHIVE_OFFER_RETRY_LIMIT => {
+                            std::thread::sleep(ARCHIVE_OFFER_RETRY_BACKOFF);
+                        }
+                        OfferResult::Retryable | OfferResult::Fatal => {
+                            error!(
+                                "gateway-{}: Failed to archive OrderCommand, client order_id: {}, result: {}",
+                                gateway_id, cmd.client_order_id, result
+                            );
+                            std::process::abort();
+                        }
+                    }
                 }
             }
             Err(e) => {
                 error!(
-                    "gateway-{}: Failed to encode processed OrderCommand: {:?}",
-                    gateway_id, e
+                    "gateway-{}: Failed to encode archive OrderCommand, client order_id: {}, error: {:?}",
+                    gateway_id, cmd.client_order_id, e
                 );
+                std::process::abort();
             }
         }
     }
@@ -165,5 +206,43 @@ mod tests {
             publications.get(MAX_GATEWAYS as u8),
             Err(ServerError::GatewayMessageError(_))
         ));
+    }
+
+    use rusteron_archive::bindings::{
+        AERON_PUBLICATION_ADMIN_ACTION, AERON_PUBLICATION_BACK_PRESSURED, AERON_PUBLICATION_CLOSED,
+        AERON_PUBLICATION_ERROR, AERON_PUBLICATION_MAX_POSITION_EXCEEDED,
+        AERON_PUBLICATION_NOT_CONNECTED,
+    };
+
+    #[test]
+    fn classifies_successful_offer() {
+        assert_eq!(classify_offer_result(0), OfferResult::Success);
+        assert_eq!(classify_offer_result(1), OfferResult::Success);
+    }
+
+    #[test]
+    fn classifies_retryable_offer_results() {
+        for result in [
+            AERON_PUBLICATION_BACK_PRESSURED,
+            AERON_PUBLICATION_ADMIN_ACTION,
+            AERON_PUBLICATION_NOT_CONNECTED,
+        ] {
+            assert_eq!(
+                classify_offer_result(i64::from(result)),
+                OfferResult::Retryable
+            );
+        }
+    }
+
+    #[test]
+    fn classifies_fatal_offer_results() {
+        for result in [
+            AERON_PUBLICATION_CLOSED,
+            AERON_PUBLICATION_MAX_POSITION_EXCEEDED,
+            AERON_PUBLICATION_ERROR,
+        ] {
+            assert_eq!(classify_offer_result(i64::from(result)), OfferResult::Fatal);
+        }
+        assert_eq!(classify_offer_result(-7), OfferResult::Fatal);
     }
 }
