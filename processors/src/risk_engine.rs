@@ -184,6 +184,11 @@ impl RiskEngine {
                 shard_id = self.shard_id,
                 user_id,
                 market_id,
+                user_side = ?user_side,
+                maker_user_id = event.maker_user_id,
+                price = event.price,
+                size = event.size,
+                taker_price = ?taker_cmd,
                 error = ?err
             );
         } else {
@@ -213,12 +218,9 @@ impl RiskEngine {
             spec.taker_fee
         };
 
-        // Acquire a lock on the store for all balance operations
-        let mut store = self.balances.lock();
-
         // --- Price Improvement Refund Logic (for Taker only) ---
         // If the taker gets a better price than their limit, refund the difference.
-        if !is_maker
+        let refund_amount = if !is_maker
             && let Some(limit_price) = taker_price
             && user_side == Side::Bid
         // Price improvement only applies to BID orders where QUOTE currency was locked.
@@ -226,11 +228,13 @@ impl RiskEngine {
             let execution_price = event.price;
             if execution_price < limit_price {
                 let price_diff = limit_price - execution_price;
-                let refund_amount = spec.calculate_quote_cost(price_diff, event.size);
-                // Move the saved amount from 'locked' back to 'available'.
-                store.unlock_funds(user_id, quote_asset(market_id), refund_amount)?;
+                spec.calculate_quote_cost(price_diff, event.size)
+            } else {
+                0
             }
-        }
+        } else {
+            0
+        };
 
         let (asset_to_subtract, amount_to_subtract, asset_to_add, amount_to_add) = match user_side {
             // User is BUYING base asset with quote asset.
@@ -264,9 +268,48 @@ impl RiskEngine {
             }
         };
 
-        let balance_sub =
-            store.subtract_locked_funds(user_id, asset_to_subtract, amount_to_subtract)?;
-        let balance_add = store.add_funds(user_id, asset_to_add, amount_to_add)?;
+        // Compute and validate every mutation against copies before changing the store.
+        let mut store = self.balances.lock();
+        let mut balance_sub = store.get_balance(user_id, asset_to_subtract);
+
+        if balance_sub.locked < refund_amount {
+            return Err(BalanceError::InsufficientLockedFunds {
+                locked: balance_sub.locked,
+                needed: refund_amount,
+            }
+            .into());
+        }
+        balance_sub.locked -= refund_amount;
+        balance_sub.available = balance_sub
+            .available
+            .checked_add(refund_amount)
+            .ok_or(BalanceError::Overflow)?;
+
+        if balance_sub.locked < amount_to_subtract {
+            return Err(BalanceError::InsufficientLockedFunds {
+                locked: balance_sub.locked,
+                needed: amount_to_subtract,
+            }
+            .into());
+        }
+        balance_sub.locked -= amount_to_subtract;
+
+        let mut balance_add = if asset_to_add == asset_to_subtract {
+            balance_sub
+        } else {
+            store.get_balance(user_id, asset_to_add)
+        };
+        balance_add.available = balance_add
+            .available
+            .checked_add(amount_to_add)
+            .ok_or(BalanceError::Overflow)?;
+
+        if asset_to_add == asset_to_subtract {
+            *store.get_balance_mut(user_id, asset_to_add) = balance_add;
+        } else {
+            *store.get_balance_mut(user_id, asset_to_subtract) = balance_sub;
+            *store.get_balance_mut(user_id, asset_to_add) = balance_add;
+        }
 
         if is_maker {
             if asset_to_subtract == base_asset(market_id) {
@@ -950,6 +993,69 @@ mod tests {
             net_quote_received
         );
         assert_eq!(engine.get_balance(maker_id, btc_asset_id).total(), 0);
+    }
+
+    #[test]
+    fn test_trade_settlement_subtract_failure_leaves_balances_unchanged() {
+        let base_asset_id = 2u16;
+        let quote_asset_id = 1u16;
+        let market_id = ((quote_asset_id as u32) << 16) | base_asset_id as u32;
+        let spec = get_spec(market_id);
+        let mut specs = HashMap::new();
+        specs.insert(market_id, spec.clone());
+        let engine = RiskEngine::new(specs, 0, 1);
+
+        let maker_id = 101;
+        let taker_id = 102;
+        let execution_price = 100;
+        let limit_price = 110;
+        let size = 10;
+
+        engine.set_balance(taker_id, base_asset_id, UserBalance::new(7, 0));
+        engine.set_balance(taker_id, quote_asset_id, UserBalance::new(3, 150));
+        engine.set_balance(maker_id, base_asset_id, UserBalance::new(5, size));
+        engine.set_balance(maker_id, quote_asset_id, UserBalance::new(11, 0));
+
+        let balances_before = [
+            engine.get_balance(taker_id, base_asset_id),
+            engine.get_balance(taker_id, quote_asset_id),
+            engine.get_balance(maker_id, base_asset_id),
+            engine.get_balance(maker_id, quote_asset_id),
+        ];
+        // MatcherTradeEvent implements Drop (PR #179): assign the fields
+        // instead of functional-update syntax, which moves out of a Drop type.
+        let mut trade_event = MatcherTradeEvent::default();
+        trade_event.price = execution_price;
+        trade_event.size = size;
+        trade_event.maker_user_id = maker_id;
+
+        let result = engine.settle_trade(
+            taker_id,
+            market_id,
+            Side::Bid,
+            &mut trade_event,
+            &spec,
+            Some(limit_price),
+        );
+
+        assert_eq!(
+            result,
+            Err(RiskEngineError::BalanceError(
+                BalanceError::InsufficientLockedFunds {
+                    locked: 50,
+                    needed: 1_000,
+                }
+            ))
+        );
+        assert_eq!(
+            [
+                engine.get_balance(taker_id, base_asset_id),
+                engine.get_balance(taker_id, quote_asset_id),
+                engine.get_balance(maker_id, base_asset_id),
+                engine.get_balance(maker_id, quote_asset_id),
+            ],
+            balances_before
+        );
     }
 
     #[test]
