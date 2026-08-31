@@ -109,14 +109,20 @@ fn test_client_server_communication() {
         )
         .pin_at_core(1)
         .handle_events_with({
-            move |cmd: &mut OrderCommand, _, _| {
+            move |cell: &std::cell::UnsafeCell<OrderCommand>, _, _| {
+                // SAFETY: This test handler is the sole handler in its barrier group, so
+                // creating an exclusive reference cannot alias another handler's reference.
+                let cmd = unsafe { &mut *cell.get() };
                 info!("Server received OrderCommand Core 1: {:?}", cmd);
             }
         })
         .and_then()
         .pin_at_core(2)
         .handle_events_with({
-            move |cmd: &mut OrderCommand, _, _| {
+            move |cell: &std::cell::UnsafeCell<OrderCommand>, _, _| {
+                // SAFETY: This test handler is the sole handler in its barrier group, so
+                // creating an exclusive reference cannot alias another handler's reference.
+                let cmd = unsafe { &mut *cell.get() };
                 info!("Server processing OrderCommand Core 2: {:?}", cmd);
             }
         })
