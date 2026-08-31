@@ -12,7 +12,7 @@ use rusteron_archive::{Aeron, AeronPublication, Handler};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, RwLock};
 use tracing::{debug, error, info, warn};
-use vex_config::CoreNetworkingConfig;
+use vex_config::{CoreNetworkingConfig, GatewayAuthenticationKey};
 
 use super::ServerError;
 
@@ -103,6 +103,8 @@ pub struct GatewayManager {
     aeron: Aeron,
     /// Core configuration
     config: CoreNetworkingConfig,
+    /// Shared key expected in authenticated gateway handshakes
+    authentication_key: GatewayAuthenticationKey,
     /// Port allocator for gateway sessions
     port_allocator: PortAllocator,
     /// Session ID allocator
@@ -121,6 +123,7 @@ impl GatewayManager {
     /// Creates a new gateway manager
     pub fn new(
         config: CoreNetworkingConfig,
+        authentication_key: GatewayAuthenticationKey,
         aeron: Aeron,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
         publications: Arc<Publications>,
@@ -141,6 +144,7 @@ impl GatewayManager {
             )
             .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?,
             config,
+            authentication_key,
             producer,
             publications,
             cleanup_rx,
@@ -204,14 +208,18 @@ impl GatewayManager {
         &self,
         publication: &AeronPublication,
         session_id: i32,
+        source: &str,
         buffer: &[u8],
     ) -> Result<(), ServerError> {
         let message = std::str::from_utf8(buffer)
             .map_err(|e| ServerError::GatewayMessageError(format!("Invalid UTF-8: {e}")))?;
 
         debug!(
-            "Processing handshake from session 0x{:x}: {}",
-            session_id, message
+            target: "gateway_manager",
+            action = "handshake_received",
+            session = format_args!("{:#x}", session_id),
+            source,
+            length = buffer.len()
         );
 
         // Parse "HELLO gateway_id encryption_key"
@@ -232,60 +240,69 @@ impl GatewayManager {
             .next()
             .ok_or_else(|| ServerError::GatewayMessageError("Missing gateway ID".to_string()))?;
 
-        let gateway_id = {
-            const PREFIX: &str = "gateway-";
-            if !gateway_id_str.starts_with(PREFIX) {
-                let error_msg = format!(
-                    "{session_id} {gateway_id_str} REJECT Invalid gateway ID format, expected 'gateway-{{id}}'"
-                );
-                send_message(publication, error_msg.as_bytes())?;
-                return Err(ServerError::GatewayMessageError(
-                    "Invalid gateway ID format".to_string(),
-                ));
-            }
-            match gateway_id_str[PREFIX.len()..].parse::<u8>() {
-                Ok(id) if (id as usize) < MAX_GATEWAYS => id,
-                Ok(id) => {
-                    let error_msg = format!(
-                        "{session_id} gateway-{id} REJECT Gateway ID out of range, expected 0-{}",
-                        MAX_GATEWAYS - 1
-                    );
-                    send_message(publication, error_msg.as_bytes())?;
-                    return Err(ServerError::GatewayMessageError(
-                        "Gateway ID out of range".to_string(),
-                    ));
-                }
-                Err(_) => {
-                    let error_msg = format!(
-                        "{session_id} {gateway_id_str} REJECT Invalid gateway ID, expected numeric ID"
-                    );
-                    send_message(publication, error_msg.as_bytes())?;
-                    return Err(ServerError::GatewayMessageError(
-                        "Invalid gateway ID".to_string(),
-                    ));
-                }
-            }
-        };
-
         let encryption_key_str = parts.next().ok_or_else(|| {
             ServerError::GatewayMessageError("Missing encryption key".to_string())
         })?;
 
-        let encryption_key = encryption_key_str.parse::<i32>().map_err(|e| {
-            ServerError::GatewayMessageError(format!("Invalid encryption key: {e}"))
-        })?;
+        let encryption_key = match encryption_key_str.parse::<i32>() {
+            Ok(key) => key,
+            Err(_) if self.authentication_is_enabled() => {
+                return self.reject_handshake(
+                    publication,
+                    session_id,
+                    gateway_id_str,
+                    source,
+                    ServerError::AuthenticationError("Invalid credentials".to_string()),
+                );
+            }
+            Err(e) => {
+                return Err(ServerError::GatewayMessageError(format!(
+                    "Invalid encryption key: {e}"
+                )));
+            }
+        };
 
-        self.check_duplicate_connection(publication, session_id, gateway_id)?;
-
-        // Authenticate if enabled
-        if self.config.enable_authentication
-            && let Err(e) = self.authenticate_gateway(gateway_id, &encryption_key.to_string())
+        if self.authentication_is_enabled()
+            && let Err(e) = authenticate_gateway(&self.authentication_key, encryption_key)
         {
-            let error_msg =
-                format!("{session_id} gateway-{gateway_id} REJECT Authentication failed");
-            send_message(publication, error_msg.as_bytes())?;
-            return Err(e);
+            return self.reject_handshake(publication, session_id, gateway_id_str, source, e);
         }
+
+        let gateway_id = {
+            const PREFIX: &str = "gateway-";
+            if !gateway_id_str.starts_with(PREFIX) {
+                return self.reject_handshake(
+                    publication,
+                    session_id,
+                    gateway_id_str,
+                    source,
+                    ServerError::GatewayMessageError("Invalid gateway ID format".to_string()),
+                );
+            }
+            match gateway_id_str[PREFIX.len()..].parse::<u8>() {
+                Ok(id) if (id as usize) < MAX_GATEWAYS => id,
+                Ok(id) => {
+                    return self.reject_handshake(
+                        publication,
+                        session_id,
+                        gateway_id_str,
+                        source,
+                        ServerError::GatewayMessageError(format!("Gateway ID {id} out of range")),
+                    );
+                }
+                Err(_) => {
+                    return self.reject_handshake(
+                        publication,
+                        session_id,
+                        gateway_id_str,
+                        source,
+                        ServerError::GatewayMessageError("Invalid gateway ID".to_string()),
+                    );
+                }
+            }
+        };
+
+        self.check_duplicate_connection(publication, session_id, gateway_id, source)?;
 
         let (dedicated_session, ports) = self.allocate_gateway_session(gateway_id)?;
         let encrypted_session = encryption_key ^ dedicated_session;
@@ -376,29 +393,32 @@ impl GatewayManager {
         publication: &AeronPublication,
         session_id: i32,
         gateway_id: u8,
+        source: &str,
     ) -> Result<(), ServerError> {
         // Check if gateway_id is within valid range (implicit capacity check)
         if gateway_id as usize >= MAX_GATEWAYS {
-            let error_msg = format!(
-                "{session_id} gateway-{gateway_id} REJECT Invalid gateway ID (must be 0-{})",
-                MAX_GATEWAYS - 1
+            return self.reject_handshake(
+                publication,
+                session_id,
+                &format!("gateway-{gateway_id}"),
+                source,
+                ServerError::GatewayMessageError(format!(
+                    "Gateway ID {} out of range (max: {})",
+                    gateway_id,
+                    MAX_GATEWAYS - 1
+                )),
             );
-            send_message(publication, error_msg.as_bytes())?;
-            return Err(ServerError::GatewayMessageError(format!(
-                "Gateway ID {} out of range (max: {})",
-                gateway_id,
-                MAX_GATEWAYS - 1
-            )));
         }
 
         // Check if this gateway is already connected
         if self.is_gateway_connected(gateway_id) {
-            let error_msg =
-                format!("{session_id} gateway-{gateway_id} REJECT Gateway already connected");
-            send_message(publication, error_msg.as_bytes())?;
-            return Err(ServerError::GatewayMessageError(
-                "Gateway already connected".to_string(),
-            ));
+            return self.reject_handshake(
+                publication,
+                session_id,
+                &format!("gateway-{gateway_id}"),
+                source,
+                ServerError::GatewayMessageError("Gateway already connected".to_string()),
+            );
         }
         Ok(())
     }
@@ -494,14 +514,28 @@ impl GatewayManager {
         Ok((dedicated_session, [ports[0], ports[1]]))
     }
 
-    fn authenticate_gateway(&self, gateway_id: u8, _credentials: &str) -> Result<(), ServerError> {
-        // TODO: Implement proper authentication
-        info!(
+    fn authentication_is_enabled(&self) -> bool {
+        self.config.enable_authentication && !self.authentication_key.is_empty()
+    }
+
+    fn reject_handshake(
+        &self,
+        publication: &AeronPublication,
+        session_id: i32,
+        gateway_label: &str,
+        source: &str,
+        error: ServerError,
+    ) -> Result<(), ServerError> {
+        warn!(
             target: "gateway_manager",
-            action = "gateway_authenticated",
-            gateway_id
+            action = "handshake_rejected",
+            source,
+            session = format_args!("{:#x}", session_id),
+            reason = %error
         );
-        Ok(())
+        let error_msg = format!("{session_id} {gateway_label} REJECT Handshake rejected");
+        send_message(publication, error_msg.as_bytes())?;
+        Err(error)
     }
 
     /// Removes a gateway session and frees all associated resources
@@ -556,5 +590,52 @@ impl GatewayManager {
         }
 
         Ok(())
+    }
+}
+
+fn constant_time_i32_eq(left: i32, right: i32) -> bool {
+    let mut difference = 0_u8;
+    for (left_byte, right_byte) in left.to_ne_bytes().iter().zip(right.to_ne_bytes()) {
+        difference |= left_byte ^ right_byte;
+    }
+    difference == 0
+}
+
+fn authenticate_gateway(
+    authentication_key: &GatewayAuthenticationKey,
+    credentials: i32,
+) -> Result<(), ServerError> {
+    let expected = authentication_key.as_i32().ok_or_else(|| {
+        ServerError::ConfigurationError(
+            "Gateway authentication key must be a signed 32-bit integer".to_string(),
+        )
+    })?;
+
+    if constant_time_i32_eq(expected, credentials) {
+        Ok(())
+    } else {
+        Err(ServerError::AuthenticationError(
+            "Invalid credentials".to_string(),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn correct_gateway_credential_is_accepted() {
+        let key = GatewayAuthenticationKey::from("123456789");
+        assert!(authenticate_gateway(&key, 123456789).is_ok());
+    }
+
+    #[test]
+    fn wrong_gateway_credential_is_rejected_without_a_slot() {
+        let key = GatewayAuthenticationKey::from("123456789");
+        let sessions = Session::new();
+
+        assert!(authenticate_gateway(&key, 987654321).is_err());
+        assert!(!sessions.is_gateway_connected(1));
     }
 }
