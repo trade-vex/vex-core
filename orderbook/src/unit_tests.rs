@@ -15,7 +15,7 @@ mod test {
                 Side::Bid => self.bids.iter().find(|(p, _)| *p == price),
                 Side::Ask => self.asks.iter().find(|(p, _)| *p == price),
             };
-            find_result.map_or(0, |(_, level)| level.total_volume)
+            find_result.map_or(0, |(_, level)| level.get_total_volume())
         }
 
         pub fn get_level_order_count(&self, side: Side, price: u64) -> usize {
@@ -50,7 +50,8 @@ mod test {
             if expected_volume == 0 {
                 if let Some((_, level)) = level_opt {
                     assert_eq!(
-                        level.total_volume, 0,
+                        level.get_total_volume(),
+                        0,
                         "Level at price {price} should be empty but has volume"
                     );
                     assert!(
@@ -64,7 +65,8 @@ mod test {
                     panic!("Expected price level at {price} for side {side:?} not found")
                 });
                 assert_eq!(
-                    level.total_volume, expected_volume,
+                    level.get_total_volume(),
+                    expected_volume,
                     "Volume mismatch at price {price} for side {side:?}"
                 );
                 assert_eq!(
@@ -76,7 +78,8 @@ mod test {
                 // Verify internal consistency: total_volume should match sum of order sizes.
                 let actual_summed_volume: u64 = level.orders.iter().map(|o| o.size).sum();
                 assert_eq!(
-                    level.total_volume, actual_summed_volume,
+                    level.get_total_volume(),
+                    actual_summed_volume,
                     "Internal volume sum inconsistency at price {price}"
                 );
 
@@ -116,20 +119,24 @@ mod test {
             // Keep your existing volume checks unchanged
             for (price, level) in self.bids.iter() {
                 let calculated_volume: u64 = level.orders.iter().map(|o| o.size).sum();
-                if calculated_volume != level.total_volume {
+                if calculated_volume != level.get_total_volume() {
                     return Err(format!(
                         "Bid level at {} has inconsistent volume: {} vs {}",
-                        price, level.total_volume, calculated_volume
+                        price,
+                        level.get_total_volume(),
+                        calculated_volume
                     ));
                 }
             }
 
             for (price, level) in self.asks.iter() {
                 let calculated_volume: u64 = level.orders.iter().map(|o| o.size).sum();
-                if calculated_volume != level.total_volume {
+                if calculated_volume != level.get_total_volume() {
                     return Err(format!(
                         "Ask level at {} has inconsistent volume: {} vs {}",
-                        price, level.total_volume, calculated_volume
+                        price,
+                        level.get_total_volume(),
+                        calculated_volume
                     ));
                 }
             }
@@ -140,7 +147,7 @@ mod test {
             self.bids
                 .iter()
                 .next()
-                .map(|(price, level)| (price, level.total_volume))
+                .map(|(price, level)| (price, level.get_total_volume()))
         }
 
         /// Get the best ask price and volume
@@ -148,7 +155,7 @@ mod test {
             self.asks
                 .iter()
                 .next()
-                .map(|(price, level)| (price, level.total_volume))
+                .map(|(price, level)| (price, level.get_total_volume()))
         }
 
         /// Get total volume at a specific price level
@@ -158,13 +165,13 @@ mod test {
                     .bids
                     .iter()
                     .find(|(p, _)| *p == price)
-                    .map(|(_, level)| level.total_volume)
+                    .map(|(_, level)| level.get_total_volume())
                     .unwrap_or(0),
                 Side::Ask => self
                     .asks
                     .iter()
                     .find(|(p, _)| *p == price)
-                    .map(|(_, level)| level.total_volume)
+                    .map(|(_, level)| level.get_total_volume())
                     .unwrap_or(0),
             }
         }
@@ -294,6 +301,142 @@ mod test {
             OrderBook::new(BTreeBidSide::new(), BTreeAskSide::new(), 10),
             price_cache,
         )
+    }
+
+    #[test]
+    fn price_level_volume_tracks_add_and_remove() {
+        let mut level = PriceLevel::new();
+        level.add_order(Order {
+            order_id: 1,
+            user_id: 1,
+            price: 100,
+            size: 25,
+            original_size: 25,
+            side: Side::Bid,
+            time_in_force: TimeInForce::Gtc,
+            status: Status::Placed,
+            timestamp: 0,
+        });
+        level.add_order(Order {
+            order_id: 2,
+            user_id: 2,
+            price: 100,
+            size: 75,
+            original_size: 75,
+            side: Side::Bid,
+            time_in_force: TimeInForce::Gtc,
+            status: Status::Placed,
+            timestamp: 0,
+        });
+        assert_eq!(level.get_total_volume(), 100);
+
+        // PR #148 makes remove_order owner-checked; these volume tests must claim the owner.
+        let mut command = OrderCommand {
+            user_id: 1,
+            ..Default::default()
+        };
+        level.remove_order(1, &mut command);
+        assert_eq!(level.get_total_volume(), 75);
+        assert_eq!(level.get_order_count(), 1);
+    }
+
+    #[test]
+    fn price_level_volume_overflow_saturates_without_panicking() {
+        let mut level = PriceLevel::new();
+        level.add_order(Order {
+            order_id: 1,
+            user_id: 1,
+            price: 100,
+            size: u64::MAX,
+            original_size: u64::MAX,
+            side: Side::Bid,
+            time_in_force: TimeInForce::Gtc,
+            status: Status::Placed,
+            timestamp: 0,
+        });
+        level.add_order(Order {
+            order_id: 2,
+            user_id: 2,
+            price: 100,
+            size: 1,
+            original_size: 1,
+            side: Side::Bid,
+            time_in_force: TimeInForce::Gtc,
+            status: Status::Placed,
+            timestamp: 0,
+        });
+
+        assert_eq!(level.get_total_volume(), u64::MAX);
+        assert_eq!(level.get_order_count(), 2);
+    }
+
+    #[test]
+    fn price_level_volume_underflow_saturates_without_panicking() {
+        let mut level = PriceLevel::new();
+        level.orders.push_back(Order {
+            order_id: 1,
+            user_id: 1,
+            price: 100,
+            size: 1,
+            original_size: 1,
+            side: Side::Bid,
+            time_in_force: TimeInForce::Gtc,
+            status: Status::Placed,
+            timestamp: 0,
+        });
+
+        // PR #148 makes remove_order owner-checked; these volume tests must claim the owner.
+        let mut command = OrderCommand {
+            user_id: 1,
+            ..Default::default()
+        };
+        level.remove_order(1, &mut command);
+
+        assert_eq!(level.get_total_volume(), 0);
+        assert_eq!(level.get_order_count(), 0);
+        assert_eq!(command.status, Status::Cancelled);
+    }
+
+    #[test]
+    fn record_snapshot_preserves_contents_without_unused_allocations() {
+        let (mut book, price_cache) = create_test_orderbook();
+        let mut bid = create_order_command(
+            OrderCommandType::PlaceOrder,
+            1,
+            100,
+            101,
+            10,
+            99,
+            25,
+            Side::Bid,
+            TimeInForce::Gtc,
+        );
+        book.place_order(&mut bid, Arc::clone(&price_cache));
+
+        let mut ask = create_order_command(
+            OrderCommandType::PlaceOrder,
+            2,
+            101,
+            102,
+            10,
+            101,
+            40,
+            Side::Ask,
+            TimeInForce::Gtc,
+        );
+        book.place_order(&mut ask, price_cache);
+
+        let snapshot = ask.l2_data.as_ref().unwrap();
+        assert_eq!(snapshot.bid_prices, [99]);
+        assert_eq!(snapshot.bid_volumes, [25]);
+        assert_eq!(snapshot.ask_prices, [101]);
+        assert_eq!(snapshot.ask_volumes, [40]);
+        assert!(snapshot.bid_orders.is_empty());
+        assert!(snapshot.ask_orders.is_empty());
+        assert_eq!(snapshot.bid_orders.capacity(), 0);
+        assert_eq!(snapshot.ask_orders.capacity(), 0);
+        assert_eq!(snapshot.reference_seq, 0);
+        assert_ne!(snapshot.timestamp, 0);
     }
 
     #[test]
@@ -2247,7 +2390,7 @@ mod test {
         let bid_levels: Vec<(u64, u64)> = book
             .bids
             .iter()
-            .map(|(price, level)| (price, level.total_volume))
+            .map(|(price, level)| (price, level.get_total_volume()))
             .collect();
         assert_eq!(bid_levels, expected_bids, "Bid levels don't match");
 
@@ -2255,7 +2398,7 @@ mod test {
         let ask_levels: Vec<(u64, u64)> = book
             .asks
             .iter()
-            .map(|(price, level)| (price, level.total_volume))
+            .map(|(price, level)| (price, level.get_total_volume()))
             .collect();
         assert_eq!(ask_levels, expected_asks, "Ask levels don't match");
     }
