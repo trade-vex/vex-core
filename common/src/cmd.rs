@@ -9,6 +9,8 @@ use sbe_order::{ReadBuf, SBE_SCHEMA_ID, SbeResult, WriteBuf};
 use serde::de::Error;
 use serde::de::value::Error as SerdeError;
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::ops::{Deref, DerefMut};
 
 // Size of the serialized OrderCommand in bytes
 // Header: 8 bytes
@@ -81,7 +83,7 @@ pub struct OrderCommand {
     pub status: Status,
 
     /// Passive order linked list
-    pub events: Option<Box<MatcherTradeEvent>>,
+    pub events: Option<MatcherTradeEventChain>,
 
     /// Final balance of the user/maker after this trade
     /// For Deposit/Withdraw commands, only balance[0] is used to represent the asset balance change
@@ -248,7 +250,7 @@ impl OrderCommand {
     }
 
     pub fn events_mut(&mut self) -> Option<&mut MatcherTradeEvent> {
-        self.events.as_mut().map(|e| e.as_mut())
+        self.events.as_deref_mut()
     }
 
     pub fn set_size(&mut self, size: u64) {
@@ -268,13 +270,10 @@ impl OrderCommand {
     }
 
     pub fn attach_event(&mut self, event: Box<MatcherTradeEvent>) {
-        if let Some(mut tail) = self.events.as_mut() {
-            while tail.next_event.is_some() {
-                tail = tail.next_event.as_mut().unwrap();
-            }
-            tail.next_event = Some(event);
+        if let Some(events) = self.events.as_mut() {
+            events.push(event);
         } else {
-            self.events = Some(event);
+            self.events = Some(MatcherTradeEventChain::new(event));
         }
     }
 
@@ -356,6 +355,75 @@ impl Drop for MatcherTradeEvent {
         while let Some(mut event) = next {
             next = event.next_event.take();
         }
+    }
+}
+
+pub struct MatcherTradeEventChain {
+    head: Box<MatcherTradeEvent>,
+    tail: usize,
+}
+
+impl MatcherTradeEventChain {
+    fn new(mut event: Box<MatcherTradeEvent>) -> Self {
+        let tail = Self::find_tail(&mut event);
+        let tail = (tail as *mut MatcherTradeEvent) as usize;
+        Self { head: event, tail }
+    }
+
+    fn push(&mut self, mut event: Box<MatcherTradeEvent>) {
+        if self.tail == 0 {
+            let tail = Self::find_tail(&mut self.head);
+            self.tail = (tail as *mut MatcherTradeEvent) as usize;
+        }
+        let next_tail = Self::find_tail(&mut event);
+        let next_tail = (next_tail as *mut MatcherTradeEvent) as usize;
+
+        // SAFETY: `tail` points into the linked list owned by `head`. Nodes are heap allocated,
+        // so moving the chain does not move them, and mutation requires exclusive access here.
+        unsafe {
+            (*(self.tail as *mut MatcherTradeEvent)).next_event = Some(event);
+        }
+        self.tail = next_tail;
+    }
+
+    fn find_tail(mut event: &mut MatcherTradeEvent) -> &mut MatcherTradeEvent {
+        loop {
+            if event.next_event.is_none() {
+                return event;
+            }
+            event = event.next_event.as_deref_mut().unwrap();
+        }
+    }
+}
+
+impl Clone for MatcherTradeEventChain {
+    fn clone(&self) -> Self {
+        let mut head = self.head.clone();
+        let tail = Self::find_tail(&mut head);
+        let tail = (tail as *mut MatcherTradeEvent) as usize;
+        Self { head, tail }
+    }
+}
+
+impl fmt::Debug for MatcherTradeEventChain {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.head.fmt(formatter)
+    }
+}
+
+impl Deref for MatcherTradeEventChain {
+    type Target = MatcherTradeEvent;
+
+    fn deref(&self) -> &Self::Target {
+        &self.head
+    }
+}
+
+impl DerefMut for MatcherTradeEventChain {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // The caller can change `next_event`, so force the next append to rebuild the tail.
+        self.tail = 0;
+        &mut self.head
     }
 }
 
@@ -504,5 +572,130 @@ mod tests {
 
             assert!(decode_order_command(&buf).is_err());
         }
+    }
+
+    use super::{MatcherTradeEvent, OrderCommand};
+
+    fn event_chain(matched_order_ids: &[u64]) -> Box<MatcherTradeEvent> {
+        let mut next_event = None;
+        for &matched_order_id in matched_order_ids.iter().rev() {
+            next_event = Some(Box::new({
+                // MatcherTradeEvent implements Drop (PR #179): no functional update.
+                let mut e = MatcherTradeEvent::default();
+                e.matched_order_id = matched_order_id;
+                e.next_event = next_event;
+                e
+            }));
+        }
+        next_event.unwrap()
+    }
+
+    fn matched_order_ids(command: &OrderCommand) -> Vec<u64> {
+        let mut matched_order_ids = Vec::new();
+        let mut current = command.events();
+        while let Some(event) = current {
+            matched_order_ids.push(event.matched_order_id);
+            current = event.next_event.as_deref();
+        }
+        matched_order_ids
+    }
+
+    #[test]
+    fn attach_event_preserves_order_for_many_fills() {
+        let mut command = OrderCommand::default();
+
+        for matched_order_id in 1..=500 {
+            command.attach_event(Box::new({
+                // MatcherTradeEvent implements Drop (PR #179): no functional update.
+                let mut e = MatcherTradeEvent::default();
+                e.matched_order_id = matched_order_id;
+                e.size = matched_order_id;
+                e
+            }));
+        }
+
+        let mut current = command.events();
+        let mut expected_order_id = 1;
+        while let Some(event) = current {
+            assert_eq!(event.matched_order_id, expected_order_id);
+            assert_eq!(event.size, expected_order_id);
+            expected_order_id += 1;
+            current = event.next_event.as_deref();
+        }
+
+        assert_eq!(expected_order_id, 501);
+
+        let mut cloned = command.clone();
+        cloned.attach_event(Box::new({
+            // MatcherTradeEvent implements Drop (PR #179): no functional update.
+            let mut e = MatcherTradeEvent::default();
+            e.matched_order_id = 501;
+            e.size = 501;
+            e
+        }));
+        assert_eq!(cloned.events().unwrap().calc_filled_size(), 125_751);
+        assert_eq!(command.events().unwrap().calc_filled_size(), 125_250);
+    }
+
+    #[test]
+    fn attach_event_rebuilds_tail_after_mutating_the_chain() {
+        let mut command = OrderCommand::default();
+        for matched_order_id in 1..=3 {
+            command.attach_event(Box::new({
+                // MatcherTradeEvent implements Drop (PR #179): no functional update.
+                let mut e = MatcherTradeEvent::default();
+                e.matched_order_id = matched_order_id;
+                e
+            }));
+        }
+
+        command.events_mut().unwrap().next_event = None;
+        command.attach_event(Box::new({
+            // MatcherTradeEvent implements Drop (PR #179): no functional update.
+            let mut e = MatcherTradeEvent::default();
+            e.matched_order_id = 4;
+            e
+        }));
+
+        let head = command.events().unwrap();
+        assert_eq!(head.matched_order_id, 1);
+        assert_eq!(head.next_event.as_deref().unwrap().matched_order_id, 4);
+        assert!(head.next_event.as_deref().unwrap().next_event.is_none());
+    }
+
+    #[test]
+    fn attach_event_preserves_prelinked_nodes_and_length() {
+        let mut command = OrderCommand::default();
+        command.attach_event(event_chain(&[1]));
+        command.attach_event(event_chain(&[2, 3]));
+        command.attach_event(event_chain(&[4]));
+
+        let matched_order_ids = matched_order_ids(&command);
+        assert_eq!(matched_order_ids, [1, 2, 3, 4]);
+        assert_eq!(matched_order_ids.len(), 4);
+    }
+
+    #[test]
+    fn attach_event_preserves_order_across_prelinked_chains() {
+        let mut command = OrderCommand::default();
+        command.attach_event(event_chain(&[1, 2]));
+        command.attach_event(event_chain(&[3, 4, 5]));
+        command.attach_event(event_chain(&[6, 7]));
+
+        let matched_order_ids = matched_order_ids(&command);
+        assert_eq!(matched_order_ids, [1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(matched_order_ids.len(), 7);
+    }
+
+    #[test]
+    fn attach_event_recomputes_actual_tail_after_mutable_access() {
+        let mut command = OrderCommand::default();
+        command.attach_event(event_chain(&[1, 2]));
+
+        let _ = command.events_mut();
+        command.attach_event(event_chain(&[3, 4]));
+        command.attach_event(event_chain(&[5]));
+
+        assert_eq!(matched_order_ids(&command), [1, 2, 3, 4, 5]);
     }
 }

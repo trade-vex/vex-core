@@ -17,7 +17,7 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
             Ok(mut order_command) => {
                 order_command.status = Status::Processing;
                 order_command.route_gateway_id = self.gateway_id;
-                info!(
+                debug!(
                     target: "order_command",
                     gateway_id = self.gateway_id,
                     client_order_id = ?order_command,
