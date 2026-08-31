@@ -31,7 +31,7 @@ tracing = { workspace = true }
 disruptor = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-ctrlc = "3.4"
+ctrlc = { version = "3.4", features = ["termination"] }
 tikv-jemallocator = { workspace = true }
 # Reads back the events the core publishes: the same Kafka client, protobuf types and
 # Schema Registry framing as the processors crate that writes them.
