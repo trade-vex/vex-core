@@ -3649,4 +3649,98 @@ mod test {
         assert_eq!(snapshot.ask_prices[2], 103);
         assert_eq!(snapshot.ask_volumes[2], 35);
     }
+
+    #[test]
+    fn test_order_cancellation_rejects_non_owner_without_modifying_book() {
+        let (mut book, price_cache) = create_test_orderbook();
+
+        let mut place_cmd = create_order_command(
+            OrderCommandType::PlaceOrder,
+            1,
+            100,
+            1001,
+            1,
+            50,
+            100,
+            Side::Bid,
+            TimeInForce::Gtc,
+        );
+        book.place_order(&mut place_cmd, price_cache.clone());
+
+        let mut unauthorized_cancel = create_order_command(
+            OrderCommandType::CancelOrder,
+            1,
+            101,
+            2002,
+            1,
+            0,
+            0,
+            Side::Bid,
+            TimeInForce::Gtc,
+        );
+        book.cancel_order(&mut unauthorized_cancel, price_cache.clone());
+
+        assert_eq!(unauthorized_cancel.status(), Status::Rejected);
+        assert_eq!(book.get_volume_at_price(50, Side::Bid), 100);
+        assert_eq!(book.total_order_count(), 1);
+        assert!(book.verify_state().is_ok());
+
+        let mut owner_cancel = create_order_command(
+            OrderCommandType::CancelOrder,
+            1,
+            102,
+            1001,
+            1,
+            0,
+            0,
+            Side::Bid,
+            TimeInForce::Gtc,
+        );
+        book.cancel_order(&mut owner_cancel, price_cache.clone());
+
+        assert_eq!(owner_cancel.status(), Status::Cancelled);
+        assert_eq!(book.total_order_count(), 0);
+        assert_eq!(book.best_bid(), None);
+        assert!(book.verify_state().is_ok());
+    }
+
+    #[test]
+    fn test_order_cancellation_by_owner_still_succeeds() {
+        let (mut book, price_cache) = create_test_orderbook();
+
+        let mut place_cmd = create_order_command(
+            OrderCommandType::PlaceOrder,
+            2,
+            200,
+            3003,
+            1,
+            75,
+            125,
+            Side::Ask,
+            TimeInForce::Gtc,
+        );
+        book.place_order(&mut place_cmd, price_cache.clone());
+
+        let mut cancel_cmd = create_order_command(
+            OrderCommandType::CancelOrder,
+            2,
+            201,
+            3003,
+            1,
+            0,
+            0,
+            Side::Ask,
+            TimeInForce::Gtc,
+        );
+        book.cancel_order(&mut cancel_cmd, price_cache.clone());
+
+        assert_eq!(cancel_cmd.status(), Status::Cancelled);
+        assert_eq!(cancel_cmd.user_id, 3003);
+        assert_eq!(cancel_cmd.price, 75);
+        assert_eq!(cancel_cmd.size, 125);
+        assert_eq!(cancel_cmd.side, Side::Ask);
+        assert_eq!(book.total_order_count(), 0);
+        assert_eq!(book.best_ask(), None);
+        assert!(book.verify_state().is_ok());
+    }
 }

@@ -362,7 +362,7 @@ async fn cancel_resting_bid_section(ctx: &mut TestContext) -> TestResult<()> {
     }
 
     // Cancel the order
-    let cancel_cmd = OrderBuilder::cancel()
+    let cancel_cmd = OrderBuilder::cancel(users::ALICE)
         .order_id(order_id)
         .side(Side::Bid)
         .market_id(market_id)
@@ -461,7 +461,7 @@ async fn cancel_resting_ask_section(ctx: &mut TestContext) -> TestResult<()> {
     }
 
     // Cancel the order
-    let cancel_cmd = OrderBuilder::cancel()
+    let cancel_cmd = OrderBuilder::cancel(users::BOB)
         .order_id(order_id)
         .side(Side::Ask)
         .market_id(market_id)
@@ -620,7 +620,7 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
     }
 
     // Cancel Charlie's remaining order
-    let cancel_cmd = OrderBuilder::cancel()
+    let cancel_cmd = OrderBuilder::cancel(users::CHARLIE)
         .order_id(charlie_order_id)
         .side(Side::Bid)
         .market_id(market_id)
@@ -674,7 +674,7 @@ async fn cancel_nonexistent_order_section(ctx: &mut TestContext) -> TestResult<(
     let fake_order_id = 999999;
 
     // Try to cancel non-existent order
-    let cancel_cmd = OrderBuilder::cancel()
+    let cancel_cmd = OrderBuilder::cancel(users::ALICE)
         .order_id(fake_order_id)
         .side(Side::Bid)
         .market_id(market_id)
@@ -760,7 +760,7 @@ async fn cancel_filled_order_section(ctx: &mut TestContext) -> TestResult<()> {
     }
 
     // Try to cancel Bob's already filled order
-    let cancel_cmd = OrderBuilder::cancel()
+    let cancel_cmd = OrderBuilder::cancel(users::BOB)
         .order_id(bob_order_id)
         .side(Side::Ask)
         .market_id(market_id)
@@ -832,7 +832,7 @@ async fn cancel_and_replace_section(ctx: &mut TestContext) -> TestResult<()> {
     }
 
     // Cancel first order
-    let cancel_cmd = OrderBuilder::cancel()
+    let cancel_cmd = OrderBuilder::cancel(users::ALICE)
         .order_id(order_id1)
         .side(Side::Bid)
         .market_id(market_id)
@@ -983,7 +983,7 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
     }
 
     // Cancel order 1
-    let cancel1 = OrderBuilder::cancel()
+    let cancel1 = OrderBuilder::cancel(users::BOB)
         .order_id(order_id1)
         .side(Side::Ask)
         .market_id(market_id)
@@ -994,7 +994,7 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     // Cancel order 2
-    let cancel2 = OrderBuilder::cancel()
+    let cancel2 = OrderBuilder::cancel(users::BOB)
         .order_id(order_id2)
         .side(Side::Ask)
         .market_id(market_id)
@@ -1005,7 +1005,7 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     // Cancel order 3
-    let cancel3 = OrderBuilder::cancel()
+    let cancel3 = OrderBuilder::cancel(users::BOB)
         .order_id(order_id3)
         .side(Side::Ask)
         .market_id(market_id)
