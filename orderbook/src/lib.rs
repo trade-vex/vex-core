@@ -45,12 +45,40 @@ use std::{
     sync::Arc,
 };
 
+macro_rules! error {
+    (
+        event = $event:literal,
+        price_level = $price_level:expr,
+        existing_total = $existing_total:expr,
+        $operand:ident = $amount:expr,
+        $message:literal
+    ) => {
+        eprintln!(
+            concat!(
+                "level=error event=",
+                $event,
+                " price_level={} existing_total={} ",
+                stringify!($operand),
+                "={} message=\"",
+                $message,
+                "\""
+            ),
+            $price_level, $existing_total, $amount
+        );
+    };
+}
+
 pub mod tree;
 mod unit_tests;
 
 #[derive(Debug, Clone)]
 pub struct PriceLevel {
-    total_volume: u64,
+    /// Exact aggregate resting size at this level.
+    ///
+    /// Held as `u128` so add/subtract are always exact: saturating in `u64` lost the excess
+    /// permanently, so a later cancel could drive a level with live orders to a published depth
+    /// of zero (finding C9-2). Only the L2 snapshot clamps, at the point of export.
+    total_volume: u128,
     orders: VecDeque<Order>,
 }
 
@@ -64,7 +92,7 @@ impl PriceLevel {
 
     #[inline]
     fn add_order(&mut self, order: Order) {
-        self.total_volume += order.size;
+        self.total_volume += order.size as u128;
         self.orders.push_back(order);
     }
 
@@ -81,7 +109,17 @@ impl PriceLevel {
             }
 
             if let Some(removed_order) = self.orders.remove(pos) {
-                self.total_volume -= removed_order.size;
+                let existing_total = self.total_volume;
+                self.total_volume = existing_total.saturating_sub(removed_order.size as u128);
+                if existing_total < removed_order.size as u128 {
+                    error!(
+                        event = "price_level_volume_underflow",
+                        price_level = removed_order.price,
+                        existing_total = existing_total,
+                        subtrahend = removed_order.size,
+                        "price level total volume underflowed; saturated at zero"
+                    );
+                }
                 cmd.set_price(removed_order.price);
                 cmd.set_size(removed_order.size);
                 cmd.set_user_id(removed_order.user_id);
@@ -97,8 +135,10 @@ impl PriceLevel {
     }
 
     /// Get the total volume at this price level
+    /// Aggregate resting size, clamped for export. The internal accumulator is exact `u128`;
+    /// clamping happens only here, so book arithmetic never loses the excess (finding C9-2).
     pub fn get_total_volume(&self) -> u64 {
-        self.total_volume
+        u64::try_from(self.total_volume).unwrap_or(u64::MAX)
     }
 
     /// Get the number of orders at this price level
@@ -174,7 +214,17 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 // Update sizes
                 remaining_size -= trade_size;
                 maker_order.size -= trade_size;
-                level.total_volume -= trade_size;
+                let existing_total = level.total_volume;
+                level.total_volume = existing_total.saturating_sub(trade_size as u128);
+                if existing_total < trade_size as u128 {
+                    error!(
+                        event = "price_level_volume_underflow",
+                        price_level = price,
+                        existing_total = existing_total,
+                        subtrahend = trade_size,
+                        "price level total volume underflowed; saturated at zero"
+                    );
+                }
 
                 let maker_order_completed = maker_order.size == 0;
 
@@ -465,7 +515,16 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
 
     /// Create a snapshot of the orderbook data with specified depth
     pub fn record_snapshot(&self, cmd: &mut OrderCommand) {
-        let mut l2_data = L2MarketData::new();
+        let mut l2_data = L2MarketData {
+            ask_prices: Vec::with_capacity(L2SIZE),
+            ask_volumes: Vec::with_capacity(L2SIZE),
+            ask_orders: Vec::new(),
+            bid_prices: Vec::with_capacity(L2SIZE),
+            bid_volumes: Vec::with_capacity(L2SIZE),
+            bid_orders: Vec::new(),
+            timestamp: 0,
+            reference_seq: 0,
+        };
 
         // Fill bid levels (highest price first)
         for (price, level) in self.get_bids().take(L2SIZE) {
@@ -482,8 +541,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
         // Set timestamp
         l2_data.timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
+            .map_or(0, |elapsed| elapsed.as_nanos() as u64);
 
         cmd.l2_data = Some(l2_data);
     }
