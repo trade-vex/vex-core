@@ -214,6 +214,20 @@ impl SymbolSpecificationConfig {
             }
 
             // Validate fees
+            if spec.taker_fee >= 10000 {
+                return Err(ConfigError::ValidationError(format!(
+                    "Symbol {}: taker_fee ({}) must be less than 10000 basis points",
+                    market_id, spec.taker_fee
+                )));
+            }
+
+            if spec.maker_fee >= 10000 {
+                return Err(ConfigError::ValidationError(format!(
+                    "Symbol {}: maker_fee ({}) must be less than 10000 basis points",
+                    market_id, spec.maker_fee
+                )));
+            }
+
             if spec.taker_fee < spec.maker_fee {
                 return Err(ConfigError::ValidationError(format!(
                     "Symbol {}: taker_fee ({}) should be >= maker_fee ({})",
@@ -371,5 +385,21 @@ mod tests {
 
         let config = SymbolSpecificationConfig { symbols };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validation_rejects_fee_at_100_percent() {
+        let mut config = SymbolSpecificationConfig::development_defaults();
+        let spec = config.symbols.values_mut().next().unwrap();
+        let market_id = spec.market_id;
+        spec.taker_fee = 10000;
+
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::ValidationError(message))
+                if message == format!(
+                    "Symbol {market_id}: taker_fee (10000) must be less than 10000 basis points"
+                )
+        ));
     }
 }
