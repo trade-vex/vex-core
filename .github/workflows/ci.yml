@@ -230,9 +230,13 @@ jobs:
           export BUILDX_CACHE_FROM="type=local,src=/tmp/.buildx-cache"
           export BUILDX_CACHE_TO="type=local,dest=/tmp/.buildx-cache-new,mode=max"
 
-          docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml up media-driver --build
+          # Export the media driver BEFORE anything runs it. The exporter mounts ./bin
+          # and copies aeronmd into it, which is the same file the integration run
+          # executes; doing this afterwards fails with ETXTBSY and takes vex-server down
+          # with it through service_completed_successfully.
+          docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml run --rm --build --no-deps media-driver
           # Build with plain progress to see full compilation output
-          docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml build --progress=plain
+          docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml --progress plain build vex-server vex-client
 
       - name: Run xtask unit tests
         run: cargo test --package xtask --lib
@@ -244,6 +248,12 @@ jobs:
         run: cargo xtask test integration --fail-fast
         env:
           VEX_ENV: dev
+
+      - name: Show failed test infrastructure
+        if: failure()
+        run: |
+          docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml ps -a
+          docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml logs --no-color
 
       # Temp fix for cache growth - https://github.com/docker/build-push-action/issues/252
       - name: Move cache
