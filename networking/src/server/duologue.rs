@@ -1,4 +1,5 @@
 use crate::server::cmd_handler::FragmentHandler;
+use crate::server::gateway_manager::GatewaySessionEvent;
 use common::OrderCommand;
 use disruptor::{MultiProducer, SingleConsumerBarrier};
 use rusteron_archive::{
@@ -99,6 +100,7 @@ impl Drop for Duologue {
 pub struct DuologueImageAvailable {
     pub expected_session_id: i32,
     pub gateway_id: u8,
+    pub tx: Sender<GatewaySessionEvent>,
 }
 
 impl AeronAvailableImageCallback for DuologueImageAvailable {
@@ -139,6 +141,17 @@ impl AeronAvailableImageCallback for DuologueImageAvailable {
                 session = format_args!("{:#x}", session_id),
                 address = %address
             );
+            if let Err(e) = self.tx.send(GatewaySessionEvent::ImageAvailable {
+                gateway_id: self.gateway_id,
+                session_id,
+            }) {
+                error!(
+                    target: "gateway_manager",
+                    action = "image_available_notification_failed",
+                    gateway_id = self.gateway_id,
+                    error = %e
+                );
+            }
         }
     }
 }
@@ -146,7 +159,7 @@ impl AeronAvailableImageCallback for DuologueImageAvailable {
 pub struct DuologueImageUnavailable {
     pub session_id: i32,
     pub gateway_id: u8,
-    pub tx: Sender<u8>,
+    pub tx: Sender<GatewaySessionEvent>,
 }
 
 impl AeronUnavailableImageCallback for DuologueImageUnavailable {
@@ -162,7 +175,10 @@ impl AeronUnavailableImageCallback for DuologueImageUnavailable {
             session = format_args!("{:#x}", self.session_id)
         );
 
-        if let Err(e) = self.tx.send(self.gateway_id) {
+        if let Err(e) = self.tx.send(GatewaySessionEvent::ImageUnavailable {
+            gateway_id: self.gateway_id,
+            session_id: self.session_id,
+        }) {
             error!(
                 target: "gateway_manager",
                 action = "core_publication_cleanup_request_failed",
