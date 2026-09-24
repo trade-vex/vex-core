@@ -40,7 +40,7 @@ mod test {
             expected_volume: u64,
             expected_order_count: usize,
         ) {
-            let (book_side, order_map): (&dyn BookSide, &HashMap<u64, u64>) = match side {
+            let (book_side, order_map): (&dyn BookSide, &HashMap<u64, (u64, Side)>) = match side {
                 Side::Bid => (&self.bids, &self.orders),
                 Side::Ask => (&self.asks, &self.orders),
             };
@@ -84,7 +84,7 @@ mod test {
                 for order in &level.orders {
                     assert_eq!(
                         order_map.get(&order.order_id),
-                        Some(&price),
+                        Some(&(price, side)),
                         "Order map out of sync for order_id {}",
                         order.order_id
                     );
@@ -99,25 +99,16 @@ mod test {
         /// Get the best bid price and volume
         pub fn verify_state(&mut self) -> Result<(), String> {
             // Check that each order referenced in self.orders exists in one of the sides
-            for (order_id, price) in &self.orders {
-                let mut found = false;
-
-                if let Some(level) = self.bids.get_level_mut(*price)
-                    && level.orders.iter().any(|o| o.order_id == *order_id)
-                {
-                    found = true;
+            for (order_id, &(price, side)) in &self.orders {
+                let found = match side {
+                    Side::Bid => self.bids.get_level_mut(price),
+                    Side::Ask => self.asks.get_level_mut(price),
                 }
-
-                if !found
-                    && let Some(level) = self.asks.get_level_mut(*price)
-                    && level.orders.iter().any(|o| o.order_id == *order_id)
-                {
-                    found = true;
-                }
+                .is_some_and(|level| level.orders.iter().any(|o| o.order_id == *order_id));
 
                 if !found {
                     return Err(format!(
-                        "Order {order_id} at price {price} not found on either side"
+                        "Order {order_id} at price {price} not found on {side:?} side"
                     ));
                 }
             }
@@ -187,19 +178,12 @@ mod test {
 
         /// Get order by ID (for testing)
         pub fn get_order(&mut self, order_id: u64) -> Option<&Order> {
-            // Check bids first
-            if let Some(price) = self.orders.get(&order_id) {
-                if *price <= self.bids.best_price()
-                    && let Some(level) = self.bids.get_level_mut(*price)
-                {
-                    return level.orders.iter().find(|o| o.order_id == order_id);
-                } else if let Some(price) = self.orders.get(&order_id)
-                    && let Some(level) = self.asks.get_level_mut(*price)
-                {
-                    return level.orders.iter().find(|o| o.order_id == order_id);
-                }
-            }
-            None
+            let &(price, side) = self.orders.get(&order_id)?;
+            let level = match side {
+                Side::Bid => self.bids.get_level_mut(price),
+                Side::Ask => self.asks.get_level_mut(price),
+            }?;
+            level.orders.iter().find(|o| o.order_id == order_id)
         }
     }
 
@@ -982,6 +966,114 @@ mod test {
         assert_eq!(book.total_order_count(), 0);
         assert_eq!(book.best_bid(), None);
         assert!(book.verify_state().is_ok());
+    }
+
+    #[test]
+    fn test_cancel_orders_on_both_sides_at_same_price() {
+        let (mut book, price_cache) = create_test_orderbook();
+
+        let mut bid = create_order_command(
+            OrderCommandType::PlaceOrder,
+            1,
+            100,
+            1001,
+            1,
+            1000,
+            10,
+            Side::Bid,
+            TimeInForce::Gtc,
+        );
+        book.place_order(&mut bid, price_cache.clone());
+
+        let mut ask = create_order_command(
+            OrderCommandType::PlaceOrder,
+            2,
+            101,
+            1001,
+            1,
+            1000,
+            10,
+            Side::Ask,
+            TimeInForce::Gtc,
+        );
+        book.place_order(&mut ask, price_cache.clone());
+
+        assert_eq!(book.get_level_order_count(Side::Bid, 1000), 1);
+        assert_eq!(book.get_level_order_count(Side::Ask, 1000), 1);
+
+        let mut cancel_ask = create_order_command(
+            OrderCommandType::CancelOrder,
+            ask.order_id,
+            102,
+            ask.user_id,
+            1,
+            0,
+            0,
+            Side::Bid,
+            TimeInForce::Gtc,
+        );
+        book.cancel_order(&mut cancel_ask, price_cache.clone());
+
+        assert_eq!(cancel_ask.status(), Status::Cancelled);
+        assert_eq!(cancel_ask.side, Side::Ask);
+        assert_eq!(book.get_level_order_count(Side::Ask, 1000), 0);
+        assert_eq!(book.get_level_order_count(Side::Bid, 1000), 1);
+
+        let mut cancel_bid = create_order_command(
+            OrderCommandType::CancelOrder,
+            bid.order_id,
+            103,
+            bid.user_id,
+            1,
+            0,
+            0,
+            Side::Ask,
+            TimeInForce::Gtc,
+        );
+        book.cancel_order(&mut cancel_bid, price_cache.clone());
+
+        assert_eq!(cancel_bid.status(), Status::Cancelled);
+        assert_eq!(cancel_bid.side, Side::Bid);
+        assert_eq!(book.total_order_count(), 0);
+        assert!(book.orders.is_empty());
+        assert!(book.verify_state().is_ok());
+    }
+
+    #[test]
+    fn test_cancel_orders_on_single_sided_books() {
+        for (order_id, side) in [(1, Side::Bid), (2, Side::Ask)] {
+            let (mut book, price_cache) = create_test_orderbook();
+            let mut order = create_order_command(
+                OrderCommandType::PlaceOrder,
+                order_id,
+                100,
+                1001,
+                1,
+                1000,
+                10,
+                side,
+                TimeInForce::Gtc,
+            );
+            book.place_order(&mut order, price_cache.clone());
+
+            let mut cancel = create_order_command(
+                OrderCommandType::CancelOrder,
+                order_id,
+                101,
+                order.user_id,
+                1,
+                0,
+                0,
+                side,
+                TimeInForce::Gtc,
+            );
+            book.cancel_order(&mut cancel, price_cache);
+
+            assert_eq!(cancel.status(), Status::Cancelled);
+            assert_eq!(book.get_level_order_count(side, 1000), 0);
+            assert!(book.orders.is_empty());
+            assert!(book.verify_state().is_ok());
+        }
     }
 
     #[test]
@@ -2886,7 +2978,10 @@ mod test {
         assert_eq!(buy_cmd.status(), Status::Placed);
         assert!(buy_cmd.events().is_none());
         book.assert_level_state(Side::Bid, 99_000, 10, 1);
-        assert_eq!(book.orders.get(&buy_cmd.order_id), Some(&99_000));
+        assert_eq!(
+            book.orders.get(&buy_cmd.order_id),
+            Some(&(99_000, Side::Bid))
+        );
 
         let mut sell_cmd =
             harness.create_place_order_cmd(202, Side::Ask, 101_000, 5, TimeInForce::Gtc);
@@ -2895,7 +2990,10 @@ mod test {
         assert_eq!(sell_cmd.status(), Status::Placed);
         assert!(sell_cmd.events().is_none());
         book.assert_level_state(Side::Ask, 101_000, 5, 1);
-        assert_eq!(book.orders.get(&sell_cmd.order_id), Some(&101_000));
+        assert_eq!(
+            book.orders.get(&sell_cmd.order_id),
+            Some(&(101_000, Side::Ask))
+        );
     }
 
     #[test]
@@ -2981,7 +3079,7 @@ mod test {
 
         book.assert_level_state(Side::Ask, 100_000, 0, 0);
         book.assert_level_state(Side::Bid, 100_000, 5, 1);
-        assert_eq!(book.orders.get(&buy_order_id), Some(&100_000));
+        assert_eq!(book.orders.get(&buy_order_id), Some(&(100_000, Side::Bid)));
     }
 
     #[test]
@@ -3006,7 +3104,10 @@ mod test {
 
         book.assert_level_state(Side::Bid, 100_000, 0, 0);
         book.assert_level_state(Side::Ask, 100_000, 8, 1);
-        assert_eq!(book.orders.get(&sell_cmd.order_id), Some(&100_000));
+        assert_eq!(
+            book.orders.get(&sell_cmd.order_id),
+            Some(&(100_000, Side::Ask))
+        );
     }
 
     #[test]

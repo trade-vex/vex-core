@@ -15,8 +15,9 @@
 //!     -   **Order Queue (`VecDeque`):** Within each `PriceLevel`, a `VecDeque` stores the orders.
 //!         This acts as a FIFO (First-In, First-Out) queue, ensuring time priority for orders
 //!         at the same price.
-//!     -   **Direct Order Access (`HashMap`):** A `HashMap<u64, u64>` provides O(1) average-case
-//!         lookup time for order-price pairs by their ID. This is crucial for fast cancellation.
+//!     -   **Direct Order Access (`HashMap`):** A `HashMap<u64, (u64, Side)>` provides O(1)
+//!         average-case lookup time for order price and side by ID. This is crucial for fast
+//!         cancellation.
 //!
 //! 2.  **Performance Characteristics:** [Depends on BookSide Implementation]
 //!     [For BTreeMap-based BookSide]
@@ -68,7 +69,7 @@ impl PriceLevel {
     }
 
     #[inline]
-    fn remove_order(&mut self, order_id: u64, cmd: &mut OrderCommand) {
+    fn remove_order(&mut self, order_id: u64, cmd: &mut OrderCommand) -> bool {
         if let Ok(pos) = self
             .orders
             .binary_search_by_key(&order_id, |order| order.order_id)
@@ -81,8 +82,10 @@ impl PriceLevel {
             cmd.set_side(removed_order.side);
             cmd.set_status(Status::Cancelled);
             cmd.original_size = removed_order.original_size;
+            true
         } else {
             cmd.set_status(Status::Rejected);
+            false
         }
     }
 
@@ -105,7 +108,7 @@ pub struct OrderBook<Ask: BookSide, Bid: BookSide> {
     /// Asks are stored in a BTreeMap sorted from low to high price.
     asks: Ask,
     /// Orders for fast lookups in case of cancellations
-    orders: HashMap<u64, u64>,
+    orders: HashMap<u64, (u64, Side)>,
     /// Market ID for this order book
     market_id: u32,
 }
@@ -322,17 +325,26 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
         if cmd.status == Status::Rejected {
             return;
         }
-        if let Some(price) = self.orders.remove(&cmd.order_id) {
-            if let Some(level) = self.bids.get_level_mut(price) {
-                level.remove_order(cmd.order_id, cmd);
-                self.bids.remove_level_if_empty(price);
-                self.record_snapshot(cmd);
-            } else if let Some(level) = self.asks.get_level_mut(price) {
-                level.remove_order(cmd.order_id, cmd);
-                self.asks.remove_level_if_empty(price);
+        if let Some((price, side)) = self.orders.get(&cmd.order_id).copied() {
+            let removed = match side {
+                Side::Bid => self
+                    .bids
+                    .get_level_mut(price)
+                    .is_some_and(|level| level.remove_order(cmd.order_id, cmd)),
+                Side::Ask => self
+                    .asks
+                    .get_level_mut(price)
+                    .is_some_and(|level| level.remove_order(cmd.order_id, cmd)),
+            };
+
+            if removed {
+                self.orders.remove(&cmd.order_id);
+                match side {
+                    Side::Bid => self.bids.remove_level_if_empty(price),
+                    Side::Ask => self.asks.remove_level_if_empty(price),
+                }
                 self.record_snapshot(cmd);
             } else {
-                // this must ideally be unreachable, to avoid any undefined behaviour, we reject the order
                 cmd.set_status(Status::Rejected);
             }
         } else {
@@ -371,7 +383,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             Side::Ask => self.asks.get_or_create_level(cmd.price),
         };
         level.add_order(order);
-        self.orders.insert(cmd.order_id, cmd.price);
+        self.orders.insert(cmd.order_id, (cmd.price, cmd.side));
         true
     }
 
