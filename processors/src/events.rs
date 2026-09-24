@@ -1,4 +1,6 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use crate::journaling::ReplayControl;
 use common::L2MarketData;
@@ -11,8 +13,9 @@ use common::{base_asset, order_debug, order_info, quote_asset};
 use prost::Message;
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
-use schema_registry_converter::async_impl::easy_proto_raw::EasyProtoRawEncoder;
+use schema_registry_converter::async_impl::proto_raw::ProtoRawEncoder;
 use schema_registry_converter::async_impl::schema_registry::SrSettings;
+use schema_registry_converter::error::SRCError;
 use schema_registry_converter::schema_registry_common::{
     SchemaType, SubjectNameStrategy, SuppliedSchema,
 };
@@ -40,10 +43,55 @@ pub trait EventsHandler: Send + Sync + 'static {
     fn handle_processed_command(&self, cmd: &mut OrderCommand);
 }
 
+/// Minimum gap between schema-registry cache evictions.
+///
+/// Clearing the cache is what lets a transient registry outage recover, so it must keep happening.
+/// Bounding the RATE is what stops a permanent failure turning into a request storm.
+const SCHEMA_RETRY_BACKOFF: Duration = Duration::from_secs(5);
+
+/// Nanoseconds since process start at which the schema cache was last evicted.
+static LAST_SCHEMA_CACHE_EVICTION: AtomicU64 = AtomicU64::new(0);
+
+/// Monotonic time since first use. A monotonic source is required here: a wall-clock step would
+/// either disable the backoff or stall retries for the duration of the jump.
+fn process_uptime() -> Duration {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed()
+}
+
+fn should_retry_schema_registration(
+    error: &SRCError,
+    now: Duration,
+    last_eviction: &AtomicU64,
+) -> bool {
+    // Deliberately keyed on `cached` alone, NOT on `cached && retriable`.
+    //
+    // schema_registry_converter 4.7.0 classifies any response it cannot parse as
+    // `RawRegisteredSchema` as NON-retryable (schema_registry.rs:519) -- which includes a registry
+    // returning 503 with an HTML body. Gating eviction on `retriable` therefore pins a *transient*
+    // outage in the cache permanently, killing the topic until the process restarts: strictly
+    // worse than the storm it was meant to prevent.
+    //
+    // So evict on any cached error, but at most once per SCHEMA_RETRY_BACKOFF, which bounds a
+    // permanent failure to one registration attempt per interval instead of one per event.
+    if !error.cached {
+        return false;
+    }
+    let now_nanos = now.as_nanos() as u64;
+    let last = last_eviction.load(Ordering::Relaxed);
+    if last != 0 && now_nanos.saturating_sub(last) < SCHEMA_RETRY_BACKOFF.as_nanos() as u64 {
+        return false;
+    }
+    last_eviction
+        .compare_exchange(last, now_nanos, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+}
+
 // Real Kafka Events Handler
 pub struct KafkaEventsHandler {
     producer: FutureProducer,
-    encoder: Arc<EasyProtoRawEncoder>,
+    encoder: Arc<ProtoRawEncoder<'static>>,
+    schema: Arc<SuppliedSchema>,
     publications: Arc<Publications>,
     replay_control: ReplayControl,
     rt: Arc<Runtime>,
@@ -66,7 +114,15 @@ impl KafkaEventsHandler {
 
         // Initialize Schema Registry Encoder
         let sr_settings = SrSettings::new(schema_registry_url.to_string());
-        let encoder = Arc::new(EasyProtoRawEncoder::new(sr_settings));
+        let encoder = Arc::new(ProtoRawEncoder::new(sr_settings));
+        let schema = Arc::new(SuppliedSchema {
+            name: None,
+            schema_type: SchemaType::Protobuf,
+            schema: TRADING_SCHEMA.to_string(),
+            references: vec![],
+            properties: None,
+            tags: None,
+        });
 
         // Create a dedicated runtime for async tasks
         let rt = Arc::new(Runtime::new().expect("Failed to create tokio runtime"));
@@ -82,6 +138,7 @@ impl KafkaEventsHandler {
         Self {
             producer,
             encoder,
+            schema,
             publications,
             replay_control,
             rt,
@@ -96,6 +153,7 @@ impl KafkaEventsHandler {
         data: T,
     ) {
         let encoder = self.encoder.clone();
+        let schema = self.schema.clone();
         let producer = self.producer.clone();
         let topic = topic_name.to_string();
         let key_str = message_key.to_string();
@@ -106,34 +164,37 @@ impl KafkaEventsHandler {
             // Serialize data to bytes using Prost
             let payload_bytes = data.encode_to_vec();
 
-            // Create SuppliedSchema with the .proto content for Schema Registry
-            let supplied_schema = SuppliedSchema {
-                name: Some(full_name.clone()),
-                schema_type: SchemaType::Protobuf,
-                schema: TRADING_SCHEMA.to_string(),
-                references: vec![],
-                properties: None,
-                tags: None,
-            };
-
             // Encode with schema registration (magic byte + schema ID)
             // Use TopicNameStrategyWithSchema so schema is registered as "<topic>-value"
             // This ensures Kafka Connect (JDBC Sink) can find the schema
             let strategy = SubjectNameStrategy::TopicNameStrategyWithSchema(
                 topic.clone(),
                 false,
-                supplied_schema,
+                schema.as_ref().clone(),
             );
+            let subject = format!("{topic}-value");
 
             let encoded_payload = match encoder.encode(&payload_bytes, &full_name, strategy).await {
                 Ok(bytes) => bytes,
                 Err(e) => {
+                    let retry_later = should_retry_schema_registration(
+                        &e,
+                        process_uptime(),
+                        &LAST_SCHEMA_CACHE_EVICTION,
+                    );
+                    if retry_later {
+                        encoder.remove_errors_from_cache();
+                    }
                     error!(
                         target: "events",
                         component = "kafka_handler",
                         action = "protobuf_encoding_failed",
                         topic = %topic,
-                        error = ?e
+                        subject = %subject,
+                        error = %e.error,
+                        cause = ?e.cause,
+                        retriable = e.retriable,
+                        retry_later
                     );
                     return;
                 }
@@ -695,6 +756,81 @@ mod tests {
     use common::{Side, UserBalance};
 
     const MARKET_ID: u32 = 100_000_010; // Example market_id encoding
+
+    #[test]
+    fn cached_schema_registration_failure_is_retried_later() {
+        let clock = AtomicU64::new(0);
+        let error = SRCError::retryable_with_cause("registry unavailable", "registration failed")
+            .into_cache();
+
+        assert!(should_retry_schema_registration(
+            &error,
+            Duration::from_secs(1),
+            &clock
+        ));
+    }
+
+    #[test]
+    fn uncached_encoding_failure_does_not_reset_registration() {
+        let clock = AtomicU64::new(0);
+        let error = SRCError::non_retryable_without_cause("invalid protobuf message name");
+
+        assert!(!should_retry_schema_registration(
+            &error,
+            Duration::from_secs(1),
+            &clock
+        ));
+    }
+
+    #[test]
+    fn cached_non_retriable_failure_is_still_evicted() {
+        // schema_registry_converter 4.7.0 marks any unparseable response NON-retryable, including
+        // a registry returning 503 with an HTML body. Gating eviction on `retriable` would pin
+        // that transient outage in the cache forever and kill the topic until restart -- strictly
+        // worse than the retry storm. This asserts we never make that trade (finding C7-2).
+        let clock = AtomicU64::new(0);
+        let error = SRCError::non_retryable_with_cause(
+            "could not parse to RawRegisteredSchema",
+            "http call to schema registry failed",
+        )
+        .into_cache();
+
+        assert!(
+            !error.retriable,
+            "precondition: converter marks this non-retriable"
+        );
+        assert!(
+            should_retry_schema_registration(&error, Duration::from_secs(1), &clock),
+            "a transient outage classified non-retriable must still be evicted"
+        );
+    }
+
+    #[test]
+    fn schema_cache_eviction_is_rate_bounded() {
+        // A permanent failure must cost one registration attempt per backoff interval, not one
+        // per event.
+        let clock = AtomicU64::new(0);
+        let error = SRCError::retryable_with_cause("registry unavailable", "registration failed")
+            .into_cache();
+
+        assert!(should_retry_schema_registration(
+            &error,
+            Duration::from_secs(10),
+            &clock
+        ));
+        assert!(
+            !should_retry_schema_registration(&error, Duration::from_secs(11), &clock),
+            "a second eviction inside the backoff window must be suppressed"
+        );
+        assert!(
+            should_retry_schema_registration(
+                &error,
+                Duration::from_secs(10) + SCHEMA_RETRY_BACKOFF,
+                &clock
+            ),
+            "eviction must resume once the backoff window has elapsed"
+        );
+    }
 
     #[test]
     fn test_kafka_events_handler_placed_order() {
