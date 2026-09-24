@@ -26,6 +26,14 @@ use vex_networking::server::Publications;
 use vex_networking::server::ServerError;
 use vex_networking::server::VexCoreServer;
 
+fn finish_replay(publications: &Publications, control: &ReplayControl) -> EngineResult<()> {
+    publications.drain_pipeline().map_err(|error| {
+        EngineError::ServerInitialization(format!("Replay terminal consumer failed: {error}"))
+    })?;
+    control.disable();
+    Ok(())
+}
+
 /// Type alias for the order command producer
 pub type OrderProducer = MultiProducer<OrderCommand, SingleConsumerBarrier>;
 
@@ -600,7 +608,13 @@ impl CoreEngine {
                         return Err(error);
                     }
                 };
-                replay_control.disable();
+                if let Err(error) = finish_replay(&publications, &replay_control) {
+                    // finish_replay IS the drain: if it failed, the terminal consumer is stalled
+                    // and tearing these down would run destructors underneath in-flight work.
+                    std::mem::forget(core_server);
+                    std::mem::forget(producer_guard);
+                    return Err(error);
+                }
 
                 match core_server.start() {
                     Ok(()) => Ok(()),
@@ -671,6 +685,88 @@ mod core_pinning_tests {
                 .validate_available_cores(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
                 .is_ok()
         );
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use disruptor::Producer;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn c8_2_held_terminal_keeps_replay_mode_and_recovery_preserves_journal_entries() {
+        let mut recording = vec![OrderCommand {
+            order_id: 123,
+            timestamp: 456,
+            ..OrderCommand::default()
+        }];
+        // Recover twice from the same journal. Real JournalingProcessor must preserve IDs
+        // and timestamps (and skip its archive offer) on both passes.
+        for _ in 0..2 {
+            let publications = Arc::new(Publications::new());
+            let control = ReplayControl::enabled();
+            let mut journaling =
+                JournalingProcessor::new(Arc::clone(&publications), control.clone());
+            let (journal_release, journal_gate) = mpsc::channel();
+            let (terminal_release, terminal_gate) = mpsc::channel();
+            let (entered, terminal_entered) = mpsc::channel();
+            let (seen, commands) = mpsc::channel();
+            let ack = Arc::clone(&publications);
+            let mut producer = build_multi_producer(64, OrderCommand::default, BusySpin)
+                .handle_events_with(move |cell, _, _| {
+                    journal_gate.recv().unwrap();
+                    // SAFETY: Sole consumer in the journaling barrier group.
+                    journaling.journal_command(unsafe { &mut *cell.get() });
+                })
+                .and_then()
+                .handle_events_with(move |cell, sequence, _| {
+                    entered.send(()).unwrap();
+                    terminal_gate.recv().unwrap();
+                    // SAFETY: Sole terminal consumer, all prior stages have finished.
+                    seen.send(unsafe { (&*cell.get()).clone() }).unwrap();
+                    ack.completed(sequence);
+                })
+                .build();
+            for command in &recording {
+                publications.submitted(
+                    producer
+                        .try_publish(|slot| *slot = command.clone())
+                        .unwrap(),
+                );
+            }
+            let finishing_control = control.clone();
+            let (done, completion) = mpsc::channel();
+            let finisher = thread::spawn(move || {
+                done.send(finish_replay(&publications, &finishing_control))
+                    .unwrap();
+            });
+            let before_journaling = completion.recv_timeout(Duration::from_millis(20));
+            journal_release.send(()).unwrap();
+            terminal_entered
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+            let while_terminal_held = control.is_enabled();
+            terminal_release.send(()).unwrap();
+            finisher.join().unwrap();
+            // Release gates before assertions so a regression cannot hang producer Drop.
+            assert!(matches!(
+                before_journaling,
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            completion
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .unwrap();
+            assert!(while_terminal_held);
+            assert!(!control.is_enabled());
+            let recovered = commands.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert_eq!(recovered.order_id, recording[0].order_id);
+            assert_eq!(recovered.timestamp, recording[0].timestamp);
+            assert!(commands.try_recv().is_err());
+            recording = vec![recovered];
+        }
     }
 }
 

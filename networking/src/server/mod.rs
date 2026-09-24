@@ -32,6 +32,8 @@ mod gateway_handler;
 mod gateway_manager;
 mod gateway_publications;
 mod progress;
+#[cfg(test)]
+mod recovery_tests;
 mod replay;
 
 use crate::server::cmd_handler::ReplayFragmentHandler;
@@ -40,10 +42,12 @@ use crate::server::gateway_handler::{
 };
 use crate::server::gateway_manager::GatewayManager;
 use crate::server::replay::{
-    ActiveRecordingReader, ExtendedRecordingDescriptor, RecorderDescriptorReader,
+    ExtendedRecordingDescriptor, RecorderDescriptorReader, RecordingCounter,
+    assert_replay_complete, drain_replay, ensure_replayable_recording, fail_on_replay_error,
+    is_live_recording, release_recording,
 };
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
-use common::{FRAMESIZE, OrderCommand};
+use common::OrderCommand;
 use disruptor::{MultiProducer, SingleConsumerBarrier};
 use progress::{DRAIN_TIMEOUT, finish_shutdown, wait_until};
 use rusteron_archive::bindings::AERON_NULL_COUNTER_ID;
@@ -74,6 +78,8 @@ pub const REPLAY_STREAM_ID: i32 = 2002;
 /// Channel for Aeron Recording also known as Aeron Control Channel
 const RECORDING_CHANNEL: &str = "aeron:ipc";
 const STARTUP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
+const LIVE_RECORDING_RELEASE_TIMEOUT: Duration = Duration::from_secs(10);
+const LIVE_RECORDING_RELEASE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Error types for VEX Core server operations
 #[derive(Error, Debug)]
@@ -96,6 +102,8 @@ pub enum ServerError {
     ConfigurationError(String),
     #[error("Pipeline/archive drain failed: {0}")]
     DrainError(String),
+    #[error("Replay error: {0}")]
+    ReplayError(String),
     #[error("{0} did not connect within 10 seconds")]
     StartupConnectionTimeout(&'static str),
 }
@@ -179,7 +187,13 @@ impl VexCoreServer {
 
             // Replay
             let recording = if replay {
-                Self::start_replay(&aeron, &archive, producer.clone(), Arc::clone(&shutdown))?
+                Self::start_replay(
+                    &aeron,
+                    &archive,
+                    producer.clone(),
+                    Arc::clone(&shutdown),
+                    Arc::clone(&publications),
+                )?
             } else {
                 None
             };
@@ -375,24 +389,14 @@ impl VexCoreServer {
                 Ok(())
             },
             || {
-            // Only stop recording subscription if we own it (subscription_id != Some(0))
-            // subscription_id = Some(0) means we're using an existing active recording we don't own
-            if let Some(sub_id) = self.subscription_id {
-                if sub_id != 0 {
-                    if let Some(ref archive) = self.archive {
-                        archive.stop_recording_subscription(sub_id)?;
-                    }
-                } else {
-                    info!(
-                        target: "core_server",
-                        action = "skipping_stop_recording",
-                        "Using existing active recording, not stopping it"
-                    );
+                if let Some(sub_id) = self.subscription_id
+                    && let Some(ref archive) = self.archive
+                {
+                    archive.stop_recording_subscription(sub_id)?;
                 }
-            }
-            if let Some(ref archive) = self.archive {
-                archive.close()?;
-            }
+                if let Some(ref archive) = self.archive {
+                    archive.close()?;
+                }
                 Ok(())
             },
         )?;
@@ -470,79 +474,61 @@ impl VexCoreServer {
                     &channel.clone().into_c_string(),
                     RECORDING_STREAM_ID,
                     SourceLocation::AERON_ARCHIVE_SOURCE_LOCATION_LOCAL,
-                    false,
+                    true,
                 )?,
                 channel,
             )),
             None => {
-                // Check for existing active recordings before starting a new one
-                let mut active_reader = Handler::leak(ActiveRecordingReader::new());
-                let _ = archive.list_recordings_for_uri(
-                    0,
-                    i32::MAX,
+                info!(
+                    target: "recording",
+                    action = "starting_new_recording"
+                );
+                let subscription_id = archive.start_recording(
                     &RECORDING_CHANNEL.into_c_string(),
                     RECORDING_STREAM_ID,
-                    Some(&active_reader),
+                    SourceLocation::AERON_ARCHIVE_SOURCE_LOCATION_LOCAL,
+                    true,
                 )?;
-
-                if let Some(active_record) = &active_reader.active_recording {
-                    info!(
-                        target: "recording",
-                        action = "found_active_recording",
-                        recording_id = active_record.recording_id,
-                        start_position = active_record.start_position
-                    );
-                    // For active recordings, we can't extend them, but we can get the subscription_id
-                    // by querying the archive. Since the recording is already active, we return
-                    // a dummy subscription_id (0) and the channel. The publication will connect to
-                    // the existing recording.
-                    active_reader.release();
-                    Ok((0, RECORDING_CHANNEL.to_string()))
-                } else {
-                    active_reader.release();
-                    info!(
-                        target: "recording",
-                        action = "starting_new_recording"
-                    );
-                    // Try to start recording, and if it fails with "recording exists",
-                    // find the last recording and extend it
-                    match archive.start_recording(
-                        &RECORDING_CHANNEL.into_c_string(),
-                        RECORDING_STREAM_ID,
-                        SourceLocation::AERON_ARCHIVE_SOURCE_LOCATION_LOCAL,
-                        false,
-                    ) {
-                        Ok(subscription_id) => Ok((subscription_id, RECORDING_CHANNEL.to_string())),
-                        Err(e) => {
-                            // Check if error is "recording exists"
-                            let error_msg = format!("{}", e);
-                            if error_msg.contains("recording exists") {
-                                info!(
-                                    target: "recording",
-                                    action = "recording_exists_fallback",
-                                    error = %error_msg,
-                                    "Archive reports recording exists, treating as active recording"
-                                );
-
-                                // When Archive says "recording exists", it means there's an active recording
-                                // that we can't query via list_recordings_for_uri. We'll proceed with
-                                // the assumption that an active recording exists and use it.
-                                // Return subscription_id = 0 to indicate we're using an existing active recording.
-                                // The publication will connect to the existing recording automatically.
-                                info!(
-                                    target: "recording",
-                                    action = "using_existing_active_recording",
-                                    "Proceeding with existing active recording"
-                                );
-                                Ok((0, RECORDING_CHANNEL.to_string()))
-                            } else {
-                                // Some other error, return it
-                                Err(ServerError::AeronConnectionError(e))
-                            }
-                        }
-                    }
-                }
+                Ok((subscription_id, RECORDING_CHANNEL.to_string()))
             }
+        }
+    }
+
+    fn wait_for_recording_stop(
+        archive: &AeronArchive,
+        recording_id: i64,
+    ) -> Result<i64, ServerError> {
+        let deadline = Instant::now() + LIVE_RECORDING_RELEASE_TIMEOUT;
+        loop {
+            let mut descriptor_count = 0;
+            let mut stop_position = None;
+            archive.list_recordings_for_uri_once(
+                &mut descriptor_count,
+                recording_id,
+                1,
+                &RECORDING_CHANNEL.into_c_string(),
+                RECORDING_STREAM_ID,
+                |descriptor| {
+                    if descriptor.recording_id == recording_id {
+                        stop_position = Some(descriptor.stop_position);
+                    }
+                },
+            )?;
+
+            if let Some(stop_position) = stop_position
+                && !is_live_recording(stop_position)
+            {
+                return Ok(stop_position);
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(ServerError::ReplayError(format!(
+                    "live recording {recording_id} was not released within {} seconds",
+                    LIVE_RECORDING_RELEASE_TIMEOUT.as_secs()
+                )));
+            }
+            std::thread::sleep(remaining.min(LIVE_RECORDING_RELEASE_POLL_INTERVAL));
         }
     }
 
@@ -553,9 +539,20 @@ impl VexCoreServer {
         archive: &AeronArchive,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
         shutdown: Arc<AtomicBool>,
+        publications: Arc<Publications>,
     ) -> Result<Option<ExtendedRecordingDescriptor>, ServerError> {
+        // Empty stopped recordings are skipped by the descriptor reader, but older
+        // auto_stop=false subscriptions still need cleanup before starting a new one.
+        archive.try_stop_recording_channel_and_stream(
+            &RECORDING_CHANNEL.into_c_string(),
+            RECORDING_STREAM_ID,
+        )?;
         let mut reader = Handler::leak(RecorderDescriptorReader::new());
-        let last_recording_id = archive.list_recordings_for_uri(
+        let mut recording_counter = Handler::leak(RecordingCounter);
+        let archive_recording_count =
+            archive.list_recordings(0, i32::MAX, Some(&recording_counter))?;
+        recording_counter.release();
+        let matching_recording_count = archive.list_recordings_for_uri(
             0,
             i32::MAX,
             &RECORDING_CHANNEL.into_c_string(), // aeron control request channel
@@ -565,24 +562,49 @@ impl VexCoreServer {
         info!(
             target: "replay",
             action = "recordings_listed",
-            recording_id = last_recording_id
+            archive_recording_count,
+            matching_recording_count,
+            skipped_empty = reader.skipped_empty,
+            skipped_invalid = reader.skipped_invalid
         );
+        ensure_replayable_recording(reader.skipped_invalid)?;
         if let Some(record) = &reader.last_recording {
             let session_id = record.session_id;
             let recording_id = record.recording_id;
+            let stop_position = release_recording(
+                record,
+                |channel| {
+                    archive.try_stop_recording_channel_and_stream(
+                        &channel.into_c_string(),
+                        RECORDING_STREAM_ID,
+                    )?;
+                    Ok(())
+                },
+                |id| Self::wait_for_recording_stop(archive, id),
+            )?;
             info!(
                 target: "replay",
                 action = "recording_selected",
                 recording_id,
                 session_id,
                 start_position = record.start_position,
-                stop_position = record.stop_position
+                stop_position,
+                was_live = is_live_recording(record.stop_position)
             );
+            if stop_position == record.start_position {
+                info!(
+                    target: "replay",
+                    action = "empty_recording_skipped",
+                    recording_id
+                );
+                reader.release();
+                return Ok(None);
+            }
             let params = AeronArchiveReplayParams::new(
-                0,
+                AERON_NULL_COUNTER_ID,
                 i32::MAX,
                 record.start_position,
-                record.stop_position - record.start_position,
+                stop_position - record.start_position,
                 0,
                 0,
             )?;
@@ -606,51 +628,53 @@ impl VexCoreServer {
                 channel = %replay_channel_with_session
             );
 
-            let mut h1 = Handler::leak(AeronAvailableImageLogger);
-            let mut h2 = Handler::leak(AeronUnavailableImageLogger);
             let mut message_handler = Handler::leak(ReplayFragmentHandler {
                 producer,
                 gateway_id: 0,
+                commands_published: 0,
+                replay_error: None,
+                publications: Arc::clone(&publications),
+                shutdown: Arc::clone(&shutdown),
             });
             let subscription = aeron.add_subscription(
                 &replay_channel_with_session.into_c_string(),
                 REPLAY_STREAM_ID,
-                Some(&h1),
-                Some(&h2),
+                None::<&Handler<AeronAvailableImageLogger>>,
+                None::<&Handler<AeronUnavailableImageLogger>>,
                 Duration::from_secs(5),
             )?;
 
             wait_for_startup_connection("replay subscription", || subscription.is_connected())?;
 
-            let mut position = record.start_position;
-            loop {
-                // Check shutdown condition
-                if shutdown.load(Ordering::Acquire) {
-                    break;
-                }
-
-                // Check position condition
-                if position >= record.stop_position {
-                    break;
-                }
-
-                // Poll subscription and handle Result
-                let fragments_read = subscription.poll(Some(&message_handler), 1)?;
-
-                // If zero fragments, run idle strategy and continue
-                if fragments_read == 0 {
-                    AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
-                    continue;
-                }
-
-                // Otherwise, increment position by the number of fragments processed
-                position += fragments_read as i64 * FRAMESIZE;
-                debug!(
-                    target: "replay",
-                    action = "position_advanced",
-                    position
-                );
+            let image = subscription.image_by_session_id(replay_session_id);
+            if image.get_inner().is_null() {
+                return Err(ServerError::ReplayError("replay image unavailable".into()));
             }
+            let replay_result =
+                drain_replay(record.start_position, stop_position, DRAIN_TIMEOUT, || {
+                    if shutdown.load(Ordering::Acquire) {
+                        return Err(ServerError::ReplayError("replay cancelled".into()));
+                    }
+                    let before = message_handler.commands_published;
+                    let fragments = image.poll(Some(&message_handler), 1)?;
+                    fail_on_replay_error(message_handler.replay_error.as_deref())?;
+                    assert_replay_complete(
+                        i64::from(fragments),
+                        message_handler.commands_published - before,
+                    )?;
+                    Ok((
+                        image.position(),
+                        image.is_end_of_stream() || image.is_closed(),
+                    ))
+                });
+            subscription.image_release(&image)?;
+            subscription.close::<AeronNotificationLogger>(None)?;
+            // Release the producer even on replay failure; callbacks are no longer polled.
+            message_handler.release();
+            replay_result?;
+            publications
+                .drain_pipeline()
+                .map_err(|e| ServerError::ReplayError(e.to_string()))?;
             info!(
                 target: "replay",
                 action = "completed",
@@ -659,15 +683,11 @@ impl VexCoreServer {
             );
             let extended_recording_descriptor = ExtendedRecordingDescriptor::new(
                 record.initial_term_id,
-                record.stop_position,
+                stop_position,
                 record.term_buffer_length,
                 recording_id,
             )?;
-            h1.release();
-            h2.release();
-            message_handler.release();
             reader.release();
-            subscription.close::<AeronNotificationLogger>(None)?;
             Ok(Some(extended_recording_descriptor))
         } else {
             info!(target: "replay", action = "no_recording_available");
