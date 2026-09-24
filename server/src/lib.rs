@@ -120,9 +120,16 @@ pub fn start(config: VexConfig, replay: bool) -> Result<RunningEngine, EngineErr
                     balance.amount, balance.asset_id, user_id
                 );
 
-                producer.publish(|cmd| {
-                    *cmd = OrderCommand::deposit_funds(*user_id, balance.amount, balance.asset_id);
-                });
+                let sequence = loop {
+                    if let Ok(sequence) = producer.try_publish(|cmd| {
+                        *cmd =
+                            OrderCommand::deposit_funds(*user_id, balance.amount, balance.asset_id);
+                    }) {
+                        break sequence;
+                    }
+                    std::hint::spin_loop();
+                };
+                engine.publications().submitted(sequence);
             }
         }
 
@@ -324,7 +331,10 @@ pub mod test {
 mod tests {
     use super::test::setup_tuple;
     use super::*;
-    use common::{MarketType, OrderCommand, PriceCache, Side, Status, TimeInForce, UserBalance};
+    use common::{
+        MarketType, OrderCommand, PriceCache, Side, Status, TimeInForce, UserBalance, base_asset,
+        quote_asset,
+    };
     use disruptor::Producer;
     use processors::risk_engine::RiskEngine;
     use std::sync::atomic::Ordering;
@@ -401,6 +411,47 @@ mod tests {
         );
     }
 
+    #[derive(Clone, Copy)]
+    enum ShippedScaling {
+        EthUsdt,
+        BtcUsdt,
+    }
+
+    /// Adds a market using the scale factors shipped in `vex-config/src/symbols.rs`.
+    fn add_shipped_spec(
+        scaling: ShippedScaling,
+        specs: &mut HashMap<u32, CoreMarketSpecification>,
+    ) -> u32 {
+        let (base_asset_id, market_type, base_scale_k, quote_scale_k, base_native_scale) =
+            match scaling {
+                ShippedScaling::EthUsdt => {
+                    (3, MarketType::Spot, 100_000, 10, 1_000_000_000_000_000_000)
+                }
+                ShippedScaling::BtcUsdt => (2, MarketType::FuturesContract, 1, 1, 100_000_000),
+            };
+        let quote_asset_id = 1;
+        let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
+
+        specs.insert(
+            market_id,
+            CoreMarketSpecification::builder()
+                .market_id(market_id)
+                .market_type(market_type)
+                .base_scale_k(base_scale_k)
+                .quote_scale_k(quote_scale_k)
+                .base_native_scale(base_native_scale)
+                .quote_native_scale(1_000_000)
+                // These are the committed configuration's 10 bp maker / 20 bp taker rates.
+                .maker_fee(10)
+                .taker_fee(20)
+                .slippage(5)
+                .build()
+                .unwrap(),
+        );
+
+        market_id
+    }
+
     /// Helper struct for checking user balances in tests
     pub struct BalanceChecker<'a> {
         risk_engines: &'a Arc<Vec<RiskEngine>>,
@@ -448,6 +499,404 @@ mod tests {
                 UserBalance::new(available, locked),
             );
         }
+    }
+
+    #[test]
+    fn test_quote_cost_at_shipped_eth_and_btc_scales() {
+        let mut specs = HashMap::new();
+        let eth_market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
+        let btc_market_id = add_shipped_spec(ShippedScaling::BtcUsdt, &mut specs);
+        let eth = &specs[&eth_market_id];
+        let btc = &specs[&btc_market_id];
+
+        assert_eq!(
+            (
+                eth.base_native_scale,
+                eth.quote_native_scale,
+                eth.base_scale_k,
+                eth.quote_scale_k,
+            ),
+            (1_000_000_000_000_000_000, 1_000_000, 100_000, 10)
+        );
+        assert_eq!(
+            (
+                btc.base_native_scale,
+                btc.quote_native_scale,
+                btc.base_scale_k,
+                btc.quote_scale_k,
+            ),
+            (100_000_000, 1_000_000, 1, 1)
+        );
+
+        let eth_price = 30_000; // $3,000 at the shipped quote_scale_k of 10.
+        let smallest_nonzero_eth_fill = 333_333_334;
+        assert_eq!(
+            eth.calculate_quote_cost(eth_price, smallest_nonzero_eth_fill - 1),
+            Some(0)
+        );
+        assert_eq!(
+            eth.calculate_quote_cost(eth_price, smallest_nonzero_eth_fill),
+            Some(1)
+        );
+        assert_eq!(
+            eth.calculate_quote_cost(eth_price, 1_000_000_000_000_000_000),
+            Some(3_000_000_000)
+        );
+        assert_eq!(
+            eth.calculate_quote_cost(eth_price, u64::MAX),
+            Some(55_340_232_221)
+        );
+
+        let btc_price = 60_000;
+        assert_eq!(btc.calculate_quote_cost(btc_price, 1), Some(600));
+        assert_eq!(
+            btc.calculate_quote_cost(btc_price, 100_000_000),
+            Some(60_000_000_000)
+        );
+
+        // This is the largest BTC fill whose $60,000 quote cost fits in u64.
+        let largest_btc_fill_in_range = 30_744_573_456_182_586;
+        assert_eq!(
+            btc.calculate_quote_cost(btc_price, largest_btc_fill_in_range),
+            Some(18_446_744_073_709_551_600)
+        );
+
+        // One atomic unit beyond that no longer fits in u64: the cost must be REJECTED, not
+        // saturated. A saturated u64::MAX is indistinguishable from a legitimate cost and lets
+        // an order reserve far less collateral than it can owe (finding C4-1).
+        assert_eq!(
+            btc.calculate_quote_cost(btc_price, largest_btc_fill_in_range + 1),
+            None
+        );
+        // And the intermediate product overflowing u128 must also be rejected, not wrapped:
+        // the release profile has overflow-checks off, so an unchecked multiply wraps silently
+        // into a small, plausible-looking cost.
+        assert_eq!(eth.calculate_quote_cost(u64::MAX, u64::MAX), None);
+    }
+
+    #[test]
+    #[ignore = "documents calculate_quote_cost wrapping when the shipped BTC result exceeds u64"]
+    fn test_shipped_btc_quote_cost_is_monotonic_past_largest_in_range() {
+        let mut specs = HashMap::new();
+        let market_id = add_shipped_spec(ShippedScaling::BtcUsdt, &mut specs);
+        let spec = &specs[&market_id];
+        let largest_fill_in_range = 30_744_573_456_182_586;
+        let largest_cost = spec.calculate_quote_cost(60_000, largest_fill_in_range);
+        let next_cost = spec.calculate_quote_cost(60_000, largest_fill_in_range + 1);
+
+        assert!(
+            largest_cost.is_some(),
+            "the largest in-range fill must still price"
+        );
+        // Stronger than the original "must not wrap": one unit past the representable range is
+        // now REJECTED rather than saturated. Saturating to u64::MAX was indistinguishable from
+        // a legitimate cost and let an order under-reserve collateral (finding C4-1).
+        assert_eq!(
+            next_cost, None,
+            "quote cost past the largest in-range fill must be rejected, not wrapped or saturated"
+        );
+    }
+
+    #[test]
+    fn test_shipped_eth_collateral_lock_and_release_for_both_sides() {
+        let mut specs = HashMap::new();
+        let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let engine = RiskEngine::new(specs, 0, 1);
+        let base_asset_id = base_asset(market_id);
+        let quote_asset_id = quote_asset(market_id);
+        let price = 30_000;
+        let size = 1_000_000_000;
+        let quote_cost = 3;
+
+        let bid_user_id = 10;
+        engine.set_balance(bid_user_id, quote_asset_id, UserBalance::new(quote_cost, 0));
+        let mut bid = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            bid_user_id,
+            price,
+            size,
+            Side::Bid,
+            market_id,
+            1,
+        );
+        engine.pre_process_command(&mut bid, Arc::clone(&price_cache));
+        assert_eq!(
+            engine.get_balance(bid_user_id, quote_asset_id),
+            UserBalance::new(0, quote_cost)
+        );
+        engine.handle_cancellation(&mut bid);
+        assert_eq!(
+            engine.get_balance(bid_user_id, quote_asset_id),
+            UserBalance::new(quote_cost, 0)
+        );
+
+        let ask_user_id = 11;
+        engine.set_balance(ask_user_id, base_asset_id, UserBalance::new(size, 0));
+        let mut ask = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            ask_user_id,
+            price,
+            size,
+            Side::Ask,
+            market_id,
+            2,
+        );
+        engine.pre_process_command(&mut ask, price_cache);
+        assert_eq!(
+            engine.get_balance(ask_user_id, base_asset_id),
+            UserBalance::new(0, size)
+        );
+        engine.handle_cancellation(&mut ask);
+        assert_eq!(
+            engine.get_balance(ask_user_id, base_asset_id),
+            UserBalance::new(size, 0)
+        );
+    }
+
+    #[test]
+    fn test_shipped_eth_settlement_releases_both_sides_and_rounds_fees() {
+        let mut specs = HashMap::new();
+        let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let engine = RiskEngine::new(specs, 0, 1);
+        let base_asset_id = base_asset(market_id);
+        let quote_asset_id = quote_asset(market_id);
+        let buyer_id = 20;
+        let seller_id = 21;
+        let price = 30_000;
+        let size = 333_333_334; // Smallest fill with a non-zero quote cost at this price.
+        let quote_cost = 1;
+
+        engine.set_balance(buyer_id, quote_asset_id, UserBalance::new(quote_cost, 0));
+        engine.set_balance(seller_id, base_asset_id, UserBalance::new(size, 0));
+        let mut bid = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            buyer_id,
+            price,
+            size,
+            Side::Bid,
+            market_id,
+            1,
+        );
+        let mut ask = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            seller_id,
+            price,
+            size,
+            Side::Ask,
+            market_id,
+            2,
+        );
+        engine.pre_process_command(&mut bid, Arc::clone(&price_cache));
+        engine.pre_process_command(&mut ask, price_cache);
+
+        // MatcherTradeEvent implements Drop (PR #179): assign the fields
+        // instead of functional-update syntax, which moves out of a Drop type.
+        let mut event = common::MatcherTradeEvent::default();
+        event.price = price;
+        event.size = size;
+        event.maker_user_id = seller_id;
+        event.matched_order_id = ask.order_id;
+        event.matched_order_completed = true;
+        event.active_order_completed = true;
+        event.maker_original_size = size;
+        engine.handle_trade_event(buyer_id, market_id, Side::Bid, &mut event, Some(price));
+        engine.handle_trade_event(seller_id, market_id, Side::Ask, &mut event, None);
+
+        // PR #163 rounds fees UP per fill (div_ceil), so this remainder costs one more
+        // atomic unit than the pre-#163 floor of 666_666.
+        let taker_fee_in_base = 666_667;
+        assert_eq!((size * 20) % 10_000, 6_680);
+        assert_eq!(
+            engine.get_balance(buyer_id, quote_asset_id),
+            UserBalance::new(0, 0)
+        );
+        assert_eq!(
+            engine.get_balance(buyer_id, base_asset_id),
+            UserBalance::new(size - taker_fee_in_base, 0)
+        );
+        assert_eq!(
+            engine.get_balance(seller_id, base_asset_id),
+            UserBalance::new(0, 0)
+        );
+        // Gross quote here is one atomic unit. Pre-#163 the 10 bp maker fee floored to zero
+        // and the seller kept the unit; with #163's per-fill div_ceil the fee is a whole unit,
+        // so the maker nets nothing. This is the ceil-per-fill overcharge tracked against #163.
+        let maker_fee_in_quote = (quote_cost * 10).div_ceil(10_000);
+        assert_eq!(
+            engine.get_balance(seller_id, quote_asset_id),
+            UserBalance::new(quote_cost - maker_fee_in_quote, 0)
+        );
+    }
+
+    #[test]
+    fn test_shipped_eth_ask_partial_fill_cancel_round_trip() {
+        let mut specs = HashMap::new();
+        let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let engine = RiskEngine::new(specs, 0, 1);
+        let base_asset_id = base_asset(market_id);
+        let quote_asset_id = quote_asset(market_id);
+        let user_id = 30;
+        let price = 30_000;
+        let initial_base = 1_000_000_000;
+        let fill_size = 333_333_334;
+        let remaining_size = initial_base - fill_size;
+
+        engine.set_balance(user_id, base_asset_id, UserBalance::new(initial_base, 0));
+        let mut ask = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            user_id,
+            price,
+            initial_base,
+            Side::Ask,
+            market_id,
+            1,
+        );
+        engine.pre_process_command(&mut ask, price_cache);
+
+        // MatcherTradeEvent implements Drop (PR #179): assign the fields
+        // instead of functional-update syntax, which moves out of a Drop type.
+        let mut event = common::MatcherTradeEvent::default();
+        event.price = price;
+        event.size = fill_size;
+        event.maker_user_id = user_id;
+        event.matched_order_id = ask.order_id;
+        event.maker_original_size = initial_base;
+        event.maker_remaining_size = remaining_size;
+        engine.handle_trade_event(user_id, market_id, Side::Ask, &mut event, None);
+        ask.set_size(remaining_size);
+        engine.handle_cancellation(&mut ask);
+
+        assert_eq!(
+            engine.get_balance(user_id, base_asset_id),
+            UserBalance::new(initial_base - fill_size, 0)
+        );
+        // Gross quote is one atomic unit. Pre-#163 the 10 bp fee floored to zero and the
+        // seller kept the unit; with #163's per-fill div_ceil the fee is one unit, i.e. the
+        // whole proceeds. Asserted explicitly so it cannot regress silently either way.
+        assert_eq!(
+            engine.get_balance(user_id, quote_asset_id),
+            UserBalance::new(0, 0)
+        );
+    }
+
+    #[test]
+    #[ignore = "documents missing issue #111 zero-collateral BID rejection in this revision"]
+    fn test_shipped_eth_bid_with_zero_quote_cost_is_rejected() {
+        let mut specs = HashMap::new();
+        let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let engine = RiskEngine::new(specs, 0, 1);
+        let mut bid = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            40,
+            30_000,
+            333_333_333,
+            Side::Bid,
+            market_id,
+            1,
+        );
+
+        // Before #111, locking zero succeeded and admitted an uncollateralized BID.
+        engine.pre_process_command(&mut bid, price_cache);
+
+        assert_eq!(bid.status, Status::Rejected);
+    }
+
+    #[test]
+    #[ignore = "documents one-atomic-unit BID collateral residue after partial fill and cancel"]
+    fn test_shipped_eth_bid_partial_fill_cancel_has_no_collateral_residue() {
+        let mut specs = HashMap::new();
+        let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let engine = RiskEngine::new(specs, 0, 1);
+        let base_asset_id = base_asset(market_id);
+        let quote_asset_id = quote_asset(market_id);
+        let user_id = 50;
+        let price = 30_000;
+        let order_size = 1_000_000_000;
+        let fill_size = 333_333_334;
+        let remaining_size = order_size - fill_size;
+        let initial_quote = 10;
+
+        engine.set_balance(user_id, quote_asset_id, UserBalance::new(initial_quote, 0));
+        let mut bid = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            user_id,
+            price,
+            order_size,
+            Side::Bid,
+            market_id,
+            1,
+        );
+        engine.pre_process_command(&mut bid, price_cache);
+
+        // MatcherTradeEvent implements Drop (PR #179): assign the fields
+        // instead of functional-update syntax, which moves out of a Drop type.
+        let mut event = common::MatcherTradeEvent::default();
+        event.price = price;
+        event.size = fill_size;
+        event.maker_user_id = user_id + 1;
+        event.matched_order_id = 2;
+        event.maker_original_size = fill_size;
+        engine.handle_trade_event(user_id, market_id, Side::Bid, &mut event, Some(price));
+        bid.set_size(remaining_size);
+        engine.handle_cancellation(&mut bid);
+
+        let fee = (fill_size * 20) / 10_000;
+        assert_eq!(
+            engine.get_balance(user_id, base_asset_id),
+            UserBalance::new(fill_size - fee, 0)
+        );
+        assert_eq!(
+            engine.get_balance(user_id, quote_asset_id),
+            UserBalance::new(initial_quote - 1, 0),
+            "lock(total) must equal spent(fill) + unlock(remainder)"
+        );
+    }
+
+    #[test]
+    #[ignore = "documents u64 fee multiplication overflow for a one-ETH shipped-scale fill"]
+    fn test_shipped_eth_one_token_fee_arithmetic_does_not_overflow() {
+        let mut specs = HashMap::new();
+        let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let engine = RiskEngine::new(specs, 0, 1);
+        let quote_asset_id = quote_asset(market_id);
+        let user_id = 60;
+        let price = 30_000;
+        let one_eth = 1_000_000_000_000_000_000;
+
+        engine.set_balance(user_id, quote_asset_id, UserBalance::new(3_000_000_000, 0));
+        let mut bid = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            user_id,
+            price,
+            one_eth,
+            Side::Bid,
+            market_id,
+            1,
+        );
+        engine.pre_process_command(&mut bid, price_cache);
+
+        // MatcherTradeEvent implements Drop (PR #179): assign the fields
+        // instead of functional-update syntax, which moves out of a Drop type.
+        let mut event = common::MatcherTradeEvent::default();
+        event.price = price;
+        event.size = one_eth;
+        event.maker_user_id = user_id + 1;
+        event.matched_order_id = 2;
+        event.maker_original_size = one_eth;
+        engine.handle_trade_event(user_id, market_id, Side::Bid, &mut event, Some(price));
+
+        assert_eq!(
+            engine
+                .get_balance(user_id, base_asset(market_id))
+                .available(),
+            998_000_000_000_000_000
+        );
     }
 
     #[test]
