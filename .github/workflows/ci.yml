@@ -5,10 +5,20 @@ on:
     branches:
       - main
       - develop
+  # No base-branch filter. Stacked PRs are based on their predecessor, not on develop,
+  # so a `branches:` filter here silently gives every PR above the bottom one zero checks.
+  # `edited` is required as well: retargeting a stacked PR onto develop as the stack
+  # merges is an edit, and the default event types do not include it.
   pull_request:
-    branches:
-      - main
-      - develop
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  merge_group:
+    types: [checks_requested]
+
+# Per-PR, so restacking cancels only that PR's superseded runs. A workflow-wide group
+# would discard other PRs' pending checks.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -70,6 +80,10 @@ jobs:
           RUSTFLAGS: "-D warnings -C link-arg=-fuse-ld=mold"
 
       - name: Build workspace (release)
+        if: >-
+          github.event_name != 'pull_request' ||
+          github.base_ref == 'develop' ||
+          github.base_ref == 'main'
         run: cargo build --workspace --release --all-features --all-targets
         env:
           RUSTFLAGS: "-D warnings -C link-arg=-fuse-ld=mold"
@@ -130,6 +144,10 @@ jobs:
   coverage:
     name: Code coverage
     runs-on: ubuntu-latest
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.base_ref == 'develop' ||
+      github.base_ref == 'main'
 
     services:
       redis:
@@ -190,6 +208,10 @@ jobs:
   xtask-tests:
     name: End-to-end tests
     runs-on: ubuntu-latest
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.base_ref == 'develop' ||
+      github.base_ref == 'main'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -260,3 +282,31 @@ jobs:
         run: |
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache || true
+
+  # Single required check. Branch protection cannot express "these jobs, but only when
+  # targeting develop", and a SKIPPED job satisfies an ordinary required-status rule --
+  # which would let a tiered-out coverage or E2E job read as success. This decides
+  # explicitly, and rejects an unexpected skip.
+  ci-required:
+    name: CI required
+    if: ${{ always() }}
+    needs: [test, fmt, clippy, audit, coverage, xtask-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce required results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          FULL: ${{ github.event_name != 'pull_request' || github.base_ref == 'develop' || github.base_ref == 'main' }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          results = json.loads(os.environ["RESULTS"])
+          required = ["test", "fmt", "clippy", "audit"]
+          if os.environ["FULL"] == "true":
+              required += ["coverage", "xtask-tests"]
+          failed = [name for name in required if results[name]["result"] != "success"]
+          if failed:
+              print("Required jobs did not succeed:", ", ".join(failed))
+              sys.exit(1)
+          print("All required jobs succeeded:", ", ".join(required))
+          PY
