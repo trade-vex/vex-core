@@ -92,7 +92,7 @@ impl VexConfig {
             .load_with_environment(environment)
     }
 
-    /// Save configuration to a file (format determined by extension)
+    /// Save configuration as `.toml` or `.json`, chosen by the file extension.
     pub fn save_to_file<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
         self.validate()?;
 
@@ -102,11 +102,9 @@ impl VexConfig {
                 .map_err(|e| ConfigError::SerializationError(e.to_string()))?,
             Some("json") => serde_json::to_string_pretty(self)
                 .map_err(|e| ConfigError::SerializationError(e.to_string()))?,
-            Some("yaml") | Some("yml") => serde_yaml::to_string(self)
-                .map_err(|e| ConfigError::SerializationError(e.to_string()))?,
             _ => {
                 return Err(ConfigError::ValidationError(
-                    "Unsupported file format. Use .toml, .json, .yaml, or .yml".to_string(),
+                    "Unsupported file format. Use .toml or .json".to_string(),
                 ));
             }
         };
