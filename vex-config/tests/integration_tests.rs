@@ -3,7 +3,7 @@
 use std::env;
 use std::sync::Mutex;
 use tempfile::TempDir;
-use vex_config::{ConfigError, ConfigLoader, Environment, VexConfig};
+use vex_config::{ConfigError, ConfigLoader, Environment, GatewayAuthenticationKey, VexConfig};
 
 static ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
 
@@ -76,12 +76,45 @@ fn test_configuration_validation() {
 #[test]
 fn production_configuration_rejects_balance_preload() {
     let mut production = VexConfig::new(Environment::Production);
+    // PRs #176 (auth) and #151 (symbols) added production gates that run BEFORE the preload
+    // rule; satisfy them so this test still isolates the preload rule rather than passing
+    // because an earlier gate fired.
+    production.gateway_networking.gateway_authentication_key =
+        GatewayAuthenticationKey::from("123456789");
+    production.symbols = VexConfig::new(Environment::Development).symbols;
+    assert!(production.validate().is_ok());
     production.balance_preload.enabled = true;
     assert!(production.validate().is_err());
 
     let mut development = VexConfig::new(Environment::Development);
     development.balance_preload.enabled = true;
     assert!(development.validate().is_ok());
+}
+
+#[test]
+fn test_empty_gateway_authentication_key_by_environment() {
+    let development = VexConfig::new(Environment::Development);
+    assert!(development.validate().is_ok());
+
+    let test = VexConfig::new(Environment::Test);
+    assert!(test.validate().is_ok());
+
+    let production = VexConfig::new(Environment::Production);
+    assert!(production.validate().is_err());
+
+    let mut authenticated_production = production;
+    authenticated_production
+        .gateway_networking
+        .gateway_authentication_key = GatewayAuthenticationKey::from("123456789");
+    // PR #151 additionally rejects a production config with no symbols. Satisfy that rule so
+    // this test still isolates PR #176's authentication gate rather than tripping on #151's.
+    authenticated_production.symbols = VexConfig::new(Environment::Development).symbols;
+    assert!(authenticated_production.validate().is_ok());
+
+    authenticated_production
+        .core_networking
+        .enable_authentication = false;
+    assert!(authenticated_production.validate().is_err());
 }
 
 #[test]
@@ -111,6 +144,8 @@ fn test_different_file_formats() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let mut config = VexConfig::new(Environment::Production);
     config.symbols = VexConfig::new(Environment::Development).symbols;
+    config.gateway_networking.gateway_authentication_key =
+        GatewayAuthenticationKey::from("123456789");
 
     let toml_path = temp_dir.path().join("config.toml");
     let json_path = temp_dir.path().join("config.json");

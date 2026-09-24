@@ -78,6 +78,19 @@ pub fn start(config: VexConfig, replay: bool) -> Result<RunningEngine, EngineErr
         .map_err(|error| EngineError::Configuration(error.to_string()))?;
 
     report_disabled_journaling(&config);
+    if !config.core_networking.enable_authentication
+        || config
+            .gateway_networking
+            .gateway_authentication_key
+            .is_empty()
+    {
+        tracing::warn!(
+            target: "core_server",
+            action = "gateway_authentication_disabled",
+            environment = %config.environment,
+            "GATEWAY HANDSHAKE AUTHENTICATION IS DISABLED; DEVELOPMENT/TEST USE ONLY"
+        );
+    }
 
     #[allow(unused_mut)] // mut needed when balance-preload feature is enabled
     let ((engine, mut producer), replay_control) = init_internal(
@@ -85,7 +98,7 @@ pub fn start(config: VexConfig, replay: bool) -> Result<RunningEngine, EngineErr
         config.kafka_broker.clone(),
         replay,
         config.core_networking.enable_core_pinning,
-        config.environment,
+        config.environment.clone(),
     )?;
 
     // Balance preload for test/local environments
@@ -116,8 +129,13 @@ pub fn start(config: VexConfig, replay: bool) -> Result<RunningEngine, EngineErr
         info!("Balance preload complete");
     }
 
-    let (thread_handle, shutdown_flag) =
-        engine.run(producer, replay_control, config.core_networking);
+    let gateway_authentication_key = config.gateway_networking.gateway_authentication_key.clone();
+    let (thread_handle, shutdown_flag) = engine.run(
+        producer,
+        replay_control,
+        config.core_networking,
+        gateway_authentication_key,
+    );
 
     Ok(RunningEngine {
         thread: thread_handle,
