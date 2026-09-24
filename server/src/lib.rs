@@ -1403,7 +1403,7 @@ mod tests {
         // Maker C cancels their order of the remaining (20 - 5) BASE @ 1020
         let maker_c_order_id = placed_c.order_id; // Use the actual generated order ID
         producer.publish(|cmd| {
-            *cmd = OrderCommand::cancel_order(maker_c_order_id, Side::Ask, market_id);
+            *cmd = OrderCommand::cancel_order(maker_c_order_id, maker_c_id, Side::Ask, market_id);
         });
         let cancelled_c = rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(cancelled_c.status, Status::Cancelled);
@@ -1865,7 +1865,12 @@ mod tests {
         // --- Phase 5: Final Clean-up and State Verification ---
         // Bob cancels his resting GTC ask on BTC/USD
         producer.publish(|cmd| {
-            *cmd = OrderCommand::cancel_order(bob_gtc_order_id, Side::Ask, market_btc_usd)
+            *cmd = OrderCommand::cancel_order(
+                bob_gtc_order_id,
+                bob_taker_id,
+                Side::Ask,
+                market_btc_usd,
+            )
         });
         let cancelled_bob = rx.recv().unwrap();
         assert_eq!(cancelled_bob.status, Status::Cancelled);

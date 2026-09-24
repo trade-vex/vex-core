@@ -40,8 +40,8 @@ impl OrderBuilder {
     }
 
     /// Create a cancel order builder
-    pub fn cancel() -> CancelBuilder<NeedsOrderId> {
-        CancelBuilder::new()
+    pub fn cancel(user_id: u64) -> CancelBuilder<NeedsOrderId> {
+        CancelBuilder::new(user_id)
     }
 }
 
@@ -637,15 +637,17 @@ pub struct NeedsOrderId;
 
 pub struct CancelBuilder<State = NeedsOrderId> {
     order_id: u64,
+    user_id: u64,
     side: Side,
     market_id: u32,
     _state: std::marker::PhantomData<State>,
 }
 
 impl CancelBuilder<NeedsOrderId> {
-    fn new() -> Self {
+    fn new(user_id: u64) -> Self {
         Self {
             order_id: 0,
+            user_id,
             side: Side::Bid,
             market_id: 0,
             _state: std::marker::PhantomData,
@@ -655,6 +657,7 @@ impl CancelBuilder<NeedsOrderId> {
     pub fn order_id(self, order_id: u64) -> CancelBuilder<NeedsSide> {
         CancelBuilder {
             order_id,
+            user_id: self.user_id,
             side: self.side,
             market_id: self.market_id,
             _state: std::marker::PhantomData,
@@ -666,6 +669,7 @@ impl CancelBuilder<NeedsSide> {
     pub fn side(self, side: Side) -> CancelBuilder<NeedsMarket> {
         CancelBuilder {
             order_id: self.order_id,
+            user_id: self.user_id,
             side,
             market_id: self.market_id,
             _state: std::marker::PhantomData,
@@ -677,6 +681,7 @@ impl CancelBuilder<NeedsMarket> {
     pub fn market_id(self, market_id: u32) -> CancelBuilder<Complete> {
         CancelBuilder {
             order_id: self.order_id,
+            user_id: self.user_id,
             side: self.side,
             market_id,
             _state: std::marker::PhantomData,
@@ -686,6 +691,6 @@ impl CancelBuilder<NeedsMarket> {
 
 impl CancelBuilder<Complete> {
     pub fn build(self) -> OrderCommand {
-        OrderCommand::cancel_order(self.order_id, self.side, self.market_id)
+        OrderCommand::cancel_order(self.order_id, self.user_id, self.side, self.market_id)
     }
 }

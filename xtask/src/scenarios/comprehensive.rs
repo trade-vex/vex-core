@@ -637,7 +637,7 @@ async fn cancellations_during_trading_section(ctx: &mut TestContext) -> TestResu
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Charlie cancels it
-    let cancel1 = OrderBuilder::cancel()
+    let cancel1 = OrderBuilder::cancel(users::CHARLIE)
         .order_id(charlie_order_id)
         .side(Side::Ask)
         .market_id(market_id)
@@ -680,7 +680,7 @@ async fn cancellations_during_trading_section(ctx: &mut TestContext) -> TestResu
 
     tokio::time::sleep(Duration::from_millis(150)).await;
 
-    let cancel2 = OrderBuilder::cancel()
+    let cancel2 = OrderBuilder::cancel(users::BOB)
         .order_id(bob_order_id)
         .side(Side::Bid)
         .market_id(market_id)
@@ -994,7 +994,7 @@ async fn partial_fills_with_cancel_section(ctx: &mut TestContext) -> TestResult<
     }
 
     // Alice cancels remaining order
-    let cancel = OrderBuilder::cancel()
+    let cancel = OrderBuilder::cancel(users::ALICE)
         .order_id(alice_order_id)
         .side(Side::Bid)
         .market_id(market_id)
