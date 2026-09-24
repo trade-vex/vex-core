@@ -721,9 +721,25 @@ fn apply_scenario_conditions(root: &Path, scenario: &str, clients: u32) -> Resul
 }
 
 fn build_docker(root: &Path) -> Result<(), XTaskError> {
+    let dir = root.join("xtask/tests");
+    // Export the media driver first, while nothing is executing it. The exporter copies
+    // aeronmd into ./bin, which is the path `start_host_media_driver` later runs, so
+    // exporting afterwards fails with ETXTBSY.
+    println!("Exporting the Aeron media driver...");
+    cmd!(
+        "docker",
+        "compose",
+        "run",
+        "--rm",
+        "--build",
+        "--no-deps",
+        "media-driver"
+    )
+    .dir(&dir)
+    .run()?;
     println!("Building all Docker services...");
-    cmd!("docker", "compose", "build",)
-        .dir(root.join("xtask/tests"))
+    cmd!("docker", "compose", "build", "vex-server", "vex-client")
+        .dir(&dir)
         .run()?;
     println!("Docker images built successfully.");
     Ok(())

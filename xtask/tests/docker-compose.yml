@@ -46,6 +46,9 @@ services:
       context: .
       dockerfile: media-driver.Dockerfile
     container_name: media-driver
+    # Build-time only: exporting the driver must never be part of a runtime `up`,
+    # because it writes over the binary the host may already be executing.
+    profiles: ["build-tools"]
     volumes:
       - ./bin/:/output
     # This service runs once to generate code, then exits
@@ -57,8 +60,6 @@ services:
       dockerfile: xtask/tests/server.Dockerfile
     container_name: vex-server
     depends_on:
-      media-driver:
-        condition: service_completed_successfully
       redis:
         condition: service_healthy
       redpanda:
@@ -94,9 +95,6 @@ services:
       context: ../../
       dockerfile: ./xtask/tests/client.Dockerfile
     # container_name: vex-client
-    depends_on:
-      media-driver:
-        condition: service_completed_successfully
     environment:
       # Config for the client to find the server (use static IP; Aeron C driver can't resolve Docker DNS names)
       - VEX_SERVER_HOST=172.28.1.10
