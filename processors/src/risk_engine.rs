@@ -226,7 +226,9 @@ impl RiskEngine {
             let execution_price = event.price;
             if execution_price < limit_price {
                 let price_diff = limit_price - execution_price;
-                let refund_amount = spec.calculate_quote_cost(price_diff, event.size);
+                let refund_amount = spec
+                    .calculate_quote_cost(price_diff, event.size)
+                    .ok_or(BalanceError::Overflow)?;
                 // Move the saved amount from 'locked' back to 'available'.
                 store.unlock_funds(user_id, quote_asset(market_id), refund_amount)?;
             }
@@ -236,7 +238,9 @@ impl RiskEngine {
             // User is BUYING base asset with quote asset.
             // Spends quote, receives base. Fee is on base asset received.
             Side::Bid => {
-                let quote_spent = spec.calculate_quote_cost(event.price, event.size);
+                let quote_spent = spec
+                    .calculate_quote_cost(event.price, event.size)
+                    .ok_or(BalanceError::Overflow)?;
                 // Fee is on the base asset received. Assuming fee is in basis points (e.g., 20bp = 0.2%)
                 let fee_in_base = (event.size * fee) / 10000;
                 let base_received_net = event.size - fee_in_base;
@@ -251,7 +255,9 @@ impl RiskEngine {
             // Spends base, receives quote. Fee is on quote asset received.
             Side::Ask => {
                 let base_spent = event.size;
-                let quote_received_gross = spec.calculate_quote_cost(event.price, event.size);
+                let quote_received_gross = spec
+                    .calculate_quote_cost(event.price, event.size)
+                    .ok_or(BalanceError::Overflow)?;
                 // Fee is on the quote asset received. Assuming fee is in basis points.
                 let fee_in_quote = (quote_received_gross * fee) / 10000;
                 let quote_received_net = quote_received_gross - fee_in_quote;
@@ -306,14 +312,38 @@ impl RiskEngine {
         cmd: &mut OrderCommand,
         price_cache: Arc<PriceCache>,
     ) -> Result<()> {
+        if cmd.size == 0 {
+            return Err(RiskEngineError::InvalidArguments {
+                price: cmd.price,
+                size: cmd.size,
+            });
+        }
+
         let (asset_to_lock, amount_to_lock) = match cmd.side {
             // For a Bid (buy), we lock the quote currency. Amount = price * size.
             Side::Bid => {
                 let amount = self.bid_amount(cmd, price_cache)?;
+                if amount == 0 {
+                    return Err(RiskEngineError::InvalidArguments {
+                        price: cmd.price,
+                        size: cmd.size,
+                    });
+                }
                 (quote_asset(cmd.market_id), amount)
             }
             // For an Ask (sell), we lock the base currency. Amount = size.
-            Side::Ask => (base_asset(cmd.market_id), cmd.size),
+            Side::Ask => {
+                // A market sell carries the price-0 sentinel and is priced by the book at match
+                // time, so there is no order-time notional to check. A *limit* ask whose quote
+                // proceeds floor to zero would hand over base for nothing, so reject it.
+                if cmd.price != 0 && self.ask_proceeds(cmd)? == 0 {
+                    return Err(RiskEngineError::InvalidArguments {
+                        price: cmd.price,
+                        size: cmd.size,
+                    });
+                }
+                (base_asset(cmd.market_id), cmd.size)
+            }
         };
 
         // Acquire a lock on the store and perform the operation
@@ -356,11 +386,27 @@ impl RiskEngine {
             // To ensure that if the order is cancelled (fully or partially),
             // the correct amount of funds can be released.
             cmd.price = conservative_price;
-            Ok(spec.calculate_quote_cost(conservative_price, cmd.size))
+            spec.calculate_quote_cost(conservative_price, cmd.size)
+                .ok_or(BalanceError::Overflow.into())
         } else {
             // Limit order
-            Ok(spec.calculate_quote_cost(cmd.price, cmd.size))
+            spec.calculate_quote_cost(cmd.price, cmd.size)
+                .ok_or(BalanceError::Overflow.into())
         }
+    }
+
+    /// Quote proceeds a *limit* ask would earn if it filled entirely at its own price.
+    #[inline]
+    fn ask_proceeds(&self, cmd: &OrderCommand) -> Result<u64> {
+        let spec =
+            self.symbol_specs
+                .get(&cmd.market_id)
+                .ok_or(RiskEngineError::MarketSpecNotFound {
+                    market_id: cmd.market_id,
+                })?;
+
+        spec.calculate_quote_cost(cmd.price, cmd.size)
+            .ok_or(BalanceError::Overflow.into())
     }
 
     /// Releases previously reserved funds from a canceled or filled order.
@@ -380,7 +426,9 @@ impl RiskEngine {
 
         let (asset_to_unlock, amount_to_unlock) = match side {
             Side::Bid => {
-                let amount = spec.calculate_quote_cost(price, size);
+                let amount = spec
+                    .calculate_quote_cost(price, size)
+                    .ok_or(BalanceError::Overflow)?;
                 (quote_asset(market_id), amount)
             }
             Side::Ask => (base_asset(market_id), size),
@@ -572,6 +620,160 @@ mod tests {
         let balance = engine.get_balance(user_id, quote_asset);
         assert_eq!(balance.available(), required_quote);
         assert_eq!(balance.locked(), 0);
+    }
+
+    #[test]
+    fn test_rejects_bid_whose_quote_cost_rounds_to_zero() {
+        let user_id = 1;
+        let market_id = (2_u32 << 16) | 1_u32;
+        let spec = CoreMarketSpecification::builder()
+            .market_id(market_id)
+            .market_type(MarketType::Spot)
+            .base_native_scale(100)
+            .quote_native_scale(1)
+            .build()
+            .unwrap();
+        let mut specs = HashMap::new();
+        specs.insert(market_id, spec);
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let engine = RiskEngine::new(specs, 0, 1);
+        let mut cmd =
+            OrderCommand::place_order(TimeInForce::Gtc, user_id, 1, 1, Side::Bid, market_id, 1);
+
+        engine.pre_process_command(&mut cmd, price_cache);
+
+        assert_eq!(cmd.status, Status::Rejected);
+    }
+
+    #[test]
+    fn test_rejects_ask_whose_quote_cost_rounds_to_zero() {
+        let user_id = 1;
+        let market_id = (2_u32 << 16) | 1_u32;
+        let spec = CoreMarketSpecification::builder()
+            .market_id(market_id)
+            .market_type(MarketType::Spot)
+            .base_native_scale(100)
+            .quote_native_scale(1)
+            .build()
+            .unwrap();
+        let mut specs = HashMap::new();
+        specs.insert(market_id, spec);
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let engine = RiskEngine::new(specs, 0, 1);
+        engine.set_balance(user_id, base_asset(market_id), UserBalance::new(1, 0));
+        let mut cmd =
+            OrderCommand::place_order(TimeInForce::Gtc, user_id, 1, 1, Side::Ask, market_id, 1);
+
+        let error = engine
+            .reserve_funds_for_order(&mut cmd, price_cache)
+            .unwrap_err();
+
+        assert!(matches!(error, RiskEngineError::InvalidArguments { .. }));
+    }
+
+    /// A market sell carries the price-0 sentinel (`orderbook/src/lib.rs:425`). Reserving
+    /// collateral for it must succeed: the ask locks `size` of the base asset, which the
+    /// `cmd.size == 0` guard already proves is non-zero.
+    #[test]
+    fn test_market_sell_reserves_collateral() {
+        let user_id = 1;
+        let market_id = (2_u32 << 16) | 1_u32;
+        let size = 10;
+        let mut specs = HashMap::new();
+        specs.insert(market_id, get_spec(market_id));
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let engine = RiskEngine::new(specs, 0, 1);
+        engine.set_balance(user_id, base_asset(market_id), UserBalance::new(size, 0));
+        // price == 0 is the market-SELL sentinel.
+        let mut cmd =
+            OrderCommand::place_order(TimeInForce::Ioc, user_id, 0, size, Side::Ask, market_id, 1);
+
+        engine
+            .reserve_funds_for_order(&mut cmd, price_cache)
+            .expect("a market sell must be able to reserve collateral");
+
+        let balance = engine.get_balance(user_id, base_asset(market_id));
+        assert_eq!(balance.locked, size, "market sell must lock `size` of base");
+    }
+
+    #[test]
+    fn test_normal_ask_locks_expected_base_amount() {
+        let user_id = 1;
+        let market_id = (2_u32 << 16) | 1_u32;
+        let price = 100;
+        let size = 10;
+        let mut specs = HashMap::new();
+        specs.insert(market_id, get_spec(market_id));
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let engine = RiskEngine::new(specs, 0, 1);
+        let base_asset = base_asset(market_id);
+        engine.set_balance(user_id, base_asset, UserBalance::new(size, 0));
+        let mut cmd = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            user_id,
+            price,
+            size,
+            Side::Ask,
+            market_id,
+            1,
+        );
+
+        engine
+            .reserve_funds_for_order(&mut cmd, price_cache)
+            .unwrap();
+
+        assert_eq!(
+            engine.get_balance(user_id, base_asset),
+            UserBalance::new(0, size)
+        );
+    }
+
+    #[test]
+    fn test_rejects_zero_size_order() {
+        let user_id = 1;
+        let market_id = (2_u32 << 16) | 1_u32;
+        let mut specs = HashMap::new();
+        specs.insert(market_id, get_spec(market_id));
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let engine = RiskEngine::new(specs, 0, 1);
+        let mut cmd =
+            OrderCommand::place_order(TimeInForce::Gtc, user_id, 100, 0, Side::Ask, market_id, 1);
+
+        engine.pre_process_command(&mut cmd, price_cache);
+
+        assert_eq!(cmd.status, Status::Rejected);
+    }
+
+    #[test]
+    fn test_normal_bid_locks_expected_quote_amount() {
+        let user_id = 1;
+        let market_id = (2_u32 << 16) | 1_u32;
+        let price = 100;
+        let size = 10;
+        let required_quote = price * size;
+        let mut specs = HashMap::new();
+        specs.insert(market_id, get_spec(market_id));
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let engine = RiskEngine::new(specs, 0, 1);
+        let quote_asset = quote_asset(market_id);
+        engine.set_balance(user_id, quote_asset, UserBalance::new(required_quote, 0));
+        let mut cmd = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            user_id,
+            price,
+            size,
+            Side::Bid,
+            market_id,
+            1,
+        );
+
+        engine.pre_process_command(&mut cmd, price_cache);
+
+        assert_ne!(cmd.status, Status::Rejected);
+        assert_eq!(
+            engine.get_balance(user_id, quote_asset),
+            UserBalance::new(0, required_quote)
+        );
     }
 
     #[test]
@@ -829,7 +1031,9 @@ mod tests {
         }
 
         // --- Test 4: Market Sell ---
-        // Market sell doesn't depend on price cache, just locks `size` of base asset (BTC).
+        // A market SELL carries price 0; u64::MAX is the market BUY sentinel. This previously
+        // passed only because calculate_quote_cost saturated an unrepresentable notional
+        // (u64::MAX * size) to u64::MAX instead of rejecting it -- finding C4-1.
         engine.set_balance(user_id, btc_asset_id, UserBalance::new(size, 0));
         let mut market_sell_cmd =
             OrderCommand::place_order(TimeInForce::Gtc, user_id, 0, size, Side::Ask, market_id, 1);
@@ -840,6 +1044,22 @@ mod tests {
         let balance = engine.get_balance(user_id, btc_asset_id);
         assert_eq!(balance.available(), 0);
         assert_eq!(balance.locked(), size);
+
+        // --- Test 5: a limit ask whose notional cannot be represented is rejected (C4-1) ---
+        let mut unrepresentable_ask = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            user_id,
+            u64::MAX,
+            size,
+            Side::Ask,
+            market_id,
+            1,
+        );
+        assert!(
+            engine
+                .reserve_funds_for_order(&mut unrepresentable_ask, price_cache)
+                .is_err()
+        );
     }
 
     #[test]
