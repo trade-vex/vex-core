@@ -793,6 +793,7 @@ impl GatewayManager {
                     .expect("image unavailable handler missing"),
                 pending.gateway_id,
                 self.producer.clone(),
+                Arc::clone(&self.publications),
             );
             let attach_result = {
                 self.gateway_sessions.write().unwrap().attach_duologue(
