@@ -31,6 +31,7 @@ mod duologue;
 mod gateway_handler;
 mod gateway_manager;
 mod gateway_publications;
+mod progress;
 mod replay;
 
 use crate::server::cmd_handler::ReplayFragmentHandler;
@@ -44,6 +45,8 @@ use crate::server::replay::{
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
 use common::{FRAMESIZE, OrderCommand};
 use disruptor::{MultiProducer, SingleConsumerBarrier};
+use progress::{DRAIN_TIMEOUT, finish_shutdown, wait_until};
+use rusteron_archive::bindings::AERON_NULL_COUNTER_ID;
 use rusteron_archive::{
     Aeron, AeronArchiveAsyncConnect, AeronArchiveReplayParams, AeronAvailableImageLogger,
     AeronCError, AeronContext, AeronNotificationLogger, AeronSubscription,
@@ -91,6 +94,8 @@ pub enum ServerError {
     CapacityExceededError(String),
     #[error("Configuration error: {0}")]
     ConfigurationError(String),
+    #[error("Pipeline/archive drain failed: {0}")]
+    DrainError(String),
     #[error("{0} did not connect within 10 seconds")]
     StartupConnectionTimeout(&'static str),
 }
@@ -137,6 +142,8 @@ pub struct VexCoreServer {
     subscription: AeronSubscription,
     /// Archive Client (optional, only when archiving is enabled)
     archive: Option<AeronArchive>,
+    publications: Arc<Publications>,
+    recording_id: Option<i64>,
     /// Subscription ID for recording (optional, only when archiving is enabled)
     subscription_id: Option<i64>,
 }
@@ -166,7 +173,8 @@ impl VexCoreServer {
         let aeron = Self::initialize_aeron(&config)?;
 
         // Initialize Aeron Archive (only if archive channels are configured)
-        let (archive, subscription_id) = if !config.request_control_channel.is_empty() {
+        let (archive, subscription_id, recording_id) = if !config.request_control_channel.is_empty()
+        {
             let archive = Self::initialize_archive(&config, &aeron)?;
 
             // Replay
@@ -190,6 +198,20 @@ impl VexCoreServer {
                 archive_publication.is_connected()
             })?;
 
+            let counters = aeron.counters_reader();
+            let mut recording_id = None;
+            wait_until(DRAIN_TIMEOUT, || {
+                let counter = rusteron_archive::RecordingPos::find_counter_id_by_session(
+                    &counters,
+                    archive_publication.session_id(),
+                );
+                if counter != AERON_NULL_COUNTER_ID {
+                    recording_id = Some(rusteron_archive::RecordingPos::get_recording_id(
+                        &counters, counter,
+                    )?);
+                }
+                Ok(recording_id.is_some())
+            })?;
             publications.set_archive_publication(archive_publication);
 
             info!(
@@ -199,7 +221,7 @@ impl VexCoreServer {
                 core_id = %config.core_id
             );
 
-            (Some(archive), Some(subscription_id))
+            (Some(archive), Some(subscription_id), recording_id)
         } else {
             info!(
                 target: "core_server",
@@ -207,7 +229,7 @@ impl VexCoreServer {
                 archive_recording = false,
                 core_id = %config.core_id
             );
-            (None, None)
+            (None, None, None)
         };
 
         let image_available_handler = Handler::leak(GatewayImageAvailableHandler);
@@ -235,7 +257,7 @@ impl VexCoreServer {
             authentication_key,
             aeron,
             producer,
-            publications,
+            Arc::clone(&publications),
         )?);
 
         // Create handshake handler
@@ -251,6 +273,8 @@ impl VexCoreServer {
             image_unavailable_handler,
             subscription_id,
             archive,
+            publications,
+            recording_id,
         })
     }
 
@@ -323,24 +347,55 @@ impl VexCoreServer {
         self.image_available_handler.release();
         self.image_unavailable_handler.release();
         self.handshake_handler.release();
-        // Only stop recording subscription if we own it (subscription_id != Some(0))
-        // subscription_id = Some(0) means we're using an existing active recording we don't own
-        if let Some(sub_id) = self.subscription_id {
-            if sub_id != 0 {
-                if let Some(ref mut archive) = self.archive {
-                    archive.stop_recording_subscription(sub_id)?;
+        // Ingress is closed. Keep the recording subscription and client alive until
+        // accepted commands finish journaling and the archive catches the publication.
+        finish_shutdown(
+            || self.publications.drain_pipeline(),
+            || {
+                if let (Some(archive), Some(recording_id), Some(publication)) = (
+                    self.archive.as_ref(),
+                    self.recording_id,
+                    self.publications.archive_publication(),
+                ) {
+                    let target = publication.position();
+                    if target < 0 {
+                        return Err(ServerError::DrainError(format!(
+                            "archive publication position: {target}"
+                        )));
+                    }
+                    wait_until(DRAIN_TIMEOUT, || {
+                        Ok(archive.get_max_recorded_position(recording_id)? >= target)
+                    })
+                    .map_err(|error| {
+                        ServerError::DrainError(format!(
+                            "recording {recording_id} did not reach publication position {target}: {error}"
+                        ))
+                    })?;
                 }
-            } else {
-                info!(
-                    target: "core_server",
-                    action = "skipping_stop_recording",
-                    "Using existing active recording, not stopping it"
-                );
+                Ok(())
+            },
+            || {
+            // Only stop recording subscription if we own it (subscription_id != Some(0))
+            // subscription_id = Some(0) means we're using an existing active recording we don't own
+            if let Some(sub_id) = self.subscription_id {
+                if sub_id != 0 {
+                    if let Some(ref archive) = self.archive {
+                        archive.stop_recording_subscription(sub_id)?;
+                    }
+                } else {
+                    info!(
+                        target: "core_server",
+                        action = "skipping_stop_recording",
+                        "Using existing active recording, not stopping it"
+                    );
+                }
             }
-        }
-        if let Some(ref mut archive) = self.archive {
-            archive.close()?;
-        }
+            if let Some(ref archive) = self.archive {
+                archive.close()?;
+            }
+                Ok(())
+            },
+        )?;
 
         info!(
             target: "core_server",

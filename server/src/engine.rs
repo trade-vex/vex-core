@@ -23,6 +23,7 @@ use std::{
 use tracing::{error, info};
 use vex_config::{CoreNetworkingConfig, GatewayAuthenticationKey};
 use vex_networking::server::Publications;
+use vex_networking::server::ServerError;
 use vex_networking::server::VexCoreServer;
 
 /// Type alias for the order command producer
@@ -248,6 +249,7 @@ impl CoreEngine {
             &price_cache,
             router_handlers,
             events_handler,
+            Arc::clone(&publications),
             core_pinning,
             enable_pinning,
         );
@@ -305,7 +307,8 @@ impl CoreEngine {
         risk_engines: &RiskEngines,
         price_cache: &Arc<PriceCache>,
         mut router_handlers_iter: impl Iterator<Item = Y>,
-        events_handler: Z,
+        mut events_handler: Z,
+        publications: Arc<Publications>,
         core_pinning: CorePinning,
         enable_pinning: bool,
     ) -> OrderProducer
@@ -464,8 +467,13 @@ impl CoreEngine {
         } else {
             pipeline
         };
-        let pipeline =
-            pipeline.handle_events_with(abort_on_handler_panic("events", events_handler));
+        let pipeline = pipeline.handle_events_with(abort_on_handler_panic(
+            "events",
+            move |cell, sequence, end_of_batch| {
+                events_handler(cell, sequence, end_of_batch);
+                publications.completed(sequence);
+            },
+        ));
 
         pipeline.build()
     }
@@ -504,11 +512,15 @@ impl CoreEngine {
             .spawn(move || {
                 let replay = replay_control.is_enabled();
 
+                // The dependency joins consumers in the last producer's Drop without a
+                // timeout. Keep a producer alive on fatal recovery/drain failure so the
+                // error can reach the caller even when a consumer is stalled.
+                let producer_guard = producer.clone();
                 let server_result = VexCoreServer::new(
                     networking_config,
                     gateway_authentication_key,
                     producer,
-                    publications,
+                    Arc::clone(&publications),
                     replay,
                     shutdown_for_thread,
                 )
@@ -518,13 +530,37 @@ impl CoreEngine {
                     ))
                 });
 
+                let mut core_server = match server_result {
+                    Ok(server) => server,
+                    Err(error) => {
+                        // The pipeline never started doing anything: it is idle and healthy, so
+                        // drop the producer normally. Leaking it here would prevent the
+                        // disruptor's last-producer shutdown and strand the worker threads and
+                        // ring for any caller that survives the error, such as a library caller
+                        // retrying startup.
+                        drop(producer_guard);
+                        return Err(error);
+                    }
+                };
                 replay_control.disable();
 
-                let mut core_server = server_result?;
-
-                core_server
-                    .start()
-                    .map_err(|e| EngineError::ServerRuntime(format!("Server error: {e}")))
+                match core_server.start() {
+                    Ok(()) => Ok(()),
+                    Err(error) => {
+                        // Only a failed drain justifies leaking: any other server error leaves the
+                        // pipeline quiescent, and holding the resources would strand the workers.
+                        let drained = !matches!(error, ServerError::DrainError(_));
+                        let mapped = EngineError::ServerRuntime(format!("Server error: {error}"));
+                        if drained {
+                            drop(core_server);
+                            drop(producer_guard);
+                        } else {
+                            std::mem::forget(core_server);
+                            std::mem::forget(producer_guard);
+                        }
+                        Err(mapped)
+                    }
+                }
             })
             .expect("Failed to spawn server thread");
 
@@ -807,6 +843,7 @@ pub mod test {
                     &price_cache,
                     &mut router_handlers_iter,
                     events_handler,
+                    Arc::clone(&publications),
                     pinning.into(),
                     false, // Tests don't use pinning
                 )
@@ -819,6 +856,7 @@ pub mod test {
                     &price_cache,
                     &mut router_handlers_iter,
                     events_handler,
+                    Arc::clone(&publications),
                     CorePinning::default(),
                     false, // Tests don't use pinning
                 )
