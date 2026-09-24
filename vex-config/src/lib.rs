@@ -66,8 +66,8 @@ impl VexConfig {
         }
     }
 
-    /// Load configuration using auto-detection of environment from ENV variables
-    /// Looks for VEX_ENV, ENVIRONMENT, or ENV environment variables
+    /// Load configuration using an explicitly selected environment
+    /// Looks for VEX_ENV, ENVIRONMENT, ENV, or NODE_ENV environment variables
     pub fn load_auto() -> Result<Self> {
         ConfigLoader::new().load_auto()
     }

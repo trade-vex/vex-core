@@ -46,21 +46,21 @@ cargo build --release --features balance-preload
 # Start Aeron Media Driver first (required - vex-core connects to it)
 make media-driver
 
-# Development mode (uses config.dev.yaml or Test defaults)
-RUST_LOG=info cargo run --bin vex-core
+# Development mode (uses config.dev.yaml or Development defaults)
+VEX_ENV=development RUST_LOG=info cargo run --bin vex-core
 
 # Or using Makefile (starts media driver + vex-core)
-make server
+VEX_ENV=development make server
 
 # With journal replay (recover from recorded state)
-./target/release/vex-core --replay
+VEX_ENV=development ./target/release/vex-core --replay
 ```
 
 ### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `VEX_ENV` / `ENVIRONMENT` / `ENV` | Environment: `development`, `test`, `production` | `development` |
+| `VEX_ENV` / `ENVIRONMENT` / `ENV` / `NODE_ENV` | Environment: `development`, `test`, `production` | Required |
 | `KAFKA_BROKER` | Kafka broker address | `localhost:9092` |
 | `ENABLE_CORE_PINNING` | Enable CPU core pinning for processor threads | `false` (dev/test), `true` (prod) |
 | `RUST_LOG` | Log level (trace, debug, info, warn, error) | `info` |
@@ -81,6 +81,8 @@ make server
 ### Configuration Files
 
 Configuration is loaded from YAML, TOML, or JSON files. Search order (first found wins):
+
+The environment must be selected explicitly with `VEX_ENV`, `ENVIRONMENT`, `ENV`, or `NODE_ENV`. Development and test selections use environment defaults if no matching file is present; production does not.
 
 - `./config.dev.yaml`, `./config.test.yaml`, `./config.prod.yaml`
 - `./config/config.dev.yaml`, etc.
@@ -127,7 +129,7 @@ balance_preload:
 
 ### Configuration Precedence
 
-1. Environment-specific config file (based on `VEX_ENV` / `ENVIRONMENT`)
+1. Environment-specific config file (based on `VEX_ENV` / `ENVIRONMENT` / `ENV` / `NODE_ENV`)
 2. Environment variables with `VEX__` prefix (nested keys use `__`, e.g., `VEX__CORE_NETWORKING__INITIAL_PORT`)
 3. Hardcoded overrides in `main.rs` (e.g., `context_dir`, `local_address`)
 
@@ -152,10 +154,10 @@ Ensure the **Aeron Media Driver uses the same `context_dir`** as vex-core (or th
 make media-driver
 
 # 2. Start vex-core
-RUST_LOG=info ./target/release/vex-core
+VEX_ENV=development RUST_LOG=info ./target/release/vex-core
 
 # Or use Makefile (handles both)
-make server
+VEX_ENV=development make server
 ```
 
 ### Stop Service
@@ -183,14 +185,14 @@ make stop-media-driver
 kill -TERM <pid>
 # Wait for shutdown, then:
 make media-driver  # If needed
-./target/release/vex-core
+VEX_ENV=development ./target/release/vex-core
 ```
 
 ### Journal Replay
 
 ```bash
 # Start with replay from recorded journal
-./target/release/vex-core --replay
+VEX_ENV=development ./target/release/vex-core --replay
 ```
 
 ### View Logs
@@ -198,7 +200,7 @@ make media-driver  # If needed
 ```bash
 # Logs go to stdout by default (development)
 # Redirect if needed:
-./target/release/vex-core 2>&1 | tee logs/vex-core.log
+VEX_ENV=development ./target/release/vex-core 2>&1 | tee logs/vex-core.log
 
 # Production config may write to /var/log/vex/vex-core.log
 tail -f /var/log/vex/vex-core.log
@@ -215,7 +217,7 @@ tail -f /var/log/vex/vex-core.log
 **Diagnosis**:
 ```bash
 # Check configuration loading
-RUST_LOG=debug ./target/release/vex-core 2>&1 | head -50
+VEX_ENV=development RUST_LOG=debug ./target/release/vex-core 2>&1 | head -50
 
 # Verify config file exists for your environment
 ls -la config.dev.yaml config.test.yaml config.prod.yaml 2>/dev/null
@@ -224,7 +226,8 @@ ls -la config.dev.yaml config.test.yaml config.prod.yaml 2>/dev/null
 ```
 
 **Solutions**:
-- Ensure a config file exists for the detected environment, or that defaults are acceptable
+- Set `VEX_ENV`, `ENVIRONMENT`, `ENV`, or `NODE_ENV` to the intended environment
+- Ensure a config file exists for the selected environment, or that development/test defaults are acceptable
 - Verify `KAFKA_BROKER` is reachable if Kafka is required
 - Check that `/dev/shm` has sufficient space for Aeron
 - Verify symbol configuration is valid (market_id, assets, fees)
@@ -305,7 +308,7 @@ netstat -tuln | grep -E "40001|3521"
 top -p $(pgrep vex-core)
 
 # Review disruptor/processor logs
-RUST_LOG=debug ./target/release/vex-core 2>&1 | grep -E "disruptor|processor|backpressure"
+VEX_ENV=development RUST_LOG=debug ./target/release/vex-core 2>&1 | grep -E "disruptor|processor|backpressure"
 ```
 
 **Solutions**:
@@ -375,7 +378,7 @@ top -p $(pgrep vex-core)
 4. **Restart**
    ```bash
    make media-driver    # If needed
-   ./target/release/vex-core
+   VEX_ENV=development ./target/release/vex-core
    ```
 
 ### Media Driver is Down
@@ -392,7 +395,7 @@ top -p $(pgrep vex-core)
 
 3. **Restart vex-core**
    ```bash
-   ./target/release/vex-core
+   VEX_ENV=development ./target/release/vex-core
    ```
 
 ### Kafka is Down
@@ -428,7 +431,7 @@ top -p $(pgrep vex-core)
 
 ```bash
 # Start with replay to recover state from last recording
-./target/release/vex-core --replay
+VEX_ENV=development ./target/release/vex-core --replay
 ```
 
 ---
@@ -476,4 +479,3 @@ VEX Core is a **low-latency matching engine** with no HTTP API. It communicates 
 | `networking/src/server/` | Aeron server, gateway handshake, publications |
 | `vex-config/` | Configuration loading and validation |
 | `config.dev.yaml` | Example development config |
-

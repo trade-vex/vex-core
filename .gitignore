@@ -12,5 +12,7 @@
 *.jar
 **/aeron-archive
 
-*.json
-*.yaml
+# Generated configuration example and cargo-chef outputs
+**/output.json
+**/output.yaml
+**/recipe.json
