@@ -201,6 +201,18 @@ impl SymbolSpecificationConfig {
                 )));
             }
 
+            if spec.base_native_scale == 0 {
+                return Err(ConfigError::ValidationError(format!(
+                    "Symbol {market_id}: base_native_scale cannot be zero"
+                )));
+            }
+
+            if spec.quote_native_scale == 0 {
+                return Err(ConfigError::ValidationError(format!(
+                    "Symbol {market_id}: quote_native_scale cannot be zero"
+                )));
+            }
+
             // Validate fees
             if spec.taker_fee < spec.maker_fee {
                 return Err(ConfigError::ValidationError(format!(
@@ -314,6 +326,34 @@ mod tests {
 
         let config = SymbolSpecificationConfig { symbols };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validation_zero_base_native_scale() {
+        let mut config = SymbolSpecificationConfig::development_defaults();
+        let spec = config.symbols.values_mut().next().unwrap();
+        let market_id = spec.market_id;
+        spec.base_native_scale = 0;
+
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::ValidationError(message))
+                if message == format!("Symbol {market_id}: base_native_scale cannot be zero")
+        ));
+    }
+
+    #[test]
+    fn test_validation_zero_quote_native_scale() {
+        let mut config = SymbolSpecificationConfig::development_defaults();
+        let spec = config.symbols.values_mut().next().unwrap();
+        let market_id = spec.market_id;
+        spec.quote_native_scale = 0;
+
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::ValidationError(message))
+                if message == format!("Symbol {market_id}: quote_native_scale cannot be zero")
+        ));
     }
 
     #[test]
