@@ -32,7 +32,7 @@ max_files = 10
   symbol_type = "Spot"
   base_asset = 3928    # ETH (szabo, 1E-6)
   quote_asset = 3762   # XBT (satoshi, 1E-8)
-  base_scale_k = 100000   # 1 lot = 100K szabo (0.1 ETH)
+  base_scale_k = 1        # Reserved compatibility field; currently unused
   quote_scale_k = 10      # 1 step = 10 satoshi
   taker_fee = 0
   maker_fee = 0
@@ -58,7 +58,7 @@ max_files = 10
   symbol_type = "Spot"
   base_asset = 3762    # XBT (satoshi, 1E-8)
   quote_asset = 1005   # LTC (litoshi, 1E-8)
-  base_scale_k = 1000000  # 1 lot = 1M satoshi (0.01 BTC)
+  base_scale_k = 1        # Reserved compatibility field; currently unused
   quote_scale_k = 10000   # 1 step = 10K litoshi
   taker_fee = 1900        # 1900 litoshi per lot
   maker_fee = 700         # 700 litoshi per lot

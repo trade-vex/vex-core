@@ -108,7 +108,7 @@ symbols:
       market_id: 65538
       base_asset: 2
       quote_asset: 1
-      base_scale_k: 100000000
+      base_scale_k: 1 # Reserved compatibility field; currently unused
       quote_scale_k: 1000000
       maker_fee: 10
       taker_fee: 20
