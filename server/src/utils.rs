@@ -25,8 +25,20 @@ macro_rules! create_risk_handler {
         // Clone Arc pointers to move into the closure
         let risk_engines = ::std::clone::Clone::clone($risk_engines);
         let price_cache = ::std::clone::Clone::clone($price_cache);
+        let shard_mask = risk_engines.len() as u64 - 1;
 
-        move |cmd: &mut $crate::engine::OrderCommand, _sequence: i64, _end_of_batch: bool| {
+        move |cell: &::std::cell::UnsafeCell<$crate::engine::OrderCommand>,
+              _sequence: i64,
+              _end_of_batch: bool| {
+            // SAFETY: This is a shared scalar read; peer R1 handlers may read user_id
+            // concurrently, and none of them mutates it.
+            let user_id = unsafe { (*cell.get()).user_id };
+            if (user_id & shard_mask) != $shard_id as u64 {
+                return;
+            }
+            // SAFETY: Journaling is ordered before R1, and the shard predicate above is
+            // exclusive, so only this R1 handler creates a mutable reference for this sequence.
+            let cmd = unsafe { &mut *cell.get() };
             let risk_engine = &risk_engines[$shard_id];
             risk_engine.pre_process_command(cmd, ::std::clone::Clone::clone(&price_cache));
         }
@@ -60,7 +72,13 @@ macro_rules! create_risk_r2_handler {
     ($shard_id:expr, $risk_engines:expr) => {{
         let risk_engines = $risk_engines.clone();
         let shard_mask = $risk_engines.len() as u64 - 1;
-        move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
+        move |cell: &::std::cell::UnsafeCell<OrderCommand>, _sequence: i64, _end_of_batch: bool| {
+            // SAFETY: R2 is the one handler group where taker and maker may be settled by
+            // different shards concurrently, so two handlers can hold `&mut` to the same
+            // command. This access is not sound. Making it sound requires
+            // `handle_trade_event` to take projected fields rather than `&mut OrderCommand`,
+            // which is a change in `processors/` and is tracked in issue #128.
+            let cmd = unsafe { &mut *cell.get() };
             if (cmd.status == Status::Rejected || cmd.status == Status::Processed) {
                 return;
             }
@@ -140,7 +158,13 @@ macro_rules! create_risk_r2_handler {
 #[macro_export]
 macro_rules! create_event_handler {
     ($events_handler:expr) => {{
-        move |cmd: &mut common::OrderCommand, _sequence: i64, _end_of_batch: bool| {
+        move |cell: &::std::cell::UnsafeCell<common::OrderCommand>,
+              _sequence: i64,
+              _end_of_batch: bool| {
+            // SAFETY: The events handler is the sole handler in this barrier group, so
+            // creating an exclusive reference to the command cannot alias another handler's
+            // reference.
+            let cmd = unsafe { &mut *cell.get() };
             $events_handler.handle_processed_command(cmd);
         }
     }};
@@ -173,7 +197,17 @@ macro_rules! create_matching_handler {
         let routers = $routers.clone();
         let shard_id = $shard_id;
         let price_cache = $price_cache.clone();
-        move |cmd: &mut OrderCommand, _sequence: i64, _end_of_batch: bool| {
+        move |cell: &::std::cell::UnsafeCell<OrderCommand>, _sequence: i64, _end_of_batch: bool| {
+            // SAFETY: This is a shared scalar read; peer matching handlers may read
+            // market_id concurrently, and none of them mutates it.
+            let market_id = unsafe { (*cell.get()).market_id };
+            let router = &routers[shard_id];
+            if !router.market_for_this_handler(market_id as u64) {
+                return;
+            }
+            // SAFETY: The market predicate above is exclusive, so this handler alone in
+            // the matching barrier group creates a mutable reference for this sequence.
+            let cmd = unsafe { &mut *cell.get() };
             // Non-op commands for order book processing
             if cmd.command == OrderCommandType::DepositFunds
                 || cmd.command == OrderCommandType::WithdrawFunds
@@ -181,7 +215,6 @@ macro_rules! create_matching_handler {
             {
                 return;
             }
-            let router = &routers[shard_id];
             let price_cache = price_cache.clone();
             router.process_order(cmd, price_cache);
         }
