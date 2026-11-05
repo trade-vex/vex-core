@@ -518,15 +518,8 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
 
     /// Create a snapshot of the orderbook data with specified depth
     pub fn record_snapshot(&self, cmd: &mut OrderCommand) {
-        // PR #182 removed the unused ask_orders/bid_orders/reference_seq fields; PR #177's
-        // pre-sizing of the price/volume vectors is kept.
-        let mut l2_data = L2MarketData {
-            ask_prices: Vec::with_capacity(L2SIZE),
-            ask_volumes: Vec::with_capacity(L2SIZE),
-            bid_prices: Vec::with_capacity(L2SIZE),
-            bid_volumes: Vec::with_capacity(L2SIZE),
-            timestamp: 0,
-        };
+        // `new` pre-sizes the price and volume vectors to the snapshot depth.
+        let mut l2_data = L2MarketData::new();
 
         // Fill bid levels (highest price first)
         for (price, level) in self.get_bids().take(L2SIZE) {
@@ -539,11 +532,6 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             l2_data.ask_prices.push(price);
             l2_data.ask_volumes.push(level.get_total_volume());
         }
-
-        // Set timestamp
-        l2_data.timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_nanos() as u64);
 
         cmd.l2_data = Some(l2_data);
     }

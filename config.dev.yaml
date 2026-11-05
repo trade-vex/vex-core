@@ -73,3 +73,4 @@ symbols:
       maker_fee: 0
       slippage: 150
 kafka_broker: localhost:9092
+schema_registry_url: http://localhost:8081

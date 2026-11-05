@@ -34,6 +34,8 @@ services:
       context: ../
       dockerfile: Dockerfile
     container_name: vex-core
+    # Graceful shutdown can take ~45 s (RUNBOOK "Stop Service"); Docker's default is 10 s.
+    stop_grace_period: 50s
     depends_on:
       media-driver:
         condition: service_healthy
@@ -47,6 +49,10 @@ services:
       # commands are not journaled and `--replay` is unavailable. Production rejects an empty
       # channel, so VEX_ENV=production fails at startup here.
       - VEX__CORE_NETWORKING__REQUEST_CONTROL_CHANNEL=
+      # Kafka and its Schema Registry, passed through from the calling shell. This stack runs
+      # neither; unset, the dev defaults point at localhost, which here is the container itself.
+      - VEX__KAFKA_BROKER
+      - VEX__SCHEMA_REGISTRY_URL
     volumes:
       - /dev/shm/aeron:/dev/shm/aeron
     restart: unless-stopped

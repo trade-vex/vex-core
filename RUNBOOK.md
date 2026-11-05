@@ -62,6 +62,7 @@ VEX_ENV=development ./target/release/vex-core --replay
 |----------|-------------|---------|
 | `VEX_ENV` | Environment: exactly `development`, `test` or `production`; any other value is a startup error | Required |
 | `VEX__KAFKA_BROKER` | Kafka broker address; overrides the configured `kafka_broker` like any `VEX__*` key | config `kafka_broker` (`localhost:9092` in the dev/test defaults) |
+| `VEX__SCHEMA_REGISTRY_URL` | Schema Registry URL for the events' protobuf schemas; overrides the configured `schema_registry_url` like any `VEX__*` key. Must be an `http://` or `https://` URL | config `schema_registry_url` (`http://localhost:8081` in the dev/test defaults) |
 | `ENABLE_CORE_PINNING` | Enable CPU core pinning for processor threads: `true` or `false`; any other value is a startup error | `false` (dev/test), `true` (prod) |
 | `RUST_LOG` | Log level (trace, debug, info, warn, error) | `info` |
 | `VEX__*` | Configuration overrides (e.g., `VEX__CORE_NETWORKING__CONTEXT_DIR`) | - |
@@ -97,6 +98,7 @@ The environment must be selected explicitly with `VEX_ENV`. Development and test
 environment: Test
 
 kafka_broker: "localhost:9092"
+schema_registry_url: "http://localhost:8081"
 
 logging:
   level: "info"
@@ -167,6 +169,12 @@ kill -TERM <pid>
 
 # vex-core handles Ctrl+C and performs graceful shutdown
 
+# A graceful shutdown can take about 45 s when Kafka is slow or down: pipeline drain
+# (up to 10 s), archive catch-up (up to 10 s), Kafka delivery (20 s, plus up to 5 s).
+# Give the orchestrator at least that before it kills the process (Docker:
+# stop_grace_period, set in docker/docker-compose.yml; Kubernetes:
+# terminationGracePeriodSeconds), or the undelivered-event count is never logged.
+
 # Force stop (use only if graceful shutdown fails)
 kill -9 <pid>
 ```
@@ -228,6 +236,7 @@ ls -la config.dev.yaml config.test.yaml config.prod.yaml 2>/dev/null
 - Set `VEX_ENV` to the intended environment (`development`, `test` or `production`)
 - Ensure a config file exists for the selected environment, or that development/test defaults are acceptable
 - Verify the configured `kafka_broker` (or `VEX__KAFKA_BROKER`) is reachable if Kafka is required
+- A config file must set `schema_registry_url`, or `VEX__SCHEMA_REGISTRY_URL` must; only the built-in dev/test defaults, used when no file exists, supply one. A value that is not an `http://` or `https://` URL is rejected
 - Check that `/dev/shm` has sufficient space for Aeron
 - Verify symbol configuration is valid (market_id, assets, fees)
 
@@ -267,11 +276,15 @@ kafka-topics.sh --bootstrap-server $VEX__KAFKA_BROKER --list
 
 # Check VEX__KAFKA_BROKER is set (otherwise the configured kafka_broker is used)
 echo $VEX__KAFKA_BROKER
+
+# Test Schema Registry connectivity, using the URL vex-core logs at startup (schema_registry=...)
+curl -s "<schema_registry_url>/subjects"
 ```
 
 **Solutions**:
 - Verify Kafka is running and reachable
 - Set `kafka_broker` in the config, or `VEX__KAFKA_BROKER`, correctly (e.g., `localhost:9092`)
+- Set `schema_registry_url` in the config, or `VEX__SCHEMA_REGISTRY_URL`, correctly (e.g., `http://localhost:8081`). A wrong URL does not fail startup: the first event stalls with `protobuf_encoding_failed` and intake halts (see "Kafka is Down"). Fix it and restart
 - Check network connectivity to Kafka
 
 ### Gateway Connection Failures
@@ -408,13 +421,21 @@ top -p $(pgrep vex-core)
 ### Kafka is Down
 
 1. **Impact**
-   - Event publishing (e.g., fills, order updates) may fail
-   - Downstream consumers (market data, analytics) will not receive events
-   - **Order matching may still operate** (in-memory), but events are not emitted
+   - **Order intake halts; no event is dropped.** While Kafka, or the Schema Registry, is unavailable, the core holds every event in engine order. librdkafka retries undelivered events with no time limit (`message.timeout.ms=0`). A topic's first event after a start needs the registry, and the sender retries it with a backoff of up to 1 s. Once librdkafka's queue (100,000 events) and the sender's channel (8,192 events) are full, the events stage blocks and ingress answers `Busy`. The gateway returns that as 503 with `Retry-After`. Responses to commands that were already accepted are delayed too
+   - Logs: `producer_send_waiting` (a full queue, or a topic the broker reports missing) or `protobuf_encoding_failed` (registry). Each repeats at most every 10 s while the stall lasts
+   - **Recovery is automatic**: when Kafka and the registry answer again, the held events are delivered in order and intake resumes
+   - A failure that no retry can cure aborts the process loudly instead of dropping an event. It is logged as one of:
+     - `delivery_failed`: a denied ACL, an event already queued for a topic that a broker then reports missing, or a fatal producer error (librdkafka logs `FATAL` first)
+     - `send_failed`
+     - `protobuf_encoding_impossible`: an event type missing from the compiled `trading.proto`
+     - `sender_panicked`
+   - Events still queued when the process dies are not re-published by replay. This covers a crash, a kill, an abort above, and a graceful shutdown that could not deliver them within 20 s, which logs `shutdown_with_undelivered_events` with the count. It also covers a shutdown whose pipeline drain timed out first, or that the orchestrator killed (see Stop Service)
 
 2. **Mitigation**
-   - Restore Kafka
-   - Consider replay or backfill if events were lost (depends on design)
+   - Restore Kafka or the Schema Registry; intake resumes by itself
+   - A registry that rejects the schema (for example as incompatible with the subject's earlier versions) also shows up as a `protobuf_encoding_failed` stall. The client library reports it exactly like an outage. Fix the subject's compatibility setting or the deployed schema
+   - A missing topic shows up as a `producer_send_waiting` stall: create the topic
+   - After an abort, or a shutdown that reported undelivered events, those events are missing downstream
 
 ### Gateway Cannot Connect
 

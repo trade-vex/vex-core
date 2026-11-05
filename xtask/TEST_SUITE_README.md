@@ -20,8 +20,9 @@ Test Framework → VexCore → [Journaling, Risk, Orderbook] → Events Handler 
 ### Prerequisites
 
 1. VexCore server: `VEX_ENV=development cargo run --bin test_server` (`VEX_ENV` is required, as for the server)
+1. VexCore server: `cargo run --bin test_server`
 2. Kafka with a Schema Registry: the server publishes to its configured broker and registers its
-   schemas at `SCHEMA_REGISTRY_URL` (default `http://localhost:8081`); the suite reads the events
+   schemas at `schema_registry_url` (default `http://localhost:8081`, override with `VEX__SCHEMA_REGISTRY_URL`); the suite reads the events
    back from `TestConfig::kafka_brokers` (default `localhost:19092`, Redpanda's host listener in
    `tests/docker-compose.yml`)
 

@@ -94,6 +94,7 @@ pub fn start(mut config: VexConfig, replay: bool) -> Result<RunningEngine, Engin
     let ((engine, mut producer), replay_control) = init_internal(
         config.symbols.symbols.clone(),
         config.kafka_broker.clone(),
+        config.schema_registry_url.clone(),
         replay,
         config.core_networking.enable_core_pinning,
         config.environment.clone(),
@@ -220,6 +221,7 @@ fn resolve_gateway_authentication(config: &mut VexConfig) {
 pub fn init_internal(
     symbol_specs: HashMap<u32, CoreMarketSpecification>,
     kafka_broker: String,
+    schema_registry_url: String,
     replay: bool,
     enable_core_pinning: bool,
     environment: vex_config::Environment,
@@ -232,10 +234,6 @@ pub fn init_internal(
     let publications = Arc::new(Publications::new());
     let journaling_processor =
         JournalingProcessor::new(Arc::clone(&publications), replay_control.clone());
-
-    // Get schema registry URL from environment variable or use default
-    let schema_registry_url = std::env::var("SCHEMA_REGISTRY_URL")
-        .unwrap_or_else(|_| "http://localhost:8081".to_string());
 
     let events_handler = KafkaEventsHandler::new(
         &kafka_broker,
@@ -273,7 +271,21 @@ pub mod test {
     use super::*;
     use common::{OrderCommand, Status};
     use engine::{RiskEngines, test::TestEngineBuilder};
+    use processors::events::EventsHandler;
     use std::{cell::UnsafeCell, sync::mpsc};
+
+    /// The events stage for tests: answers each command's gateway and publishes nothing.
+    ///
+    /// Tests run without Kafka or a Schema Registry. [`KafkaEventsHandler`] never drops an event,
+    /// so without them it would hold its first event, block the pipeline once its queues fill, and
+    /// make every teardown wait out its shutdown grace.
+    pub struct GatewayResponsesOnly(pub Arc<Publications>);
+
+    impl EventsHandler for GatewayResponsesOnly {
+        fn handle_processed_command(&self, cmd: &mut OrderCommand) {
+            self.0.publish_response(cmd);
+        }
+    }
 
     /// Test engine instance with access to internals for testing
     pub struct TestEngine {
@@ -334,12 +346,7 @@ pub mod test {
                 Arc::clone(&publications),
                 ReplayControl::disabled(),
             ))
-            .with_events_handler(KafkaEventsHandler::new(
-                "localhost:9092",
-                "http://localhost:8081",
-                Arc::clone(&publications),
-                ReplayControl::disabled(),
-            ))
+            .with_events_handler(GatewayResponsesOnly(Arc::clone(&publications)))
             .with_publications(publications)
             .with_risk_engines(Arc::clone(&risk_engines))
             .with_test_handler(test_handler)
@@ -363,7 +370,9 @@ mod tests {
         quote_asset,
     };
     use disruptor::Producer;
+    use processors::matching_engine::MatchingEngineRouter;
     use processors::risk_engine::RiskEngine;
+    use std::cell::UnsafeCell;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
     use tracing::field::{Field, Visit};
@@ -461,12 +470,7 @@ mod tests {
                 Arc::clone(&publications),
                 ReplayControl::disabled(),
             ))
-            .with_events_handler(KafkaEventsHandler::new(
-                "localhost:9092",
-                "http://localhost:8081",
-                Arc::clone(&publications),
-                ReplayControl::disabled(),
-            ))
+            .with_events_handler(test::GatewayResponsesOnly(Arc::clone(&publications)))
             .with_publications(Arc::clone(&publications))
             .with_risk_engines(Arc::clone(&risk_engines))
             .build()
@@ -1225,6 +1229,178 @@ mod tests {
         assert_eq!(
             risk_engines[maker_shard_id].get_balance(maker_id, quote_asset_id),
             trade_event.maker_balance[1]
+        );
+    }
+
+    /// R1(k) waits only on journaling(k), so R1 can apply a deposit before R2 has settled an
+    /// EARLIER trade of the same user. Drive the stages in exactly that legal interleaving: the
+    /// deposit's published balance must still include the trade.
+    #[test]
+    fn deposit_balance_includes_an_earlier_trade_settled_after_r1_applied_the_deposit() {
+        let mut specs = HashMap::new();
+        let base_asset_id = 1;
+        let quote_asset_id = 2;
+        let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
+        add_spec(market_id, &mut specs);
+        let spec = specs.get_mut(&market_id).unwrap();
+        spec.quote_scale_k = 10;
+
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let risk_engines: Arc<Vec<RiskEngine>> = Arc::new(
+            (0..4)
+                .map(|shard_id| RiskEngine::new(specs.clone(), shard_id, 4))
+                .collect(),
+        );
+        let mut router = MatchingEngineRouter::new(0, 1);
+        router.add_market(market_id);
+        let r2_handlers: Vec<_> = (0..4usize)
+            .map(|shard_id| crate::create_risk_r2_handler!(shard_id, &risk_engines))
+            .collect();
+        let r1 = |cmd: &mut OrderCommand| {
+            for engine in risk_engines.iter() {
+                engine.pre_process_command(cmd, Arc::clone(&price_cache));
+            }
+        };
+        let r2 = |cmd: OrderCommand| {
+            let cell = UnsafeCell::new(cmd);
+            for handler in &r2_handlers {
+                handler(&cell, 0, false);
+            }
+            cell.into_inner()
+        };
+
+        let checker = BalanceChecker::new(&risk_engines);
+        let maker_id = 101;
+        let taker_id = 42;
+        let price = 5000;
+        let size = 10_000;
+        checker.set_balance(maker_id, base_asset_id, size, 0);
+        checker.set_balance(taker_id, quote_asset_id, 5_000_000, 0);
+
+        let mut ask = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            maker_id,
+            price,
+            size,
+            Side::Ask,
+            market_id,
+            1,
+        );
+        r1(&mut ask);
+        router.process_order(&mut ask, Arc::clone(&price_cache));
+        assert_eq!(r2(ask).status, Status::Placed);
+
+        // Trade N: R1 and matching have run, R2 has not.
+        let mut bid = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            taker_id,
+            price,
+            size,
+            Side::Bid,
+            market_id,
+            2,
+        );
+        r1(&mut bid);
+        router.process_order(&mut bid, Arc::clone(&price_cache));
+        assert_eq!(bid.status, Status::Filled);
+
+        // Deposit D > N: its R1 runs ahead of N's R2.
+        let deposit_amount = 1_000;
+        let mut deposit = OrderCommand::deposit_funds(taker_id, deposit_amount, base_asset_id);
+        r1(&mut deposit);
+        assert_eq!(deposit.status, Status::Processed);
+
+        // R2 in sequence order: N, then D.
+        r2(bid);
+        let deposit = r2(deposit);
+
+        // N credits 10_000 base minus the 20 bp taker fee.
+        let expected = UserBalance::new(9_980 + deposit_amount, 0);
+        assert_eq!(
+            deposit.balance[0], expected,
+            "the deposit's balance must include the earlier trade's settlement"
+        );
+        checker.check(
+            taker_id,
+            base_asset_id,
+            9_980 + deposit_amount,
+            0,
+            "after N and D",
+        );
+    }
+
+    /// The events stage publishes one balance per maker, from that maker's LAST fill in the
+    /// chain. Pin the premise: when one sweep hits the same maker twice, the first snapshot is
+    /// intermediate and the last one is the maker's final balance.
+    #[test]
+    fn maker_hit_twice_in_one_sweep_last_fill_snapshot_is_its_final_balance() {
+        let mut specs = HashMap::new();
+        let base_asset_id = 1;
+        let quote_asset_id = 2;
+        let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
+        add_spec(market_id, &mut specs);
+        let spec = specs.get_mut(&market_id).unwrap();
+        spec.quote_scale_k = 10;
+
+        let TestEngine {
+            mut producer,
+            risk_engines,
+            receiver: rx,
+        } = setup(specs);
+        let checker = BalanceChecker::new(&risk_engines);
+        let maker_id = 101;
+        let taker_id = 42;
+        let price = 5000;
+        let size = 10_000;
+        checker.set_balance(maker_id, base_asset_id, 2 * size, 0);
+        checker.set_balance(taker_id, quote_asset_id, 10_000_000, 0);
+
+        for order_id in [1, 2] {
+            producer.publish(|cmd| {
+                *cmd = OrderCommand::place_order(
+                    TimeInForce::Gtc,
+                    maker_id,
+                    price,
+                    size,
+                    Side::Ask,
+                    market_id,
+                    order_id,
+                );
+            });
+            let placed = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(placed.status, Status::Placed);
+        }
+        producer.publish(|cmd| {
+            *cmd = OrderCommand::place_order(
+                TimeInForce::Gtc,
+                taker_id,
+                price,
+                2 * size,
+                Side::Bid,
+                market_id,
+                3,
+            );
+        });
+        let filled = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(filled.status, Status::Filled);
+
+        let first = filled.events().expect("two fills");
+        let last = first.next_event.as_deref().expect("two fills");
+        assert!(last.next_event.is_none());
+        assert_eq!(
+            (first.maker_user_id, last.maker_user_id),
+            (maker_id, maker_id)
+        );
+
+        let maker_shard = (maker_id & (risk_engines.len() as u64 - 1)) as usize;
+        let final_balance = [
+            risk_engines[maker_shard].get_balance(maker_id, base_asset_id),
+            risk_engines[maker_shard].get_balance(maker_id, quote_asset_id),
+        ];
+        assert_eq!(last.maker_balance, final_balance);
+        assert_ne!(
+            first.maker_balance, final_balance,
+            "the first fill's snapshot is intermediate and must not be published"
         );
     }
 
