@@ -711,6 +711,7 @@ mod core_pinning_tests {
 #[cfg(test)]
 mod recovery_tests {
     use super::*;
+    use crate::test::PIPELINE_DEADLINE;
     use disruptor::Producer;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -764,9 +765,7 @@ mod recovery_tests {
             });
             let before_journaling = completion.recv_timeout(Duration::from_millis(20));
             journal_release.send(()).unwrap();
-            terminal_entered
-                .recv_timeout(Duration::from_secs(1))
-                .unwrap();
+            terminal_entered.recv_timeout(PIPELINE_DEADLINE).unwrap();
             let while_terminal_held = control.is_enabled();
             terminal_release.send(()).unwrap();
             finisher.join().unwrap();
@@ -775,13 +774,10 @@ mod recovery_tests {
                 before_journaling,
                 Err(mpsc::RecvTimeoutError::Timeout)
             ));
-            completion
-                .recv_timeout(Duration::from_secs(1))
-                .unwrap()
-                .unwrap();
+            completion.recv_timeout(PIPELINE_DEADLINE).unwrap().unwrap();
             assert!(while_terminal_held);
             assert!(!control.is_enabled());
-            let recovered = commands.recv_timeout(Duration::from_secs(1)).unwrap();
+            let recovered = commands.recv_timeout(PIPELINE_DEADLINE).unwrap();
             assert_eq!(recovered.order_id, recording[0].order_id);
             assert_eq!(recovered.timestamp, recording[0].timestamp);
             assert!(commands.try_recv().is_err());
