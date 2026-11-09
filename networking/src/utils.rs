@@ -373,18 +373,19 @@ impl SessionAllocator {
     /// A new allocator
     ///
     /// # Errors
-    /// Returns `ResourceAllocationError` if max < min
+    /// Returns `ResourceAllocationError` if max <= min or the range is too large
     pub fn new(min: i32, max: i32) -> Result<Self, ServerError> {
         if max <= min {
             return Err(ServerError::ResourceAllocationError(format!(
-                "Maximum value {max} must be >= minimum value {min}"
+                "Maximum value {max} must be greater than minimum value {min}"
             )));
         }
 
-        Ok(Self {
-            min,
-            max_count: std::cmp::max(max - min, 1),
-        })
+        let max_count = max.checked_sub(min).ok_or_else(|| {
+            ServerError::ResourceAllocationError(format!("Session range {min}..{max} is too large"))
+        })?;
+
+        Ok(Self { min, max_count })
     }
 
     /// Allocate a new session, avoiding sessions already in use.
@@ -423,5 +424,20 @@ impl SessionAllocator {
     /// Get the maximum number of sessions that can be allocated
     pub fn max_sessions(&self) -> i32 {
         self.max_count
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_allocator_rejects_inverted_range() {
+        assert!(SessionAllocator::new(10, 9).is_err());
+    }
+
+    #[test]
+    fn session_allocator_rejects_range_that_exceeds_i32_capacity() {
+        assert!(SessionAllocator::new(i32::MIN, i32::MAX).is_err());
     }
 }
