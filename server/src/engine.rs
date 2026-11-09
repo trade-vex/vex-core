@@ -153,6 +153,8 @@ impl Default for CorePinning {
 pub struct CoreEngine {
     /// Gateway Publications for sending responses back to gateways
     publications: Arc<Publications>,
+    /// The risk shards the pipeline settles on, kept so their fee totals can be read
+    risk_engines: RiskEngines,
 }
 
 impl CoreEngine {
@@ -252,7 +254,10 @@ impl CoreEngine {
             enable_pinning,
         );
 
-        let engine = Self { publications };
+        let engine = Self {
+            publications,
+            risk_engines: risk_engines_arc,
+        };
         Ok((engine, producer))
     }
 
@@ -537,6 +542,21 @@ impl CoreEngine {
     #[must_use]
     pub fn publications(&self) -> &Arc<Publications> {
         &self.publications
+    }
+
+    /// Trading fees accrued per asset, summed across every risk shard.
+    ///
+    /// Nothing drains the accumulators yet, so this is how the fees are audited. Read it once the
+    /// pipeline is quiescent for a final figure; each shard's total is read under its own lock.
+    #[must_use]
+    pub fn accrued_fees(&self) -> std::collections::BTreeMap<u16, u128> {
+        let mut totals = std::collections::BTreeMap::new();
+        for (asset_id, amount) in self.risk_engines.iter().flat_map(RiskEngine::accrued_fees) {
+            let total: &mut u128 = totals.entry(asset_id).or_default();
+            // Each shard's total is checked against u128::MAX, so this cannot saturate in practice.
+            *total = total.saturating_add(amount);
+        }
+        totals
     }
 }
 
@@ -824,7 +844,10 @@ pub mod test {
                 )
             };
 
-            let engine = CoreEngine { publications };
+            let engine = CoreEngine {
+                publications,
+                risk_engines: risk_engines_arc,
+            };
             Ok((engine, producer))
         }
 
@@ -1009,6 +1032,50 @@ pub mod test {
         fn default() -> Self {
             Self::new()
         }
+    }
+
+    #[test]
+    fn accrued_fees_sum_every_risk_shard() {
+        use common::{MarketType, MatcherTradeEvent, Side, UserBalance};
+
+        let market_id = (1_u32 << 16) | 3_u32;
+        let mut specs = HashMap::new();
+        specs.insert(
+            market_id,
+            CoreMarketSpecification::builder()
+                .market_id(market_id)
+                .market_type(MarketType::Spot)
+                .taker_fee(20)
+                .build()
+                .unwrap(),
+        );
+        let engine = CoreEngine {
+            publications: Arc::new(Publications::new()),
+            risk_engines: CoreEngine::initialize_risk_engines(&specs, NUM_RISK_ENGINES),
+        };
+
+        // One 20 bp taker buy of 10_000 base units (a fee of 20) on each of shards 0 and 1.
+        for user_id in [4_u64, 5] {
+            let shard = &engine.risk_engines[(user_id % NUM_RISK_ENGINES as u64) as usize];
+            shard.set_balance(user_id, quote_asset(market_id), UserBalance::new(0, 10_000));
+            let mut fill = MatcherTradeEvent::default();
+            fill.price = 1;
+            fill.size = 10_000;
+            fill.maker_user_id = 99;
+            shard.handle_trade_event(user_id, market_id, Side::Bid, &mut fill, None);
+        }
+
+        let base = base_asset(market_id);
+        let per_shard: Vec<u128> = engine
+            .risk_engines
+            .iter()
+            .map(|shard| shard.get_accrued_fee(base))
+            .collect();
+        assert_eq!(per_shard, [20, 20, 0, 0]);
+        assert_eq!(
+            engine.accrued_fees(),
+            std::collections::BTreeMap::from([(base, 40)])
+        );
     }
 
     #[test]
