@@ -116,7 +116,7 @@ impl VexConfig {
 
     /// Validate the entire configuration
     pub fn validate(&self) -> Result<()> {
-        self.core_networking.validate()?;
+        self.core_networking.validate(&self.environment)?;
         self.gateway_networking.validate()?;
         self.logging.validate()?;
         self.symbols.validate()?;
@@ -127,6 +127,11 @@ impl VexConfig {
         }
         #[cfg(feature = "balance-preload")]
         if self.balance_preload.enabled {
+            if self.is_production() {
+                return Err(ConfigError::ValidationError(
+                    "Balance preload cannot be enabled in production".to_string(),
+                ));
+            }
             self.balance_preload.validate()?;
         }
         Ok(())

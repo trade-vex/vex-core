@@ -17,12 +17,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // silent Development fallback. Development and test load their defaults when no file exists.
     let mut config = VexConfig::load_auto()?;
 
-    // Override Kafka broker from environment if set
-    if let Ok(kafka_broker) = std::env::var("VEX_KAFKA_BROKER") {
-        info!("Using Kafka broker from environment: {}", kafka_broker);
-        config.kafka_broker = kafka_broker;
-    }
-
     // Disable Aeron Archive for E2E tests (no archive container in test environment)
     // Setting request_control_channel to empty disables archive mode in VexCoreServer
     if std::env::var("VEX_DISABLE_ARCHIVE").is_ok() {

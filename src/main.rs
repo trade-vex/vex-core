@@ -16,10 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration
     let mut config = VexConfig::load_auto()?;
 
-    config.core_networking.local_address = "0.0.0.0".to_string();
-    config.core_networking.context_dir = "/dev/shm/aeron".to_string();
-    config.kafka_broker =
-        std::env::var("KAFKA_BROKER").unwrap_or_else(|_| "localhost:9092".to_string());
+    apply_container_networking_overrides(&mut config);
 
     if let Ok(pinning_str) = std::env::var("ENABLE_CORE_PINNING") {
         if let Ok(pinning_value) = pinning_str.parse::<bool>() {
@@ -104,4 +101,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     engine.join()?;
 
     Ok(())
+}
+
+fn apply_container_networking_overrides(config: &mut VexConfig) {
+    config.core_networking.local_address = "0.0.0.0".to_string();
+    config.core_networking.context_dir = "/dev/shm/aeron".to_string();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // #166 removed the crate-level Environment import; #180's tests still need it.
+    use vex_config::Environment;
+
+    #[test]
+    fn container_networking_overrides_preserve_configured_kafka_broker() {
+        let mut config = VexConfig::new(Environment::Development);
+        config.kafka_broker = "configured-kafka:19092".to_string();
+
+        apply_container_networking_overrides(&mut config);
+
+        assert_eq!(config.kafka_broker, "configured-kafka:19092");
+        assert_eq!(config.core_networking.local_address, "0.0.0.0");
+        assert_eq!(config.core_networking.context_dir, "/dev/shm/aeron");
+    }
 }
