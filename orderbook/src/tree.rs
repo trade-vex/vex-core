@@ -25,9 +25,6 @@ pub trait BookSide {
         &'a mut self,
     ) -> Box<dyn Iterator<Item = (u64, &'a mut PriceLevel)> + 'a>;
 
-    /// Provides an iterator over price levels for generating L2 market data.
-    fn iter_for_l2<'a>(&'a self) -> Box<dyn Iterator<Item = (u64, &'a PriceLevel)> + 'a>;
-
     /// Provides an iterator over price levels for getting prices and volumes
     fn iter(&self) -> Box<dyn Iterator<Item = (u64, &PriceLevel)> + '_>;
 
@@ -90,10 +87,6 @@ impl BookSide for BTreeAskSide {
         Box::new(self.tree.iter_mut().map(|(price, level)| (*price, level)))
     }
 
-    fn iter_for_l2<'a>(&'a self) -> Box<dyn Iterator<Item = (u64, &'a PriceLevel)> + 'a> {
-        Box::new(self.tree.iter().map(|(price, level)| (*price, level)))
-    }
-
     fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (u64, &'a PriceLevel)> + 'a> {
         Box::new(self.tree.iter().map(|(price, level)| (*price, level)))
     }
@@ -142,10 +135,6 @@ impl BookSide for BTreeBidSide {
         &'a mut self,
     ) -> Box<dyn Iterator<Item = (u64, &'a mut PriceLevel)> + 'a> {
         Box::new(self.tree.iter_mut().map(|(price, level)| (price.0, level)))
-    }
-
-    fn iter_for_l2<'a>(&'a self) -> Box<dyn Iterator<Item = (u64, &'a PriceLevel)> + 'a> {
-        Box::new(self.tree.iter().map(|(price, level)| (price.0, level)))
     }
 
     fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = (u64, &'a PriceLevel)> + 'a> {

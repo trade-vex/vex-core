@@ -55,7 +55,6 @@ symbols:
       market_type: Spot
       base_asset: 3
       quote_asset: 1
-      base_scale_k: 100000
       quote_scale_k: 10
       base_native_scale: 1000000000000000000
       quote_native_scale: 1000000
@@ -67,7 +66,6 @@ symbols:
       market_type: FuturesContract
       base_asset: 2
       quote_asset: 1
-      base_scale_k: 1
       quote_scale_k: 1
       base_native_scale: 100000000
       quote_native_scale: 1000000

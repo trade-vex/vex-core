@@ -11,12 +11,12 @@ use std::sync::{Arc, mpsc::Sender};
 use tracing::{error, info};
 
 pub const DUOLOGUE_STREAM_ID: i32 = 1002;
-/// Upper bound on fragments consumed per poll.
+/// Upper bound on fragments consumed per poll. It only bounds the work one poll call does.
 ///
-/// Must not exceed the disruptor ring capacity (`vex_server::engine::BUFFER_SIZE`), otherwise a
-/// single poll can hand the ring more commands than it can hold and the excess is rejected. The
-/// value is duplicated rather than imported because `server` depends on `networking`, not the
-/// reverse; keep the two in step.
+/// It does not decide refusals. Each fragment is published to the ring on its own: one that finds
+/// the ring full is answered `Busy` (`FragmentHandler`), and fragments a poll does not consume
+/// stay in the Aeron log for the next poll. The value matches the default build's ring capacity
+/// (`vex_server::engine::BUFFER_SIZE`, 1024), but nothing depends on that.
 const RING_BUFFER_CAPACITY: usize = 1024;
 
 pub struct Duologue {

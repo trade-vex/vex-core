@@ -132,13 +132,13 @@ version = "1.0.0"
 
     // Set some environment variables
     unsafe {
-        env::set_var("VEX_CORE_NETWORKING__INITIAL_PORT", "47001");
+        env::set_var("VEX__CORE_NETWORKING__INITIAL_PORT", "47001");
     }
     unsafe {
-        env::set_var("VEX_LOGGING__LEVEL", "trace");
+        env::set_var("VEX__LOGGING__LEVEL", "trace");
     }
     unsafe {
-        env::set_var("VEX_GATEWAY_NETWORKING__MAX_MESSAGE_SIZE", "16384");
+        env::set_var("VEX__GATEWAY_NETWORKING__MAX_MESSAGE_SIZE", "16384");
     }
 
     let config_with_env = ConfigLoader::new()
@@ -163,13 +163,13 @@ version = "1.0.0"
 
     // Clean up environment variables
     unsafe {
-        env::remove_var("VEX_CORE_NETWORKING__INITIAL_PORT");
+        env::remove_var("VEX__CORE_NETWORKING__INITIAL_PORT");
     }
     unsafe {
-        env::remove_var("VEX_LOGGING__LEVEL");
+        env::remove_var("VEX__LOGGING__LEVEL");
     }
     unsafe {
-        env::remove_var("VEX_GATEWAY_NETWORKING__MAX_MESSAGE_SIZE");
+        env::remove_var("VEX__GATEWAY_NETWORKING__MAX_MESSAGE_SIZE");
     }
 
     println!();

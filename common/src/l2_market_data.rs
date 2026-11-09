@@ -8,12 +8,9 @@ use crate::L2SIZE;
 pub struct L2MarketData {
     pub ask_prices: Vec<u64>,
     pub ask_volumes: Vec<u64>,
-    pub ask_orders: Vec<u64>,
     pub bid_prices: Vec<u64>,
     pub bid_volumes: Vec<u64>,
-    pub bid_orders: Vec<u64>,
     pub timestamp: u64,
-    pub reference_seq: u64,
 }
 
 impl Default for L2MarketData {
@@ -28,12 +25,9 @@ impl L2MarketData {
         Self {
             ask_prices: Vec::with_capacity(L2SIZE),
             ask_volumes: Vec::with_capacity(L2SIZE),
-            ask_orders: Vec::with_capacity(L2SIZE),
             bid_prices: Vec::with_capacity(L2SIZE),
             bid_volumes: Vec::with_capacity(L2SIZE),
-            bid_orders: Vec::with_capacity(L2SIZE),
             timestamp: 0,
-            reference_seq: 0,
         }
     }
 

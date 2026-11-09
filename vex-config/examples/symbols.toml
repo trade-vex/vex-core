@@ -32,7 +32,6 @@ max_files = 10
   symbol_type = "Spot"
   base_asset = 3928    # ETH (szabo, 1E-6)
   quote_asset = 3762   # XBT (satoshi, 1E-8)
-  base_scale_k = 100000   # 1 lot = 100K szabo (0.1 ETH)
   quote_scale_k = 10      # 1 step = 10 satoshi
   taker_fee = 0
   maker_fee = 0
@@ -45,7 +44,6 @@ max_files = 10
   symbol_type = "FuturesContract"
   base_asset = 978     # EUR
   quote_asset = 840    # USD
-  base_scale_k = 1
   quote_scale_k = 1
   taker_fee = 0
   maker_fee = 0
@@ -58,9 +56,8 @@ max_files = 10
   symbol_type = "Spot"
   base_asset = 3762    # XBT (satoshi, 1E-8)
   quote_asset = 1005   # LTC (litoshi, 1E-8)
-  base_scale_k = 1000000  # 1 lot = 1M satoshi (0.01 BTC)
   quote_scale_k = 10000   # 1 step = 10K litoshi
-  taker_fee = 1900        # 1900 litoshi per lot
-  maker_fee = 700         # 700 litoshi per lot
+  taker_fee = 1900        # 1900 bp (19%) of the asset received
+  maker_fee = 700         # 700 bp (7%) of the asset received
   margin_buy = 0
   margin_sell = 0

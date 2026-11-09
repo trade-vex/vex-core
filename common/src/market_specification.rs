@@ -2,7 +2,6 @@ use crate::MarketType;
 use serde::{Deserialize, Serialize};
 
 /// Core symbol specification that defines trading parameters for a symbol.
-/// This mirrors the Java CoreMarketSpecification class exactly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct CoreMarketSpecification {
     pub market_id: u32,
@@ -11,14 +10,14 @@ pub struct CoreMarketSpecification {
     // Currency pair specification
     pub base_asset: u16,    // base currency
     pub quote_asset: u16,   // quote/counter currency (OR futures contract currency)
-    pub base_scale_k: u64,  // base currency amount multiplier (lot size in base currency units)
     pub quote_scale_k: u64, // quote currency amount multiplier (step size in quote currency units)
 
     // Native scales for atomic calculations
     pub base_native_scale: u64,  // e.g. 100,000,000
     pub quote_native_scale: u64, // e.g. 1,000,000
 
-    // Fees per lot in quote currency units
+    // Fees in basis points of the asset received: base for a bid, quote for an ask. Settlement
+    // charges ceil(amount * fee / 10_000) per fill.
     pub taker_fee: u64, // taker fee (should be >= maker fee)
     pub maker_fee: u64, // maker fee
 
@@ -65,7 +64,6 @@ pub struct CoreMarketSpecificationBuilder {
     market_type: Option<MarketType>,
     base_asset: Option<u16>,
     quote_asset: Option<u16>,
-    base_scale_k: Option<u64>,
     quote_scale_k: Option<u64>,
     base_native_scale: Option<u64>,
     quote_native_scale: Option<u64>,
@@ -84,11 +82,6 @@ impl CoreMarketSpecificationBuilder {
 
     pub fn market_type(mut self, market_type: MarketType) -> Self {
         self.market_type = Some(market_type);
-        self
-    }
-
-    pub fn base_scale_k(mut self, base_scale_k: u64) -> Self {
-        self.base_scale_k = Some(base_scale_k);
         self
     }
 
@@ -128,7 +121,6 @@ impl CoreMarketSpecificationBuilder {
             market_type: self.market_type.ok_or("market_type is required")?,
             base_asset: self.base_asset.ok_or("base_asset is required")?,
             quote_asset: self.quote_asset.ok_or("quote_asset is required")?,
-            base_scale_k: self.base_scale_k.unwrap_or(1),
             quote_scale_k: self.quote_scale_k.unwrap_or(1),
             base_native_scale: self.base_native_scale.unwrap_or(1),
             quote_native_scale: self.quote_native_scale.unwrap_or(1),
