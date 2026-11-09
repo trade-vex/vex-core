@@ -42,18 +42,18 @@ use crate::server::gateway_handler::{
 };
 use crate::server::gateway_manager::GatewayManager;
 use crate::server::replay::{
-    ExtendedRecordingDescriptor, RecorderDescriptorReader, RecordingCounter,
+    ExtendedRecordingDescriptor, RecorderDescriptorReader, RecordingCounter, RecordingInfo,
     assert_replay_complete, drain_replay, ensure_replayable_recording, fail_on_replay_error,
-    is_live_recording, release_recording,
+    is_live_recording, release_recording, replay_lineage, tail_recording, tail_window_start,
 };
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
-use common::OrderCommand;
+use common::{OrderCommand, decode_order_command};
 use disruptor::{MultiProducer, SingleConsumerBarrier};
 use progress::{DRAIN_TIMEOUT, finish_shutdown, wait_until};
 use rusteron_archive::bindings::AERON_NULL_COUNTER_ID;
 use rusteron_archive::{
     Aeron, AeronArchiveAsyncConnect, AeronArchiveReplayParams, AeronAvailableImageLogger,
-    AeronCError, AeronContext, AeronNotificationLogger, AeronSubscription,
+    AeronCError, AeronContext, AeronImage, AeronNotificationLogger, AeronSubscription,
     AeronUnavailableImageLogger, Handler, IntoCString, SourceLocation,
 };
 use rusteron_archive::{AeronArchive, AeronArchiveContext};
@@ -212,18 +212,30 @@ impl VexCoreServer {
         let (archive, subscription_id, recording_id) = if !config.request_control_channel.is_empty()
         {
             let archive = Self::initialize_archive(&config, &aeron)?;
+            let recordings = Self::list_recordings(&archive)?;
 
-            // Replay
-            let recording = if replay {
-                Self::start_replay(
+            // With or without replay, every live command is stamped above the journal's last
+            // command, and its order id is derived from that timestamp.
+            let journal_tail = match tail_recording(&recordings) {
+                Some(record) => Self::read_journal_tail(&aeron, &archive, record, &shutdown)?,
+                None => 0,
+            };
+            publications.set_journal_tail(journal_tail);
+
+            let recording = match (replay, replay_lineage(&recordings)) {
+                (false, _) => None,
+                (true, None) => {
+                    info!(target: "replay", action = "no_recording_available");
+                    None
+                }
+                (true, Some(record)) => Some(Self::start_replay(
                     &aeron,
                     &archive,
+                    record,
                     producer.clone(),
                     Arc::clone(&shutdown),
                     Arc::clone(&publications),
-                )?
-            } else {
-                None
+                )?),
             };
 
             // Start recording
@@ -279,6 +291,8 @@ impl VexCoreServer {
 
             (Some(archive), Some(subscription_id), recording_id)
         } else {
+            // No journal, so no tail to continue from: timestamps, and the order ids derived from
+            // them, follow the wall clock alone (see `Publications::journal_tail`).
             info!(
                 target: "core_server",
                 action = "initialized",
@@ -577,15 +591,8 @@ impl VexCoreServer {
         }
     }
 
-    /// Starts replaying from the last recording if available
-    /// Returns the recording ID if replay was completed successfully
-    fn start_replay(
-        aeron: &Aeron,
-        archive: &AeronArchive,
-        producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
-        shutdown: Arc<AtomicBool>,
-        publications: Arc<Publications>,
-    ) -> Result<Option<ExtendedRecordingDescriptor>, ServerError> {
+    /// Lists the journal's recordings, oldest first, each at its final stop position.
+    fn list_recordings(archive: &AeronArchive) -> Result<Vec<RecordingInfo>, ServerError> {
         // A process killed between starting its recording and its publication connecting leaves
         // a recording subscription with no image, which auto_stop never removes; the archive
         // would then refuse to start or extend the recording ("recording exists"). Stopping it
@@ -608,8 +615,8 @@ impl VexCoreServer {
             Some(&reader),
         );
         // Copy the result out and free the reader before anything below can return early.
-        let last_recording = reader.last_recording.take();
-        let (skipped_empty, skipped_invalid) = (reader.skipped_empty, reader.skipped_invalid);
+        let mut recordings = std::mem::take(&mut reader.recordings);
+        let skipped_invalid = reader.skipped_invalid;
         reader.release();
         let matching_recording_count = matching_recording_count?;
         info!(
@@ -617,143 +624,218 @@ impl VexCoreServer {
             action = "recordings_listed",
             archive_recording_count,
             matching_recording_count,
-            skipped_empty,
             skipped_invalid
         );
         ensure_replayable_recording(skipped_invalid)?;
-        if let Some(record) = &last_recording {
-            let session_id = record.session_id;
-            let recording_id = record.recording_id;
-            let stop_position =
+        for record in &mut recordings {
+            let was_live = is_live_recording(record.stop_position);
+            record.stop_position =
                 release_recording(record, |id| Self::wait_for_recording_stop(archive, id))?;
-            info!(
-                target: "replay",
-                action = "recording_selected",
-                recording_id,
-                session_id,
-                start_position = record.start_position,
-                stop_position,
-                was_live = is_live_recording(record.stop_position)
-            );
-            if stop_position == record.start_position {
+            if was_live {
                 info!(
                     target: "replay",
-                    action = "empty_recording_skipped",
-                    recording_id
+                    action = "live_recording_released",
+                    recording_id = record.recording_id,
+                    stop_position = record.stop_position
                 );
-                return Ok(None);
             }
-            let params = AeronArchiveReplayParams::new(
-                AERON_NULL_COUNTER_ID,
-                i32::MAX,
-                record.start_position,
-                stop_position - record.start_position,
-                0,
-                0,
-            )?;
-            debug!(
-                target: "replay",
-                action = "replay_params",
-                params = ?params
-            );
-            let replay_session_id = archive.start_replay(
-                recording_id,
-                &RECORDING_CHANNEL.into_c_string(),
-                REPLAY_STREAM_ID,
-                &params,
-            )?;
-            // Stop a replay that is still streaming if startup fails before it completes.
-            let stop_replay_on_error = UndoOnError::new(|| {
-                if let Err(error) = archive.stop_replay(replay_session_id) {
-                    warn!(
-                        target: "replay",
-                        action = "failed_replay_stop_failed",
-                        replay_session_id,
-                        error = %error
-                    );
-                }
-            });
-            // The replay image's session id is the low 32 bits of the replay session id.
-            let image_session_id = replay_session_id as i32;
-
-            let replay_channel_with_session =
-                format!("{}?session-id={}", RECORDING_CHANNEL, image_session_id);
-            info!(
-                target: "replay",
-                action = "subscription_created",
-                channel = %replay_channel_with_session
-            );
-
-            let subscription = aeron.add_subscription(
-                &replay_channel_with_session.into_c_string(),
-                REPLAY_STREAM_ID,
-                None::<&Handler<AeronAvailableImageLogger>>,
-                None::<&Handler<AeronUnavailableImageLogger>>,
-                Duration::from_secs(5),
-            )?;
-
-            wait_for_startup_connection("replay subscription", || subscription.is_connected())?;
-
-            let image = subscription.image_by_session_id(image_session_id);
-            if image.get_inner().is_null() {
-                return Err(ServerError::ReplayError("replay image unavailable".into()));
-            }
-            // Created only now, so no early return above can strand its producer clone (which
-            // would keep the disruptor from shutting down after a failed start).
-            let mut message_handler = Handler::leak(ReplayFragmentHandler {
-                producer,
-                gateway_id: 0,
-                commands_published: 0,
-                replay_error: None,
-                publications: Arc::clone(&publications),
-                shutdown: Arc::clone(&shutdown),
-            });
-            let replay_result =
-                drain_replay(record.start_position, stop_position, DRAIN_TIMEOUT, || {
-                    if shutdown.load(Ordering::Acquire) {
-                        return Err(ServerError::ReplayError("replay cancelled".into()));
-                    }
-                    let before = message_handler.commands_published;
-                    let fragments = image.poll(Some(&message_handler), 1)?;
-                    fail_on_replay_error(message_handler.replay_error.as_deref())?;
-                    assert_replay_complete(
-                        i64::from(fragments),
-                        message_handler.commands_published - before,
-                    )?;
-                    Ok((
-                        image.position(),
-                        image.is_end_of_stream() || image.is_closed(),
-                    ))
-                });
-            // Release the producer even on replay failure; callbacks are no longer polled.
-            message_handler.release();
-            if replay_result.is_ok() {
-                // A complete replay has already ended on the archive side.
-                stop_replay_on_error.disarm();
-            }
-            subscription.image_release(&image)?;
-            subscription.close::<AeronNotificationLogger>(None)?;
-            replay_result?;
-            publications
-                .drain_pipeline()
-                .map_err(|e| ServerError::ReplayError(e.to_string()))?;
-            info!(
-                target: "replay",
-                action = "completed",
-                recording_id,
-                session_id
-            );
-            let extended_recording_descriptor = ExtendedRecordingDescriptor::new(
-                record.initial_term_id,
-                stop_position,
-                record.term_buffer_length,
-                recording_id,
-            )?;
-            Ok(Some(extended_recording_descriptor))
-        } else {
-            info!(target: "replay", action = "no_recording_available");
-            Ok(None)
         }
+        Ok(recordings)
+    }
+
+    /// Timestamp of the last command in `record`, which must hold one. Replays only the term
+    /// that holds it.
+    fn read_journal_tail(
+        aeron: &Aeron,
+        archive: &AeronArchive,
+        record: &RecordingInfo,
+        shutdown: &AtomicBool,
+    ) -> Result<u64, ServerError> {
+        let mut tail = None;
+        let mut decode_error = None;
+        Self::replay_range(
+            aeron,
+            archive,
+            record.recording_id,
+            tail_window_start(record),
+            record.stop_position,
+            shutdown,
+            |image| {
+                image.poll_once(
+                    |buffer, _| match decode_order_command(buffer) {
+                        Ok(command) => tail = Some(command.timestamp),
+                        Err(e) => {
+                            decode_error =
+                                Some(format!("failed to decode recorded order command: {e:?}"))
+                        }
+                    },
+                    10,
+                )?;
+                fail_on_replay_error(decode_error.as_deref())
+            },
+        )?;
+        let tail = tail.ok_or_else(|| {
+            ServerError::ReplayError(format!(
+                "recording {} holds no command in its last term",
+                record.recording_id
+            ))
+        })?;
+        info!(
+            target: "replay",
+            action = "journal_tail_read",
+            recording_id = record.recording_id,
+            timestamp = tail
+        );
+        Ok(tail)
+    }
+
+    /// Replays `record` into the pipeline and returns the descriptor that extends it.
+    fn start_replay(
+        aeron: &Aeron,
+        archive: &AeronArchive,
+        record: &RecordingInfo,
+        producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
+        shutdown: Arc<AtomicBool>,
+        publications: Arc<Publications>,
+    ) -> Result<ExtendedRecordingDescriptor, ServerError> {
+        let (recording_id, session_id) = (record.recording_id, record.session_id);
+        info!(
+            target: "replay",
+            action = "recording_selected",
+            recording_id,
+            session_id,
+            start_position = record.start_position,
+            stop_position = record.stop_position
+        );
+        let mut message_handler = Handler::leak(ReplayFragmentHandler {
+            producer,
+            gateway_id: 0,
+            commands_published: 0,
+            replay_error: None,
+            publications: Arc::clone(&publications),
+            shutdown: Arc::clone(&shutdown),
+        });
+        let replay_result = Self::replay_range(
+            aeron,
+            archive,
+            recording_id,
+            record.start_position,
+            record.stop_position,
+            &shutdown,
+            |image| {
+                let before = message_handler.commands_published;
+                let fragments = image.poll(Some(&message_handler), 1)?;
+                fail_on_replay_error(message_handler.replay_error.as_deref())?;
+                assert_replay_complete(
+                    i64::from(fragments),
+                    message_handler.commands_published - before,
+                )
+            },
+        );
+        // Release the producer whatever the outcome: a stranded clone would keep the disruptor
+        // from shutting down after a failed start. Callbacks are no longer polled.
+        message_handler.release();
+        replay_result?;
+        publications
+            .drain_pipeline()
+            .map_err(|e| ServerError::ReplayError(e.to_string()))?;
+        info!(
+            target: "replay",
+            action = "completed",
+            recording_id,
+            session_id
+        );
+        ExtendedRecordingDescriptor::new(
+            record.initial_term_id,
+            record.stop_position,
+            record.term_buffer_length,
+            recording_id,
+        )
+    }
+
+    /// Replays `[start, stop)` of a recording, calling `poll` to poll its image until the image
+    /// reaches `stop`.
+    fn replay_range(
+        aeron: &Aeron,
+        archive: &AeronArchive,
+        recording_id: i64,
+        start: i64,
+        stop: i64,
+        shutdown: &AtomicBool,
+        mut poll: impl FnMut(&AeronImage) -> Result<(), ServerError>,
+    ) -> Result<(), ServerError> {
+        let params = AeronArchiveReplayParams::new(
+            AERON_NULL_COUNTER_ID,
+            i32::MAX,
+            start,
+            stop - start,
+            0,
+            0,
+        )?;
+        debug!(
+            target: "replay",
+            action = "replay_params",
+            params = ?params
+        );
+        let replay_session_id = archive.start_replay(
+            recording_id,
+            &RECORDING_CHANNEL.into_c_string(),
+            REPLAY_STREAM_ID,
+            &params,
+        )?;
+        // Stop a replay that is still streaming if startup fails before it completes.
+        let stop_replay_on_error = UndoOnError::new(|| {
+            if let Err(error) = archive.stop_replay(replay_session_id) {
+                warn!(
+                    target: "replay",
+                    action = "failed_replay_stop_failed",
+                    replay_session_id,
+                    error = %error
+                );
+            }
+        });
+        // The replay image's session id is the low 32 bits of the replay session id.
+        let image_session_id = replay_session_id as i32;
+
+        let replay_channel_with_session =
+            format!("{}?session-id={}", RECORDING_CHANNEL, image_session_id);
+        info!(
+            target: "replay",
+            action = "subscription_created",
+            channel = %replay_channel_with_session
+        );
+
+        let subscription = aeron.add_subscription(
+            &replay_channel_with_session.into_c_string(),
+            REPLAY_STREAM_ID,
+            None::<&Handler<AeronAvailableImageLogger>>,
+            None::<&Handler<AeronUnavailableImageLogger>>,
+            Duration::from_secs(5),
+        )?;
+
+        wait_for_startup_connection("replay subscription", || subscription.is_connected())?;
+
+        let image = subscription.image_by_session_id(image_session_id);
+        if image.get_inner().is_null() {
+            return Err(ServerError::ReplayError("replay image unavailable".into()));
+        }
+        let replay_result = drain_replay(start, stop, DRAIN_TIMEOUT, || {
+            if shutdown.load(Ordering::Acquire) {
+                return Err(ServerError::ReplayError("replay cancelled".into()));
+            }
+            poll(&image)?;
+            Ok((
+                image.position(),
+                image.is_end_of_stream() || image.is_closed(),
+            ))
+        });
+        if replay_result.is_ok() {
+            // A complete replay has already ended on the archive side.
+            stop_replay_on_error.disarm();
+        }
+        subscription.image_release(&image)?;
+        subscription.close::<AeronNotificationLogger>(None)?;
+        replay_result
     }
 
     /// Gets core configuration

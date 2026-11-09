@@ -195,6 +195,8 @@ make media-driver  # If needed
 VEX_ENV=development ./target/release/vex-core
 ```
 
+Every start, with or without `--replay`, reads the last journaled command from the archive (`journal_tail_read`) and stamps live commands above it, so order ids and timestamps never repeat any the archive holds, even if this host's clock is behind. A start fails if it cannot read it. With journaling disabled there is no journal: ids and timestamps follow the wall clock alone.
+
 ### Journal Replay
 
 ```bash

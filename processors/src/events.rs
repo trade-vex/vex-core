@@ -668,8 +668,9 @@ fn final_maker_balances(
 ///      `user_id`.
 /// 2. **`timestamp` strictly increases per command.** Every event a command produces carries the
 ///    command's timestamp, which journaling makes strictly increasing per command. It never
-///    repeats and never steps backwards with the wall clock, and a restart that replays the
-///    journal (`--replay`) continues above the previous run's last command.
+///    repeats and never steps backwards with the wall clock, and every start, with or without
+///    `--replay`, continues above the last command in the journal. Order ids are derived from it,
+///    so an id is never issued twice either, within a run or across a restart.
 /// 3. **At most one event per key per command**, on every topic. In particular a maker hit by
 ///    several fills of one taker gets one `balances` event per asset, not one per fill.
 /// 4. **That event holds the key's state after the command.** Balances are snapshotted in R2,
@@ -708,11 +709,15 @@ fn final_maker_balances(
 ///   is really missing stalls at send rather than aborting; see [`send_failure`].
 /// - Adding partitions to a topic moves keys: each partition stays ordered, but a key's events
 ///   from before and after the change can sit in different partitions.
-/// - A restart WITHOUT replay starts an empty ledger with no seed; its timestamps are ordered
-///   against the previous run's only by the wall clock.
-/// - A key is only as unique as its id. Order ids come from the snowflake generator, which is
-///   not seeded from the journal: a restart on a host whose clock is behind the previous run's
-///   can re-issue one of that run's order ids.
+/// - Without journaling (no archive control channel, as `VEX_DISABLE_ARCHIVE` sets) there is no
+///   journal to continue from: timestamps, and the order ids derived from them, follow the wall
+///   clock alone, so a restart on a host whose clock is behind the previous run's can repeat
+///   them. The same holds for balance preload (development and test only), which runs before
+///   the journal is read.
+/// - The journal is what the archive recorded. If the host or media driver dies after a
+///   command's events were sent but before the archive recorded the command, the restart does not
+///   see it and, on a host whose clock is behind, can stamp a new command with its timestamp and
+///   id.
 pub struct KafkaEventsHandler {
     sender: OrderedSender,
     publications: Arc<Publications>,

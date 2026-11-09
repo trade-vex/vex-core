@@ -157,41 +157,20 @@ The system maintains an append-only journal via Aeron Archive. State reconstruct
 
 **Field Transformations**:
 
-When an OrderCommand arrives from the FragmentHandler, several fields are set before entering the disruptor:
+Ingress (`FragmentHandler`, networking/src/server/cmd_handler.rs) sets `status = Processing` and records the sending gateway in `route_gateway_id`, which the events handler uses to route the response. A cancel's `order_id` is the client's id of the order to cancel.
 
-```rust
-// In FragmentHandler (networking/src/server/cmd_handler.rs)
-order_command.status = Status::Processing;
-
-if order_command.command == PlaceOrder {
-    order_command.order_id = gateway_id as u64;  // Temporary: actual ID assigned in journaling
-} else {  // CancelOrder
-    order_command.user_id = gateway_id as u64;   // Store gateway_id for response routing
-}
-```
-
-**Field Assignment Rationale**:
-
-1. **status = Processing**: Indicates the order has entered the pipeline but not yet validated by risk engines.
-
-2. **order_id = gateway_id (PlaceOrder)**: The `order_id` field is repurposed to carry the gateway_id through the disruptor. In the journaling processor, this value becomes the input to the Snowflake generator:
+The journaling processor then stamps every command and assigns an order id to every command but a cancel:
 
 ```rust
 // In JournalingProcessor (processors/src/journaling.rs)
-if cmd.command != CancelOrder {
-    cmd.order_id = self.snowflake.generate(cmd.order_id).unwrap();
+cmd.timestamp = self.next_timestamp();
+if cmd.command != OrderCommandType::CancelOrder {
+    cmd.order_id = self
+        .snowflake
+        .generate(cmd.timestamp, cmd.route_gateway_id as u64)
+        .unwrap();
 }
 ```
-
-The Snowflake algorithm embeds the gateway_id into the lower 4 bits of the generated order_id.
-
-3. **user_id = gateway_id (CancelOrder)**: For cancel orders, the `order_id` field contains the ID of the order being cancelled (provided by the client). This order_id might be invalid, malformed, or reference a non-existent order. If we tried to extract gateway_id from this potentially incorrect order_id, response routing would fail. As a conservative measure, we store the known-correct gateway_id in the `user_id` field. The `user_id` field is not required for cancel order logic, making it a safe location for gateway_id storage.
-
-**Gateway ID Preservation Requirement**:
-
-The gateway_id must be preserved because the Events Handler needs it to route responses back to the correct gateway:
-- For PlaceOrder: gateway_id is embedded in the newly generated order_id
-- For CancelOrder: gateway_id is stored in user_id field since the order_id from the client cannot be trusted
 
 **Snowflake ID Structure** (64 bits):
 ```
@@ -201,16 +180,12 @@ The gateway_id must be preserved because the Events Handler needs it to route re
 └─────────────┴────────────┴─────────┘
 ```
 
-**Snowflake Generation** (processors/src/journaling.rs:32):
-```rust
-cmd.order_id = self.snowflake.generate(cmd.order_id).unwrap();
-cmd.timestamp = self.snowflake.timestamp();
-```
-
-The `generate()` function takes the gateway_id (stored in order_id) and produces a new order_id with:
-- **Timestamp** (48 bits): Milliseconds since epoch, in MSB for natural time ordering
-- **Sequence** (12 bits): Counter incremented within the same millisecond
+An id is the command's timestamp plus its gateway (common/src/snowflake.rs):
+- **Timestamp** (48 bits): ~1.024 µs ticks since 2025-01-01 (the timestamp's nanoseconds >> 10), in the MSB for natural time ordering
+- **Sequence** (12 bits): the timestamp's nanoseconds within its tick (0-1023), which sequences the commands of one tick
 - **Gateway** (4 bits): Gateway identifier (0-15)
+
+Ids therefore order exactly as their timestamps do, and are as unique: journaling stamps every command strictly above the previous one and above the last command in the journal (see Timestamp Field), so an id is never issued twice, within a run or across a restart. A tick holds 1024 nanoseconds, so its sequence cannot overflow.
 
 **Design Decision: Monotonically Increasing Order IDs**:
 
@@ -235,22 +210,9 @@ The `orders` VecDeque stores orders in insertion order. Since orders are assigne
 - **Deterministic Replay**: Archive replay processes commands in order_id sequence, preserving original execution order
 - **No Sorting Overhead**: VecDeque remains sorted without explicit sorting operations
 
-**Sequence Overflow Handling** (common/src/snowflake.rs:88-95):
-
-If more than 4095 (2^12 - 1) orders arrive within the same millisecond:
-```rust
-if self.sequence > STEP_MAX {
-    let next_timestamp = self.wait_next_millis(current_timestamp)?;
-    self.last_timestamp = next_timestamp;
-    self.sequence = 0;
-}
-```
-
-The generator busy-waits until the next millisecond and resets the sequence. This preserves monotonicity at the cost of latency during extreme bursts (>4M orders/sec).
-
 **Timestamp Field**:
 
-Separate from the order_id timestamp component, the `cmd.timestamp` field is the command's journaled time: wall-clock nanoseconds, forced strictly above the previous command's (`JournalingProcessor::next_timestamp`) and continued from the journal on `--replay`. Every Kafka event a command produces, `orderbook` included, carries it.
+The `cmd.timestamp` field is the command's journaled time: wall-clock nanoseconds, forced strictly above the previous command's and above the journal tail (`JournalingProcessor::next_timestamp`). The journal tail is the timestamp of the last command in the archive, which the server reads on every start, with or without `--replay`, by replaying only the term that holds it (`VexCoreServer::read_journal_tail`). With journaling disabled there is no tail, and timestamps, and the ids derived from them, follow the wall clock alone. Every Kafka event a command produces, `orderbook` included, carries it.
 
 **Replay Mode**:
 
@@ -600,18 +562,18 @@ The following examples trace order processing through all pipeline stages with c
 
 **Stage 1: Journaling Processor**
 - Sequence claimed: 1000
+- Timestamp assignment: `cmd.timestamp = 1735696793249403904`
 - Snowflake generation:
   ```rust
-  order_id = snowflake.generate(3)  // Input: gateway_id
+  order_id = snowflake.generate(cmd.timestamp, 3)  // Input: timestamp, gateway_id
   // Output: 0x0001A2B3C4D50003
   // Breakdown: timestamp=0x0001A2B3C4D5, sequence=0, gateway=3
   ```
-- Timestamp assignment: `cmd.timestamp = 1735689600123`
 - Archive publication: Publishes to `aeron:ipc` stream 2001
 - Result:
   ```
   order_id: 0x0001A2B3C4D50003 (assigned)
-  timestamp: 1735689600123
+  timestamp: 1735696793249403904
   status: Processing
   ```
 
@@ -722,7 +684,7 @@ The following examples trace order processing through all pipeline stages with c
 **Stage 1: Journaling Processor**
 - Sequence: 1001
 - Snowflake: `order_id = 0x0001A2B3C4D60005` (gateway 5)
-- Timestamp: 1735689600234
+- Timestamp: 1735696793249404928
 - Archive publication
 
 **Stage 2: Risk Engine R1**
@@ -914,7 +876,7 @@ maker_balance[1] = UserBalance { available: prev_usd + 50,174.9, locked: 0 }
 **Stage 1: Journaling Processor**
 - Check command type: CancelOrder
 - Skip Snowflake generation: `order_id` already contains target
-- Timestamp: `cmd.timestamp = 1735689600456`
+- Timestamp: `cmd.timestamp = 1735696793249406000`
 - Archive publication
 
 **Stage 2: Risk Engine R1**
@@ -1230,11 +1192,12 @@ Polls replay subscription, processing fragments and publishing to disruptor. Tra
 
 **Normal Mode**:
 - No replay
+- Reads the journal tail: the last command of the newest recording that holds any
 - Calls `start_recording()` to create new recording
 - Full pipeline active (journaling, events publishing)
 
 **Replay Mode**:
-1. Calls `list_recordings_for_uri()` to find last recording
+1. Calls `list_recordings_for_uri()` to find last recording, and reads the journal tail as in normal mode
 2. Calls `start_replay()` to initiate replay from Archive
 3. Creates subscription to receive replayed messages
 4. Polls subscription, publishing each message to disruptor
@@ -1377,34 +1340,18 @@ Matching engines update prices with `Ordering::Release` after modifying orderboo
 
 ### Snowflake ID Generation
 
-**Algorithm**:
+**Algorithm** (bounds checks omitted):
 ```rust
-pub fn generate(&mut self, gateway_id: u64) -> Result<u64> {
-    let current_timestamp = self.current_time_millis();
-
-    if current_timestamp == self.last_timestamp {
-        self.sequence += 1;
-        if self.sequence > SEQUENCE_MAX {
-            // Wait for next millisecond
-            let next_timestamp = self.wait_next_millis(current_timestamp);
-            self.last_timestamp = next_timestamp;
-            self.sequence = 0;
-        }
-    } else {
-        self.last_timestamp = current_timestamp;
-        self.sequence = 0;
-    }
-
-    let id = (current_timestamp << TIMESTAMP_SHIFT)
-           | (self.sequence << SEQUENCE_SHIFT)
-           | gateway_id;
-    Ok(id)
+pub fn generate(&self, timestamp_ns: u64, gateway: u64) -> Result<u64, SnowflakeError> {
+    let since_epoch = timestamp_ns - self.epoch_ns;
+    let tick = since_epoch >> TIME_GRANULARITY_SHIFT; // ~1.024 µs
+    let sequence = since_epoch & TICK_NANOS_MASK; // nanoseconds within the tick
+    Ok((tick << TIMESTAMP_SHIFT) | (sequence << SEQUENCE_SHIFT) | gateway)
 }
 ```
 
 **ID Properties**:
-- Globally unique (per gateway)
-- Monotonically increasing within gateway
+- Unique and strictly increasing across gateways, as the journaling timestamps they derive from are, including across restarts while journaling is enabled
 - Sortable by timestamp
 - Extractable metadata (gateway ID, timestamp)
 

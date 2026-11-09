@@ -31,6 +31,7 @@ impl Fixture {
         }
     }
 
+    /// Records `commands` commands whose order ids and timestamps are 1, 2, 3, ...
     fn recording(&self, commands: usize) -> (i64, i64, AeronPublication) {
         let channel = "aeron:ipc?term-length=65536".into_c_string();
         let subscription = self
@@ -61,6 +62,7 @@ impl Fixture {
         for id in 0..commands {
             let command = OrderCommand {
                 order_id: id as u64 + 1,
+                timestamp: id as u64 + 1,
                 ..OrderCommand::default()
             };
             let mut bytes = [0; ORDERCOMMANDSIZE];
@@ -83,14 +85,15 @@ impl Fixture {
         publications: Arc<Publications>,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
     ) -> ExtendedRecordingDescriptor {
+        let recordings = VexCoreServer::list_recordings(&self.archive).unwrap();
         VexCoreServer::start_replay(
             &self.aeron,
             &self.archive,
+            replay_lineage(&recordings).expect("a recording to replay"),
             producer,
             Arc::new(AtomicBool::new(false)),
             publications,
         )
-        .unwrap()
         .unwrap()
     }
 }
@@ -172,6 +175,41 @@ fn c8_1_live_term_rotation_and_truncated_replay() {
     subscription.image_release(&image).unwrap();
     subscription.close::<AeronNotificationLogger>(None).unwrap();
     assert!(error.to_string().contains("replay incomplete"));
+}
+
+#[test]
+#[ignore = "needs dedicated live Aeron driver/archive; set VEX_RECOVERY_AERON_DIR and VEX_RECOVERY_ARCHIVE_CHANNEL"]
+fn live_start_reads_the_journal_tail_from_its_last_term_with_and_without_replay() {
+    let fixture = Fixture::new();
+    // The first term ends in padding and the last command opens the second.
+    let count = (65_536 / FRAMESIZE + 1) as usize;
+    let (id, subscription_id, publication) = fixture.recording(count);
+    fixture
+        .archive
+        .stop_recording_subscription(subscription_id)
+        .unwrap();
+    VexCoreServer::wait_for_recording_stop(&fixture.archive, id).unwrap();
+    publication.close::<AeronNotificationLogger>(None).unwrap();
+
+    // The replaying start extends the recording. The fresh start after it leaves a newer, empty
+    // recording: the last start then replays nothing, but still continues above the tail.
+    for (replay, replayed_commands) in [(true, count), (false, 0), (true, 0)] {
+        let publications = Arc::new(Publications::new());
+        let replayed = Arc::new(Mutex::new(Vec::new()));
+        let producer = collector(Arc::clone(&publications), Arc::clone(&replayed));
+        let mut server = VexCoreServer::new(
+            fixture.config.clone(),
+            GatewayAuthenticationKey::default(),
+            producer,
+            Arc::clone(&publications),
+            replay,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        assert_eq!(publications.journal_tail(), count as u64);
+        assert_eq!(replayed.lock().unwrap().len(), replayed_commands);
+        server.shutdown().unwrap();
+    }
 }
 
 #[test]
@@ -282,8 +320,8 @@ fn c8_3_live_restart_after_a_crash_mid_recording_replays_and_extends_that_record
         )
         .unwrap();
     let id = reader
-        .last_recording
-        .as_ref()
+        .recordings
+        .last()
         .expect("child recording")
         .recording_id;
     reader.release();
