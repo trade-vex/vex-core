@@ -1,27 +1,25 @@
 //! Trade event verification utilities
 //!
-//! This module provides verification functions for trade events in Redis.
-//! Trade events are published by the Events Handler.
+//! This module provides verification functions for trade events.
+//! Trade events are published to Kafka by the Events Handler.
 
-use crate::test_framework::redis::RedisVerifier;
+use crate::test_framework::kafka::KafkaVerifier;
 use crate::test_framework::types::*;
 use std::time::Duration;
 use tracing::{debug, info};
 
-/// Verifier for trade events in Redis
+/// Verifier for trade events
 ///
-/// Verifies trades that are published to Redis by the Events Handler.
-/// Key formats:
-/// - Stream: `trades:market:{market_id}`
-/// - ZSet: `market:{market_id}:trades` (sorted by timestamp)
+/// Verifies trades that are published to Kafka by the Events Handler.
+/// Topic `trades`, key `{taker_order_id}:{maker_order_id}`
 pub struct TradeVerifier<'a> {
-    redis: &'a mut RedisVerifier,
+    kafka: &'a mut KafkaVerifier,
 }
 
 impl<'a> TradeVerifier<'a> {
     /// Create a new trade verifier
-    pub fn new(redis: &'a mut RedisVerifier) -> Self {
-        Self { redis }
+    pub fn new(kafka: &'a mut KafkaVerifier) -> Self {
+        Self { kafka }
     }
 
     /// Assert a trade exists matching the given criteria
@@ -30,7 +28,7 @@ impl<'a> TradeVerifier<'a> {
         market_id: u32,
         criteria: &TradeCriteria,
     ) -> TestResult<()> {
-        let trades = self.redis.get_trades(market_id, 100).await?;
+        let trades = self.kafka.get_trades(market_id, 100).await?;
         info!("Trades fetched for market {}: {:?}", market_id, trades);
 
         let found = trades.iter().any(|trade| criteria.matches(trade));
@@ -54,7 +52,7 @@ impl<'a> TradeVerifier<'a> {
         market_id: u32,
         expected_count: usize,
     ) -> TestResult<()> {
-        let trades = self.redis.get_trades(market_id, 1000).await?;
+        let trades = self.kafka.get_trades(market_id, 1000).await?;
 
         if trades.len() != expected_count {
             return Err(TestError::Verification {
@@ -80,7 +78,7 @@ impl<'a> TradeVerifier<'a> {
         market_id: u32,
         min_count: usize,
     ) -> TestResult<()> {
-        let trades = self.redis.get_trades(market_id, min_count + 10).await?;
+        let trades = self.kafka.get_trades(market_id, min_count + 10).await?;
 
         if trades.len() < min_count {
             return Err(TestError::Verification {
@@ -126,8 +124,8 @@ impl<'a> TradeVerifier<'a> {
         &mut self,
         market_id: u32,
         count: usize,
-    ) -> TestResult<Vec<RedisTrade>> {
-        self.redis.get_trades(market_id, count).await
+    ) -> TestResult<Vec<TradeEvent>> {
+        self.kafka.get_trades(market_id, count).await
     }
 
     /// Wait for trade event and verify it matches criteria
@@ -136,9 +134,9 @@ impl<'a> TradeVerifier<'a> {
         market_id: u32,
         criteria: &TradeCriteria,
         timeout: Duration,
-    ) -> TestResult<RedisTrade> {
+    ) -> TestResult<TradeEvent> {
         let trade = self
-            .redis
+            .kafka
             .wait_for_trade(market_id, criteria, timeout)
             .await?;
 
@@ -198,7 +196,7 @@ impl<'a> TradeVerifier<'a> {
 
     /// Assert NO trades exist (useful for FOK rejection, self-match prevention, etc.)
     pub async fn assert_no_trades(&mut self, market_id: u32) -> TestResult<()> {
-        let trades = self.redis.get_trades(market_id, 10).await?;
+        let trades = self.kafka.get_trades(market_id, 10).await?;
 
         if !trades.is_empty() {
             return Err(TestError::Verification {
@@ -216,7 +214,7 @@ impl<'a> TradeVerifier<'a> {
 
     /// Verify trades are sorted by timestamp (ascending)
     pub async fn assert_trades_sorted_by_timestamp(&mut self, market_id: u32) -> TestResult<()> {
-        let trades = self.redis.get_trades(market_id, 100).await?;
+        let trades = self.kafka.get_trades(market_id, 100).await?;
 
         for window in trades.windows(2) {
             if window[0].timestamp > window[1].timestamp {
@@ -242,8 +240,8 @@ impl<'a> TradeVerifier<'a> {
         market_id: u32,
         maker_order_id: u64,
         taker_order_id: u64,
-    ) -> TestResult<Option<RedisTrade>> {
-        let trades = self.redis.get_trades(market_id, 100).await?;
+    ) -> TestResult<Option<TradeEvent>> {
+        let trades = self.kafka.get_trades(market_id, 100).await?;
 
         Ok(trades.into_iter().find(|trade| {
             trade.maker_order_id == maker_order_id && trade.taker_order_id == taker_order_id
@@ -252,7 +250,7 @@ impl<'a> TradeVerifier<'a> {
 
     /// Calculate total traded volume for a market
     pub async fn calculate_total_volume(&mut self, market_id: u32) -> TestResult<u64> {
-        let trades = self.redis.get_trades(market_id, 1000).await?;
+        let trades = self.kafka.get_trades(market_id, 1000).await?;
         let total = trades.iter().map(|trade| trade.size).sum();
 
         debug!("Total traded volume for market {}: {}", market_id, total);

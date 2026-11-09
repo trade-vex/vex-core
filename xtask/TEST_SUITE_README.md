@@ -2,26 +2,28 @@
 
 ## Overview
 
-Production-grade test framework for VEX-CORE trading system. Validates end-to-end order processing: submission → journaling → matching → event publishing to Redis.
+Production-grade test framework for VEX-CORE trading system. Validates end-to-end order processing: submission → journaling → matching → event publishing to Kafka.
 
 ## Architecture
 
 ```
-Test Framework → VexCore → [Journaling, Risk, Orderbook] → Events Handler → Redis
+Test Framework → VexCore → [Journaling, Risk, Orderbook] → Events Handler → Kafka → Test Framework
 ```
 
 ## Two-Phase Verification
 
 1. **Response Verification** - Immediate validation of OrderCommand response fields
-2. **Redis Verification** - Eventual consistency validation of published state
+2. **Kafka Verification** - Eventual consistency validation of the events the core publishes
 
 ## Running Tests
 
 ### Prerequisites
 
 1. VexCore server: `cargo run --bin test_server`
-2. Redis: Running on port 6380 (Docker: 6380→6379)
-3. Kafka: localhost:9092
+2. Kafka with a Schema Registry: the server publishes to its configured broker and registers its
+   schemas at `SCHEMA_REGISTRY_URL` (default `http://localhost:8081`); the suite reads the events
+   back from `TestConfig::kafka_brokers` (default `localhost:19092`, Redpanda's host listener in
+   `tests/docker-compose.yml`)
 
 ### Execute
 
@@ -128,9 +130,26 @@ Type-safe fluent API for OrderCommands with compile-time guarantees.
 - `TradeVerifier` - Trade matching with TradeCriteria
 - `OrderbookVerifier` - Orderbook validation with wait APIs
 
+### Kafka Verification
+
+`KafkaVerifier` (`test_framework/kafka.rs`) consumes the topics the core publishes to, decoding
+each value with the `processors` crate's protobuf types after stripping its Schema Registry
+framing. When the test context is created it reads each topic from its current end, so a run sees
+only its own events, whatever the topics already hold. It keeps what a downstream reader keeps:
+
+| Topic | Key | Message | Kept |
+|-------|-----|---------|------|
+| `balances` | `{user_id}:{asset_id}` | `BalanceEvent` | Latest per key |
+| `trades` | `{taker_order_id}:{maker_order_id}` | `TradeEvent` | Every trade, in publication order |
+| `orderbook` | `{market_id}` | `OrderbookEvent` (levels as JSON) | Latest per key |
+
+Every read first takes in all the events the broker holds at that moment. The core publishes
+asynchronously, after it has answered the command, so assertions made right after a command
+either wait first or use a wait-based API.
+
 ### Wait-Based APIs
 
-All Redis verifications use wait-based APIs to handle eventual consistency:
+Wait-based APIs handle eventual consistency:
 - `wait_for_trade()` - Poll until trade matching criteria appears
 - `wait_for_orderbook_update()` - Wait for orderbook publication
 - `wait_and_assert_level()` - Wait for specific price level
@@ -143,14 +162,6 @@ All Redis verifications use wait-based APIs to handle eventual consistency:
 3. Orderbook Ordering: Bids descending, asks ascending
 4. No Crossed Book: `best_ask ≥ best_bid`
 5. Trade Validity: Size > 0, valid prices
-
-## Redis Key Patterns
-
-| Pattern | Type | Description |
-|---------|------|-------------|
-| `user:{id}:asset:{id}:balance` | HASH | User balance |
-| `market:{id}:trades` | ZSET | Trades (sorted by timestamp) |
-| `orderbook:market:{id}` | STRING | Orderbook snapshot (JSON, TTL 60s) |
 
 ## Market Configuration
 
@@ -186,8 +197,8 @@ async fn test_example() -> TestResult<()> {
     // Phase 1: Response verification
     ResponseVerifier::assert_placed(&response)?;
 
-    // Phase 2: Redis verification
-    let mut verifier = BalanceVerifier::new(&mut ctx.redis);
+    // Phase 2: Kafka verification
+    let mut verifier = BalanceVerifier::new(&mut ctx.kafka);
     verifier.assert_locked_eq(1, 1, 500_000).await?;
 
     Ok(())
@@ -198,7 +209,7 @@ async fn test_example() -> TestResult<()> {
 
 When adding tests:
 1. Follow state-aware continuous testing model
-2. Use wait-based APIs for Redis verification
+2. Use wait-based APIs for Kafka verification
 3. Handle leftover state from previous sections
 4. Document expected state transitions
 5. Add proper sleep delays between operations, perfomance optmization is not the goal for the test suite, they must be handled separately

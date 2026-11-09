@@ -19,7 +19,7 @@ use tracing::{info, warn};
 /// Execute: Place bid below market or ask above market
 /// Verify:
 /// - Response: status=Placed, order_id assigned, size unchanged
-/// - Redis: order exists, orderbook updated, funds locked
+/// - Kafka: orderbook updated, funds locked
 pub async fn test_gtc_no_match(ctx: &mut TestContext) -> TestResult<()> {
     info!("Running test: gtc_no_match");
 
@@ -52,14 +52,14 @@ pub async fn test_gtc_no_match(ctx: &mut TestContext) -> TestResult<()> {
         original_size,
     )?;
 
-    // Phase 2: Verify Redis
+    // Phase 2: Verify Kafka events
     let locked_amount = price * size;
-    let redis_timeout = ctx.config().redis_event_timeout;
+    let event_timeout = ctx.config().event_timeout;
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // Verify funds locked (price * size for bid)
     {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
             .assert_locked_eq(user_id, assets::USD, locked_amount)
             .await?;
@@ -70,9 +70,9 @@ pub async fn test_gtc_no_match(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify orderbook updated
     {
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_depth(market_id, 1, 0, redis_timeout)
+            .wait_and_assert_depth(market_id, 1, 0, event_timeout)
             .await?;
         orderbook_verifier
             .assert_level(market_id, Side::Bid, price, size)
@@ -89,7 +89,7 @@ pub async fn test_gtc_no_match(ctx: &mut TestContext) -> TestResult<()> {
 /// Execute: Place order that crosses
 /// Verify:
 /// - Response: status=Filled, size=0
-/// - Redis: trade exists, balances updated, no resting order
+/// - Kafka: trade exists, no resting order
 pub async fn test_gtc_full_match(ctx: &mut TestContext) -> TestResult<()> {
     info!("Running test: gtc_full_match");
 
@@ -133,8 +133,8 @@ pub async fn test_gtc_full_match(ctx: &mut TestContext) -> TestResult<()> {
     // Phase 1: Verify Response
     ResponseVerifier::assert_filled(&taker_response)?;
 
-    // Phase 2: Verify Redis
-    let mut trade_verifier = TradeVerifier::new(&mut ctx.redis);
+    // Phase 2: Verify Kafka events
+    let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
 
     // Wait for trade event
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -151,7 +151,7 @@ pub async fn test_gtc_full_match(ctx: &mut TestContext) -> TestResult<()> {
         .await?;
 
     // Verify orderbook is now empty
-    let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+    let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
     orderbook_verifier.assert_empty(market_id).await?;
 
     info!("Test passed: gtc_full_match");
@@ -164,7 +164,7 @@ pub async fn test_gtc_full_match(ctx: &mut TestContext) -> TestResult<()> {
 /// Execute: Place larger order
 /// Verify:
 /// - Response: status=PartiallyFilled, size=remaining
-/// - Redis: trade exists, partial amount rests on book
+/// - Kafka: trade exists, partial amount rests on book
 pub async fn test_gtc_partial_match(ctx: &mut TestContext) -> TestResult<()> {
     info!("Running test: gtc_partial_match");
 
@@ -209,11 +209,11 @@ pub async fn test_gtc_partial_match(ctx: &mut TestContext) -> TestResult<()> {
     ResponseVerifier::assert_partially_filled(&taker_response, taker_size)?;
     ResponseVerifier::assert_size(&taker_response, expected_remaining)?;
 
-    // Phase 2: Verify Redis
+    // Phase 2: Verify Kafka events
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Verify trade occurred for matched portion
-    let mut trade_verifier = TradeVerifier::new(&mut ctx.redis);
+    let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
     let criteria = TradeCriteria::new().market_id(market_id).size(maker_size); // Only maker_size was matched
 
     trade_verifier
@@ -221,7 +221,7 @@ pub async fn test_gtc_partial_match(ctx: &mut TestContext) -> TestResult<()> {
         .await?;
 
     // Verify remaining size rests on book
-    let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+    let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
     orderbook_verifier
         .assert_level(market_id, Side::Bid, price, expected_remaining)
         .await?;
@@ -419,23 +419,23 @@ async fn test_gtc_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
     )?;
     info!("  → Order placed: order_id={}", response.order_id);
 
-    // Verify Redis
+    // Verify Kafka events
     let locked_amount = price * size;
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
             .assert_locked_eq(users::ALICE, assets::USD, locked_amount)
             .await?;
         info!("  → Funds locked: {} USD", locked_amount);
     }
 
-    let redis_timeout = ctx.config().redis_event_timeout;
+    let event_timeout = ctx.config().event_timeout;
     {
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_depth(market_id, 1, 0, redis_timeout)
+            .wait_and_assert_depth(market_id, 1, 0, event_timeout)
             .await?;
         orderbook_verifier
             .assert_level(market_id, Side::Bid, price, size)
@@ -489,7 +489,7 @@ async fn test_gtc_full_match_section(ctx: &mut TestContext) -> TestResult<()> {
         taker_response.order_id
     );
 
-    // Verify trade in Redis
+    // Verify trade on Kafka
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     let criteria = TradeCriteria::new()
@@ -501,7 +501,7 @@ async fn test_gtc_full_match_section(ctx: &mut TestContext) -> TestResult<()> {
         .maker_order_id(maker_response.order_id)
         .taker_order_id(taker_response.order_id);
 
-    let mut trade_verifier = TradeVerifier::new(&mut ctx.redis);
+    let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
     trade_verifier
         .wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2))
         .await?;
@@ -558,7 +558,7 @@ async fn test_gtc_partial_match_section(ctx: &mut TestContext) -> TestResult<()>
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     {
-        let mut trade_verifier = TradeVerifier::new(&mut ctx.redis);
+        let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
         let criteria = TradeCriteria::new().market_id(market_id).size(maker_size);
         trade_verifier
             .assert_trade_exists(market_id, &criteria)
@@ -568,15 +568,15 @@ async fn test_gtc_partial_match_section(ctx: &mut TestContext) -> TestResult<()>
 
     {
         // Wait for orderbook to update with remaining order
-        let redis_timeout = ctx.config().redis_event_timeout;
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let event_timeout = ctx.config().event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
             .wait_and_assert_level(
                 market_id,
                 Side::Bid,
                 price,
                 expected_remaining,
-                redis_timeout,
+                event_timeout,
             )
             .await?;
         info!(

@@ -7,7 +7,7 @@
 //!
 //! The test suite is organized into several modules:
 //!
-//! - `test_framework`: Core test infrastructure (TestContext, TestClient, RedisVerifier)
+//! - `test_framework`: Core test infrastructure (TestContext, TestClient, KafkaVerifier)
 //! - `builders`: Fluent APIs for creating test data (OrderBuilder, ScenarioBuilder)
 //! - `verifiers`: Assertion utilities for validating system state
 //! - `scenarios`: Pre-built test scenarios organized by functionality
@@ -42,7 +42,7 @@
 //! assert_eq!(response.status, common::Status::Placed);
 //!
 //! // Cleanup
-//! ctx.cleanup().await?;
+//! ctx.cleanup();
 //! # Ok(())
 //! # }
 //! ```
@@ -59,12 +59,11 @@
 //! - `size` - Remaining size after matching
 //! - `price` - May be adjusted for market orders
 //!
-//! ### Phase 2: Redis Verification (Eventual)
-//! Verifies state published by the Events Handler:
-//! - Balance events in `user:{user_id}:asset:{asset_id}:balance`
-//! - Order events in `order:{order_id}`
-//! - Trade events in `market:{market_id}:trades`
-//! - Orderbook snapshots in `orderbook:market:{market_id}`
+//! ### Phase 2: Kafka Verification (Eventual)
+//! Verifies the events the Events Handler publishes to Kafka, read back from the start of the run:
+//! - Latest balance per `{user_id}:{asset_id}` on topic `balances`
+//! - Every trade on topic `trades`
+//! - Latest orderbook snapshot per `{market_id}` on topic `orderbook`
 //!
 //! ## Market Configuration
 //!

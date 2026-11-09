@@ -14,7 +14,7 @@ use tracing::info;
 ///
 /// Verifies:
 /// - Response status is Processed
-/// - Balance appears in Redis with correct values
+/// - Balance is published to Kafka with correct values
 /// - Balance invariant holds (available + locked = total)
 pub async fn test_single_deposit(ctx: &mut TestContext) -> TestResult<()> {
     info!("Running test: single_deposit");
@@ -35,12 +35,12 @@ pub async fn test_single_deposit(ctx: &mut TestContext) -> TestResult<()> {
     // Phase 1: Verify Response
     ResponseVerifier::assert_status(&response, Status::Processed)?;
 
-    // Phase 2: Verify Redis
-    let redis_timeout = ctx.config().redis_event_timeout;
-    let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+    // Phase 2: Verify Kafka events
+    let event_timeout = ctx.config().event_timeout;
+    let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
 
     let _balance = balance_verifier
-        .wait_for_balance_update(user_id, asset_id, redis_timeout)
+        .wait_for_balance_update(user_id, asset_id, event_timeout)
         .await?;
 
     // Verify balance values
@@ -89,15 +89,15 @@ pub async fn test_multiple_deposits_same_asset(ctx: &mut TestContext) -> TestRes
     ResponseVerifier::assert_status(&response1, Status::Processed)?;
 
     // Wait for first deposit
-    let redis_timeout = ctx.config().redis_event_timeout;
+    let event_timeout = ctx.config().event_timeout;
     {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
             .wait_and_assert_balance(
                 user_id,
                 asset_id,
                 Balance::from_total(deposit1),
-                redis_timeout,
+                event_timeout,
             )
             .await?;
     }
@@ -127,7 +127,7 @@ pub async fn test_multiple_deposits_same_asset(ctx: &mut TestContext) -> TestRes
     // Wait and verify final total
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
             .assert_total_eq(user_id, asset_id, expected_total)
             .await?;
@@ -147,7 +147,7 @@ pub async fn test_multiple_deposits_same_asset(ctx: &mut TestContext) -> TestRes
 /// - No cross-asset balance contamination
 pub async fn test_deposits_different_assets(ctx: &mut TestContext) -> TestResult<()> {
     info!("Running test: deposits_different_assets");
-    let timeout = ctx.config().redis_event_timeout;
+    let timeout = ctx.config().event_timeout;
     let user_id = users::CHARLIE;
     let usd_amount = 1_000_000u64;
     let btc_amount = 100u64;
@@ -175,7 +175,7 @@ pub async fn test_deposits_different_assets(ctx: &mut TestContext) -> TestResult
     ResponseVerifier::assert_status(&btc_response, Status::Processed)?;
 
     // Verify both balances
-    let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+    let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
     let _balance = balance_verifier
         .wait_for_balance_update(user_id, assets::BTC, timeout)
         .await?;

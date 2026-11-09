@@ -19,16 +19,6 @@ jobs:
     runs-on: ubuntu-latest
 
     services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
       redpanda:
         image: redpandadata/redpanda:v25.3.1
         ports:
@@ -79,7 +69,6 @@ jobs:
         env:
           RUSTFLAGS: "-D warnings -C link-arg=-fuse-ld=mold"
           VEX_KAFKA_BROKER: localhost:9092
-          VEX_REDIS_URL: redis://localhost:6379
           VEX_ENV: dev
 
   fmt:
@@ -132,16 +121,6 @@ jobs:
     runs-on: ubuntu-latest
 
     services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
       redpanda:
         image: redpandadata/redpanda:v25.3.1
         ports:
@@ -178,7 +157,6 @@ jobs:
           cargo llvm-cov --workspace --all-features --all-targets --exclude rusteron_client --text
         env:
           VEX_KAFKA_BROKER: localhost:9092
-          VEX_REDIS_URL: redis://localhost:6379
           VEX_ENV: dev
 
   audit:

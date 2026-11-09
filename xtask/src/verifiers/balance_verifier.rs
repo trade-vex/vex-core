@@ -1,25 +1,25 @@
 //! Balance verification utilities
 //!
-//! This module provides verification functions for balance state in Redis.
-//! Balances are published by the Events Handler and stored in Redis.
+//! This module provides verification functions for balance state.
+//! Balances are published to Kafka by the Events Handler.
 
-use crate::test_framework::redis::RedisVerifier;
+use crate::test_framework::kafka::KafkaVerifier;
 use crate::test_framework::types::*;
 use std::time::Duration;
 use tracing::debug;
 
-/// Verifier for balance state in Redis
+/// Verifier for balance state
 ///
-/// Verifies balances that are published to Redis by the Events Handler.
-/// Key format: `user:{user_id}:asset:{asset_id}:balance`
+/// Verifies balances that are published to Kafka by the Events Handler.
+/// Topic `balances`, key `{user_id}:{asset_id}`
 pub struct BalanceVerifier<'a> {
-    redis: &'a mut RedisVerifier,
+    kafka: &'a mut KafkaVerifier,
 }
 
 impl<'a> BalanceVerifier<'a> {
     /// Create a new balance verifier
-    pub fn new(redis: &'a mut RedisVerifier) -> Self {
-        Self { redis }
+    pub fn new(kafka: &'a mut KafkaVerifier) -> Self {
+        Self { kafka }
     }
 
     /// Assert balance equals expected value
@@ -29,7 +29,7 @@ impl<'a> BalanceVerifier<'a> {
         asset_id: u16,
         expected: Balance,
     ) -> TestResult<()> {
-        let actual = self.redis.get_balance(user_id, asset_id).await?;
+        let actual = self.kafka.get_balance(user_id, asset_id).await?;
 
         if actual.available != expected.available {
             return Err(TestError::Verification {
@@ -73,7 +73,7 @@ impl<'a> BalanceVerifier<'a> {
         asset_id: u16,
         expected: u64,
     ) -> TestResult<()> {
-        let actual = self.redis.get_balance(user_id, asset_id).await?;
+        let actual = self.kafka.get_balance(user_id, asset_id).await?;
 
         if actual.locked != expected {
             return Err(TestError::Verification {
@@ -99,7 +99,7 @@ impl<'a> BalanceVerifier<'a> {
         asset_id: u16,
         expected: u64,
     ) -> TestResult<()> {
-        let actual = self.redis.get_balance(user_id, asset_id).await?;
+        let actual = self.kafka.get_balance(user_id, asset_id).await?;
 
         if actual.available != expected {
             return Err(TestError::Verification {
@@ -125,7 +125,7 @@ impl<'a> BalanceVerifier<'a> {
         asset_id: u16,
         expected: u64,
     ) -> TestResult<()> {
-        let actual = self.redis.get_balance(user_id, asset_id).await?;
+        let actual = self.kafka.get_balance(user_id, asset_id).await?;
 
         if actual.total != expected {
             return Err(TestError::Verification {
@@ -150,8 +150,8 @@ impl<'a> BalanceVerifier<'a> {
         user_id: u64,
         asset_id: u16,
     ) -> TestResult<()> {
-        let balance = self.redis.get_balance(user_id, asset_id).await?;
-        balance.verify_invariant()?;
+        let balance = self.kafka.get_balance(user_id, asset_id).await?;
+        verify_balance_invariant(&balance)?;
 
         debug!(
             "Balance invariant verified for user {} asset {}",
@@ -170,7 +170,7 @@ impl<'a> BalanceVerifier<'a> {
         timeout: Duration,
     ) -> TestResult<()> {
         let actual = self
-            .redis
+            .kafka
             .wait_for_balance_update(user_id, asset_id, timeout)
             .await?;
 
@@ -207,8 +207,8 @@ impl<'a> BalanceVerifier<'a> {
         user_id: u64,
         asset_id: u16,
         timeout: Duration,
-    ) -> TestResult<RedisBalance> {
-        self.redis
+    ) -> TestResult<BalanceEvent> {
+        self.kafka
             .wait_for_balance_update(user_id, asset_id, timeout)
             .await
     }
@@ -221,7 +221,7 @@ impl<'a> BalanceVerifier<'a> {
         previous: u64,
         increase: u64,
     ) -> TestResult<()> {
-        let actual = self.redis.get_balance(user_id, asset_id).await?;
+        let actual = self.kafka.get_balance(user_id, asset_id).await?;
         let expected = previous + increase;
 
         if actual.available != expected {
@@ -249,7 +249,7 @@ impl<'a> BalanceVerifier<'a> {
         previous: u64,
         decrease: u64,
     ) -> TestResult<()> {
-        let actual = self.redis.get_balance(user_id, asset_id).await?;
+        let actual = self.kafka.get_balance(user_id, asset_id).await?;
         let expected = previous - decrease;
 
         if actual.available != expected {
@@ -277,7 +277,7 @@ impl<'a> BalanceVerifier<'a> {
         previous: u64,
         increase: u64,
     ) -> TestResult<()> {
-        let actual = self.redis.get_balance(user_id, asset_id).await?;
+        let actual = self.kafka.get_balance(user_id, asset_id).await?;
         let expected = previous + increase;
 
         if actual.locked != expected {
@@ -305,7 +305,7 @@ impl<'a> BalanceVerifier<'a> {
         previous: u64,
         decrease: u64,
     ) -> TestResult<()> {
-        let actual = self.redis.get_balance(user_id, asset_id).await?;
+        let actual = self.kafka.get_balance(user_id, asset_id).await?;
         let expected = previous - decrease;
 
         if actual.locked != expected {
@@ -326,7 +326,7 @@ impl<'a> BalanceVerifier<'a> {
     }
 
     /// Get current balance
-    pub async fn get_balance(&mut self, user_id: u64, asset_id: u16) -> TestResult<RedisBalance> {
-        self.redis.get_balance(user_id, asset_id).await
+    pub async fn get_balance(&mut self, user_id: u64, asset_id: u16) -> TestResult<BalanceEvent> {
+        self.kafka.get_balance(user_id, asset_id).await
     }
 }

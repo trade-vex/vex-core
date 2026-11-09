@@ -13,7 +13,7 @@ use tracing::debug;
 /// - status, order_id, timestamp, size, price, etc.
 ///
 /// Does NOT verify internal fields like events, balance, l2_data
-/// (those are verified through Redis)
+/// (those are verified through the events published to Kafka)
 pub struct ResponseVerifier;
 
 impl ResponseVerifier {
