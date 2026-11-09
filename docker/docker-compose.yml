@@ -12,8 +12,10 @@ services:
     shm_size: "512m"            # 🆕 Set shm-size like docker run
     ipc: "shareable"            # 🆕 Enable shared IPC namespace
     restart: unless-stopped
+    environment:
+      - AERON_DIR=/dev/shm/aeron
     volumes:
-      - /dev/shm:/opt
+      - /dev/shm:/dev/shm
 
   # SBE Code Generator - generates Rust code from ordercmd.xml
   sbe-generator:
@@ -38,19 +40,20 @@ services:
       sbe-generator:
         condition: service_completed_successfully
     environment:
+      # Passed through from the calling shell, and required: development or test (see below).
       - VEX_ENV
       - RUST_LOG=info
-      - AERON_DIR=/tmp/aeron
+      # This stack runs only a media driver, no Aeron Archive, so the archive channel is empty:
+      # commands are not journaled and `--replay` is unavailable. Production rejects an empty
+      # channel, so VEX_ENV=production fails at startup here.
+      - VEX__CORE_NETWORKING__REQUEST_CONTROL_CHANNEL=
     volumes:
-      - aeron-ipc:/tmp/aeron
+      - /dev/shm/aeron:/dev/shm/aeron
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "vex-core"]
+      # vex-core always uses /dev/shm/aeron (src/main.rs); it does not read AERON_DIR.
+      test: ["CMD-SHELL", "test -s /dev/shm/aeron/cnc.dat || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 15s
-
-volumes:
-  aeron-ipc:
-    driver: local

@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     openjdk-17-jdk-headless \
     git \
     libbsd-dev \
-    uuser_id-dev \
+    uuid-dev \
     libssl-dev \
     zlib1g-dev \
     doxygen \
@@ -36,7 +36,7 @@ FROM ubuntu:22.04 as runtime
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     libbsd0 \
-    libuuser_id1 \
+    libuuid1 \
     libssl3 \
     zlib1g \
     && rm -rf /var/lib/apt/lists/*
@@ -61,7 +61,7 @@ EXPOSE 40123 40124
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD pgrep aeronmd || exit 1
+    CMD pidof aeronmd || exit 1
 
 # Start the C Media Driver
 CMD ["aeronmd"]

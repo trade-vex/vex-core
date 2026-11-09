@@ -1,6 +1,6 @@
-# Docker Setup Guser_ide
+# Docker Setup Guide
 
-This guser_ide explains how to use the Docker setup for the VEX Core project, including the media driver and SBE code generation.
+This guide explains how to use the Docker setup for the VEX Core project, including the media driver and SBE code generation.
 
 ## Overview
 
@@ -67,6 +67,12 @@ VEX_ENV=development ./docker-scripts.sh start-full
 ### 1. `docker-compose.yml` (Main)
 - Includes media driver, SBE generator, and vex-core
 - Proper service dependencies and health checks
+- **Development only, with no durability.** It runs a media driver but no Aeron Archive, so it
+  starts vex-core with an empty archive channel (`VEX__CORE_NETWORKING__REQUEST_CONTROL_CHANNEL=`).
+  Commands are not journaled, nothing survives a restart, and `--replay` is unavailable. Production
+  needs an Aeron Archive; vex-core refuses an empty archive channel with `VEX_ENV=production`
+- `VEX_ENV` must be set to `development` or `test` in the shell that runs compose. Compose passes it
+  through; without it vex-core exits at startup (`No environment selected`)
 
 ### 2. `docker-compose.media-driver.yml`
 - Standalone media driver for testing
@@ -182,13 +188,13 @@ The generated code includes:
 ## Environment Variables
 
 ### Media Driver
-- `AERON_DIR=/tmp/aeron` - Aeron IPC directory
+- `AERON_DIR=/dev/shm/aeron` - Aeron IPC directory (must be the directory vex-core uses, below)
 - `AERON_EVENT_LOG=all` - Enable all event logging
 
 ### VEX Core
 - `VEX_ENV=development|test|production` - Required explicit environment selection
 - `RUST_LOG=info` - Rust logging level
-- `AERON_DIR=/tmp/aeron` - Aeron IPC directory (must match media driver)
+- Aeron IPC directory: always `/dev/shm/aeron` (set in `src/main.rs`). vex-core does not read `AERON_DIR`; point the media driver at this directory instead.
 
 ## Monitoring
 
