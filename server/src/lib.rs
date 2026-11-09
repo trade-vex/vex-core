@@ -102,8 +102,6 @@ pub fn start(mut config: VexConfig, replay: bool) -> Result<RunningEngine, Engin
     // Balance preload for test/local environments
     #[cfg(feature = "balance-preload")]
     if config.balance_preload.enabled {
-        use common::OrderCommand;
-        use disruptor::Producer;
         use tracing::info;
 
         info!(
@@ -111,24 +109,15 @@ pub fn start(mut config: VexConfig, replay: bool) -> Result<RunningEngine, Engin
             config.balance_preload.users.len()
         );
 
-        for (user_id, balances) in &config.balance_preload.users {
-            for balance in balances {
-                info!(
-                    "Depositing {} units of asset {} for user {}",
-                    balance.amount, balance.asset_id, user_id
-                );
-
-                let sequence = loop {
-                    if let Ok(sequence) = producer.try_publish(|cmd| {
-                        *cmd =
-                            OrderCommand::deposit_funds(*user_id, balance.amount, balance.asset_id);
-                    }) {
-                        break sequence;
-                    }
-                    std::hint::spin_loop();
-                };
-                engine.publications().submitted(sequence);
-            }
+        if let Err(error) = preload_balances(
+            &config.balance_preload,
+            &mut producer,
+            engine.publications(),
+        ) {
+            // Dropping the last producer joins the pipeline's consumers without a timeout. Keep
+            // it alive so a stalled consumer cannot swallow this error, as `CoreEngine::run` does.
+            std::mem::forget(producer);
+            return Err(error);
         }
 
         info!("Balance preload complete");
@@ -146,6 +135,48 @@ pub fn start(mut config: VexConfig, replay: bool) -> Result<RunningEngine, Engin
         thread: thread_handle,
         shutdown_flag,
         engine,
+    })
+}
+
+/// Publishes the configured deposits, then waits until every one has cleared the pipeline.
+///
+/// Preload is re-applied on every start, so it must never be journaled: a journaled deposit
+/// would be credited twice on replay. Journaling skips commands while no archive publication
+/// is installed, and `CoreEngine::run` installs it only after this returns, so the wait makes
+/// "never journaled" a guarantee instead of a race against archive initialization.
+#[cfg(feature = "balance-preload")]
+fn preload_balances(
+    preload: &vex_config::BalancePreloadConfig,
+    producer: &mut OrderProducer,
+    publications: &Publications,
+) -> Result<(), EngineError> {
+    use common::OrderCommand;
+    use disruptor::Producer;
+    use tracing::info;
+
+    for (user_id, balances) in &preload.users {
+        for balance in balances {
+            info!(
+                "Depositing {} units of asset {} for user {}",
+                balance.amount, balance.asset_id, user_id
+            );
+
+            let sequence = loop {
+                if let Ok(sequence) = producer.try_publish(|cmd| {
+                    *cmd = OrderCommand::deposit_funds(*user_id, balance.amount, balance.asset_id);
+                }) {
+                    break sequence;
+                }
+                std::hint::spin_loop();
+            };
+            publications.submitted(sequence);
+        }
+    }
+
+    publications.drain_pipeline().map_err(|error| {
+        EngineError::ServerInitialization(format!(
+            "Balance preload did not clear the pipeline: {error}"
+        ))
     })
 }
 
@@ -429,6 +460,63 @@ mod tests {
             start(config, false),
             Err(EngineError::Configuration(_))
         ));
+    }
+
+    #[cfg(feature = "balance-preload")]
+    #[test]
+    fn balance_preload_returns_only_after_every_deposit_is_applied() {
+        use engine::test::TestEngineBuilder;
+
+        const DEPOSITS: u64 = 1_000;
+        let user_id = 7;
+        let asset_id = 1;
+
+        let mut specs = HashMap::new();
+        add_spec((1 << 16) | 2, &mut specs);
+        let publications = Arc::new(Publications::new());
+        let risk_engines = Arc::new(
+            (0..4)
+                .map(|shard_id| RiskEngine::new(specs.clone(), shard_id, 4))
+                .collect::<Vec<_>>(),
+        );
+        let (_engine, mut producer) = TestEngineBuilder::new()
+            .with_symbol_specs(specs)
+            .with_journaling_processor(JournalingProcessor::new(
+                Arc::clone(&publications),
+                ReplayControl::disabled(),
+            ))
+            .with_events_handler(KafkaEventsHandler::new(
+                "localhost:9092",
+                "http://localhost:8081",
+                Arc::clone(&publications),
+                ReplayControl::disabled(),
+            ))
+            .with_publications(Arc::clone(&publications))
+            .with_risk_engines(Arc::clone(&risk_engines))
+            .build()
+            .unwrap();
+
+        let mut preload = vex_config::BalancePreloadConfig::new();
+        preload.enabled = true;
+        preload.users.insert(
+            user_id,
+            (0..DEPOSITS)
+                .map(|_| vex_config::balance_preload::UserBalance {
+                    asset_id,
+                    amount: 1,
+                })
+                .collect(),
+        );
+
+        preload_balances(&preload, &mut producer, &publications).unwrap();
+
+        // No waiting here: `start` hands over to `run`, which installs the archive publication,
+        // as soon as the preload returns, so every deposit must already have been applied.
+        let shard = (user_id & 3) as usize;
+        assert_eq!(
+            risk_engines[shard].get_balance(user_id, asset_id),
+            UserBalance::new(DEPOSITS, 0)
+        );
     }
 
     /// Helper function to add a market specification to the specs map
