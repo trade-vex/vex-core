@@ -312,7 +312,7 @@ async fn test_fok_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Record initial balance
     let initial_balance = {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
             .get_balance(users::ALICE, assets::USD)
             .await?
@@ -336,12 +336,12 @@ async fn test_fok_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
         response.order_id
     );
 
-    // Verify Redis
+    // Verify Kafka events
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     {
         // Verify no funds were locked (order was immediately rejected)
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
             .assert_locked_eq(users::ALICE, assets::USD, 0)
             .await?;
@@ -363,7 +363,7 @@ async fn test_fok_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
 
     {
         // Verify orderbook is still empty
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier.assert_empty(market_id).await?;
         info!("  → Orderbook remains empty (FOK doesn't rest)");
     }
@@ -405,10 +405,10 @@ async fn test_fok_insufficient_liquidity_section(ctx: &mut TestContext) -> TestR
 
     // Record Bob's ask on orderbook
     {
-        let redis_timeout = ctx.config().redis_event_timeout;
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let event_timeout = ctx.config().event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_depth(market_id, 0, 1, redis_timeout)
+            .wait_and_assert_depth(market_id, 0, 1, event_timeout)
             .await?;
         info!(
             "  → Orderbook has 1 ask level: {} BTC @ {}",
@@ -439,7 +439,7 @@ async fn test_fok_insufficient_liquidity_section(ctx: &mut TestContext) -> TestR
 
     {
         // Verify Bob's ask is still on the orderbook (FOK was rejected, no trade)
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
             .assert_level(market_id, Side::Ask, price, maker_size)
             .await?;
@@ -518,7 +518,7 @@ async fn test_fok_exact_match_section(ctx: &mut TestContext) -> TestResult<()> {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     {
-        let mut trade_verifier = TradeVerifier::new(&mut ctx.redis);
+        let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
         let criteria = TradeCriteria::new()
             .market_id(market_id)
             .maker_user_id(users::CHARLIE)
@@ -536,7 +536,7 @@ async fn test_fok_exact_match_section(ctx: &mut TestContext) -> TestResult<()> {
 
     {
         // Verify orderbook is now empty (both orders filled exactly)
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier.assert_empty(market_id).await?;
         info!("  → Orderbook empty (exact match)");
     }
@@ -592,7 +592,7 @@ async fn test_fok_excess_liquidity_section(ctx: &mut TestContext) -> TestResult<
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     {
-        let mut trade_verifier = TradeVerifier::new(&mut ctx.redis);
+        let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
         let criteria = TradeCriteria::new()
             .market_id(market_id)
             .maker_user_id(users::BOB)
@@ -607,7 +607,7 @@ async fn test_fok_excess_liquidity_section(ctx: &mut TestContext) -> TestResult<
 
     {
         // Verify remaining ask stays on orderbook
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
             .assert_level(market_id, Side::Ask, price, remaining)
             .await?;
@@ -692,10 +692,10 @@ async fn test_fok_multiple_levels_section(ctx: &mut TestContext) -> TestResult<(
 
     // Verify orderbook has 3 ask levels
     {
-        let redis_timeout = ctx.config().redis_event_timeout;
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let event_timeout = ctx.config().event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_depth(market_id, 0, 3, redis_timeout)
+            .wait_and_assert_depth(market_id, 0, 3, event_timeout)
             .await?;
         info!("  → Orderbook ready: 3 ask levels (2+3+2=7 BTC total)");
     }
@@ -718,7 +718,7 @@ async fn test_fok_multiple_levels_section(ctx: &mut TestContext) -> TestResult<(
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     {
-        let mut trade_verifier = TradeVerifier::new(&mut ctx.redis);
+        let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
 
         // Verify trade at level 1 (2 BTC @ 50,000)
         let criteria1 = TradeCriteria::new()
@@ -759,7 +759,7 @@ async fn test_fok_multiple_levels_section(ctx: &mut TestContext) -> TestResult<(
 
     {
         // Verify orderbook is now empty (all orders fully consumed)
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier.assert_empty(market_id).await?;
         info!("  → Orderbook empty (all liquidity consumed)");
     }
@@ -813,10 +813,10 @@ async fn test_market_buy_fok_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify orderbook: 0 bids, 2 asks
     {
-        let redis_timeout = ctx.config().redis_event_timeout;
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let event_timeout = ctx.config().event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_depth(market_id, 0, 2, redis_timeout)
+            .wait_and_assert_depth(market_id, 0, 2, event_timeout)
             .await?;
         info!("  → Orderbook ready: 0 bids, 2 asks");
     }
@@ -853,7 +853,7 @@ async fn test_market_buy_fok_section(ctx: &mut TestContext) -> TestResult<()> {
     // Verify trade
     tokio::time::sleep(Duration::from_millis(200)).await;
     {
-        let mut trade_verifier = TradeVerifier::new(&mut ctx.redis);
+        let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
         let criteria = TradeCriteria::new()
             .market_id(market_id)
             .maker_order_id(ask1_response.order_id)
@@ -871,10 +871,10 @@ async fn test_market_buy_fok_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Orderbook state: 1 BTC @ 53k, 5 BTC @ 54k = 0 bids, 2 asks
     {
-        let redis_timeout = ctx.config().redis_event_timeout;
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let event_timeout = ctx.config().event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_depth(market_id, 0, 2, redis_timeout)
+            .wait_and_assert_depth(market_id, 0, 2, event_timeout)
             .await?;
         orderbook_verifier
             .assert_level(market_id, Side::Ask, best_ask_price, 1)
@@ -911,7 +911,7 @@ async fn test_market_buy_fok_section(ctx: &mut TestContext) -> TestResult<()> {
     // Orderbook unchanged: 1 BTC @ 53k, 5 BTC @ 54k
     tokio::time::sleep(Duration::from_millis(100)).await;
     {
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
             .assert_level(market_id, Side::Ask, best_ask_price, 1)
             .await?;
@@ -973,10 +973,10 @@ async fn test_market_sell_fok_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify orderbook: 2 bids, 2 asks (from Section 7)
     {
-        let redis_timeout = ctx.config().redis_event_timeout;
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let event_timeout = ctx.config().event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_depth(market_id, 2, 2, redis_timeout)
+            .wait_and_assert_depth(market_id, 2, 2, event_timeout)
             .await?;
         info!("  → Orderbook ready: 2 bids, 2 asks");
     }
@@ -1006,7 +1006,7 @@ async fn test_market_sell_fok_section(ctx: &mut TestContext) -> TestResult<()> {
     // Verify trade
     tokio::time::sleep(Duration::from_millis(200)).await;
     {
-        let mut trade_verifier = TradeVerifier::new(&mut ctx.redis);
+        let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
         let criteria = TradeCriteria::new()
             .market_id(market_id)
             .maker_order_id(bid1_response.order_id)
@@ -1024,10 +1024,10 @@ async fn test_market_sell_fok_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Orderbook state: 90 BTC @ 52k, 100 BTC @ 51k, 2 asks
     {
-        let redis_timeout = ctx.config().redis_event_timeout;
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let event_timeout = ctx.config().event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_depth(market_id, 2, 2, redis_timeout)
+            .wait_and_assert_depth(market_id, 2, 2, event_timeout)
             .await?;
         orderbook_verifier
             .assert_level(market_id, Side::Bid, best_bid_price, 90)
@@ -1064,7 +1064,7 @@ async fn test_market_sell_fok_section(ctx: &mut TestContext) -> TestResult<()> {
     // Orderbook unchanged: 90 BTC @ 52k, 100 BTC @ 51k, 2 asks
     tokio::time::sleep(Duration::from_millis(100)).await;
     {
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
             .assert_level(market_id, Side::Bid, best_bid_price, 90)
             .await?;

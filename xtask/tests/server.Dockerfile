@@ -1,7 +1,7 @@
 # ---- Chef Planner Stage ----
 # Edition 2024 requires Rust 1.85+, use latest for full feature support
 FROM --platform=$BUILDPLATFORM rust:latest AS chef
-RUN cargo install cargo-chef
+RUN cargo install --locked cargo-chef@0.1.78
 WORKDIR /usr/src/app
 
 # ---- Chef Recipe Stage ----
@@ -31,11 +31,11 @@ ENV RUSTFLAGS="-C link-arg=-fuse-ld=mold"
 
 # Build dependencies - this layer is cached unless dependencies change
 COPY --from=planner /usr/src/app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --locked --recipe-path recipe.json
 
 # Build application
 COPY . .
-RUN cargo build --release --bin test_server --package xtask
+RUN cargo build --release --locked --bin test_server --package xtask
 
 # ---- Final Stage ----
 FROM --platform=$BUILDPLATFORM debian:trixie-slim

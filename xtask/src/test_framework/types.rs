@@ -4,6 +4,7 @@
 //! verification, and result reporting.
 
 use hashbrown::HashMap;
+pub use processors::events::trading_proto::{BalanceEvent, TradeEvent};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
@@ -11,8 +12,11 @@ use thiserror::Error;
 /// Test framework error types
 #[derive(Debug, Error)]
 pub enum TestError {
-    #[error("Redis error: {0}")]
-    Redis(#[from] redis::RedisError),
+    #[error("Kafka error: {0}")]
+    Kafka(#[from] rdkafka::error::KafkaError),
+
+    #[error("Protobuf decode error: {0}")]
+    Decode(#[from] prost::DecodeError),
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -48,66 +52,27 @@ pub enum TestError {
 /// Test result type
 pub type TestResult<T> = Result<T, TestError>;
 
-/// Redis balance representation (from Redis HASH)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RedisBalance {
-    pub user_id: u64,
-    pub asset_id: u16,
-    pub available: u64,
-    pub locked: u64,
-    pub total: u64,
-    pub timestamp: u64,
-}
-
-impl RedisBalance {
-    /// Verify balance invariant: available + locked = total
-    pub fn verify_invariant(&self) -> TestResult<()> {
-        if self.available + self.locked != self.total {
-            return Err(TestError::Assertion {
-                message: format!(
-                    "Balance invariant violated for user {} asset {}: available({}) + locked({}) != total({})",
-                    self.user_id, self.asset_id, self.available, self.locked, self.total
-                ),
-            });
-        }
-        Ok(())
+/// Verify balance invariant: available + locked = total
+pub fn verify_balance_invariant(balance: &BalanceEvent) -> TestResult<()> {
+    if balance.available.checked_add(balance.locked) != Some(balance.total) {
+        return Err(TestError::Assertion {
+            message: format!(
+                "Balance invariant violated for user {} asset {}: available({}) + locked({}) != total({})",
+                balance.user_id, balance.asset_id, balance.available, balance.locked, balance.total
+            ),
+        });
     }
+    Ok(())
 }
 
-/// Redis order representation (from Redis HASH)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RedisOrder {
-    pub order_id: u64,
-    pub user_id: u64,
-    pub price: u64,
-    pub size: u64,
-    pub side: String, // "Bid" or "Ask"
-    pub timestamp: u64,
+/// Orderbook snapshot, as the core publishes it after each command that reaches the book
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderbookSnapshot {
     pub market_id: u32,
-    pub status: String, // "placed", "cancelled", etc.
-}
-
-/// Redis trade event representation (from Redis STREAM or ZSET)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RedisTrade {
-    pub trade_id: String,
-    pub maker_user_id: u64,
-    pub taker_user_id: u64,
-    pub market_id: u32,
-    pub price: u64,
-    pub size: u64,
-    pub maker_order_id: u64,
-    pub taker_order_id: u64,
-    pub timestamp: u64,
-}
-
-/// Redis orderbook snapshot representation
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RedisOrderbook {
-    pub market_id: u32,
+    /// Best (highest) price first
     pub bids: Vec<OrderbookLevel>,
+    /// Best (lowest) price first
     pub asks: Vec<OrderbookLevel>,
-    pub timestamp: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,7 +199,7 @@ impl TradeCriteria {
         self
     }
 
-    pub fn matches(&self, trade: &RedisTrade) -> bool {
+    pub fn matches(&self, trade: &TradeEvent) -> bool {
         if let Some(market_id) = self.market_id
             && trade.market_id != market_id
         {
@@ -283,13 +248,14 @@ impl Default for TradeCriteria {
 /// Test configuration
 #[derive(Debug, Clone)]
 pub struct TestConfig {
-    pub redis_host: String,
-    pub redis_port: u16,
+    /// Kafka brokers the core publishes its events to, as reachable from the test runner
+    pub kafka_brokers: String,
     pub market_id: u32,
     pub base_asset_id: u16,
     pub quote_asset_id: u16,
     pub default_timeout: Duration,
-    pub redis_event_timeout: Duration,
+    /// How long to wait for the core's events to appear on Kafka
+    pub event_timeout: Duration,
     /// VEX Core server address (defaults to 127.0.0.1 for local, use Docker IP for integration tests)
     pub core_address: String,
     pub core_port: u16,
@@ -299,13 +265,12 @@ pub struct TestConfig {
 impl Default for TestConfig {
     fn default() -> Self {
         Self {
-            redis_host: "localhost".to_string(),
-            redis_port: 6380,
+            kafka_brokers: "localhost:19092".to_string(),
             market_id: ((1u32 << 16) | 2u32), // quote=1 (USD), base=2 (BTC)
             base_asset_id: 2,
             quote_asset_id: 1,
             default_timeout: Duration::from_secs(5),
-            redis_event_timeout: Duration::from_secs(60), // reset
+            event_timeout: Duration::from_secs(60),
             core_address: "127.0.0.1".to_string(),
             core_port: 3521,
             core_control_port: 3522,

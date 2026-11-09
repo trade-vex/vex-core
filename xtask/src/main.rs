@@ -323,19 +323,11 @@ async fn run_integration_tests(
     let mut media_driver = start_host_media_driver(root)?;
     wait_for_cnc_file(std::time::Duration::from_secs(10))?;
 
-    // Start docker-compose services (redis, redpanda, vex-server)
+    // Start docker-compose services (redpanda, vex-server)
     println!("Starting infrastructure services...");
-    cmd!(
-        "docker",
-        "compose",
-        "up",
-        "-d",
-        "redis",
-        "redpanda",
-        "vex-server"
-    )
-    .dir(root.join("xtask/tests"))
-    .run()?;
+    cmd!("docker", "compose", "up", "-d", "redpanda", "vex-server")
+        .dir(root.join("xtask/tests"))
+        .run()?;
 
     println!("Waiting for services to stabilize...");
     tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
@@ -373,7 +365,7 @@ async fn run_integration_tests(
         Err(e) => {
             error!("Test suite failed: {}", e);
             if fail_fast {
-                cleanup_ctx_and_docker(&mut ctx, root).await;
+                cleanup_ctx_and_docker(&mut ctx, root);
                 let _ = media_driver.kill();
                 return Err(XTaskError::IntegrationTest(e));
             }
@@ -383,7 +375,7 @@ async fn run_integration_tests(
     suite_result.duration = start.elapsed();
 
     // Cleanup
-    cleanup_ctx_and_docker(&mut ctx, root).await;
+    cleanup_ctx_and_docker(&mut ctx, root);
     let _ = media_driver.kill();
 
     // Print summary
@@ -470,10 +462,8 @@ async fn run_suite_tests(
     }
 }
 
-async fn cleanup_ctx_and_docker(ctx: &mut TestContext, root: &Path) {
-    if let Err(e) = ctx.cleanup().await {
-        error!("Cleanup failed: {}", e);
-    }
+fn cleanup_ctx_and_docker(ctx: &mut TestContext, root: &Path) {
+    ctx.cleanup();
     cleanup_docker(root);
 }
 
@@ -721,9 +711,25 @@ fn apply_scenario_conditions(root: &Path, scenario: &str, clients: u32) -> Resul
 }
 
 fn build_docker(root: &Path) -> Result<(), XTaskError> {
+    let dir = root.join("xtask/tests");
+    // Export the media driver first, while nothing is executing it. The exporter copies
+    // aeronmd into ./bin, which is the path `start_host_media_driver` later runs, so
+    // exporting afterwards fails with ETXTBSY.
+    println!("Exporting the Aeron media driver...");
+    cmd!(
+        "docker",
+        "compose",
+        "run",
+        "--rm",
+        "--build",
+        "--no-deps",
+        "media-driver"
+    )
+    .dir(&dir)
+    .run()?;
     println!("Building all Docker services...");
-    cmd!("docker", "compose", "build",)
-        .dir(root.join("xtask/tests"))
+    cmd!("docker", "compose", "build", "vex-server", "vex-client")
+        .dir(&dir)
         .run()?;
     println!("Docker images built successfully.");
     Ok(())

@@ -1,26 +1,26 @@
 //! Orderbook snapshot verification utilities
 //!
-//! This module provides verification functions for orderbook snapshots in Redis.
+//! This module provides verification functions for orderbook snapshots.
 
-use crate::test_framework::redis::RedisVerifier;
+use crate::test_framework::kafka::KafkaVerifier;
 use crate::test_framework::types::*;
 use common::Side;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::debug;
 
-/// Verifier for orderbook snapshots in Redis
+/// Verifier for orderbook snapshots
 ///
-/// Verifies orderbook snapshots that are published to Redis by the Events Handler.
-/// Key format: `orderbook:market:{market_id}`
+/// Verifies orderbook snapshots that are published to Kafka by the Events Handler.
+/// Topic `orderbook`, key `{market_id}`
 pub struct OrderbookVerifier<'a> {
-    redis: &'a mut RedisVerifier,
+    kafka: &'a mut KafkaVerifier,
 }
 
 impl<'a> OrderbookVerifier<'a> {
     /// Create a new orderbook verifier
-    pub fn new(redis: &'a mut RedisVerifier) -> Self {
-        Self { redis }
+    pub fn new(kafka: &'a mut KafkaVerifier) -> Self {
+        Self { kafka }
     }
 
     /// Assert orderbook depth (number of levels)
@@ -30,7 +30,7 @@ impl<'a> OrderbookVerifier<'a> {
         expected_bid_levels: usize,
         expected_ask_levels: usize,
     ) -> TestResult<()> {
-        let orderbook = self.redis.get_orderbook(market_id).await?;
+        let orderbook = self.kafka.get_orderbook(market_id).await?;
 
         if orderbook.bids.len() != expected_bid_levels {
             return Err(TestError::Verification {
@@ -71,7 +71,7 @@ impl<'a> OrderbookVerifier<'a> {
         expected_best_bid: Option<u64>,
         expected_best_ask: Option<u64>,
     ) -> TestResult<()> {
-        let orderbook = self.redis.get_orderbook(market_id).await?;
+        let orderbook = self.kafka.get_orderbook(market_id).await?;
 
         let actual_best_bid = orderbook.bids.first().map(|level| level.price);
         let actual_best_ask = orderbook.asks.first().map(|level| level.price);
@@ -110,7 +110,7 @@ impl<'a> OrderbookVerifier<'a> {
         price: u64,
         expected_volume: u64,
     ) -> TestResult<()> {
-        let orderbook = self.redis.get_orderbook(market_id).await?;
+        let orderbook = self.kafka.get_orderbook(market_id).await?;
 
         let levels = match side {
             Side::Bid => &orderbook.bids,
@@ -153,7 +153,7 @@ impl<'a> OrderbookVerifier<'a> {
         timeout: Duration,
     ) -> TestResult<()> {
         let orderbook = self
-            .redis
+            .kafka
             .wait_for_orderbook_update(market_id, timeout)
             .await?;
 
@@ -186,15 +186,15 @@ impl<'a> OrderbookVerifier<'a> {
         &mut self,
         market_id: u32,
         timeout: Duration,
-    ) -> TestResult<RedisOrderbook> {
-        self.redis
+    ) -> TestResult<OrderbookSnapshot> {
+        self.kafka
             .wait_for_orderbook_update(market_id, timeout)
             .await
     }
 
     /// Get current orderbook
-    pub async fn get_orderbook(&mut self, market_id: u32) -> TestResult<RedisOrderbook> {
-        self.redis.get_orderbook(market_id).await
+    pub async fn get_orderbook(&mut self, market_id: u32) -> TestResult<OrderbookSnapshot> {
+        self.kafka.get_orderbook(market_id).await
     }
 
     /// Assert orderbook is empty (no bids or asks)
@@ -204,7 +204,7 @@ impl<'a> OrderbookVerifier<'a> {
 
     /// Assert spread (difference between best bid and best ask)
     pub async fn assert_spread(&mut self, market_id: u32, expected_spread: u64) -> TestResult<()> {
-        let orderbook = self.redis.get_orderbook(market_id).await?;
+        let orderbook = self.kafka.get_orderbook(market_id).await?;
 
         if orderbook.bids.is_empty() || orderbook.asks.is_empty() {
             return Err(TestError::Verification {
@@ -238,7 +238,7 @@ impl<'a> OrderbookVerifier<'a> {
 
     /// Calculate total volume on one side of the book
     pub async fn calculate_side_volume(&mut self, market_id: u32, side: Side) -> TestResult<u64> {
-        let orderbook = self.redis.get_orderbook(market_id).await?;
+        let orderbook = self.kafka.get_orderbook(market_id).await?;
 
         let levels = match side {
             Side::Bid => &orderbook.bids,
@@ -257,7 +257,7 @@ impl<'a> OrderbookVerifier<'a> {
 
     /// Assert bids are sorted in descending order (highest price first)
     pub async fn assert_bids_sorted(&mut self, market_id: u32) -> TestResult<()> {
-        let orderbook = self.redis.get_orderbook(market_id).await?;
+        let orderbook = self.kafka.get_orderbook(market_id).await?;
 
         for window in orderbook.bids.windows(2) {
             if window[0].price < window[1].price {
@@ -276,7 +276,7 @@ impl<'a> OrderbookVerifier<'a> {
 
     /// Assert asks are sorted in ascending order (lowest price first)
     pub async fn assert_asks_sorted(&mut self, market_id: u32) -> TestResult<()> {
-        let orderbook = self.redis.get_orderbook(market_id).await?;
+        let orderbook = self.kafka.get_orderbook(market_id).await?;
 
         for window in orderbook.asks.windows(2) {
             if window[0].price > window[1].price {
@@ -305,7 +305,7 @@ impl<'a> OrderbookVerifier<'a> {
         let start = std::time::Instant::now();
 
         loop {
-            match self.redis.get_orderbook(market_id).await {
+            match self.kafka.get_orderbook(market_id).await {
                 Ok(orderbook) => {
                     let levels = match side {
                         Side::Bid => &orderbook.bids,

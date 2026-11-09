@@ -1,7 +1,7 @@
 //! Verification utilities for asserting test state
 //!
 //! This module provides utilities for verifying OrderCommand responses
-//! and Redis state after order execution.
+//! and the state the core publishes to Kafka after order execution.
 
 pub mod balance_verifier;
 pub mod invariants;

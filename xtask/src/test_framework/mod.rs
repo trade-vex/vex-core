@@ -4,11 +4,11 @@
 //! managing test state, and coordinating verification.
 
 pub mod client;
-pub mod redis;
+pub mod kafka;
 pub mod types;
 
 use self::client::TestClient;
-use self::redis::RedisVerifier;
+use self::kafka::KafkaVerifier;
 use self::types::*;
 use common::OrderCommand;
 use hashbrown::HashMap;
@@ -19,7 +19,7 @@ use tracing::{debug, info};
 ///
 /// The TestContext manages:
 /// - Test client for sending/receiving OrderCommands
-/// - Redis verifier for state validation
+/// - Kafka verifier for state validation
 /// - User state tracking
 /// - Test configuration
 ///
@@ -37,15 +37,15 @@ use tracing::{debug, info};
 /// // ... send orders, verify results ...
 ///
 /// // Cleanup
-/// ctx.cleanup().await?;
+/// ctx.cleanup();
 /// # Ok(())
 /// # }
 /// ```
 pub struct TestContext {
     /// Test client for sending commands
     pub client: TestClient,
-    /// Redis verifier for state validation
-    pub redis: RedisVerifier,
+    /// Kafka verifier for state validation
+    pub kafka: KafkaVerifier,
     /// Market ID being tested
     pub market_id: u32,
     /// Base asset ID
@@ -70,7 +70,7 @@ impl TestContext {
         info!("  Market ID: {}", config.market_id);
         info!("  Base asset: {}", config.base_asset_id);
         info!("  Quote asset: {}", config.quote_asset_id);
-        info!("  Redis: {}:{}", config.redis_host, config.redis_port);
+        info!("  Kafka: {}", config.kafka_brokers);
 
         let client = TestClient::new(
             0,
@@ -79,11 +79,11 @@ impl TestContext {
             config.core_port,
             config.core_control_port,
         )?;
-        let redis = RedisVerifier::new(&config.redis_host, config.redis_port).await?;
+        let kafka = KafkaVerifier::new(&config.kafka_brokers).await?;
 
         Ok(Self {
             client,
-            redis,
+            kafka,
             market_id: config.market_id,
             base_asset_id: config.base_asset_id,
             quote_asset_id: config.quote_asset_id,
@@ -146,10 +146,10 @@ impl TestContext {
             });
         }
 
-        // Wait for balance to appear in Redis
+        // Wait for the balance to be published to Kafka
         let balance = self
-            .redis
-            .wait_for_balance_update(user_id, asset_id, self.config.redis_event_timeout)
+            .kafka
+            .wait_for_balance_update(user_id, asset_id, self.config.event_timeout)
             .await?;
 
         if balance.total != amount {
@@ -174,29 +174,16 @@ impl TestContext {
         &self.config
     }
 
-    /// Cleanup test data
-    pub async fn cleanup(&mut self) -> TestResult<()> {
+    /// Cleanup test context
+    ///
+    /// Kafka needs no cleanup: each run only reads the events published after it started.
+    pub fn cleanup(&mut self) {
         info!("Cleaning up test context");
 
         // Drain any pending responses
         self.client.drain_responses();
 
-        // Cleanup Redis test data
-        // Clean up test users, orders, trades
-        for user_id in self.users.keys() {
-            let pattern = format!("user:{}", user_id);
-            self.redis.cleanup_test_data(&pattern).await?;
-        }
-
-        // Clean up market data
-        let market_pattern = format!("market:{}", self.market_id);
-        self.redis.cleanup_test_data(&market_pattern).await?;
-
-        let orderbook_pattern = format!("orderbook:market:{}", self.market_id);
-        self.redis.cleanup_test_data(&orderbook_pattern).await?;
-
         debug!("Test context cleaned up successfully");
-        Ok(())
     }
 
     /// Verify system-wide invariants
@@ -209,8 +196,8 @@ impl TestContext {
         // Verify balance invariants for all users
         for user in self.users.values() {
             for (&asset_id, _) in &user.expected_balances {
-                let balance = self.redis.get_balance(user.user_id, asset_id).await?;
-                balance.verify_invariant()?;
+                let balance = self.kafka.get_balance(user.user_id, asset_id).await?;
+                verify_balance_invariant(&balance)?;
             }
         }
 

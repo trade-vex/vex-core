@@ -98,22 +98,18 @@ fn test_different_file_formats() -> Result<(), Box<dyn std::error::Error>> {
 
     let toml_path = temp_dir.path().join("config.toml");
     let json_path = temp_dir.path().join("config.json");
-    let yaml_path = temp_dir.path().join("config.yaml");
 
     // Save in different formats
     config.save_to_file(&toml_path)?;
     config.save_to_file(&json_path)?;
-    config.save_to_file(&yaml_path)?;
 
     // Load from different formats
     let toml_config = VexConfig::load_from_file(&toml_path)?;
     let json_config = VexConfig::load_from_file(&json_path)?;
-    let yaml_config = VexConfig::load_from_file(&yaml_path)?;
 
     // All should have the same core values
     assert_eq!(toml_config.environment, Environment::Production);
     assert_eq!(json_config.environment, Environment::Production);
-    assert_eq!(yaml_config.environment, Environment::Production);
 
     assert_eq!(
         toml_config.core_networking.core_id,
@@ -121,10 +117,6 @@ fn test_different_file_formats() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert_eq!(
         json_config.core_networking.core_id,
-        config.core_networking.core_id
-    );
-    assert_eq!(
-        yaml_config.core_networking.core_id,
         config.core_networking.core_id
     );
 

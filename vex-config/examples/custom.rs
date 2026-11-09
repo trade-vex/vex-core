@@ -225,21 +225,17 @@ version = "1.0.0"
 
     let toml_path = temp_path.join("output.toml");
     let json_path = temp_path.join("output.json");
-    let yaml_path = temp_path.join("output.yaml");
 
     custom_config.save_to_file(&toml_path)?;
     custom_config.save_to_file(&json_path)?;
-    custom_config.save_to_file(&yaml_path)?;
 
     println!("Saved TOML: {}", toml_path.display());
     println!("Saved JSON: {}", json_path.display());
-    println!("Saved YAML: {}", yaml_path.display());
 
     // Show file sizes
     println!("   File sizes:");
     println!("     - TOML: {} bytes", fs::metadata(&toml_path)?.len());
     println!("     - JSON: {} bytes", fs::metadata(&json_path)?.len());
-    println!("     - YAML: {} bytes", fs::metadata(&yaml_path)?.len());
 
     println!("\n=== Custom configuration example completed ===");
 

@@ -501,7 +501,7 @@ impl VexCoreServer {
             )? as i32;
 
             let replay_channel_with_session =
-                format!("{}?session-id={}", &RECORDING_CHANNEL, replay_session_id);
+                format!("{}?session-id={}", RECORDING_CHANNEL, replay_session_id);
             info!(
                 target: "replay",
                 action = "subscription_created",

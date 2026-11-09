@@ -312,7 +312,7 @@ async fn cancel_resting_bid_section(ctx: &mut TestContext) -> TestResult<()> {
     let size = 5;
 
     // Get Alice's initial balance
-    let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+    let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
     let initial_balance = balance_verifier
         .get_balance(users::ALICE, assets::USD)
         .await?;
@@ -340,7 +340,7 @@ async fn cancel_resting_bid_section(ctx: &mut TestContext) -> TestResult<()> {
     // Verify funds are locked
     let locked_amount = price * size; // 40,000 * 5 = 200,000
     {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
             .assert_locked_eq(
                 users::ALICE,
@@ -353,10 +353,10 @@ async fn cancel_resting_bid_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify order is on orderbook
     {
-        let redis_timeout = ctx.config().redis_event_timeout;
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let event_timeout = ctx.config().event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_level(market_id, Side::Bid, price, size, redis_timeout)
+            .wait_and_assert_level(market_id, Side::Bid, price, size, event_timeout)
             .await?;
         info!("  → Order on orderbook at {} for {} BTC", price, size);
     }
@@ -376,7 +376,7 @@ async fn cancel_resting_bid_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify funds are unlocked
     {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
             .assert_locked_eq(users::ALICE, assets::USD, initial_balance.locked)
             .await?;
@@ -385,7 +385,7 @@ async fn cancel_resting_bid_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify orderbook updated (order removed)
     {
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         let orderbook = orderbook_verifier.get_orderbook(market_id).await?;
 
         // Check that the specific price level is either gone or has size 0
@@ -416,7 +416,7 @@ async fn cancel_resting_ask_section(ctx: &mut TestContext) -> TestResult<()> {
     let size = 8;
 
     // Get Bob's initial balance
-    let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+    let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
     let initial_balance = balance_verifier
         .get_balance(users::BOB, assets::BTC)
         .await?;
@@ -443,7 +443,7 @@ async fn cancel_resting_ask_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify funds are locked (BTC for ask)
     {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
             .assert_locked_eq(users::BOB, assets::BTC, initial_balance.locked + size)
             .await?;
@@ -452,10 +452,10 @@ async fn cancel_resting_ask_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify order is on orderbook
     {
-        let redis_timeout = ctx.config().redis_event_timeout;
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let event_timeout = ctx.config().event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_level(market_id, Side::Ask, price, size, redis_timeout)
+            .wait_and_assert_level(market_id, Side::Ask, price, size, event_timeout)
             .await?;
         info!("  → Order on orderbook at {} for {} BTC", price, size);
     }
@@ -475,7 +475,7 @@ async fn cancel_resting_ask_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify funds are unlocked
     {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
             .assert_locked_eq(users::BOB, assets::BTC, initial_balance.locked)
             .await?;
@@ -484,7 +484,7 @@ async fn cancel_resting_ask_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify orderbook updated (order removed)
     {
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         let orderbook = orderbook_verifier.get_orderbook(market_id).await?;
 
         let ask_at_price = orderbook.asks.iter().find(|a| a.price == price);
@@ -520,7 +520,7 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
     let remaining_size = charlie_size - alice_size; // 7
 
     // Get Charlie's initial balance
-    let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+    let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
     let charlie_initial_balance = balance_verifier
         .get_balance(users::CHARLIE, assets::USD)
         .await?;
@@ -548,7 +548,7 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
     // Verify Charlie's funds locked for full order
     let locked_amount = price * charlie_size; // 50,000 * 10 = 500,000
     {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
             .assert_locked_eq(
                 users::CHARLIE,
@@ -576,7 +576,7 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
 
     // Verify trade occurred
     {
-        let mut trade_verifier = TradeVerifier::new(&mut ctx.redis);
+        let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
         let criteria = TradeCriteria::new()
             .market_id(market_id)
             .maker_user_id(users::CHARLIE)
@@ -592,7 +592,7 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
     // Verify Charlie's locked amount decreased by filled portion
     let remaining_locked = price * remaining_size; // 50,000 * 7 = 350,000
     {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
             .assert_locked_eq(
                 users::CHARLIE,
@@ -608,10 +608,10 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
 
     // Verify remaining size on orderbook
     {
-        let redis_timeout = ctx.config().redis_event_timeout;
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let event_timeout = ctx.config().event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_level(market_id, Side::Bid, price, remaining_size, redis_timeout)
+            .wait_and_assert_level(market_id, Side::Bid, price, remaining_size, event_timeout)
             .await?;
         info!(
             "  → Remaining {} BTC on orderbook at {}",
@@ -637,7 +637,7 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
 
     // Verify only remaining funds unlocked
     {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
             .assert_locked_eq(users::CHARLIE, assets::USD, charlie_initial_balance.locked)
             .await?;
@@ -646,7 +646,7 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
 
     // Verify orderbook updated
     {
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         let orderbook = orderbook_verifier.get_orderbook(market_id).await?;
 
         let bid_at_price = orderbook.bids.iter().find(|b| b.price == price);
@@ -746,7 +746,7 @@ async fn cancel_filled_order_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify trade occurred
     {
-        let mut trade_verifier = TradeVerifier::new(&mut ctx.redis);
+        let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
         let criteria = TradeCriteria::new()
             .market_id(market_id)
             .maker_user_id(users::BOB)
@@ -798,7 +798,7 @@ async fn cancel_and_replace_section(ctx: &mut TestContext) -> TestResult<()> {
     let size2 = 4;
 
     // Get Alice's initial balance
-    let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+    let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
     let initial_balance = balance_verifier
         .get_balance(users::ALICE, assets::USD)
         .await?;
@@ -824,10 +824,10 @@ async fn cancel_and_replace_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify first order on book
     {
-        let redis_timeout = ctx.config().redis_event_timeout;
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let event_timeout = ctx.config().event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_level(market_id, Side::Bid, price, size1, redis_timeout)
+            .wait_and_assert_level(market_id, Side::Bid, price, size1, event_timeout)
             .await?;
     }
 
@@ -865,17 +865,17 @@ async fn cancel_and_replace_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify second order on book with new size
     {
-        let redis_timeout = ctx.config().redis_event_timeout;
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let event_timeout = ctx.config().event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_level(market_id, Side::Bid, price, size2, redis_timeout)
+            .wait_and_assert_level(market_id, Side::Bid, price, size2, event_timeout)
             .await?;
         info!("  → New order on orderbook at {} for {} BTC", price, size2);
     }
 
     // Verify correct locked amount (only size2 locked now)
     {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         let locked_amount = price * size2;
         balance_verifier
             .assert_locked_eq(
@@ -905,7 +905,7 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
     let size = 3;
 
     // Get Bob's initial balance
-    let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+    let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
     let initial_balance = balance_verifier
         .get_balance(users::BOB, assets::BTC)
         .await?;
@@ -956,7 +956,7 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
     // Verify all 3 orders locked funds
     let total_locked = size * 3; // 3 BTC per order * 3 orders = 9 BTC
     {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
             .assert_locked_eq(
                 users::BOB,
@@ -969,7 +969,7 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
 
     // Verify all orders on orderbook
     {
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
             .assert_level(market_id, Side::Ask, price1, size)
             .await?;
@@ -1017,7 +1017,7 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
 
     // Verify all funds unlocked
     {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.redis);
+        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
             .assert_locked_eq(users::BOB, assets::BTC, initial_balance.locked)
             .await?;
@@ -1026,7 +1026,7 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
 
     // Verify all orders removed from orderbook
     {
-        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.redis);
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         let orderbook = orderbook_verifier.get_orderbook(market_id).await?;
 
         for (i, price) in [price1, price2, price3].iter().enumerate() {
