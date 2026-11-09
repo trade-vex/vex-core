@@ -429,16 +429,16 @@ For each MatcherTradeEvent in the linked list:
 ```
 Taker (BID - buying base for quote):
   1. Subtract locked quote: locked_quote -= (price * size)
-  2. Calculate taker fee: fee = (size * taker_fee_bps) / 10000
+  2. Calculate taker fee: fee = ceil(size * taker_fee_bps / 10000)
   3. Add base asset: available_base += (size - fee)
 
 Maker (ASK - selling base for quote):
   1. Subtract locked base: locked_base -= size
-  2. Calculate maker fee: fee = (price * size * maker_fee_bps) / 10000
+  2. Calculate maker fee: fee = ceil(price * size * maker_fee_bps / 10000)
   3. Add quote asset: available_quote += (price * size - fee)
 ```
 
-**Fee Structure**: Maker and taker fees configured per market in basis points.
+**Fee Structure**: Maker and taker fees configured per market in basis points. Each fee is rounded up per fill, so a fill pays its exact share plus less than one atomic unit: slicing an order into many fills can never pay less than one fill would, and over-pays by at most one unit per fill.
 
 **Price Improvement Refund**:
 
