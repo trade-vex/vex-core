@@ -1123,10 +1123,15 @@ aeron:udp?endpoint={address}:{port}|session-id={session}
 
 **Phase 1 - Handshake**:
 
-1. Gateway publishes handshake message to `ALL_GATEWAYS_STREAM_ID`
-2. Core validates gateway_id < MAX_GATEWAYS
+1. Gateway publishes `HELLO gateway-{id} {credential} {encryption_key}` to `ALL_GATEWAYS_STREAM_ID`:
+   `credential` is the shared `gateway_authentication_key` (a cleartext bearer credential);
+   `encryption_key` is a fresh random i32 per handshake. It sends HELLO only once both its
+   publication and its MDC reply subscription are connected: the core answers once, and a reply
+   sent before the subscription joins is lost
+2. Core authenticates the credential (when enabled) and validates gateway_id < MAX_GATEWAYS
 3. Core allocates session_id and two ports (data, control)
-4. Core responds with allocation info via MDC publication
+4. Core responds `{hello_session} gateway-{id} ACCEPT {data_port} {control_port} {session_id XOR encryption_key}`
+   via MDC publication; the mask is never the credential, so ACCEPT cannot leak it
 
 **Phase 2 - Duologue Establishment**:
 

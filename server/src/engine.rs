@@ -19,7 +19,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 use tracing::info;
-use vex_config::CoreNetworkingConfig;
+use vex_config::{CoreNetworkingConfig, GatewayAuthenticationKey};
 use vex_networking::server::Publications;
 use vex_networking::server::VexCoreServer;
 
@@ -415,6 +415,7 @@ impl CoreEngine {
         producer: OrderProducer,
         replay_control: ReplayControl,
         networking_config: CoreNetworkingConfig,
+        gateway_authentication_key: GatewayAuthenticationKey,
     ) -> (JoinHandle<Result<(), EngineError>>, Arc<AtomicBool>) {
         let publications = Arc::clone(&self.publications);
         let shutdown_flag = Arc::new(AtomicBool::new(false));
@@ -427,6 +428,7 @@ impl CoreEngine {
 
                 let server_result = VexCoreServer::new(
                     networking_config,
+                    gateway_authentication_key,
                     producer,
                     publications,
                     replay,
