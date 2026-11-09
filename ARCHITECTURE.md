@@ -1281,7 +1281,7 @@ fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) 
     let cmd = decode_order_command(buffer)?;
     if self.producer.try_publish(|target| { *target = cmd.clone(); }).is_err() {
         // Ring full: nothing enqueued, so tell the gateway to retry.
-        self.publications.publish_response(&busy_response(cmd));
+        self.publications.try_publish_response(&busy_response(cmd)); // one offer, never sleeps
     }
 }
 ```
@@ -1298,7 +1298,7 @@ fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) 
 
 **Thread Safety**: `Publication` is thread-safe. `Subscription` is not (polled from single thread).
 
-**Back-Pressure**: `publication.offer()` returns negative codes when buffer full. VEX-CORE uses busy-spin retry rather than queuing.
+**Back-Pressure**: `publication.offer()` returns negative codes when buffer full. VEX-CORE does not queue: a pipeline response is re-offered at most 10 times with 1 ms backoff (`Publications::publish_response`), while the ingress thread's ring-full `Busy` reply is offered once and never sleeps (`Publications::try_publish_response`).
 
 ## Data Structures and Algorithms
 

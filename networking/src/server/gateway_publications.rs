@@ -14,7 +14,8 @@ use super::ServerError;
 use super::progress::{DRAIN_TIMEOUT, PipelineProgress};
 
 const ARCHIVE_OFFER_RETRY_LIMIT: usize = 5_000;
-const ARCHIVE_OFFER_RETRY_BACKOFF: Duration = Duration::from_millis(1);
+const OFFER_RETRY_BACKOFF: Duration = Duration::from_millis(1);
+const RESPONSE_OFFER_RETRY_LIMIT: usize = 10;
 
 #[derive(Debug, PartialEq, Eq)]
 enum OfferResult {
@@ -34,6 +35,28 @@ fn classify_offer_result(result: i64) -> OfferResult {
     } else {
         OfferResult::Fatal
     }
+}
+
+fn classify_response_offer_result(result: i64) -> OfferResult {
+    if result == i64::from(AERON_PUBLICATION_NOT_CONNECTED) {
+        OfferResult::Fatal
+    } else {
+        classify_offer_result(result)
+    }
+}
+
+/// Offers once, then re-offers a retryable result at most `retry_limit` times with
+/// `OFFER_RETRY_BACKOFF` between attempts. Returns the last offer result.
+fn offer_response(retry_limit: usize, mut offer: impl FnMut() -> i64) -> i64 {
+    let mut result = offer();
+    for _ in 0..retry_limit {
+        if classify_response_offer_result(result) != OfferResult::Retryable {
+            break;
+        }
+        std::thread::sleep(OFFER_RETRY_BACKOFF);
+        result = offer();
+    }
+    result
 }
 
 /// Manages Gateway Publications from gateway id 0 to MAX_GATEWAYS - 1
@@ -109,8 +132,21 @@ impl Publications {
         Ok(index)
     }
 
+    /// Sends `cmd` back to the gateway that submitted it, retrying a back-pressured offer up to
+    /// `RESPONSE_OFFER_RETRY_LIMIT` times.
     // Publisher (event handler thread)
     pub fn publish_response(&self, cmd: &OrderCommand) {
+        self.send_response(cmd, RESPONSE_OFFER_RETRY_LIMIT);
+    }
+
+    /// Sends `cmd` back to its gateway with a single offer that never sleeps. For the ingress poll
+    /// thread, where a retry backoff would stall every gateway's commands; a reply lost to
+    /// back-pressure surfaces at the gateway as its request timeout.
+    pub fn try_publish_response(&self, cmd: &OrderCommand) {
+        self.send_response(cmd, 0);
+    }
+
+    fn send_response(&self, cmd: &OrderCommand, retry_limit: usize) {
         let gateway_id = cmd.route_gateway_id;
         let ptr = match self.get(gateway_id) {
             Ok(ptr) => ptr,
@@ -132,18 +168,22 @@ impl Publications {
         match encode_order_command(cmd, &mut response_buffer) {
             Ok(_) => {
                 // Send the processed command back
-                let result =
-                    publication.offer::<AeronReservedValueSupplierLogger>(&response_buffer, None);
-
-                if result < 0 {
-                    error!(
-                        "gateway-{}: Failed to send processed OrderCommand, result: {}",
-                        gateway_id, result
-                    );
-                } else {
+                let result = offer_response(retry_limit, || {
+                    publication.offer::<AeronReservedValueSupplierLogger>(&response_buffer, None)
+                });
+                if result >= 0 {
                     debug!(
                         "gateway-{}: Successfully sent processed OrderCommand",
                         gateway_id
+                    );
+                } else {
+                    error!(
+                        gateway_id,
+                        client_order_id = cmd.client_order_id,
+                        order_id = cmd.order_id,
+                        final_status = ?cmd.status,
+                        last_result_code = result,
+                        "Failed to send processed OrderCommand"
                     );
                 }
             }
@@ -186,7 +226,7 @@ impl Publications {
                             return;
                         }
                         OfferResult::Retryable if retry < ARCHIVE_OFFER_RETRY_LIMIT => {
-                            std::thread::sleep(ARCHIVE_OFFER_RETRY_BACKOFF);
+                            std::thread::sleep(OFFER_RETRY_BACKOFF);
                         }
                         OfferResult::Retryable | OfferResult::Fatal => {
                             error!(
@@ -256,6 +296,44 @@ mod tests {
     }
 
     #[test]
+    fn classifies_response_and_archive_offer_results() {
+        assert_eq!(
+            classify_response_offer_result(i64::from(AERON_PUBLICATION_NOT_CONNECTED)),
+            OfferResult::Fatal
+        );
+        assert_eq!(
+            classify_offer_result(i64::from(AERON_PUBLICATION_NOT_CONNECTED)),
+            OfferResult::Retryable
+        );
+
+        for result in [
+            AERON_PUBLICATION_BACK_PRESSURED,
+            AERON_PUBLICATION_ADMIN_ACTION,
+        ] {
+            assert_eq!(
+                classify_response_offer_result(i64::from(result)),
+                OfferResult::Retryable
+            );
+            assert_eq!(
+                classify_offer_result(i64::from(result)),
+                OfferResult::Retryable
+            );
+        }
+
+        for result in [
+            AERON_PUBLICATION_CLOSED,
+            AERON_PUBLICATION_MAX_POSITION_EXCEEDED,
+            AERON_PUBLICATION_ERROR,
+        ] {
+            assert_eq!(
+                classify_response_offer_result(i64::from(result)),
+                OfferResult::Fatal
+            );
+            assert_eq!(classify_offer_result(i64::from(result)), OfferResult::Fatal);
+        }
+    }
+
+    #[test]
     fn classifies_fatal_offer_results() {
         for result in [
             AERON_PUBLICATION_CLOSED,
@@ -265,5 +343,43 @@ mod tests {
             assert_eq!(classify_offer_result(i64::from(result)), OfferResult::Fatal);
         }
         assert_eq!(classify_offer_result(-7), OfferResult::Fatal);
+    }
+
+    #[test]
+    fn single_offer_response_never_retries_back_pressure() {
+        let back_pressured = i64::from(AERON_PUBLICATION_BACK_PRESSURED);
+        let mut offers = 0;
+
+        let result = offer_response(0, || {
+            offers += 1;
+            back_pressured
+        });
+
+        // One offer means no backoff sleep was taken on the caller's thread.
+        assert_eq!(offers, 1);
+        assert_eq!(result, back_pressured);
+    }
+
+    #[test]
+    fn response_offer_retries_only_retryable_results_and_is_bounded() {
+        let mut offers = 0;
+        offer_response(RESPONSE_OFFER_RETRY_LIMIT, || {
+            offers += 1;
+            i64::from(AERON_PUBLICATION_BACK_PRESSURED)
+        });
+        assert_eq!(offers, RESPONSE_OFFER_RETRY_LIMIT + 1);
+
+        let mut results = [i64::from(AERON_PUBLICATION_ADMIN_ACTION), 0].into_iter();
+        assert_eq!(
+            offer_response(RESPONSE_OFFER_RETRY_LIMIT, || results.next().unwrap()),
+            0
+        );
+
+        let mut offers = 0;
+        offer_response(RESPONSE_OFFER_RETRY_LIMIT, || {
+            offers += 1;
+            i64::from(AERON_PUBLICATION_NOT_CONNECTED)
+        });
+        assert_eq!(offers, 1);
     }
 }
