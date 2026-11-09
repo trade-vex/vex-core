@@ -41,6 +41,10 @@ pub struct VexConfig {
     pub symbols: SymbolSpecificationConfig,
     /// Kafka broker address for event streaming
     pub kafka_broker: String,
+    /// Schema Registry URL for the Kafka events' protobuf schemas: an `http://` or `https://` URL.
+    /// An unreachable one does not fail startup: the first event stalls and, since no event is
+    /// dropped, intake halts.
+    pub schema_registry_url: String,
     /// Balance preload configuration (test/local only)
     #[cfg(feature = "balance-preload")]
     #[serde(default)]
@@ -49,6 +53,10 @@ pub struct VexConfig {
 
 fn default_kafka_broker() -> String {
     "localhost:9092".to_string()
+}
+
+fn default_schema_registry_url() -> String {
+    "http://localhost:8081".to_string()
 }
 
 impl VexConfig {
@@ -60,6 +68,7 @@ impl VexConfig {
             logging: LoggingConfig::for_environment(&environment),
             symbols: SymbolSpecificationConfig::for_environment(&environment),
             kafka_broker: default_kafka_broker(),
+            schema_registry_url: default_schema_registry_url(),
             environment,
             #[cfg(feature = "balance-preload")]
             balance_preload: BalancePreloadConfig::new(),
@@ -131,6 +140,17 @@ impl VexConfig {
         }
         self.logging.validate()?;
         self.symbols.validate()?;
+        // The registry client does not check the URL either; a malformed one would fail every
+        // event's registration, and that is retried forever rather than failing startup.
+        if !["http://", "https://"]
+            .iter()
+            .any(|scheme| self.schema_registry_url.starts_with(scheme))
+        {
+            return Err(ConfigError::validation(format!(
+                "schema_registry_url must be an http:// or https:// URL, got {:?}",
+                self.schema_registry_url
+            )));
+        }
         if self.is_production() && self.symbols.is_empty() {
             return Err(ConfigError::ValidationError(
                 "Symbol configuration cannot be empty in production".to_string(),

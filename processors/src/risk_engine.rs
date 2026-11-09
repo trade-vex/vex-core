@@ -108,7 +108,7 @@ impl RiskEngine {
             }
             OrderCommandType::DepositFunds => match self.handle_deposit(cmd) {
                 Ok(_) => {
-                    cmd.balance[0] = self.get_balance(cmd.user_id(), cmd.market_id as u16);
+                    // R2 snapshots the balance, in sequence order with settlements.
                     cmd.set_status(Status::Processed);
                     order_debug!(
                         "risk_deposit_applied",
@@ -130,7 +130,7 @@ impl RiskEngine {
             },
             OrderCommandType::WithdrawFunds => match self.handle_withdrawal(cmd) {
                 Ok(_) => {
-                    cmd.balance[0] = self.get_balance(cmd.user_id(), cmd.market_id as u16);
+                    // R2 snapshots the balance, in sequence order with settlements.
                     cmd.set_status(Status::Processed);
                     order_debug!(
                         "risk_withdrawal_applied",
@@ -213,6 +213,15 @@ impl RiskEngine {
                 taker_order = ?taker_order,
                 error = ?err
             );
+            // The zeroed snapshot would otherwise become the maker's latest row. Publish what the
+            // store actually holds: unchanged if settlement failed before its commit, or the
+            // committed state if a later step (bid-collateral release) failed after it.
+            if user_id == event.maker_user_id {
+                event.maker_balance = [
+                    self.get_balance(user_id, base_asset(market_id)),
+                    self.get_balance(user_id, quote_asset(market_id)),
+                ];
+            }
         } else {
             debug!(
                 target: "risk_engine",
@@ -1525,6 +1534,33 @@ mod tests {
             net_quote_received
         );
         assert_eq!(engine.get_balance(maker_id, btc_asset_id).total(), 0);
+    }
+
+    #[test]
+    fn failed_maker_settlement_publishes_the_unchanged_balance_not_zeros() {
+        let base_asset_id = 2u16;
+        let quote_asset_id = 1u16;
+        let market_id = ((quote_asset_id as u32) << 16) | base_asset_id as u32;
+        let mut specs = HashMap::new();
+        specs.insert(market_id, get_spec(market_id));
+        let engine = RiskEngine::new(specs, 0, 1);
+        let maker_id = 101;
+        let size = 10;
+
+        // The maker's locked base cannot cover the fill, so settlement fails.
+        engine.set_balance(maker_id, base_asset_id, UserBalance::new(5, size - 1));
+        engine.set_balance(maker_id, quote_asset_id, UserBalance::new(11, 0));
+
+        let mut trade_event = MatcherTradeEvent::default();
+        trade_event.price = 100;
+        trade_event.size = size;
+        trade_event.maker_user_id = maker_id;
+        engine.handle_trade_event(maker_id, market_id, Side::Ask, &mut trade_event, None);
+
+        assert_eq!(
+            trade_event.maker_balance,
+            [UserBalance::new(5, size - 1), UserBalance::new(11, 0)]
+        );
     }
 
     #[test]

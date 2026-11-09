@@ -194,6 +194,7 @@ The generated code includes:
 ### VEX Core
 - `VEX_ENV=development|test|production` - Required explicit environment selection
 - `RUST_LOG=info` - Rust logging level
+- `VEX__KAFKA_BROKER`, `VEX__SCHEMA_REGISTRY_URL` - Kafka broker and Schema Registry URL (config `kafka_broker`, `schema_registry_url`), passed through from the calling shell. The compose stack runs neither, and the development defaults (`localhost:9092`, `http://localhost:8081`) point at the container itself, so set both. Without a reachable Kafka and registry, events back up and order intake halts (RUNBOOK "Kafka is Down")
 - Aeron IPC directory: always `/dev/shm/aeron` (set in `src/main.rs`). vex-core does not read `AERON_DIR`; point the media driver at this directory instead.
 
 ## Monitoring

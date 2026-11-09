@@ -58,9 +58,10 @@ macro_rules! create_risk_handler {
 /// # Processing Logic
 ///
 /// 1. Skips rejected orders
-/// 2. Processes trade events for both maker and taker based on shard ownership
-/// 3. Handles order cancellations for partially filled IOC/FOK orders
-/// 4. Updates balance snapshots in the command
+/// 2. Snapshots the balance of a deposit or withdrawal (applied in R1) and stops there
+/// 3. Processes trade events for both maker and taker based on shard ownership
+/// 4. Handles order cancellations for partially filled IOC/FOK orders
+/// 5. Updates balance snapshots in the command
 ///
 /// # Example
 ///
@@ -79,7 +80,7 @@ macro_rules! create_risk_r2_handler {
             // `handle_trade_event` to take projected fields rather than `&mut OrderCommand`,
             // which is a change in `processors/` and is tracked in issue #128.
             let cmd = unsafe { &mut *cell.get() };
-            if (cmd.status == Status::Rejected || cmd.status == Status::Processed) {
+            if cmd.status == Status::Rejected {
                 return;
             }
 
@@ -92,6 +93,17 @@ macro_rules! create_risk_r2_handler {
 
             // Determine shard ownership for taker
             let is_taker_shard = ((taker_id & shard_mask) as usize) == $shard_id;
+
+            // A deposit or withdrawal (`Processed`) was applied in R1. R1 runs ahead of R2 for
+            // earlier sequences, so snapshot it here, where this shard has settled every earlier
+            // trade of the user: the published balance must not miss one of them.
+            if cmd.status == Status::Processed {
+                if is_taker_shard {
+                    // For deposits and withdrawals `market_id` carries the asset id.
+                    cmd.balance[0] = risk_engine.get_balance(taker_id, market_id as u16);
+                }
+                return;
+            }
 
             // Process all trade events in the chain
             let mut current_event = cmd.events_mut();

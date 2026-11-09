@@ -176,6 +176,8 @@ fn test_different_file_formats() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_shipped_development_config_matches_defaults() -> Result<(), Box<dyn std::error::Error>> {
+    // `load_from_file` applies `VEX__*` overrides, which other tests set.
+    let _guard = ENVIRONMENT_LOCK.lock().unwrap();
     let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../config.dev.yaml");
     let loaded = VexConfig::load_from_file(config_path)?;
     let defaults = VexConfig::new(Environment::Development);
@@ -280,6 +282,83 @@ fn test_missing_file_defaults_load_unchanged() -> Result<(), Box<dyn std::error:
     }
 
     Ok(())
+}
+
+#[test]
+fn test_production_config_without_schema_registry_url_fails_to_load()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let path = temp_dir.path().join("config.prod.toml");
+    let mut config = VexConfig::new(Environment::Production);
+    config.symbols = VexConfig::new(Environment::Development).symbols;
+    config.gateway_networking.gateway_authentication_key =
+        GatewayAuthenticationKey::from("123456789");
+    config.save_to_file(&path)?;
+    let load = || {
+        ConfigLoader::new()
+            .with_search_paths(vec![path.display().to_string()])
+            .without_env_prefix()
+            .load_for_environment(Environment::Production)
+    };
+    assert_eq!(load()?.schema_registry_url, "http://localhost:8081");
+
+    // Without the key, and with no override, the file does not load: production gets no default.
+    let without_registry: String = std::fs::read_to_string(&path)?
+        .lines()
+        .filter(|line| !line.starts_with("schema_registry_url ="))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    std::fs::write(&path, without_registry)?;
+
+    let error = load().unwrap_err();
+    assert!(matches!(error, ConfigError::LoadError { .. }), "{error}");
+    assert!(error.to_string().contains("schema_registry_url"), "{error}");
+
+    Ok(())
+}
+
+/// Loads the development defaults with `variable` set to `value`, reading overrides under `prefix`.
+fn load_with_variable(prefix: &str, variable: &str, value: &str) -> vex_config::Result<VexConfig> {
+    let _guard = ENVIRONMENT_LOCK.lock().unwrap();
+    unsafe {
+        env::set_var(variable, value);
+    }
+    let result = ConfigLoader::new()
+        .with_search_paths(vec!["/nonexistent/config.yaml".to_string()])
+        .with_env_prefix(prefix)
+        .allow_missing_files()
+        .load_for_environment(Environment::Development);
+    unsafe {
+        env::remove_var(variable);
+    }
+    result
+}
+
+#[test]
+fn test_schema_registry_url_environment_override() -> Result<(), Box<dyn std::error::Error>> {
+    let config = load_with_variable("VEX", "VEX__SCHEMA_REGISTRY_URL", "http://redpanda:8081")?;
+    assert_eq!(config.schema_registry_url, "http://redpanda:8081");
+    Ok(())
+}
+
+#[test]
+fn test_schema_registry_url_must_be_an_http_url() {
+    // A prefix of its own: an invalid `VEX__` value would fail every concurrent `VEX__` load.
+    for invalid in ["", "  ", "redpanda:8081"] {
+        let error = load_with_variable("BADREGISTRY", "BADREGISTRY__SCHEMA_REGISTRY_URL", invalid)
+            .unwrap_err();
+        assert!(matches!(error, ConfigError::LoadError { .. }), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("schema_registry_url must be an http:// or https:// URL"),
+            "{error}"
+        );
+    }
+
+    let mut config = VexConfig::new(Environment::Development);
+    config.schema_registry_url = "https://registry.internal:8081".to_string();
+    assert!(config.validate().is_ok());
 }
 
 #[test]

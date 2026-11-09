@@ -250,7 +250,7 @@ The generator busy-waits until the next millisecond and resets the sequence. Thi
 
 **Timestamp Field**:
 
-Separate from the order_id timestamp component, the `cmd.timestamp` field records the wall-clock time when the order entered VEX-CORE, used for order lifecycle tracking.
+Separate from the order_id timestamp component, the `cmd.timestamp` field is the command's journaled time: wall-clock nanoseconds, forced strictly above the previous command's (`JournalingProcessor::next_timestamp`) and continued from the journal on `--replay`. Every Kafka event a command produces, `orderbook` included, carries it.
 
 **Replay Mode**:
 
@@ -1508,6 +1508,7 @@ The Makefile provides high-level orchestration for complex workflows involving A
 RUST_LOG=info               # Logging level
 VEX_ENV=development         # Required: development | test | production
 VEX__KAFKA_BROKER=localhost:9092  # Kafka broker (overrides the configured kafka_broker)
+VEX__SCHEMA_REGISTRY_URL=http://localhost:8081  # Schema Registry (overrides the configured schema_registry_url)
 ```
 
 **Static Configuration** (vex-config crate):

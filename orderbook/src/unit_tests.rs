@@ -435,7 +435,6 @@ mod test {
         // asserted on the vectors that survived.
         assert_eq!(snapshot.bid_prices.capacity(), common::L2SIZE);
         assert_eq!(snapshot.ask_prices.capacity(), common::L2SIZE);
-        assert_ne!(snapshot.timestamp, 0);
     }
 
     #[test]
