@@ -5,6 +5,10 @@ use crate::utils::{
 use common::ORDERCOMMANDSIZE;
 use common::{OrderCommand, encode_order_command, order_debug};
 use rand;
+use rusteron_archive::bindings::{
+    AERON_PUBLICATION_ADMIN_ACTION, AERON_PUBLICATION_BACK_PRESSURED,
+    AERON_PUBLICATION_NOT_CONNECTED,
+};
 use rusteron_archive::{
     Aeron, AeronCError, AeronContext, AeronFragmentHandlerCallback, AeronHeader, AeronPublication,
     AeronReservedValueSupplierLogger, AeronSubscription, Handler,
@@ -247,10 +251,16 @@ pub enum GatewayError {
     CoreError(String),
     #[error("Failed to send message: {0}")]
     SendError(String),
+    /// The core is back-pressuring this gateway: Aeron `BACK_PRESSURED`, or an `ADMIN_ACTION` that
+    /// persisted across one immediate re-offer. Nothing was sent; transient, retry shortly.
+    #[error("VEX Core is busy; retry shortly")]
+    Busy,
     #[error("Protocol error: {0}")]
     ProtocolError(String),
     #[error("Configuration error: {0}")]
     ConfigError(String),
+    /// No core is subscribed to this gateway's publication (Aeron `NOT_CONNECTED`): the engine
+    /// is down or restarting. Nothing was sent; unlike `Busy`, there is no expected retry time.
     #[error("Gateway not connected to Server")]
     NotConnected,
     #[error("Invalid gateway state: expected {expected}, got {actual}")]
@@ -294,7 +304,6 @@ impl Publisher {
 
     /// Sends an OrderCommand to the core
     pub fn send_order_command(&self, order_command: &OrderCommand) -> Result<(), GatewayError> {
-        // Send the binary message directly
         order_debug!(
             "gateway_send_attempt",
             order_command,
@@ -302,19 +311,15 @@ impl Publisher {
         );
 
         let mut message_buffer = [0u8; ORDERCOMMANDSIZE];
-
         encode_order_command(order_command, &mut message_buffer).map_err(|e| {
             GatewayError::ProtocolError(format!("Failed to encode OrderCommand: {e:?}"))
         })?;
 
-        // Send using the buffer directly
         for attempt in 0..MESSAGE_RETRY_COUNT {
-            let result = self
-                .publication
-                .offer::<AeronReservedValueSupplierLogger>(&message_buffer, None);
-
-            if result >= 0 {
-                return Ok(());
+            match self.offer_order_command(&message_buffer) {
+                Ok(()) => return Ok(()),
+                Err(error @ GatewayError::ProtocolError(_)) => return Err(error),
+                Err(_) => {}
             }
 
             // Wait before retrying with exponential backoff
@@ -324,6 +329,55 @@ impl Publisher {
 
         Err(GatewayError::SendError(format!(
             "Failed to send OrderCommand after {MESSAGE_RETRY_COUNT} attempts",
+        )))
+    }
+
+    /// Sends an OrderCommand to the core without blocking: never sleeps or waits for the core.
+    /// Fails with `Busy` on back-pressure, `NotConnected` when no core is connected, and
+    /// `SendError` when this gateway's publication is unusable.
+    pub fn try_send_order_command(&self, order_command: &OrderCommand) -> Result<(), GatewayError> {
+        let mut message_buffer = [0u8; ORDERCOMMANDSIZE];
+
+        encode_order_command(order_command, &mut message_buffer).map_err(|e| {
+            GatewayError::ProtocolError(format!("Failed to encode OrderCommand: {e:?}"))
+        })?;
+
+        self.offer_order_command(&message_buffer)
+    }
+
+    fn offer_order_command(&self, message_buffer: &[u8]) -> Result<(), GatewayError> {
+        offer_order(|| {
+            self.publication
+                .offer::<AeronReservedValueSupplierLogger>(message_buffer, None)
+        })
+    }
+}
+
+/// Offers once and classifies the result. `ADMIN_ACTION` (e.g. a log-buffer term rotation) is not
+/// back-pressure; Aeron documents that the next attempt is likely to succeed, so it gets exactly
+/// one immediate re-offer. Never sleeps.
+fn offer_order(mut offer: impl FnMut() -> i64) -> Result<(), GatewayError> {
+    let mut result = offer();
+    if result == i64::from(AERON_PUBLICATION_ADMIN_ACTION) {
+        result = offer();
+    }
+    classify_order_offer_result(result)
+}
+
+/// `CLOSED`, `MAX_POSITION_EXCEEDED`, `ERROR` and unknown codes are `SendError`: they mean this
+/// gateway's own publication is unusable, not that the engine is busy or down.
+fn classify_order_offer_result(result: i64) -> Result<(), GatewayError> {
+    if result >= 0 {
+        Ok(())
+    } else if result == i64::from(AERON_PUBLICATION_NOT_CONNECTED) {
+        Err(GatewayError::NotConnected)
+    } else if result == i64::from(AERON_PUBLICATION_BACK_PRESSURED)
+        || result == i64::from(AERON_PUBLICATION_ADMIN_ACTION)
+    {
+        Err(GatewayError::Busy)
+    } else {
+        Err(GatewayError::SendError(format!(
+            "Failed to send OrderCommand, result: {result}",
         )))
     }
 }
@@ -730,6 +784,99 @@ impl VexGateway {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn order_offer_result_classifies_success() {
+        assert!(classify_order_offer_result(0).is_ok());
+    }
+
+    #[test]
+    fn order_offer_result_classifies_back_pressure_as_busy() {
+        for result in [
+            AERON_PUBLICATION_BACK_PRESSURED,
+            AERON_PUBLICATION_ADMIN_ACTION,
+        ] {
+            assert!(matches!(
+                classify_order_offer_result(i64::from(result)),
+                Err(GatewayError::Busy)
+            ));
+        }
+    }
+
+    #[test]
+    fn order_offer_result_classifies_no_core_as_not_connected() {
+        assert!(matches!(
+            classify_order_offer_result(i64::from(AERON_PUBLICATION_NOT_CONNECTED)),
+            Err(GatewayError::NotConnected)
+        ));
+    }
+
+    #[test]
+    fn order_offer_result_classifies_closed_publication_as_failure() {
+        assert!(matches!(
+            classify_order_offer_result(i64::from(
+                rusteron_archive::AeronErrorType::PublicationClosed.code()
+            )),
+            Err(GatewayError::SendError(message))
+                if message == "Failed to send OrderCommand, result: -4"
+        ));
+    }
+
+    #[test]
+    fn order_offer_result_classifies_unusable_publication_as_failure() {
+        for result in [
+            rusteron_archive::bindings::AERON_PUBLICATION_MAX_POSITION_EXCEEDED,
+            rusteron_archive::bindings::AERON_PUBLICATION_ERROR,
+        ] {
+            assert!(matches!(
+                classify_order_offer_result(i64::from(result)),
+                Err(GatewayError::SendError(_))
+            ));
+        }
+    }
+
+    /// Runs `offer_order` against scripted offer results; returns its outcome and the offer count.
+    fn offer_scripted(results: &[i32]) -> (Result<(), GatewayError>, usize) {
+        let mut offers = 0;
+        let outcome = offer_order(|| {
+            offers += 1;
+            i64::from(results[offers - 1])
+        });
+        (outcome, offers)
+    }
+
+    #[test]
+    fn order_offer_reoffers_admin_action_once_and_nothing_else() {
+        let admin = AERON_PUBLICATION_ADMIN_ACTION;
+
+        assert!(matches!(offer_scripted(&[admin, 0]), (Ok(()), 2)));
+        assert!(matches!(
+            offer_scripted(&[admin, admin]),
+            (Err(GatewayError::Busy), 2)
+        ));
+        assert!(matches!(
+            offer_scripted(&[admin, AERON_PUBLICATION_NOT_CONNECTED]),
+            (Err(GatewayError::NotConnected), 2)
+        ));
+        assert!(matches!(
+            offer_scripted(&[AERON_PUBLICATION_BACK_PRESSURED]),
+            (Err(GatewayError::Busy), 1)
+        ));
+        assert!(matches!(
+            offer_scripted(&[AERON_PUBLICATION_NOT_CONNECTED]),
+            (Err(GatewayError::NotConnected), 1)
+        ));
+        assert!(matches!(offer_scripted(&[0]), (Ok(()), 1)));
+    }
+
+    #[test]
+    fn order_offer_result_classifies_unrecognised_negative_code_as_failure() {
+        assert!(matches!(
+            classify_order_offer_result(-99),
+            Err(GatewayError::SendError(message))
+                if message == "Failed to send OrderCommand, result: -99"
+        ));
+    }
 
     #[test]
     fn test_parse_core_response_accept() {
