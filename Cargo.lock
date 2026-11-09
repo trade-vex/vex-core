@@ -2962,6 +2962,7 @@ name = "vex-server"
 version = "0.1.0"
 dependencies = [
  "common",
+ "core_affinity",
  "disruptor",
  "hashbrown 0.15.5",
  "parking_lot",

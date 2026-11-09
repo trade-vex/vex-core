@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::sync::atomic::Ordering;
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
@@ -18,11 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     apply_container_networking_overrides(&mut config);
 
-    if let Ok(pinning_str) = std::env::var("ENABLE_CORE_PINNING") {
-        if let Ok(pinning_value) = pinning_str.parse::<bool>() {
-            config.core_networking.enable_core_pinning = pinning_value;
-        }
-    }
+    apply_core_pinning_override(&mut config, std::env::var_os("ENABLE_CORE_PINNING"))?;
 
     if config.core_networking.enable_core_pinning {
         info!(
@@ -108,6 +105,22 @@ fn apply_container_networking_overrides(config: &mut VexConfig) {
     config.core_networking.context_dir = "/dev/shm/aeron".to_string();
 }
 
+/// `ENABLE_CORE_PINNING` overrides the configured pinning. A value other than `true` or `false`
+/// is a startup error; ignoring it would run with whichever pinning the config happened to set.
+fn apply_core_pinning_override(
+    config: &mut VexConfig,
+    value: Option<OsString>,
+) -> Result<(), String> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    config.core_networking.enable_core_pinning = value
+        .to_str()
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| format!("ENABLE_CORE_PINNING must be true or false, got {value:?}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,5 +137,26 @@ mod tests {
         assert_eq!(config.kafka_broker, "configured-kafka:19092");
         assert_eq!(config.core_networking.local_address, "0.0.0.0");
         assert_eq!(config.core_networking.context_dir, "/dev/shm/aeron");
+    }
+
+    #[test]
+    fn core_pinning_override_accepts_only_true_or_false() {
+        let mut config = VexConfig::new(Environment::Development);
+        config.core_networking.enable_core_pinning = true;
+
+        apply_core_pinning_override(&mut config, None).unwrap();
+        assert!(config.core_networking.enable_core_pinning);
+
+        apply_core_pinning_override(&mut config, Some("false".into())).unwrap();
+        assert!(!config.core_networking.enable_core_pinning);
+
+        apply_core_pinning_override(&mut config, Some("true".into())).unwrap();
+        assert!(config.core_networking.enable_core_pinning);
+
+        for invalid in ["1", "yes", "TRUE", ""] {
+            let error = apply_core_pinning_override(&mut config, Some(invalid.into())).unwrap_err();
+            assert!(error.contains("ENABLE_CORE_PINNING"), "{error}");
+            assert!(config.core_networking.enable_core_pinning);
+        }
     }
 }

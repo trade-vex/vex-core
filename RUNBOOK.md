@@ -62,7 +62,7 @@ VEX_ENV=development ./target/release/vex-core --replay
 |----------|-------------|---------|
 | `VEX_ENV` | Environment: exactly `development`, `test` or `production`; any other value is a startup error | Required |
 | `VEX__KAFKA_BROKER` | Kafka broker address; overrides the configured `kafka_broker` like any `VEX__*` key | config `kafka_broker` (`localhost:9092` in the dev/test defaults) |
-| `ENABLE_CORE_PINNING` | Enable CPU core pinning for processor threads | `false` (dev/test), `true` (prod) |
+| `ENABLE_CORE_PINNING` | Enable CPU core pinning for processor threads: `true` or `false`; any other value is a startup error | `false` (dev/test), `true` (prod) |
 | `RUST_LOG` | Log level (trace, debug, info, warn, error) | `info` |
 | `VEX__*` | Configuration overrides (e.g., `VEX__CORE_NETWORKING__CONTEXT_DIR`) | - |
 
