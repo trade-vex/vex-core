@@ -52,6 +52,7 @@ services:
       redpanda:
         condition: service_healthy
     environment:
+      - VEX_ENV=development
       - VEX_SERVER_HOST=vex-server
       - VEX_SERVER_PORT=3521
       - VEX_KAFKA_BROKER=redpanda:9092

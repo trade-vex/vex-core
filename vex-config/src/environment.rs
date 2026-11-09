@@ -1,5 +1,6 @@
 //! Environment configuration and utilities
 
+use crate::ConfigError;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
@@ -18,30 +19,28 @@ pub enum Environment {
 }
 
 impl Environment {
-    /// Detect environment from environment variables
-    /// Checks VEX_ENV, ENVIRONMENT, ENV, and NODE_ENV in that order
-    pub fn detect() -> Self {
-        let env_vars = ["VEX_ENV", "ENVIRONMENT", "ENV", "NODE_ENV"];
+    /// The one environment variable that selects the environment.
+    pub const VARIABLE: &'static str = "VEX_ENV";
 
-        for var in &env_vars {
-            if let Ok(value) = std::env::var(var)
-                && let Ok(env) = value.parse::<Environment>()
-            {
-                tracing::info!(
-                    target: "config",
-                    action = "environment_detected",
-                    environment = %env,
-                    source = *var
-                );
-                return env;
-            }
-        }
-
-        tracing::warn!(
+    /// Read the environment selected by `VEX_ENV`: `None` when it is unset, and an error when it
+    /// is set to anything other than `development`, `test` or `production`.
+    pub fn detect_explicit() -> crate::Result<Option<Self>> {
+        let Some(value) = std::env::var_os(Self::VARIABLE) else {
+            return Ok(None);
+        };
+        let environment = value
+            .to_string_lossy()
+            .parse::<Environment>()
+            .map_err(|error| {
+                ConfigError::EnvironmentError(format!("{}: {error}", Self::VARIABLE))
+            })?;
+        tracing::info!(
             target: "config",
-            action = "environment_defaulted"
+            action = "environment_detected",
+            environment = %environment,
+            source = Self::VARIABLE
         );
-        Environment::Development
+        Ok(Some(environment))
     }
 
     /// Check if this is a development environment
@@ -111,10 +110,10 @@ impl FromStr for Environment {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "development" | "dev" | "develop" => Ok(Environment::Development),
-            "test" | "testing" => Ok(Environment::Test),
-            "production" | "prod" => Ok(Environment::Production),
+        match s {
+            "development" => Ok(Environment::Development),
+            "test" => Ok(Environment::Test),
+            "production" => Ok(Environment::Production),
             _ => Err(format!(
                 "Invalid environment: '{s}'. Valid options: development, test, production"
             )),
@@ -132,22 +131,23 @@ mod tests {
             "development".parse::<Environment>().unwrap(),
             Environment::Development
         );
-        assert_eq!(
-            "dev".parse::<Environment>().unwrap(),
-            Environment::Development
-        );
         assert_eq!("test".parse::<Environment>().unwrap(), Environment::Test);
-        assert_eq!("testing".parse::<Environment>().unwrap(), Environment::Test);
         assert_eq!(
             "production".parse::<Environment>().unwrap(),
             Environment::Production
         );
-        assert_eq!(
-            "prod".parse::<Environment>().unwrap(),
-            Environment::Production
-        );
 
-        assert!("invalid".parse::<Environment>().is_err());
+        for alias in [
+            "dev",
+            "develop",
+            "testing",
+            "prod",
+            "Production",
+            "invalid",
+            "",
+        ] {
+            assert!(alias.parse::<Environment>().is_err(), "{alias:?}");
+        }
     }
 
     #[test]

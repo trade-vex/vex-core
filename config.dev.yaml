@@ -1,0 +1,77 @@
+environment: development
+core_networking:
+  context_dir: /dev/shm/aeron-test-server
+  local_address: 127.0.0.1
+  initial_port: 40001
+  initial_control_port: 40002
+  base_gateway_port: 50000
+  max_gateways: 15
+  reserved_session_id_low: 1000
+  reserved_session_id_high: 9999
+  enable_authentication: false
+  core_id: vex-core-dev
+  buffer_size: 1048576
+  retry_attempts: 3
+  retry_delay_ms: 1000
+  request_control_channel: aeron:udp?endpoint=localhost:8010
+  response_control_channel: aeron:udp?endpoint=localhost:0
+  recording_events_channel: aeron:udp?endpoint=localhost:0
+  enable_core_pinning: false
+gateway_networking:
+  context_dir: /tmp/aeron-test-client
+  local_address: 127.0.0.1
+  core_address: 127.0.0.1
+  core_port: 3521
+  core_control_port: 3522
+  gateway_id: 1
+  max_message_size: 64
+  enable_heartbeat: true
+  heartbeat_interval_seconds: 10
+  connection_timeout_seconds: 60
+  reconnection_attempts: 5
+  reconnection_delay_ms: 2000
+  buffer_size: 524288
+logging:
+  level: debug
+  format: pretty
+  outputs:
+    - type: stdout
+  module_levels:
+    vex_core: debug
+    networking: debug
+    orderbook: info
+  include_location: true
+  include_timestamp: true
+  include_thread_id: true
+  include_spans: true
+  custom_fields: {}
+  async_logging: false
+  async_buffer_size: 1024
+  sampling_rate: 1.0
+symbols:
+  symbols:
+    "65539":
+      market_id: 65539
+      market_type: Spot
+      base_asset: 3
+      quote_asset: 1
+      base_scale_k: 100000
+      quote_scale_k: 10
+      base_native_scale: 1000000000000000000
+      quote_native_scale: 1000000
+      taker_fee: 0
+      maker_fee: 0
+      slippage: 150
+    "65538":
+      market_id: 65538
+      market_type: FuturesContract
+      base_asset: 2
+      quote_asset: 1
+      base_scale_k: 1
+      quote_scale_k: 1
+      base_native_scale: 100000000
+      quote_native_scale: 1000000
+      taker_fee: 0
+      maker_fee: 0
+      slippage: 150
+kafka_broker: localhost:9092

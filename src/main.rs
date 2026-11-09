@@ -1,9 +1,9 @@
 use std::sync::atomic::Ordering;
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use tracing_subscriber::fmt;
-use vex_config::{environment::Environment, VexConfig};
+use vex_config::VexConfig;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -14,11 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fmt::init();
 
     // Load configuration
-    let mut config = VexConfig::load_auto().or_else(|e| {
-        warn!("Failed to load configuration from files: {e}");
-        info!("Using default Test configuration");
-        Ok::<_, Box<dyn std::error::Error>>(VexConfig::new(Environment::Test))
-    })?;
+    let mut config = VexConfig::load_auto()?;
 
     config.core_networking.local_address = "0.0.0.0".to_string();
     config.core_networking.context_dir = "/dev/shm/aeron".to_string();

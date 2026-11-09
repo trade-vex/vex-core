@@ -1,8 +1,11 @@
 //! Integration tests for VEX configuration
 
 use std::env;
+use std::sync::Mutex;
 use tempfile::TempDir;
 use vex_config::{ConfigError, ConfigLoader, Environment, VexConfig};
+
+static ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_basic_configuration_loading() {
@@ -94,7 +97,7 @@ fn test_file_loading_and_saving() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_different_file_formats() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
-    let config = VexConfig::new(Environment::Production);
+    let config = VexConfig::new(Environment::Development);
 
     let toml_path = temp_dir.path().join("config.toml");
     let json_path = temp_dir.path().join("config.json");
@@ -108,8 +111,8 @@ fn test_different_file_formats() -> Result<(), Box<dyn std::error::Error>> {
     let json_config = VexConfig::load_from_file(&json_path)?;
 
     // All should have the same core values
-    assert_eq!(toml_config.environment, Environment::Production);
-    assert_eq!(json_config.environment, Environment::Production);
+    assert_eq!(toml_config.environment, Environment::Development);
+    assert_eq!(json_config.environment, Environment::Development);
 
     assert_eq!(
         toml_config.core_networking.core_id,
@@ -124,38 +127,134 @@ fn test_different_file_formats() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn test_shipped_development_config_matches_defaults() -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../config.dev.yaml");
+    let loaded = VexConfig::load_from_file(config_path)?;
+    let defaults = VexConfig::new(Environment::Development);
+
+    assert_eq!(
+        serde_json::to_value(loaded)?,
+        serde_json::to_value(defaults)?
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_load_error_names_path_and_parse_cause() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let config_path = temp_dir.path().join("config.prod.yaml");
+    std::fs::write(&config_path, "invalid: [yaml")?;
+
+    let error = ConfigLoader::new()
+        .with_search_paths(vec![config_path.display().to_string()])
+        .load_for_environment(Environment::Production)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains(&config_path.display().to_string()));
+    assert!(error.contains("Parse error"));
+
+    Ok(())
+}
+
+#[test]
 fn test_environment_variable_overrides() -> Result<(), Box<dyn std::error::Error>> {
-    // Set environment variables
+    let _guard = ENVIRONMENT_LOCK.lock().unwrap();
+    // config-rs puts the `__` separator after the prefix too: `TEST__...`, not `TEST_...`.
     unsafe {
-        env::set_var("TEST_CORE_NETWORKING__INITIAL_PORT", "9999");
-    }
-    unsafe {
-        env::set_var("TEST_LOGGING__LEVEL", "error");
-    }
-    unsafe {
-        env::set_var("TEST_GATEWAY_NETWORKING__MAX_MESSAGE_SIZE", "32768");
+        env::set_var("TEST__CORE_NETWORKING__INITIAL_PORT", "9999");
+        env::set_var("TEST__LOGGING__LEVEL", "error");
+        env::set_var("TEST__GATEWAY_NETWORKING__MAX_MESSAGE_SIZE", "32768");
     }
 
-    // Load with no files but allow missing - should use defaults (env vars not applied in current implementation)
-    let config = ConfigLoader::new()
+    // No file: the environment defaults stand in for it, and the overrides still apply.
+    let result = ConfigLoader::new()
         .with_search_paths(vec!["/nonexistent/config.toml".to_string()])
         .with_env_prefix("TEST")
         .allow_missing_files()
+        .load_for_environment(Environment::Development);
+
+    unsafe {
+        env::remove_var("TEST__CORE_NETWORKING__INITIAL_PORT");
+        env::remove_var("TEST__LOGGING__LEVEL");
+        env::remove_var("TEST__GATEWAY_NETWORKING__MAX_MESSAGE_SIZE");
+    }
+
+    let config = result?;
+    assert_eq!(config.environment, Environment::Development);
+    assert_eq!(config.core_networking.initial_port, 9999);
+    assert_eq!(config.logging.level, vex_config::logging::LogLevel::Error);
+    assert_eq!(config.gateway_networking.max_message_size, 32768);
+
+    Ok(())
+}
+
+#[test]
+fn test_environment_overrides_of_defaults_are_validated() {
+    let _guard = ENVIRONMENT_LOCK.lock().unwrap();
+    unsafe {
+        env::set_var("TESTINVALID__CORE_NETWORKING__INITIAL_PORT", "0");
+    }
+
+    let result = ConfigLoader::new()
+        .with_search_paths(vec!["/nonexistent/config.toml".to_string()])
+        .with_env_prefix("TESTINVALID")
+        .allow_missing_files()
+        .load_for_environment(Environment::Development);
+
+    unsafe {
+        env::remove_var("TESTINVALID__CORE_NETWORKING__INITIAL_PORT");
+    }
+
+    let error = result.unwrap_err();
+    assert!(matches!(error, ConfigError::LoadError { .. }), "{error}");
+    assert!(
+        error.to_string().contains("Initial port cannot be 0"),
+        "{error}"
+    );
+}
+
+#[test]
+fn test_missing_file_defaults_load_unchanged() -> Result<(), Box<dyn std::error::Error>> {
+    // The defaults reach the loader as a config source; nothing may be lost in that round trip.
+    for environment in [Environment::Development, Environment::Test] {
+        let loaded = ConfigLoader::new()
+            .with_search_paths(vec!["/nonexistent/config.yaml".to_string()])
+            .without_env_prefix()
+            .allow_missing_files()
+            .load_for_environment(environment.clone())?;
+
+        assert_eq!(
+            serde_json::to_value(loaded)?,
+            serde_json::to_value(VexConfig::new(environment))?
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_first_existing_config_file_wins() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let first = temp_dir.path().join("first.toml");
+    let second = temp_dir.path().join("second.toml");
+
+    let mut config = VexConfig::new(Environment::Development);
+    config.kafka_broker = "first-kafka:9092".to_string();
+    config.save_to_file(&first)?;
+    config.kafka_broker = "second-kafka:9092".to_string();
+    config.save_to_file(&second)?;
+
+    let loaded = ConfigLoader::new()
+        .with_search_paths(vec![
+            first.display().to_string(),
+            second.display().to_string(),
+        ])
+        .without_env_prefix()
         .load_for_environment(Environment::Development)?;
 
-    assert_eq!(config.environment, Environment::Development);
-    assert!(config.core_networking.initial_port > 0); // Should have some valid port
-
-    // Clean up
-    unsafe {
-        env::remove_var("TEST_CORE_NETWORKING__INITIAL_PORT");
-    }
-    unsafe {
-        env::remove_var("TEST_LOGGING__LEVEL");
-    }
-    unsafe {
-        env::remove_var("TEST_GATEWAY_NETWORKING__MAX_MESSAGE_SIZE");
-    }
+    assert_eq!(loaded.kafka_broker, "first-kafka:9092");
 
     Ok(())
 }
@@ -307,87 +406,52 @@ fn test_logging_configuration() {
 
 #[test]
 fn test_environment_detection() {
-    // Clear all environment variables first to ensure clean test state
-    unsafe {
-        env::remove_var("VEX_ENV");
-        env::remove_var("ENVIRONMENT");
-        env::remove_var("ENV");
-        env::remove_var("NODE_ENV");
-    }
+    let _guard = ENVIRONMENT_LOCK.lock().unwrap();
 
-    // Test with VEX_ENV
     unsafe {
         env::set_var("VEX_ENV", "production");
     }
-    assert_eq!(Environment::detect(), Environment::Production);
-    unsafe {
-        env::remove_var("VEX_ENV");
-        env::remove_var("ENVIRONMENT");
-        env::remove_var("ENV");
-        env::remove_var("NODE_ENV");
+    assert_eq!(
+        Environment::detect_explicit().unwrap(),
+        Some(Environment::Production)
+    );
+
+    // Only the canonical spellings select an environment; anything else is an error, never a
+    // silent fall-through to some other selection.
+    for invalid in ["dev", "prod", "testing", "Production", ""] {
+        unsafe {
+            env::set_var("VEX_ENV", invalid);
+        }
+        let error = Environment::detect_explicit().unwrap_err().to_string();
+        assert!(error.contains("VEX_ENV"), "{error}");
+        assert!(VexConfig::load_auto().is_err());
     }
 
-    // Test with ENVIRONMENT
+    // VEX_ENV is the only selector: other variables do not choose an environment.
     unsafe {
+        env::remove_var("VEX_ENV");
         env::set_var("ENVIRONMENT", "test");
     }
-    assert_eq!(Environment::detect(), Environment::Test);
-    unsafe {
-        env::remove_var("VEX_ENV");
-        env::remove_var("ENVIRONMENT");
-        env::remove_var("ENV");
-        env::remove_var("NODE_ENV");
-    }
-
-    // Test with ENV
-    unsafe {
-        env::set_var("ENV", "dev");
-    }
-    assert_eq!(Environment::detect(), Environment::Development);
-    unsafe {
-        env::remove_var("VEX_ENV");
-        env::remove_var("ENVIRONMENT");
-        env::remove_var("ENV");
-        env::remove_var("NODE_ENV");
-    }
-
-    // Test fallback to development
-    unsafe {
-        env::remove_var("VEX_ENV");
-    }
+    assert_eq!(Environment::detect_explicit().unwrap(), None);
+    let error = VexConfig::load_auto().unwrap_err().to_string();
+    assert!(error.contains("Set VEX_ENV to development, test, or production"));
     unsafe {
         env::remove_var("ENVIRONMENT");
     }
-    unsafe {
-        env::remove_var("ENV");
-    }
-    unsafe {
-        env::remove_var("NODE_ENV");
-    }
-    assert_eq!(Environment::detect(), Environment::Development);
 }
 
 #[test]
 fn test_auto_loading() {
-    // Set environment and test auto loading
+    let _guard = ENVIRONMENT_LOCK.lock().unwrap();
+
+    // Explicit development selects and loads the shipped config.dev.yaml.
     unsafe {
-        env::set_var("VEX_ENV", "test");
+        env::set_var("VEX_ENV", "development");
     }
 
-    let result = VexConfig::load_auto();
-
-    // Should either succeed or fail with NotFound (no config files)
-    match result {
-        Ok(config) => {
-            assert_eq!(config.environment, Environment::Test);
-        }
-        Err(ConfigError::NotFound(_)) => {
-            // Expected when no config files exist
-        }
-        Err(e) => {
-            panic!("Unexpected error during auto loading: {e}");
-        }
-    }
+    let config = VexConfig::load_auto().unwrap();
+    assert_eq!(config.environment, Environment::Development);
+    assert!(!config.symbols.is_empty());
 
     unsafe {
         env::remove_var("VEX_ENV");

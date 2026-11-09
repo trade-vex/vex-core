@@ -1,9 +1,9 @@
 use std::sync::atomic::Ordering;
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use tracing_subscriber::fmt;
-use vex_config::{VexConfig, environment::Environment};
+use vex_config::VexConfig;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -13,12 +13,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     fmt::init();
 
-    // Load configuration
-    let mut config = VexConfig::load_auto().or_else(|e| {
-        warn!("Failed to load configuration from files: {e}");
-        info!("Using default Development configuration for e2e tests");
-        Ok::<_, Box<dyn std::error::Error>>(VexConfig::new(Environment::Development))
-    })?;
+    // As for the server, VEX_ENV must name the environment: unset or invalid is an error, never a
+    // silent Development fallback. Development and test load their defaults when no file exists.
+    let mut config = VexConfig::load_auto()?;
 
     // Override Kafka broker from environment if set
     if let Ok(kafka_broker) = std::env::var("VEX_KAFKA_BROKER") {
