@@ -315,6 +315,9 @@ pub enum Status {
     Processing,
     /// For Deposit/Withdraw commands
     Processed,
+    /// Not accepted: the engine's ingress ring was full. Nothing was executed, so the gateway
+    /// should retry. Unlike `Rejected`, this is transient and never a final verdict on the command.
+    Busy,
 }
 
 impl TryFrom<SbeStatus> for Status {
@@ -329,6 +332,7 @@ impl TryFrom<SbeStatus> for Status {
             SbeStatus::Filled => Ok(Status::Filled),
             SbeStatus::Processing => Ok(Status::Processing),
             SbeStatus::Processed => Ok(Status::Processed),
+            SbeStatus::Busy => Ok(Status::Busy),
             SbeStatus::NullVal => Err(SerdeError::custom("Invalid status: NullVal")),
         }
     }
@@ -344,6 +348,7 @@ impl From<Status> for SbeStatus {
             Status::Filled => SbeStatus::Filled,
             Status::Processing => SbeStatus::Processing,
             Status::Processed => SbeStatus::Processed,
+            Status::Busy => SbeStatus::Busy,
         }
     }
 }
@@ -430,6 +435,29 @@ pub fn decode_order_command(buf: &[u8]) -> Result<OrderCommand, SerdeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn busy_status_round_trips_as_wire_value_seven() {
+        let command = OrderCommand {
+            client_order_id: 42,
+            status: Status::Busy,
+            ..OrderCommand::default()
+        };
+        let mut buf = [0; ORDERCOMMANDSIZE];
+        encode_order_command(&command, &mut buf).unwrap();
+
+        // Status is the frame's last byte; core and gateway both rely on Busy being 7 there.
+        assert_eq!(buf[ORDERCOMMANDSIZE - 1], 7);
+        let decoded = decode_order_command(&buf).unwrap();
+        assert_eq!(decoded.status, Status::Busy);
+        assert_eq!(decoded.client_order_id, 42);
+
+        buf[ORDERCOMMANDSIZE - 1] = 8;
+        assert!(
+            decode_order_command(&buf).is_err(),
+            "an unknown status value must not decode"
+        );
+    }
 
     #[test]
     fn deep_matcher_trade_event_chain_drops_iteratively() {

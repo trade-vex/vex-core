@@ -8,6 +8,7 @@ pub enum Status {
     Filled = 0x4_u8,
     Processing = 0x5_u8,
     Processed = 0x6_u8,
+    Busy = 0x7_u8,
     #[default]
     NullVal = 0xff_u8,
 }
@@ -22,6 +23,7 @@ impl From<u8> for Status {
             0x4_u8 => Self::Filled,
             0x5_u8 => Self::Processing,
             0x6_u8 => Self::Processed,
+            0x7_u8 => Self::Busy,
             _ => Self::NullVal,
         }
     }
@@ -37,6 +39,7 @@ impl From<Status> for u8 {
             Status::Filled => 0x4_u8,
             Status::Processing => 0x5_u8,
             Status::Processed => 0x6_u8,
+            Status::Busy => 0x7_u8,
             Status::NullVal => 0xff_u8,
         }
     }
@@ -54,6 +57,7 @@ impl core::str::FromStr for Status {
             "Filled" => Ok(Self::Filled),
             "Processing" => Ok(Self::Processing),
             "Processed" => Ok(Self::Processed),
+            "Busy" => Ok(Self::Busy),
             _ => Ok(Self::NullVal),
         }
     }
@@ -69,6 +73,7 @@ impl core::fmt::Display for Status {
             Self::Filled => write!(f, "Filled"),
             Self::Processing => write!(f, "Processing"),
             Self::Processed => write!(f, "Processed"),
+            Self::Busy => write!(f, "Busy"),
             Self::NullVal => write!(f, "NullVal"),
         }
     }

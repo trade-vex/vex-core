@@ -255,6 +255,10 @@ impl KafkaEventsHandler {
             Status::Filled => trading_proto::Status::Filled,
             Status::Processing => trading_proto::Status::Processing,
             Status::Processed => trading_proto::Status::Processed,
+            // Unreachable: Busy is only ever sent back to the gateway by ingress, for a command
+            // that never entered the ring. Mapped to the nearest "not executed" value rather than
+            // widening the Kafka schema.
+            Status::Busy => trading_proto::Status::Rejected,
         };
 
         let order = trading_proto::Order {
@@ -575,6 +579,15 @@ impl EventsHandler for KafkaEventsHandler {
         let taker_order_id = cmd.order_id();
 
         match cmd.status() {
+            // Unreachable: ingress answers a full ring with Busy and never enqueues the command.
+            Status::Busy => {
+                error!(
+                    target: "events",
+                    component = "kafka_handler",
+                    action = "unexpected_busy_status",
+                    order_id = cmd.order_id()
+                );
+            }
             Status::Rejected => {
                 order_debug!(
                     "events_noop_rejected",

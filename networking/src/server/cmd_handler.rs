@@ -1,11 +1,14 @@
+use crate::server::gateway_publications::Publications;
 use common::{OrderCommand, Status, decode_order_command};
 use disruptor::{MultiProducer, Producer, SingleConsumerBarrier};
 use rusteron_archive::{AeronFragmentHandlerCallback, AeronHeader};
+use std::sync::Arc;
 use tracing::{debug, error, info};
 
 pub struct FragmentHandler {
     pub gateway_id: u8,
     pub producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
+    pub publications: Arc<Publications>,
 }
 
 impl AeronFragmentHandlerCallback for FragmentHandler {
@@ -30,6 +33,8 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
                         error = %e,
                         "failed to publish order command to ring buffer"
                     );
+                    self.publications
+                        .publish_response(&busy_response(order_command));
                 }
             }
             Err(e) => {
@@ -107,5 +112,35 @@ impl AeronFragmentHandlerCallback for ReplayFragmentHandler {
                 );
             }
         }
+    }
+}
+
+/// The reply to a command the ring had no room for: `Busy`, not `Rejected`. Nothing was executed,
+/// so the gateway should retry instead of reporting a final rejection.
+fn busy_response(mut order_command: OrderCommand) -> OrderCommand {
+    order_command.status = Status::Busy;
+    order_command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ring_full_reply_is_busy_and_still_routes_to_the_sender() {
+        let command = OrderCommand {
+            client_order_id: 7,
+            order_id: 9,
+            route_gateway_id: 3,
+            status: Status::Processing,
+            ..OrderCommand::default()
+        };
+
+        let reply = busy_response(command);
+
+        assert_eq!(reply.status, Status::Busy);
+        assert_eq!(reply.client_order_id, 7);
+        assert_eq!(reply.order_id, 9);
+        assert_eq!(reply.route_gateway_id, 3);
     }
 }

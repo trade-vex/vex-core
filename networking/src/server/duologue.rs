@@ -1,15 +1,23 @@
 use crate::server::cmd_handler::FragmentHandler;
 use crate::server::gateway_manager::GatewaySessionEvent;
+use crate::server::gateway_publications::Publications;
 use common::OrderCommand;
 use disruptor::{MultiProducer, SingleConsumerBarrier};
 use rusteron_archive::{
     AeronAvailableImageCallback, AeronCError, AeronImage, AeronNotificationCallback,
     AeronSubscription, AeronUnavailableImageCallback, Handler,
 };
-use std::sync::mpsc::Sender;
+use std::sync::{Arc, mpsc::Sender};
 use tracing::{error, info};
 
 pub const DUOLOGUE_STREAM_ID: i32 = 1002;
+/// Upper bound on fragments consumed per poll.
+///
+/// Must not exceed the disruptor ring capacity (`vex_server::engine::BUFFER_SIZE`), otherwise a
+/// single poll can hand the ring more commands than it can hold and the excess is rejected. The
+/// value is duplicated rather than imported because `server` depends on `networking`, not the
+/// reverse; keep the two in step.
+const RING_BUFFER_CAPACITY: usize = 1024;
 
 pub struct Duologue {
     fragment_handler: Option<Handler<FragmentHandler>>,
@@ -27,10 +35,12 @@ impl Duologue {
         on_image_unavailable_handler: Handler<DuologueImageUnavailable>,
         gateway_id: u8,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
+        publications: Arc<Publications>,
     ) -> Self {
         let fragment_handler = FragmentHandler {
             gateway_id,
             producer,
+            publications,
         };
 
         Self {
@@ -45,7 +55,7 @@ impl Duologue {
 
     pub fn poll(&self) -> Result<i32, AeronCError> {
         if let Some(handler) = &self.fragment_handler {
-            self.subscription.poll(Some(handler), 2048)
+            self.subscription.poll(Some(handler), RING_BUFFER_CAPACITY)
         } else {
             // should not reach here as the handler is only taken during close()
             Ok(0)
