@@ -378,11 +378,15 @@ impl RiskEngine {
             .checked_add(amount_to_add)
             .ok_or(BalanceError::Overflow)?;
 
+        // PR #178 made get_balance_mut fallible so a REJECTED operation can no longer insert
+        // an empty row. This is the commit point: every validation above has passed, so the
+        // write must succeed even for an asset the user is receiving for the first time.
+        // set_balance inserts-or-updates, keeping PR #153's all-or-nothing commit intact.
         if asset_to_add == asset_to_subtract {
-            *store.get_balance_mut(user_id, asset_to_add) = balance_add;
+            store.set_balance(user_id, asset_to_add, balance_add);
         } else {
-            *store.get_balance_mut(user_id, asset_to_subtract) = balance_sub;
-            *store.get_balance_mut(user_id, asset_to_add) = balance_add;
+            store.set_balance(user_id, asset_to_subtract, balance_sub);
+            store.set_balance(user_id, asset_to_add, balance_add);
         }
 
         if let (Some(fees), Some(total)) = (accrued_fees.as_mut(), accrued_fee_total) {
@@ -423,6 +427,12 @@ impl RiskEngine {
     }
 
     /// handle cancellations -> release funds
+    ///
+    /// R2 calls this once matching has decided the order's fate: a cancel removed it from the
+    /// book, or the unfilled part of an IOC/FOK/market order was cancelled (after any trades). That
+    /// status must stand even when the release fails: `Rejected` would publish nothing and hide a
+    /// real cancel and real trades (user decision 3). Such a failure is a ledger inconsistency and
+    /// is logged for an operator.
     pub fn handle_cancellation(&self, cmd: &mut OrderCommand) {
         if let Err(err) = self.release_funds_for_order(
             cmd.order_id,
@@ -431,9 +441,12 @@ impl RiskEngine {
             cmd.side,
             cmd.size,
         ) {
-            error!(
-                "[RiskEngine_{}] Failed to release funds for cancelled order {}: {:?}",
-                self.shard_id, cmd.order_id, err
+            common::order_error!(
+                "risk_cancel_release_failed",
+                cmd,
+                stage = "risk_r2",
+                shard_id = self.shard_id,
+                error = ?err
             );
         } else {
             info!(
@@ -516,9 +529,11 @@ impl RiskEngine {
         if cmd.is_market_order() {
             // Market buy order
             let slippage = spec.slippage;
-            let best_ask = price_cache.get_best_ask(cmd.market_id);
+            let best_ask = price_cache
+                .get_prices(cmd.market_id)
+                .map_or(0, |(_, best_ask)| best_ask);
 
-            if best_ask == u64::MAX {
+            if best_ask == 0 || best_ask == u64::MAX {
                 // No liquidity on ask side (sentinel value), cannot determine price for market order.
                 return Err(RiskEngineError::InvalidArguments {
                     price: cmd.price,
@@ -650,7 +665,7 @@ impl RiskEngine {
 
     pub fn set_balance(&self, user_id: u64, asset_id: u16, balance: UserBalance) {
         let mut store = self.balances.lock();
-        *store.get_balance_mut(user_id, asset_id) = balance;
+        store.set_balance(user_id, asset_id, balance);
     }
 
     /// Handles deposit funds command
@@ -1329,6 +1344,37 @@ mod tests {
     }
 
     #[test]
+    fn failed_cancellation_release_keeps_matching_status() {
+        let user_id = 1;
+        let market_id = (2_u32 << 16) | 1_u32;
+        let mut specs = HashMap::new();
+        specs.insert(market_id, get_spec(market_id));
+        let engine = RiskEngine::new(specs, 0, 1);
+        // PR #171 made the BID path release only what was actually tracked, so a missing
+        // collateral record is deliberately NOT an error (see
+        // test_bid_cancel_without_collateral_record_is_safe). The ASK path unlocks base
+        // directly, so locking less than the order's size makes its release genuinely fail.
+        let balance = UserBalance::new(5, 3);
+        engine.set_balance(user_id, base_asset(market_id), balance);
+
+        // By the time R2 releases, the book has already removed the order (Cancelled) or traded
+        // part of it (IOC PartiallyFilled); neither may be reported as Rejected.
+        for (time_in_force, status) in [
+            (TimeInForce::Gtc, Status::Cancelled),
+            (TimeInForce::Ioc, Status::PartiallyFilled),
+        ] {
+            let mut cmd =
+                OrderCommand::place_order(time_in_force, user_id, 100, 10, Side::Ask, market_id, 1);
+            cmd.set_status(status);
+
+            engine.handle_cancellation(&mut cmd);
+
+            assert_eq!(cmd.status, status);
+            assert_eq!(engine.get_balance(user_id, base_asset(market_id)), balance);
+        }
+    }
+
+    #[test]
     fn test_insufficient_funds() {
         let user_id = 1;
         let market_id = (2_u32 << 16) | 1_u32;
@@ -1393,9 +1439,16 @@ mod tests {
         let maker_initial_base = size;
 
         let mut balances = engine.balances.lock();
-        *balances.get_balance_mut(taker_id, usd_asset_id) =
-            UserBalance::new(taker_initial_quote, 0);
-        *balances.get_balance_mut(maker_id, btc_asset_id) = UserBalance::new(maker_initial_base, 0);
+        balances.set_balance(
+            taker_id,
+            usd_asset_id,
+            UserBalance::new(taker_initial_quote, 0),
+        );
+        balances.set_balance(
+            maker_id,
+            btc_asset_id,
+            UserBalance::new(maker_initial_base, 0),
+        );
         drop(balances);
 
         // --- Reserve funds ---
@@ -1732,6 +1785,38 @@ mod tests {
     }
 
     #[test]
+    fn market_buy_rejects_zero_reference_price() {
+        let user_id = 1;
+        let usd_asset_id = 1u16;
+        let btc_asset_id = 2u16;
+        let market_id = ((usd_asset_id as u32) << 16) | btc_asset_id as u32;
+        let mut specs = HashMap::new();
+        specs.insert(market_id, get_spec(market_id));
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        price_cache.update_prices(market_id, 0, 0);
+        let engine = RiskEngine::new(specs, 0, 1);
+        engine.set_balance(user_id, usd_asset_id, UserBalance::new(1_000, 0));
+        let mut cmd = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            user_id,
+            u64::MAX,
+            10,
+            Side::Bid,
+            market_id,
+            1,
+        );
+
+        assert!(matches!(
+            engine.reserve_funds_for_order(&mut cmd, price_cache),
+            Err(RiskEngineError::InvalidArguments { .. })
+        ));
+        assert_eq!(
+            engine.get_balance(user_id, usd_asset_id),
+            UserBalance::new(1_000, 0)
+        );
+    }
+
+    #[test]
     fn test_parallel_markets_and_settlement() {
         // This test simulates a user trading on two different markets concurrently.
         // It verifies that funds are locked, settled, and cancelled correctly across markets.
@@ -1755,9 +1840,9 @@ mod tests {
         // --- Initial Balances ---
         // User has 100,000,000 USD, 10,000 BTC, 50,000 ETH
         let mut balances = engine.balances.lock();
-        *balances.get_balance_mut(user_id, usd_asset_id) = UserBalance::new(100_000_000, 0);
-        *balances.get_balance_mut(user_id, btc_asset_id) = UserBalance::new(10_000, 0);
-        *balances.get_balance_mut(user_id, eth_asset_id) = UserBalance::new(50_000, 0);
+        balances.set_balance(user_id, usd_asset_id, UserBalance::new(100_000_000, 0));
+        balances.set_balance(user_id, btc_asset_id, UserBalance::new(10_000, 0));
+        balances.set_balance(user_id, eth_asset_id, UserBalance::new(50_000, 0));
         drop(balances);
 
         // --- Action 1: User places a BID order on BTC/USD market ---
