@@ -327,7 +327,7 @@ pub mod test {
 
 #[cfg(test)]
 mod tests {
-    use super::test::setup_tuple;
+    use super::test::{TestEngine, setup, setup_tuple};
     use super::*;
     use common::{MarketType, OrderCommand, PriceCache, Side, Status, TimeInForce, UserBalance};
     use disruptor::Producer;
@@ -955,6 +955,95 @@ mod tests {
             event3.next_event.is_none(),
             "There should be no more events"
         );
+    }
+
+    #[test]
+    fn test_market_gtc_orders_are_rejected_and_never_rest() {
+        let mut specs = HashMap::new();
+        let base_asset_id = 1;
+        let quote_asset_id = 2;
+        let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
+        add_spec(market_id, &mut specs);
+        let TestEngine {
+            mut producer,
+            risk_engines,
+            receiver: rx,
+        } = setup(specs);
+
+        let maker_id = 101; // Shard 1
+        let taker_id = 42; // Shard 2
+        let maker_shard = 1;
+        let taker_shard = 2;
+        risk_engines[maker_shard].set_balance(maker_id, base_asset_id, UserBalance::new(11, 0));
+        risk_engines[maker_shard].set_balance(maker_id, quote_asset_id, UserBalance::new(900, 0));
+        let taker_base = UserBalance::new(20, 0);
+        let taker_quote = UserBalance::new(1_000_000, 0);
+        risk_engines[taker_shard].set_balance(taker_id, base_asset_id, taker_base);
+        risk_engines[taker_shard].set_balance(taker_id, quote_asset_id, taker_quote);
+
+        // Resting liquidity on both sides, smaller than either market order below.
+        for (client_order_id, side, price) in [(1, Side::Ask, 100), (2, Side::Bid, 90)] {
+            producer.publish(|cmd| {
+                *cmd = OrderCommand::place_order(
+                    TimeInForce::Gtc,
+                    maker_id,
+                    price,
+                    10,
+                    side,
+                    market_id,
+                    client_order_id,
+                );
+            });
+            let response = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert_eq!(response.status, Status::Placed);
+        }
+
+        // Without the R1 check the buy is capped at 100, fills 10 and rests the other 10 at the
+        // cap, and the sell sweeps the bid as if it were IOC.
+        for (client_order_id, side, sentinel) in [(3, Side::Bid, u64::MAX), (4, Side::Ask, 0)] {
+            producer.publish(|cmd| {
+                *cmd = OrderCommand::place_order(
+                    TimeInForce::Gtc,
+                    taker_id,
+                    sentinel,
+                    20,
+                    side,
+                    market_id,
+                    client_order_id,
+                );
+            });
+            let response = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+            assert_eq!(response.status, Status::Rejected, "{side:?} market GTC");
+            assert_eq!(response.price, sentinel, "R1 must reject before capping");
+            assert!(response.events().is_none(), "nothing may trade");
+        }
+        assert_eq!(
+            risk_engines[taker_shard].get_balance(taker_id, base_asset_id),
+            taker_base
+        );
+        assert_eq!(
+            risk_engines[taker_shard].get_balance(taker_id, quote_asset_id),
+            taker_quote
+        );
+
+        // Nothing rests: the next order's snapshot shows only the maker's book.
+        producer.publish(|cmd| {
+            *cmd = OrderCommand::place_order(
+                TimeInForce::Gtc,
+                maker_id,
+                120,
+                1,
+                Side::Ask,
+                market_id,
+                5,
+            );
+        });
+        let response = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(response.status, Status::Placed);
+        let l2 = response.l2_data.as_ref().unwrap();
+        assert_eq!(l2.bid_prices, [90]);
+        assert_eq!(l2.ask_prices, [100, 120]);
     }
 
     #[test]
