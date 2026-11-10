@@ -80,6 +80,15 @@ impl Ledger {
         self.expect("balances", format!("{user}:{asset}"), timestamp);
     }
 
+    /// The timestamp of the last command answered: every answered command published events.
+    fn last_timestamp(&self) -> u64 {
+        self.expected
+            .iter()
+            .map(|event| event.timestamp)
+            .max()
+            .unwrap_or_default()
+    }
+
     fn deposited(&mut self, response: &OrderCommand) -> TestResult<()> {
         expect_status(response, Status::Processed)?;
         let (user, asset, timestamp) = (
@@ -229,27 +238,17 @@ impl Outbox {
         Ok(())
     }
 
-    /// Stops the core gracefully, once it has let the client's gateway go, and waits for it to
-    /// exit.
-    ///
-    /// The core releases a gateway session's ring producer only when Aeron confirms that the
-    /// session's subscription has closed, which it never does once the shutdown has closed the
-    /// Aeron client. A session still open at shutdown therefore keeps the pipeline alive, and the
-    /// process exits without the events handler's delivery grace or its last watermark write
-    /// (the next start re-publishes what that leaves undelivered; #200). Letting the gateway go
-    /// first tests the shutdown the outbox specifies.
+    /// Stops the core gracefully with the client's gateway connected, as gateways always are in
+    /// production, and waits for it to exit. The client goes once the core has exited.
     fn stop_core(&mut self) -> TestResult<()> {
-        let since = stack::now();
-        if self.client.take().is_some() {
-            stack::wait_for_log(
-                CORE,
-                &since,
-                "subscription_closed_handlers_released",
-                Duration::from_secs(30),
-            )?;
-        }
+        let client = self
+            .client
+            .take()
+            .expect("the core is running and connected");
         stack::signal(CORE, "TERM")?;
-        stack::wait_exited(CORE, STOP_TIMEOUT).map(drop)
+        let exited = stack::wait_exited(CORE, STOP_TIMEOUT);
+        drop(client);
+        exited.map(drop)
     }
 
     fn start_core(&mut self) -> TestResult<()> {
@@ -355,11 +354,24 @@ impl Outbox {
         self.verify().await
     }
 
-    /// A clean shutdown delivers everything and writes the watermark of its last command, which
-    /// only the closing channel closes: the restart re-publishes nothing.
+    /// A clean shutdown, its gateway connected, runs the events stage's shutdown: it delivers
+    /// everything and writes the watermark of the last command, which only the closing channel
+    /// closes. The restart re-publishes nothing.
     async fn clean_restart_re_publishes_nothing(&mut self) -> TestResult<()> {
         self.verify().await?;
+        let since = stack::now();
         self.stop_core()?;
+        expect_logged(&stack::logs_since(CORE, &since)?, "flush_complete")?;
+        let last = self.ledger.last_timestamp();
+        let delivered = self.kafka.delivered_watermark()?;
+        if delivered != last {
+            return Err(TestError::Assertion {
+                message: format!(
+                    "the shutdown left the delivered watermark at {delivered}, not at the last \
+                     command's timestamp {last}"
+                ),
+            });
+        }
         let before = self.kafka.end_offsets()?;
         self.start_core()?;
         // The core accepts gateways once its replay has drained; give whatever it re-published

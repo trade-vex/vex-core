@@ -130,10 +130,12 @@ cargo xtask test integration balance --fail-fast
 Runs the core's outbox scenarios, in order, on one continuous ledger: a `kill -9` with events
 queued behind a paused broker, a graceful shutdown that runs out of its delivery grace with the
 broker paused, a start while the broker does not answer, a clean restart, and starts that must
-refuse a missing or non-compacted `vex-core.delivered`. The oracle is the test client's own ledger,
-built from the core's responses: Kafka must hold every event it expects, by
-`(topic, key, timestamp)`, and its latest balance per key must equal the ledger's. The orders are
-limit orders only, because replay does not regenerate a market buy's events exactly (#140).
+refuse a missing or non-compacted `vex-core.delivered`. Every graceful shutdown keeps the test
+gateway connected, as gateways are in production; the clean one must deliver everything and write
+the watermark of the last command, so that the restart re-publishes nothing. The oracle is the
+test client's own ledger, built from the core's responses: Kafka must hold every event it expects,
+by `(topic, key, timestamp)`, and its latest balance per key must equal the ledger's. The orders
+are limit orders only, because replay does not regenerate a market buy's events exactly (#140).
 
 **Usage:**
 ```sh

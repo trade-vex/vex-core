@@ -1,13 +1,14 @@
 use crate::server::duologue::{
-    DUOLOGUE_STREAM_ID, Duologue, DuologueImageAvailable, DuologueImageUnavailable,
+    DUOLOGUE_STREAM_ID, Duologue, DuologueCloseNotification, DuologueImageAvailable,
+    DuologueImageUnavailable,
 };
 use crate::server::gateway_publications::Publications;
 use crate::utils::{PortAllocator, SessionAllocator, send_message};
 use common::{MAX_GATEWAYS, OrderCommand};
 use disruptor::{MultiProducer, SingleConsumerBarrier};
 use rusteron_archive::{
-    Aeron, AeronAsyncAddPublication, AeronAsyncAddSubscription, AeronNotificationCallback,
-    AeronPublication, AeronSubscription, Handler,
+    Aeron, AeronAsyncAddPublication, AeronAsyncAddSubscription, AeronPublication,
+    AeronSubscription, Handler,
 };
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -1003,7 +1004,8 @@ fn release_unattached_image_handlers(
         on_image_unavailable_handler.release();
         return;
     };
-    let closed = Handler::leak(UnattachedSubscriptionClosed {
+    let closed = Handler::leak(DuologueCloseNotification {
+        gateway_id,
         on_image_available_handler,
         on_image_unavailable_handler,
     });
@@ -1015,18 +1017,6 @@ fn release_unattached_image_handlers(
             gateway_id,
             error = ?e
         );
-    }
-}
-
-struct UnattachedSubscriptionClosed {
-    on_image_available_handler: Handler<DuologueImageAvailable>,
-    on_image_unavailable_handler: Handler<DuologueImageUnavailable>,
-}
-
-impl AeronNotificationCallback for UnattachedSubscriptionClosed {
-    fn handle_aeron_notification(&mut self) {
-        self.on_image_available_handler.release();
-        self.on_image_unavailable_handler.release();
     }
 }
 
@@ -1076,6 +1066,17 @@ pub(super) fn validate_authentication_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::VexCoreServer;
+    use crate::server::progress::{DRAIN_TIMEOUT, wait_until};
+    use common::{ORDERCOMMANDSIZE, encode_order_command};
+    use disruptor::{BusySpin, build_multi_producer};
+    use rusteron_archive::{
+        AeronAvailableImageCallback, AeronImage, AeronNotificationCallback,
+        AeronReservedValueSupplierLogger, AeronUnavailableImageLogger, IntoCString,
+    };
+    use rusteron_media_driver::{AeronCError, AeronDriver, AeronDriverContext};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread::JoinHandle;
 
     #[test]
     fn slot_reservation_rejects_duplicate_and_out_of_range_ids() {
@@ -1154,10 +1155,11 @@ mod tests {
     }
 
     #[test]
-    fn unattached_subscription_close_notification_releases_image_handlers() {
+    fn subscription_close_notification_releases_image_handlers() {
         let (tx, rx) = channel();
         let (on_image_available_handler, on_image_unavailable_handler) = image_handlers(&tx);
-        let mut closed = UnattachedSubscriptionClosed {
+        let mut closed = DuologueCloseNotification {
+            gateway_id: 1,
             on_image_available_handler,
             on_image_unavailable_handler,
         };
@@ -1167,6 +1169,180 @@ mod tests {
         closed.handle_aeron_notification();
 
         assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
+    }
+
+    /// An embedded media driver in a directory of its own, which it stops and removes when
+    /// dropped, whatever the test's outcome.
+    struct EmbeddedDriver {
+        dir: String,
+        stop: Arc<AtomicBool>,
+        thread: Option<JoinHandle<Result<(), AeronCError>>>,
+    }
+
+    impl EmbeddedDriver {
+        fn launch(dir: String) -> Self {
+            let context = AeronDriverContext::new().unwrap();
+            context.set_dir(&dir.clone().into_c_string()).unwrap();
+            context.set_dir_delete_on_start(true).unwrap();
+            let (stop, thread) = AeronDriver::launch_embedded(context, false);
+            Self {
+                dir,
+                stop,
+                thread: Some(thread),
+            }
+        }
+    }
+
+    impl Drop for EmbeddedDriver {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Holds Aeron's conductor thread, which calls it when an image of its subscription becomes
+    /// available: reports that it holds it, then waits until `release` is sent to or dropped.
+    struct HoldConductor {
+        held: Sender<()>,
+        release: Receiver<()>,
+    }
+
+    impl AeronAvailableImageCallback for HoldConductor {
+        fn handle_aeron_on_available_image(&mut self, _: AeronSubscription, _: AeronImage) {
+            let _ = self.held.send(());
+            let _ = self.release.recv();
+        }
+    }
+
+    /// A gateway still connected at shutdown must not keep the pipeline alive. Its session holds a
+    /// clone of the ring producer, and the pipeline joins its consumers when the last clone drops,
+    /// which must be the server thread's own producer. A clone left to Aeron's close notification
+    /// was released on Aeron's conductor thread after that, or never once the Aeron client was torn
+    /// down (#200). The test holds that thread while the session closes and the producers drop,
+    /// so the outcome does not depend on when it would have run the notification.
+    ///
+    /// Runs an embedded media driver; the session and its gateway use IPC, so it binds no port.
+    #[test]
+    fn shutdown_releases_a_connected_sessions_ring_producer() {
+        let driver = EmbeddedDriver::launch(format!(
+            "/dev/shm/vex-session-release-test-{}",
+            std::process::id()
+        ));
+        let mut config = CoreNetworkingConfig::test_defaults();
+        config.context_dir = driver.dir.clone();
+        let aeron = VexCoreServer::initialize_aeron(&config).unwrap();
+        // The pipeline: one consumer, which reports each command, and by its drop, the join.
+        let (seen, commands) = channel();
+        let producer = build_multi_producer(64, OrderCommand::default, BusySpin)
+            .handle_events_with(move |cell, _, _| {
+                // SAFETY: Sole consumer reads its currently owned slot.
+                let _ = seen.send(unsafe { (*cell.get()).order_id });
+            })
+            .build();
+        let manager = GatewayManager::new(
+            config,
+            GatewayAuthenticationKey::default(),
+            aeron.clone(),
+            producer.clone(),
+            Arc::new(Publications::new()),
+        )
+        .unwrap();
+
+        // A session, attached as a handshake attaches one but on IPC, and the gateway feeding it.
+        let (available, unavailable) = image_handlers(&manager.session_event_tx);
+        let subscription = aeron
+            .add_subscription(
+                &"aeron:ipc?session-id=101".into_c_string(),
+                DUOLOGUE_STREAM_ID,
+                Some(&available),
+                Some(&unavailable),
+                DRAIN_TIMEOUT,
+            )
+            .unwrap();
+        let session = Duologue::new(
+            subscription,
+            available,
+            unavailable,
+            1,
+            producer.clone(),
+            Arc::clone(&manager.publications),
+        );
+        {
+            let mut sessions = manager.gateway_sessions.write().unwrap();
+            assert!(sessions.reserve(1, 101, [10_000, 10_001], Instant::now()));
+            assert!(sessions.attach_duologue(1, 101, session).is_ok());
+        }
+        let gateway = aeron
+            .add_publication(
+                &"aeron:ipc?term-length=65536|session-id=101".into_c_string(),
+                DUOLOGUE_STREAM_ID,
+                DRAIN_TIMEOUT,
+            )
+            .unwrap();
+
+        // The gateway's command reaches the pipeline through the session.
+        let mut command = [0; ORDERCOMMANDSIZE];
+        let order = OrderCommand {
+            order_id: 7,
+            ..OrderCommand::default()
+        };
+        encode_order_command(&order, &mut command).unwrap();
+        wait_until(DRAIN_TIMEOUT, || {
+            Ok(gateway.offer::<AeronReservedValueSupplierLogger>(&command, None) >= 0)
+        })
+        .unwrap();
+        wait_until(DRAIN_TIMEOUT, || {
+            manager.poll()?;
+            Ok(commands.try_recv() == Ok(7))
+        })
+        .unwrap();
+
+        // Aeron's conductor thread, held in the image handler of a stream of the test's own.
+        let (held_tx, held) = channel();
+        let (release_conductor, release) = channel();
+        let mut hold = Handler::leak(HoldConductor {
+            held: held_tx,
+            release,
+        });
+        let hold_stream_id = DUOLOGUE_STREAM_ID + 1;
+        let hold_publication = aeron
+            .add_publication(
+                &"aeron:ipc?term-length=65536".into_c_string(),
+                hold_stream_id,
+                DRAIN_TIMEOUT,
+            )
+            .unwrap();
+        let hold_subscription = aeron
+            .async_add_subscription(
+                &"aeron:ipc".into_c_string(),
+                hold_stream_id,
+                Some(&hold),
+                None::<&Handler<AeronUnavailableImageLogger>>,
+            )
+            .unwrap();
+        held.recv_timeout(DRAIN_TIMEOUT).unwrap();
+
+        // As the server shuts down: it closes the sessions with the gateway connected, and drops
+        // the gateway manager; then the engine drops its own producer, which must be the last.
+        manager.shutdown_all_gateways().unwrap();
+        drop(manager);
+        drop(producer);
+        let joined = commands.try_recv();
+
+        drop(release_conductor);
+        drop(hold_subscription);
+        drop(hold_publication);
+        drop(gateway);
+        drop(aeron);
+        hold.release();
+        assert_eq!(
+            joined,
+            Err(TryRecvError::Disconnected),
+            "a closed session kept a ring producer, so the pipeline never joined its consumer"
+        );
     }
 
     #[test]

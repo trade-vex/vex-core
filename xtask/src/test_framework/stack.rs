@@ -77,25 +77,6 @@ pub fn logs_since(container: &str, since: &str) -> TestResult<String> {
     docker(&["logs", "--since", since, container])
 }
 
-/// Waits until the container's output since `since` contains `needle`.
-pub fn wait_for_log(
-    container: &str,
-    since: &str,
-    needle: &str,
-    timeout: Duration,
-) -> TestResult<()> {
-    let start = Instant::now();
-    while !logs_since(container, since)?.contains(needle) {
-        if start.elapsed() > timeout {
-            return Err(TestError::Verification {
-                message: format!("{container} did not log {needle:?} within {timeout:?}"),
-            });
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    Ok(())
-}
-
 /// A paused container, unpaused when this is dropped, whichever way the scenario ends.
 pub struct Paused(&'static str);
 
