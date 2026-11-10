@@ -293,6 +293,82 @@ jobs:
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache || true
 
+  # The live recovery tests (#[ignore]d in networking/src/server/recovery_tests.rs): journaling,
+  # replay and restarts after a crash, against a real Java media driver and a separate archive
+  # process, which some tests pause (SIGSTOP). Both run from the end-to-end tests' archive image
+  # (xtask/tests/archive.Dockerfile, Aeron 1.49.0) as the runner's user, so that the tests can map
+  # the driver's files, which a bind-mounted directory shares, and signal the archive. The archive
+  # runs in SHARED threading mode, in which
+  # c8_3_live_restart_replays_the_commands_a_crash_left_unrecorded fails without its fix.
+  recovery-tests:
+    name: Live recovery tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AERON_SHARED_DIR: /dev/shm/vex-recovery
+      VEX_RECOVERY_AERON_DIR: /dev/shm/vex-recovery/driver
+      VEX_RECOVERY_ARCHIVE_CHANNEL: aeron:udp?endpoint=localhost:18010
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
+          # Install CMake 3.30+ (required by rusteron)
+          pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
+          cmake --version
+
+      - name: Build the tests
+        run: cargo test --package vex-networking --lib --no-run
+
+      - name: Start a media driver and a separate archive
+        run: |
+          docker build --tag vex-recovery-aeron --file xtask/tests/archive.Dockerfile xtask/tests
+          mkdir -p "$AERON_SHARED_DIR"
+          wait_for() {
+            for _ in $(seq 300); do "$@" && return; sleep 0.2; done
+            echo "timed out waiting for $*"
+            return 1
+          }
+          # The archive is ready once the media driver listens on its control channel.
+          archive_listens() { ss -Hlun "sport = :${VEX_RECOVERY_ARCHIVE_CHANNEL##*:}" | grep -q .; }
+          run=(docker run --detach --network host --user "$(id -u):$(id -g)"
+            --volume "$AERON_SHARED_DIR:$AERON_SHARED_DIR" --entrypoint java)
+          java=(--add-opens java.base/sun.nio.ch=ALL-UNNAMED
+            --add-opens java.base/jdk.internal.misc=ALL-UNNAMED
+            -cp /opt/aeron/aeron-all.jar "-Daeron.dir=$VEX_RECOVERY_AERON_DIR")
+          "${run[@]}" --name vex-recovery-driver vex-recovery-aeron "${java[@]}" \
+            -Daeron.dir.delete.on.start=true -Daeron.threading.mode=SHARED \
+            io.aeron.driver.MediaDriver
+          wait_for test -f "$VEX_RECOVERY_AERON_DIR/cnc.dat"
+          "${run[@]}" --name vex-recovery-archive vex-recovery-aeron "${java[@]}" \
+            -Daeron.archive.dir=/tmp/archive \
+            "-Daeron.archive.control.channel=$VEX_RECOVERY_ARCHIVE_CHANNEL" \
+            "-Daeron.archive.replication.channel=aeron:udp?endpoint=localhost:0" \
+            -Daeron.archive.threading.mode=SHARED \
+            io.aeron.archive.Archive
+          wait_for archive_listens
+          echo "VEX_RECOVERY_ARCHIVE_PID=$(docker inspect --format '{{.State.Pid}}' vex-recovery-archive)" >> "$GITHUB_ENV"
+
+      - name: Run the live recovery tests
+        run: |
+          set -o pipefail
+          cargo test --package vex-networking --lib -- --ignored --test-threads=1 server::recovery_tests \
+            | tee "$RUNNER_TEMP/recovery-tests.out"
+          # A filter that matches no test (a renamed module) passes; fail instead.
+          grep -Eq '^test result: ok\. [1-9][0-9]* passed' "$RUNNER_TEMP/recovery-tests.out"
+
+      - name: Show the media driver's and archive's output
+        if: failure()
+        run: |
+          docker logs vex-recovery-driver || true
+          docker logs vex-recovery-archive || true
+
   # Single required check. Branch protection cannot express "these jobs, but only when
   # targeting develop", and a SKIPPED job satisfies an ordinary required-status rule --
   # which would let a tiered-out coverage or E2E job read as success. This decides
@@ -300,7 +376,7 @@ jobs:
   ci-required:
     name: CI required
     if: ${{ always() }}
-    needs: [test, fmt, clippy, audit, coverage, xtask-tests]
+    needs: [test, fmt, clippy, audit, recovery-tests, coverage, xtask-tests]
     runs-on: ubuntu-latest
     steps:
       - name: Enforce required results
@@ -311,7 +387,7 @@ jobs:
           python3 - <<'PY'
           import json, os, sys
           results = json.loads(os.environ["RESULTS"])
-          required = ["test", "fmt", "clippy", "audit"]
+          required = ["test", "fmt", "clippy", "audit", "recovery-tests"]
           if os.environ["FULL"] == "true":
               required += ["coverage", "xtask-tests"]
           failed = [name for name in required if results[name]["result"] != "success"]

@@ -42,9 +42,10 @@ use crate::server::gateway_handler::{
 };
 use crate::server::gateway_manager::GatewayManager;
 use crate::server::replay::{
-    ExtendedRecordingDescriptor, RecorderDescriptorReader, RecordingCounter, RecordingInfo,
-    assert_replay_complete, drain_replay, ensure_replayable_recording, fail_on_replay_error,
-    is_live_recording, release_recording, replay_lineage, tail_recording, tail_window_start,
+    ExtendedRecordingDescriptor, JournalHolders, RecorderDescriptorReader, RecordingCounter,
+    RecordingInfo, assert_replay_complete, await_journal_release, drain_replay,
+    ensure_replayable_recording, ensure_stopped_recordings, fail_on_replay_error,
+    is_live_recording, journal_publication, replay_lineage, tail_recording, tail_window_start,
 };
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
 use common::{OrderCommand, decode_order_command};
@@ -53,7 +54,7 @@ use progress::{DRAIN_TIMEOUT, finish_shutdown, wait_until};
 use rusteron_archive::bindings::AERON_NULL_COUNTER_ID;
 use rusteron_archive::{
     Aeron, AeronArchiveAsyncConnect, AeronArchiveReplayParams, AeronAvailableImageLogger,
-    AeronCError, AeronContext, AeronImage, AeronNotificationLogger, AeronSubscription,
+    AeronCError, AeronCnc, AeronContext, AeronImage, AeronNotificationLogger, AeronSubscription,
     AeronUnavailableImageLogger, Handler, IntoCString, SourceLocation,
 };
 use rusteron_archive::{AeronArchive, AeronArchiveContext};
@@ -78,8 +79,11 @@ pub const REPLAY_STREAM_ID: i32 = 2002;
 /// Channel for Aeron Recording also known as Aeron Control Channel
 const RECORDING_CHANNEL: &str = "aeron:ipc";
 const STARTUP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
-const LIVE_RECORDING_RELEASE_TIMEOUT: Duration = Duration::from_secs(10);
-const LIVE_RECORDING_RELEASE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// How long past the media driver's client liveness timeout a dead process may still hold the
+/// journal: the driver notices the timeout at its next timer check, and frees the dead process's
+/// publication within two more (draining, then lingering; `aeron.timer.interval`, 1 s by default)
+/// once the archive has recorded what it held; the archive then stops the recording.
+const JOURNAL_RELEASE_MARGIN: Duration = Duration::from_secs(5);
 
 /// Error types for VEX Core server operations
 #[derive(Error, Debug)]
@@ -211,7 +215,8 @@ impl VexCoreServer {
         let (archive, subscription_id, recording_id) = if !config.request_control_channel.is_empty()
         {
             let archive = Self::initialize_archive(&config, &aeron)?;
-            let recordings = Self::list_recordings(&archive)?;
+            let release_timeout = Self::journal_release_timeout(&config.context_dir)?;
+            let recordings = Self::list_recordings(&aeron, &archive, release_timeout, &shutdown)?;
 
             // Every live command is stamped above the journal's last command, and its order id
             // is derived from that timestamp.
@@ -553,50 +558,71 @@ impl VexCoreServer {
         }
     }
 
-    fn wait_for_recording_stop(
-        archive: &AeronArchive,
-        recording_id: i64,
-    ) -> Result<i64, ServerError> {
-        let deadline = Instant::now() + LIVE_RECORDING_RELEASE_TIMEOUT;
-        loop {
-            let mut descriptor_count = 0;
-            let mut stop_position = None;
-            archive.list_recordings_for_uri_once(
-                &mut descriptor_count,
-                recording_id,
-                1,
-                &RECORDING_CHANNEL.into_c_string(),
-                RECORDING_STREAM_ID,
-                |descriptor| {
-                    if descriptor.recording_id == recording_id {
-                        stop_position = Some(descriptor.stop_position);
-                    }
-                },
-            )?;
-
-            if let Some(stop_position) = stop_position
-                && !is_live_recording(stop_position)
-            {
-                return Ok(stop_position);
-            }
-
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(ServerError::ReplayError(format!(
-                    "live recording {recording_id} was not released within {} seconds",
-                    LIVE_RECORDING_RELEASE_TIMEOUT.as_secs()
-                )));
-            }
-            std::thread::sleep(remaining.min(LIVE_RECORDING_RELEASE_POLL_INTERVAL));
-        }
+    /// How long a start waits for a process that died while journaling to release the journal:
+    /// the client liveness timeout of the media driver at `context_dir`, as the driver publishes
+    /// it, plus [`JOURNAL_RELEASE_MARGIN`].
+    fn journal_release_timeout(context_dir: &str) -> Result<Duration, ServerError> {
+        let liveness = AeronCnc::new_on_heap(context_dir)?
+            .get_constants()?
+            .client_liveness_timeout();
+        let liveness = u64::try_from(liveness)
+            .ok()
+            .filter(|&nanos| nanos > 0)
+            .ok_or_else(|| {
+                ServerError::ConfigurationError(format!(
+                    "the media driver at {context_dir} reports a client liveness timeout of \
+                     {liveness} ns"
+                ))
+            })?;
+        Ok(Duration::from_nanos(liveness) + JOURNAL_RELEASE_MARGIN)
     }
 
-    /// Lists the journal's recordings, oldest first, each at its final stop position.
-    fn list_recordings(archive: &AeronArchive) -> Result<Vec<RecordingInfo>, ServerError> {
+    /// What holds the journal: the archive's live recordings of it, and its publications that the
+    /// media driver holds.
+    fn journal_holders(
+        aeron: &Aeron,
+        archive: &AeronArchive,
+    ) -> Result<JournalHolders, ServerError> {
+        let mut holders = JournalHolders::default();
+        let mut descriptor_count = 0;
+        archive.list_recordings_for_uri_once(
+            &mut descriptor_count,
+            0,
+            i32::MAX,
+            &RECORDING_CHANNEL.into_c_string(),
+            RECORDING_STREAM_ID,
+            |descriptor| {
+                if is_live_recording(descriptor.stop_position) {
+                    holders.live_recordings.push(descriptor.recording_id);
+                }
+            },
+        )?;
+        aeron
+            .counters_reader()
+            .foreach_counter_once(|_, _, type_id, key, _| {
+                holders
+                    .publications
+                    .extend(journal_publication(type_id, key));
+            });
+        Ok(holders)
+    }
+
+    /// Lists the journal's recordings, oldest first, each at its final stop position. Waits first,
+    /// for at most `release_timeout`, until no process that died while journaling holds the
+    /// journal (see [`await_journal_release`]).
+    fn list_recordings(
+        aeron: &Aeron,
+        archive: &AeronArchive,
+        release_timeout: Duration,
+        shutdown: &AtomicBool,
+    ) -> Result<Vec<RecordingInfo>, ServerError> {
+        await_journal_release(release_timeout, shutdown, || {
+            Self::journal_holders(aeron, archive)
+        })?;
         // A process killed between starting its recording and its publication connecting leaves
         // a recording subscription with no image, which auto_stop never removes; the archive
-        // would then refuse to start or extend the recording ("recording exists"). Stopping it
-        // also ends a recording left live by a process killed mid-run.
+        // would then refuse to start or extend the recording ("recording exists"). No recording
+        // of the journal is live now, so this stops none.
         archive.try_stop_recording_channel_and_stream(
             &RECORDING_CHANNEL.into_c_string(),
             RECORDING_STREAM_ID,
@@ -615,7 +641,7 @@ impl VexCoreServer {
             Some(&reader),
         );
         // Copy the result out and free the reader before anything below can return early.
-        let mut recordings = std::mem::take(&mut reader.recordings);
+        let recordings = std::mem::take(&mut reader.recordings);
         let skipped_invalid = reader.skipped_invalid;
         reader.release();
         let matching_recording_count = matching_recording_count?;
@@ -627,19 +653,7 @@ impl VexCoreServer {
             skipped_invalid
         );
         ensure_replayable_recording(skipped_invalid)?;
-        for record in &mut recordings {
-            let was_live = is_live_recording(record.stop_position);
-            record.stop_position =
-                release_recording(record, |id| Self::wait_for_recording_stop(archive, id))?;
-            if was_live {
-                info!(
-                    target: "replay",
-                    action = "live_recording_released",
-                    recording_id = record.recording_id,
-                    stop_position = record.stop_position
-                );
-            }
-        }
+        ensure_stopped_recordings(&recordings)?;
         Ok(recordings)
     }
 

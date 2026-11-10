@@ -128,8 +128,9 @@ cargo xtask test integration balance --fail-fast
 #### Outbox Tests
 
 Runs the core's outbox scenarios, in order, on one continuous ledger: a `kill -9` with events
-queued behind a paused broker, a graceful shutdown that runs out of its delivery grace with the
-broker paused, a start while the broker does not answer, a clean restart, and starts that must
+queued behind a paused broker, restarted at once (the start must wait for the media driver to
+release the killed core's journal), a graceful shutdown that runs out of its delivery grace with
+the broker paused, a start while the broker does not answer, a clean restart, and starts that must
 refuse a missing or non-compacted `vex-core.delivered`. Every graceful shutdown keeps the test
 gateway connected, as gateways are in production; the clean one must deliver everything and write
 the watermark of the last command, so that the restart re-publishes nothing. The oracle is the
