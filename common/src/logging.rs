@@ -27,7 +27,7 @@ macro_rules! order_log {
 #[macro_export]
 macro_rules! order_info {
     ($event:expr, $cmd:expr $(, $($field:tt)*)?) => {
-        $crate::order_log!(info, $event, $cmd $(, $($field)*)?);
+        $crate::order_log!(info, $event, $cmd $(, $($field)*)?)
     };
 }
 
@@ -35,7 +35,7 @@ macro_rules! order_info {
 #[macro_export]
 macro_rules! order_debug {
     ($event:expr, $cmd:expr $(, $($field:tt)*)?) => {
-        $crate::order_log!(debug, $event, $cmd $(, $($field)*)?);
+        $crate::order_log!(debug, $event, $cmd $(, $($field)*)?)
     };
 }
 
@@ -43,7 +43,7 @@ macro_rules! order_debug {
 #[macro_export]
 macro_rules! order_warn {
     ($event:expr, $cmd:expr $(, $($field:tt)*)?) => {
-        $crate::order_log!(warn, $event, $cmd $(, $($field)*)?);
+        $crate::order_log!(warn, $event, $cmd $(, $($field)*)?)
     };
 }
 
@@ -51,6 +51,6 @@ macro_rules! order_warn {
 #[macro_export]
 macro_rules! order_error {
     ($event:expr, $cmd:expr $(, $($field:tt)*)?) => {
-        $crate::order_log!(error, $event, $cmd $(, $($field)*)?);
+        $crate::order_log!(error, $event, $cmd $(, $($field)*)?)
     };
 }

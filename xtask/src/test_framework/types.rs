@@ -65,6 +65,15 @@ pub fn verify_balance_invariant(balance: &BalanceEvent) -> TestResult<()> {
     Ok(())
 }
 
+/// What identifies an event on Kafka, and every copy of it: its topic, its key, and the timestamp
+/// of the command that produced it
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct EventId {
+    pub topic: String,
+    pub key: String,
+    pub timestamp: u64,
+}
+
 /// Orderbook snapshot, as the core publishes it after each command that reaches the book
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderbookSnapshot {

@@ -22,7 +22,8 @@
 
 2. **System Dependencies**
    - **Aeron Media Driver** (with Archive support for journaling/replay)
-   - **Kafka** broker for event streaming
+   - **Kafka** broker for event streaming, with a Schema Registry, and the core's topics applied
+     from `deploy/kafka/` (see [Kafka Topics](#kafka-topics))
    - Shared memory (`/dev/shm`) for Aeron IPC
 
 3. **Optional: Java** (for standalone Archiving Media Driver)
@@ -51,10 +52,9 @@ VEX_ENV=development RUST_LOG=info cargo run --bin vex-core
 
 # Or using Makefile (starts media driver + vex-core)
 VEX_ENV=development make server
-
-# With journal replay (recover from recorded state)
-VEX_ENV=development ./target/release/vex-core --replay
 ```
+
+Every start replays the journal first; see [Restart Service](#restart-service).
 
 ### Environment Variables
 
@@ -74,6 +74,29 @@ VEX_ENV=development ./target/release/vex-core --replay
 | Development | 40001 | 40002 | 50000 | localhost:8010 |
 | Test | 40001 | 40002 | 50000 | localhost:8010 |
 | Production | 3521 | 3522 | 50000 | localhost:8010 |
+
+### Kafka Topics
+
+`deploy/kafka/topics.toml` declares every topic the core produces, and the Schema Registry
+compatibility of their values; `deploy/kafka/README.md` explains it. Brokers create no topic by
+themselves (`auto.create.topics.enable=false`). Apply it before the core's first start, and on
+every deploy:
+
+```bash
+cargo xtask kafka apply --brokers <bootstrap servers> --schema-registry <url>
+
+# A development broker of one (e.g. for `make server`):
+cargo xtask kafka apply --brokers localhost:9092 --schema-registry http://localhost:8081 --single-broker
+```
+
+With journaling configured, every start checks the topics before the pipeline starts. It refuses
+to start, naming each topic and the setting at fault, if a topic is missing (or the core may not
+describe it), if `vex-core.delivered` does not have exactly one partition or is not compacted, if,
+in production, an event topic's `min.insync.replicas` is below 2, if Kafka answers for a topic
+with an error that waiting cannot clear, such as a denied authorization, or if it denies the core
+the read of the watermark (see the ACLs in `deploy/kafka/README.md`). `vex-core.delivered` holds
+the delivered watermark, which decides what a start re-publishes (see
+[Restart Service](#restart-service)).
 
 ---
 
@@ -129,6 +152,10 @@ balance_preload:
         amount: 50000000
 ```
 
+Balance preload credits the engine only, at every start, before the replay. It is never journaled
+and never published to Kafka, so a read model shows a preloaded balance only after the key's first
+journaled command (#198 replaces it with journaled genesis deposits).
+
 ### Configuration Precedence
 
 1. Environment-specific config file (based on `VEX_ENV`)
@@ -170,10 +197,11 @@ kill -TERM <pid>
 # vex-core handles Ctrl+C and performs graceful shutdown
 
 # A graceful shutdown can take about 45 s when Kafka is slow or down: pipeline drain
-# (up to 10 s), archive catch-up (up to 10 s), Kafka delivery (20 s, plus up to 5 s).
-# Give the orchestrator at least that before it kills the process (Docker:
-# stop_grace_period, set in docker/docker-compose.yml; Kubernetes:
-# terminationGracePeriodSeconds), or the undelivered-event count is never logged.
+# (fails once 10 s pass without progress), archive catch-up (up to 10 s), Kafka delivery
+# (20 s, plus up to 5 s). Give the orchestrator at least that before it kills the process
+# (Docker: stop_grace_period, set in docker/docker-compose.yml; Kubernetes:
+# terminationGracePeriodSeconds), or the undelivered-event count is never logged. Nothing
+# undelivered is lost either way: the next start re-publishes it (see "Kafka is Down").
 
 # Force stop (use only if graceful shutdown fails)
 kill -9 <pid>
@@ -195,14 +223,23 @@ make media-driver  # If needed
 VEX_ENV=development ./target/release/vex-core
 ```
 
-Every start, with or without `--replay`, reads the last journaled command from the archive (`journal_tail_read`) and stamps live commands above it, so order ids and timestamps never repeat any the archive holds, even if this host's clock is behind. A start fails if it cannot read it. With journaling disabled there is no journal: ids and timestamps follow the wall clock alone.
+Every start, with journaling configured:
 
-### Journal Replay
+1. **Checks the Kafka topics and reads the delivered watermark**, before the pipeline starts (see
+   [Kafka Topics](#kafka-topics)). While Kafka does not answer, the core waits, logging
+   `waiting_for_kafka` every 10 s; it logs `watermark_read` once it has read the watermark.
+2. **Replays the journal**: the newest recording that holds commands, which the start then
+   extends. An empty archive holds nothing to replay, so the start is fresh. The replay
+   re-publishes the events of every command above the watermark, the events a previous run may
+   not have delivered, and answers no gateway. It takes as long as Kafka needs to accept them,
+   and fails only once 10 s pass without progress (`DrainError`).
+3. **Stamps every live command above the last journaled command** (`journal_tail_read`), so
+   order ids and timestamps never repeat any the archive holds, even if this host's clock is
+   behind. A start fails if it cannot read it.
 
-```bash
-# Start with replay from recorded journal
-VEX_ENV=development ./target/release/vex-core --replay
-```
+There is no start without replay: a new ledger is a [reset](#resetting-the-ledger). With
+journaling disabled there is no journal, nothing is replayed or re-published, and ids and
+timestamps follow the wall clock alone.
 
 ### View Logs
 
@@ -237,7 +274,10 @@ ls -la config.dev.yaml config.test.yaml config.prod.yaml 2>/dev/null
 **Solutions**:
 - Set `VEX_ENV` to the intended environment (`development`, `test` or `production`)
 - Ensure a config file exists for the selected environment, or that development/test defaults are acceptable
-- Verify the configured `kafka_broker` (or `VEX__KAFKA_BROKER`) is reachable if Kafka is required
+- `the Kafka topics are not as the core requires`: a topic is missing or misconfigured; the error names each one and why. Apply `deploy/kafka/topics.toml` (see [Kafka Topics](#kafka-topics)). A topic that exists but is reported missing is one the core may not describe: grant the ACLs in `deploy/kafka/README.md`
+- `Kafka answered for topic <topic> with an error that waiting cannot clear` or `Kafka described no setting of topic <topic>`: usually a denied ACL (`Topic authorization failed`, or no DescribeConfigs); grant the ACLs in `deploy/kafka/README.md`
+- `the core may not read the watermark from topic vex-core.delivered`: grant the core Read on `vex-core.delivered` and Describe on the consumer group `vex-core.watermark-reader` (`deploy/kafka/README.md`, "ACLs")
+- The process runs but never accepts gateways, logging `waiting_for_kafka`: the configured `kafka_broker` (or `VEX__KAFKA_BROKER`) does not answer. The core waits for it before it starts
 - A config file must set `schema_registry_url`, or `VEX__SCHEMA_REGISTRY_URL` must; only the built-in dev/test defaults, used when no file exists, supply one. A value that is not an `http://` or `https://` URL is rejected
 - Check that `/dev/shm` has sufficient space for Aeron
 - Verify symbol configuration is valid (market_id, assets, fees)
@@ -341,7 +381,7 @@ VEX_ENV=development RUST_LOG=debug ./target/release/vex-core 2>&1 | grep -E "dis
 
 ### Replay Failures
 
-**Symptom**: `--replay` fails or crashes
+**Symptom**: Startup fails while replaying the journal (`ReplayError`, or a `DrainError` while the replay re-publishes to a stalled Kafka)
 
 **Diagnosis**:
 ```bash
@@ -356,6 +396,7 @@ VEX_ENV=development RUST_LOG=debug ./target/release/vex-core 2>&1 | grep -E "dis
 - Ensure Archiving Media Driver (not plain MediaDriver) is used
 - Verify previous runs recorded to the archive successfully
 - Check `request_control_channel` and archive configuration
+- A `DrainError` means the pipeline stopped advancing for 10 s, usually because Kafka stopped accepting the re-published events: restore Kafka and start again. Each start re-publishes from the last watermark written, so restarts converge
 
 ### High Memory Usage
 
@@ -431,13 +472,15 @@ top -p $(pgrep vex-core)
      - `send_failed`
      - `protobuf_encoding_impossible`: an event type missing from the compiled `trading.proto`
      - `sender_panicked`
-   - Events still queued when the process dies are not re-published by replay. This covers a crash, a kill, an abort above, and a graceful shutdown that could not deliver them within 20 s, which logs `shutdown_with_undelivered_events` with the count. It also covers a shutdown whose pipeline drain timed out first, or that the orchestrator killed (see Stop Service)
+   - **Events still queued when the process dies are re-published by the next start.** The core writes the delivered watermark, the last command whose events the brokers have all acknowledged, to `vex-core.delivered`: at most every 100 ms while delivery advances, and once more at the end of a graceful shutdown. Every start replays the journal and re-publishes the events of every command above it. This covers a crash, a kill, an abort above, a graceful shutdown that could not deliver within 20 s (it logs `shutdown_with_undelivered_events` with the count, "replay will re-publish them"), one whose pipeline drain failed first, and one that the orchestrator killed. The sinks receive duplicates of the events after the last watermark written, which they absorb: a reader takes a key's latest state from the greatest timestamp, not from the last event in the partition
+   - **A start waits for Kafka.** With journaling configured, the core checks its topics and reads the watermark before it starts: while Kafka does not answer, it logs `waiting_for_kafka` every 10 s and accepts no gateway. It starts by itself once Kafka answers
+   - `watermark_write_skipped` or `watermark_not_delivered` (each at most every 10 s): a watermark record could not be enqueued or delivered. Nothing is lost: the next write carries the then-current watermark, and a start from an older one only re-publishes more
 
 2. **Mitigation**
    - Restore Kafka or the Schema Registry; intake resumes by itself
    - A registry that rejects the schema (for example as incompatible with the subject's earlier versions) also shows up as a `protobuf_encoding_failed` stall. The client library reports it exactly like an outage. Fix the subject's compatibility setting or the deployed schema
-   - A missing topic shows up as a `producer_send_waiting` stall: create the topic
-   - After an abort, or a shutdown that reported undelivered events, those events are missing downstream
+   - A topic deleted while the core runs shows up as a `producer_send_waiting` stall. Re-create it from `deploy/kafka/topics.toml` (see [Kafka Topics](#kafka-topics)). If it was `vex-core.delivered`, the next start re-publishes the whole journal
+   - After an abort, or a shutdown that reported undelivered events, start the core again: it re-publishes them
 
 ### Gateway Cannot Connect
 
@@ -459,9 +502,37 @@ top -p $(pgrep vex-core)
 
 ### Need to Recover from Journal
 
+Start the core: every start replays the journal, and re-publishes what Kafka may lack (see
+[Restart Service](#restart-service)).
+
+### Resetting the ledger
+
+The core always replays its journal, so a new ledger means removing the old one everywhere at
+once: the engine, Kafka and the read model. A partial reset leaves them on different ledgers. A
+new partition count for an event topic is a reset too (`deploy/kafka/README.md`).
+
+1. Stop the gateway, the core and the Kafka Connect connectors.
+2. Delete the archive's recordings (the journal), with the media driver stopped: the archive
+   directory (`aeron.archive.dir`).
+3. Delete the seven event topics and `vex-core.delivered`, then re-create them with
+   `cargo xtask kafka apply` (see [Kafka Topics](#kafka-topics)).
+4. Delete the connectors' consumer groups (`connect-<connector>`), so that they read the new
+   topics from the start.
+5. Drop the read model, and re-apply its migrations and seeds (vex-gateway `readmodel/`).
+6. Bring the environment up: topics, migrations and seeds, Connect, the core, the gateway.
+
+### Rebuilding the read model
+
+To rebuild the read model while keeping the ledger: drop it and re-apply its migrations and seeds,
+then either reset the connectors' offsets to the earliest, if the topics' retention still covers
+the whole history, or make the core re-publish the whole journal. For the latter, stop the core,
+write a tombstone (a null value) for the key `w` on `vex-core.delivered`, and start it: a
+tombstone reads as watermark 0. The replay then re-publishes every journaled command, taking as
+long as Kafka needs.
+
 ```bash
-# Start with replay to recover state from last recording
-VEX_ENV=development ./target/release/vex-core --replay
+# With the core stopped. kcat: -Z sends the empty value as null (a tombstone).
+echo "w:" | kcat -b <brokers> -t vex-core.delivered -P -K: -Z
 ```
 
 ---

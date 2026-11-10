@@ -18,10 +18,15 @@ services:
       - internal://0.0.0.0:9092,host://0.0.0.0:19092
       - --advertise-kafka-addr
       - internal://redpanda:9092,host://localhost:19092
+      # As in every environment, topics come only from deploy/kafka/topics.toml, which xtask
+      # applies before vex-server starts: a topic deleted while the core runs stalls it instead
+      # of coming back with default settings.
       - --set
-      - redpanda.auto_create_topics_enabled=true
+      - redpanda.auto_create_topics_enabled=false
     ports:
       - "19092:19092"
+      # The built-in Schema Registry, for applying the subjects' compatibility from the host.
+      - "18081:8081"
     networks:
       - vex-testing-net
     healthcheck:
@@ -43,6 +48,26 @@ services:
     # This service runs once to generate code, then exits
     restart: "no"
 
+  # The media driver vex-server uses, with the Aeron Archive that journals its commands
+  # (archive.Dockerfile). vex-server joins its network and IPC namespaces, so the driver, the
+  # archive and the journal outlive a vex-server that is killed and restarted, as they do in
+  # production.
+  aeron-archive:
+    build:
+      context: .
+      dockerfile: archive.Dockerfile
+    container_name: vex-aeron-archive
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /dev/shm/aeron-test-server/cnc.dat"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    ipc: shareable
+    shm_size: '512m'
+    networks:
+      vex-testing-net:
+        ipv4_address: 172.28.1.10
+
   vex-server:
     build:
       context: ../../
@@ -51,6 +76,8 @@ services:
     depends_on:
       redpanda:
         condition: service_healthy
+      aeron-archive:
+        condition: service_healthy
     environment:
       - VEX_ENV=development
       - VEX_SERVER_HOST=vex-server
@@ -58,10 +85,6 @@ services:
       - VEX__KAFKA_BROKER=redpanda:9092
       # Redpanda's built-in Schema Registry (enabled on port 8081 by the image's default config).
       - VEX__SCHEMA_REGISTRY_URL=http://redpanda:8081
-      - VEX_DISABLE_ARCHIVE=1
-      - AERON_DIR=/dev/shm/aeron-test-server
-      - AERON_RESERVED_SESSION_ID_LOW=1
-      - AERON_RESERVED_SESSION_ID_HIGH=2147483647
       - LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
       - RUST_LOG=debug
     healthcheck:
@@ -70,14 +93,13 @@ services:
       timeout: 3s
       retries: 20
       start_period: 10s
-    ipc: shareable # Allows aeronmd and test_server to share memory.
+    # The archive's media driver does vex-server's networking (it answers on the archive's
+    # address, 172.28.1.10) and holds its shared memory.
+    network_mode: "service:aeron-archive"
+    ipc: "service:aeron-archive"
     privileged: true
-    shm_size: '512m'
     volumes:
       - ./test-results:/results
-    networks:
-      vex-testing-net:
-        ipv4_address: 172.28.1.10
 
   vex-client:
     build:

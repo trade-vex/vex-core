@@ -17,15 +17,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // silent Development fallback. Development and test load their defaults when no file exists.
     let mut config = VexConfig::load_auto()?;
 
-    // Disable Aeron Archive for E2E tests (no archive container in test environment)
-    // Setting request_control_channel to empty disables archive mode in VexCoreServer
-    if std::env::var("VEX_DISABLE_ARCHIVE").is_ok() {
-        info!("Disabling Aeron Archive for E2E tests");
-        config.core_networking.request_control_channel = String::new();
-        config.core_networking.response_control_channel = String::new();
-        config.core_networking.recording_events_channel = String::new();
-    }
-
     // Override server networking from environment for Docker deployment
     if let Ok(server_port) = std::env::var("VEX_SERVER_PORT")
         && let Ok(port) = server_port.parse::<u16>()
@@ -62,27 +53,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     debug!(target: "server_main", action = "config_snapshot", config = ?config);
 
-    let args: Vec<String> = std::env::args().collect();
-    let engine = if args.contains(&"--replay".to_string()) {
-        info!(target: "server_main", action = "starting_with_replay");
-        vex_server::start(config, true).map_err(|e| {
-            error!(
-                target: "server_main",
-                action = "engine_start_with_replay_failed",
-                error = %e
-            );
-            e
-        })?
-    } else {
-        vex_server::start(config, false).map_err(|e| {
-            error!(
-                target: "server_main",
-                action = "engine_start_failed",
-                error = %e
-            );
-            e
-        })?
-    };
+    let engine = vex_server::start(config).map_err(|e| {
+        error!(
+            target: "server_main",
+            action = "engine_start_failed",
+            error = %e
+        );
+        e
+    })?;
 
     info!(
         target: "server_main",

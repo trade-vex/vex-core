@@ -212,11 +212,11 @@ The `orders` VecDeque stores orders in insertion order. Since orders are assigne
 
 **Timestamp Field**:
 
-The `cmd.timestamp` field is the command's journaled time: wall-clock nanoseconds, forced strictly above the previous command's and above the journal tail (`JournalingProcessor::next_timestamp`). The journal tail is the timestamp of the last command in the archive, which the server reads on every start, with or without `--replay`, by replaying only the term that holds it (`VexCoreServer::read_journal_tail`). With journaling disabled there is no tail, and timestamps, and the ids derived from them, follow the wall clock alone. Every Kafka event a command produces, `orderbook` included, carries it.
+The `cmd.timestamp` field is the command's journaled time: wall-clock nanoseconds, forced strictly above the previous command's and above the journal tail (`JournalingProcessor::next_timestamp`). The journal tail is the timestamp of the last command in the archive, which the server reads on every start by replaying only the term that holds it (`VexCoreServer::read_journal_tail`). With journaling disabled there is no tail, and timestamps, and the ids derived from them, follow the wall clock alone. Every Kafka event a command produces, `orderbook` included, carries it.
 
 **Replay Mode**:
 
-When `ReplayControl::enabled()`, the journaling processor skips ID generation and archive publishing:
+Every start replays the journal, with the replay flag set (`ReplayControl::enabled()` in `init_internal`) until the replay has drained (`finish_replay`). While it is set, the journaling processor skips ID generation and archive publishing:
 
 ```rust
 if self.replay_enabled.is_enabled() {
@@ -224,7 +224,7 @@ if self.replay_enabled.is_enabled() {
 }
 ```
 
-During replay, OrderCommands already have assigned order_ids and timestamps from the original execution. Re-assigning would break deterministic replay.
+During replay, OrderCommands already have assigned order_ids and timestamps from the original execution. Re-assigning would break deterministic replay. Balance preload (development and test only) runs before the replay, with the flag set, so it is never stamped, journaled or published.
 
 #### 4. Risk Engine (R1 - Pre-Processing)
 
@@ -441,26 +441,23 @@ R2 engines process trade events for both maker and taker:
 
 **Purpose**: Publish order lifecycle events to Kafka for external consumption AND send responses back to the originating gateway via Aeron.
 
-**Event Types**:
+**Kafka Topics**: values are `trading.proto` messages framed for the Schema Registry (subject `<topic>-value`); keys are UTF-8 strings; every event carries its command's timestamp. `deploy/kafka/topics.toml` declares the topics.
 
-1. **OrderEvent**: Order placed on book
-2. **TradeEvent**: Order matched (one event per maker-taker pair)
-3. **CancelEvent**: Order cancelled
-4. **BalanceEvent**: User balance update
-5. **OrderbookEvent**: L2 market data snapshot
+| Topic | Message | Key | Emitted for |
+|---|---|---|---|
+| `balances` | `BalanceEvent` | `user_id:asset_id` | the taker after a placement, cancel or fills; each maker once per command; a deposit or withdrawal |
+| `orders` | `OrderEvent` | `order_id` | the taker; each maker per fill |
+| `orderbook` | `OrderbookEvent` (L2 snapshot) | `market_id` | a placement, cancel or fill |
+| `cancels` | `CancelOrderEvent` | `order_id` | a cancellation |
+| `trades` | `TradeEvent` | `taker_order_id:maker_order_id` | each fill |
+| `deposits` | `DepositEvent` | `user_id` | a processed deposit |
+| `withdrawals` | `WithdrawEvent` | `user_id` | a processed withdrawal |
 
-**Kafka Topic Structure**:
-```
-market-{market_id}-orders    -> OrderEvents
-market-{market_id}-trades    -> TradeEvents
-market-{market_id}-cancels   -> CancelEvents
-market-{market_id}-orderbook -> OrderbookEvents
-asset-{asset_id}-balances    -> BalanceEvents
-```
+The ordering and delivery contract is on `KafkaEventsHandler` (`processors/src/events.rs`). In short: per key, a run publishes in engine order through one ordered sender and an idempotent producer; at most one event per key per command, holding the key's state after it; `(key, timestamp)` identifies an event, and a reader takes a key's latest state from the greatest timestamp. No event is dropped while the process runs: a Kafka or registry outage back-pressures intake (`Busy`).
 
-**Gateway Response**: The events handler also publishes the processed OrderCommand back to the originating gateway via Aeron for client response.
+**Gateway Response**: The events handler also publishes the processed OrderCommand back to the originating gateway via Aeron for client response, after its events.
 
-**Replay Mode**: Events handler is bypassed during replay for pure matching performance measurement.
+**Delivered watermark and replay**: the sender tracks W, the greatest command timestamp up to which the brokers have acknowledged every event, and writes it to the compacted topic `vex-core.delivered` (at most every 100 ms while it advances, and at the end of a shutdown). Every start reads W before the pipeline starts, after checking the topics, then replays the journal: the events handler re-publishes the events of every replayed command above W, which a death may have left undelivered, and sends no gateway response for any replayed command. So a crash, a kill or a shutdown past its delivery grace loses no event; Kafka gets duplicates of the commands after the last W written.
 
 ## Processing Pipeline
 
@@ -653,8 +650,9 @@ The following examples trace order processing through all pipeline stages with c
 
 **Stage 5: Events Handler**
 - Extract gateway_id: `Snowflake::gateway_from_id(0x0001A2B3C4D50003) = 3`
-- Publish OrderEvent to Kafka: `market-1-orders` topic
-- Publish L2 snapshot to Kafka: `market-1-orderbook` topic
+- Publish BalanceEvents to Kafka: topic `balances`, keys `100:<base asset>` and `100:<quote asset>`
+- Publish OrderEvent to Kafka: topic `orders`, key `0x0001A2B3C4D50003` (in decimal)
+- Publish L2 snapshot to Kafka: topic `orderbook`, key `1`
 - Gateway response via Aeron:
   ```rust
   publications.publish_response(&cmd)
@@ -1201,22 +1199,14 @@ Session ID isolation ensures replay stream doesn't interfere with concurrent liv
 
 Polls replay subscription, processing fragments and publishing to disruptor. Tracks position from `start_position` to `stop_position` in fixed frame size increments. Busy-spins when no fragments available.
 
-**Operating Modes**:
-
-**Normal Mode**:
-- No replay
-- Reads the journal tail: the last command of the newest recording that holds any
-- Calls `start_recording()` to create new recording
-- Full pipeline active (journaling, events publishing)
-
-**Replay Mode**:
-1. Calls `list_recordings_for_uri()` to find last recording, and reads the journal tail as in normal mode
-2. Calls `start_replay()` to initiate replay from Archive
+**Startup**: every start with an archive configured replays the journal; there is no start without replay.
+1. Calls `list_recordings_for_uri()` to find the recordings, and reads the journal tail: the last command of the newest recording that holds any
+2. Calls `start_replay()` on the newest recording, unless it holds no command (an empty archive starts fresh)
 3. Creates subscription to receive replayed messages
-4. Polls subscription, publishing each message to disruptor
-5. After replay completes, calls `extend_recording()` to append future messages to same recording
+4. Polls subscription, publishing each message to disruptor, then waits for the pipeline to drain: it fails only after 10 s without progress, since the events stage may be re-publishing to a slow Kafka
+5. Calls `extend_recording()` to append future messages to the replayed recording, or `start_recording()` for a fresh start
 
-Journaling and events handlers check internal replay flag and skip processing during replay to avoid re-persisting or re-publishing already recorded events.
+During the replay, journaling skips every command (they are journaled already), and the events handler re-publishes only the commands above the delivered watermark and answers no gateway (see Events Handler).
 
 ### Connection Lifecycle
 

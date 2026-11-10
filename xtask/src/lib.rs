@@ -61,9 +61,10 @@
 //!
 //! ### Phase 2: Kafka Verification (Eventual)
 //! Verifies the events the Events Handler publishes to Kafka, read back from the start of the run:
-//! - Latest balance per `{user_id}:{asset_id}` on topic `balances`
+//! - Latest balance per `{user_id}:{asset_id}` on topic `balances` (the greatest timestamp)
 //! - Every trade on topic `trades`
-//! - Latest orderbook snapshot per `{market_id}` on topic `orderbook`
+//! - Latest orderbook snapshot per `{market_id}` on topic `orderbook` (the greatest timestamp)
+//! - Every `(topic, key, timestamp)` on every topic
 //!
 //! ## Market Configuration
 //!
@@ -77,6 +78,7 @@
 
 pub mod builders;
 pub mod fixtures;
+pub mod kafka_topics;
 pub mod scenarios;
 pub mod test_framework;
 pub mod verifiers;

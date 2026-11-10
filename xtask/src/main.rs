@@ -13,9 +13,10 @@ use tracing::{error, info};
 use tracing_subscriber::FmtSubscriber;
 use vex_config::GatewayNetworkingConfig;
 
+use xtask::kafka_topics::{self, KafkaTopics};
 use xtask::scenarios;
 use xtask::test_framework::TestContext;
-use xtask::test_framework::types::TestSuiteResult;
+use xtask::test_framework::types::{ScenarioResult, TestConfig, TestSuiteResult};
 
 /// delay in network emulation in teste2e (high-latency scenario)
 const NETWORK_DELAY_MS: u64 = 100;
@@ -40,6 +41,32 @@ enum Commands {
     Test {
         #[command(subcommand)]
         command: TestCommands,
+    },
+
+    /// The Kafka topics and Schema Registry subjects that deploy/kafka/topics.toml declares.
+    Kafka {
+        #[command(subcommand)]
+        command: KafkaCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum KafkaCommands {
+    /// Create the missing topics, set every topic's configuration and every subject's
+    /// compatibility to what deploy/kafka/topics.toml declares. Applying it twice changes nothing.
+    Apply {
+        /// Kafka bootstrap servers
+        #[arg(long)]
+        brokers: String,
+
+        /// Schema Registry URL
+        #[arg(long)]
+        schema_registry: String,
+
+        /// A development or test cluster of one broker: replication factor and
+        /// min.insync.replicas 1. The core refuses such event topics in production.
+        #[arg(long)]
+        single_broker: bool,
     },
 }
 
@@ -74,6 +101,10 @@ enum TestCommands {
         #[arg(short, long)]
         fail_fast: bool,
     },
+
+    /// The core's outbox: re-publication after a kill or a shutdown past its grace, the wait
+    /// for Kafka at start, and the startup topic check (Docker, with an Aeron archive)
+    Outbox,
 
     /// Performance benchmarks
     Benchmark {
@@ -145,7 +176,7 @@ async fn main() -> Result<(), XTaskError> {
                 if all {
                     run_all_e2e_scenarios(project_root.into_boxed_path()).await
                 } else {
-                    run_correctness_task(project_root.into_boxed_path(), &scenario, clients)
+                    run_correctness_task(project_root.into_boxed_path(), &scenario, clients).await
                 }
             }
             TestCommands::Integration {
@@ -153,12 +184,40 @@ async fn main() -> Result<(), XTaskError> {
                 verbose,
                 fail_fast,
             } => run_integration_tests(&project_root, suite, verbose, fail_fast).await,
+            TestCommands::Outbox => run_outbox_tests(&project_root).await,
             TestCommands::Benchmark { clients } => {
-                run_benchmark(project_root.into_boxed_path(), clients)
+                run_benchmark(project_root.into_boxed_path(), clients).await
             }
             TestCommands::Unit { filter } => run_unit_tests(&project_root, filter),
         },
+
+        Commands::Kafka {
+            command:
+                KafkaCommands::Apply {
+                    brokers,
+                    schema_registry,
+                    single_broker,
+                },
+        } => apply_topics(&brokers, &schema_registry, single_broker).await,
     }
+}
+
+/// Applies deploy/kafka/topics.toml to the cluster at `brokers` and the registry at
+/// `schema_registry`.
+async fn apply_topics(
+    brokers: &str,
+    schema_registry: &str,
+    single_broker: bool,
+) -> Result<(), XTaskError> {
+    let file = KafkaTopics::load().map_err(XTaskError::Unexpected)?;
+    kafka_topics::apply(
+        &file.topics(single_broker),
+        &file.subjects(),
+        brokers,
+        schema_registry,
+    )
+    .await
+    .map_err(XTaskError::Unexpected)
 }
 
 /// Run all E2E test scenarios sequentially
@@ -171,7 +230,7 @@ async fn run_all_e2e_scenarios(project_root: Box<Path>) -> Result<(), XTaskError
         println!("Running E2E scenario: {}", scenario);
         println!("========================================\n");
 
-        if let Err(e) = run_correctness_task(project_root.clone(), scenario, 1) {
+        if let Err(e) = run_correctness_task(project_root.clone(), scenario, 1).await {
             eprintln!("Scenario '{}' FAILED: {}", scenario, e);
             failed_scenarios.push(scenario.to_string());
         }
@@ -192,6 +251,11 @@ async fn run_all_e2e_scenarios(project_root: Box<Path>) -> Result<(), XTaskError
 
 /// Docker server IP from the docker-compose vex-testing-net subnet
 const DOCKER_SERVER_IP: &str = "172.28.1.10";
+
+/// The stack's Kafka listener and Schema Registry, as the host reaches them
+/// (xtask/tests/docker-compose.yml).
+const STACK_BROKERS: &str = "localhost:19092";
+const STACK_SCHEMA_REGISTRY: &str = "http://localhost:18081";
 
 /// The host-side Aeron media driver the integration test client connects through
 ///
@@ -322,19 +386,16 @@ async fn run_integration_tests(
     // that, the next start empties the directory instead.
     let _media_driver = HostMediaDriver::start(root, std::time::Duration::from_secs(10))?;
 
-    // Start redpanda and vex-server. The stack is torn down when this function returns, a failed
-    // `docker compose up` included.
+    // Start redpanda, its topics, the archive and vex-server. The stack is torn down when this
+    // function returns, a failed start included.
     println!("Starting infrastructure services...");
-    let compose = DockerComposeEnv::up(
-        root.join("xtask/tests").into_boxed_path(),
-        &["redpanda", "vex-server"],
-    )?;
+    let compose = DockerComposeEnv::start(root, &["vex-server"]).await?;
 
     println!("Waiting for services to stabilize...");
     tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
 
     // Create test context with Docker server address
-    let config = xtask::test_framework::types::TestConfig {
+    let config = TestConfig {
         core_address: DOCKER_SERVER_IP.to_string(),
         ..Default::default()
     };
@@ -376,6 +437,42 @@ async fn run_integration_tests(
     ctx.cleanup();
     drop(compose);
 
+    report(&suite_result)
+}
+
+/// The outbox scenarios, on a stack of their own: they pause the broker, and kill and restart the
+/// core.
+async fn run_outbox_tests(root: &Path) -> Result<(), XTaskError> {
+    let _ = tracing::subscriber::set_global_default(
+        FmtSubscriber::builder()
+            .with_max_level(tracing::Level::INFO)
+            .finish(),
+    );
+    let _media_driver = HostMediaDriver::start(root, std::time::Duration::from_secs(10))?;
+    println!("Starting infrastructure services...");
+    let compose = DockerComposeEnv::start(root, &["vex-server"]).await?;
+
+    let config = TestConfig {
+        core_address: DOCKER_SERVER_IP.to_string(),
+        kafka_brokers: STACK_BROKERS.to_string(),
+        ..Default::default()
+    };
+    let start = Instant::now();
+    let results = scenarios::outbox::run_all(config, STACK_SCHEMA_REGISTRY)
+        .await
+        .map_err(|e| XTaskError::IntegrationTest(format!("Outbox suite failed: {e}")))?;
+    drop(compose);
+
+    let mut suite_result = TestSuiteResult::new();
+    for result in results {
+        suite_result.add_result(result);
+    }
+    suite_result.duration = start.elapsed();
+    report(&suite_result)
+}
+
+/// Prints a suite's summary; an error if any scenario failed.
+fn report(suite_result: &TestSuiteResult) -> Result<(), XTaskError> {
     // Print summary
     info!("");
     info!("========================================");
@@ -417,7 +514,7 @@ async fn run_integration_tests(
 async fn run_suite_tests(
     ctx: &mut TestContext,
     suite: &IntegrationSuite,
-) -> Result<Vec<xtask::test_framework::types::ScenarioResult>, String> {
+) -> Result<Vec<ScenarioResult>, String> {
     match suite {
         IntegrationSuite::All => {
             info!("Running Comprehensive Integration Test Suite");
@@ -480,30 +577,50 @@ fn run_unit_tests(root: &Path, filter: Option<String>) -> Result<(), XTaskError>
 /// A docker-compose stack in `root`, torn down (`docker compose down -v`) when dropped
 ///
 /// Every constructor creates the guard before `docker compose up` runs, so a start that fails part
-/// of the way through is torn down too. The logs of `containers` are saved before the teardown.
+/// of the way through is torn down too. The logs of every container are saved before the teardown.
 struct DockerComposeEnv {
     root: Box<Path>,
-    containers: Vec<String>,
 }
 impl DockerComposeEnv {
-    /// Run `docker compose up -d` with `args` (services, `--scale`, ...)
-    fn up(root: Box<Path>, args: &[&str]) -> Result<Self, XTaskError> {
+    /// Brings up the broker, applies deploy/kafka/topics.toml to it as to any environment (the
+    /// broker creates no topic by itself), then brings up `args` (services, `--scale`, ...),
+    /// which the Aeron archive and vex-server are among, or are brought up with.
+    async fn start(project_root: &Path, args: &[&str]) -> Result<Self, XTaskError> {
         let env = Self {
-            root,
-            containers: Vec::new(),
+            root: project_root.join("xtask/tests").into_boxed_path(),
         };
-        cmd("docker", ["compose", "up", "-d"].iter().chain(args))
-            .dir(env.root.as_ref())
-            .run()?;
+        // Created here, or the containers' bind mount creates it owned by root, and the logs
+        // cannot be saved into it.
+        fs::create_dir_all(env.root.join("test-results/logs"))?;
+        env.compose_up(&["--wait", "redpanda"])?;
+        // The Schema Registry can answer a moment after the broker reports healthy.
+        let mut attempts = 0;
+        while let Err(e) = apply_topics(STACK_BROKERS, STACK_SCHEMA_REGISTRY, true).await {
+            attempts += 1;
+            if attempts == 30 {
+                return Err(e);
+            }
+            println!("Applying the Kafka topics failed, retrying: {e}");
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        env.compose_up(args)?;
         Ok(env)
     }
 
+    /// Run `docker compose up -d` with `args`
+    fn compose_up(&self, args: &[&str]) -> Result<(), XTaskError> {
+        cmd("docker", ["compose", "up", "-d"].iter().chain(args))
+            .dir(self.root.as_ref())
+            .run()?;
+        Ok(())
+    }
+
     /// Start the e2e stack with `clients` client containers and wait for vex-server to be healthy
-    fn new(root: Box<Path>, clients: u32) -> Result<Self, XTaskError> {
-        fs::create_dir_all(root.join("test-results"))?;
+    async fn new(project_root: &Path, clients: u32) -> Result<Self, XTaskError> {
+        let root = project_root.join("xtask/tests");
 
         println!("Bringing up docker-compose environment...");
-        let mut env = Self::up(root.clone(), &["--scale", &format!("vex-client={clients}")])?;
+        let env = Self::start(project_root, &["--scale", &format!("vex-client={clients}")]).await?;
 
         // Wait for vex-server to be healthy (has healthcheck in docker-compose.yml)
         println!("Waiting for vex-server to be healthy...");
@@ -558,23 +675,6 @@ impl DockerComposeEnv {
         // Additional stabilization for Aeron subscriptions to be fully registered
         println!("Waiting for Aeron subscriptions to stabilize...");
         std::thread::sleep(std::time::Duration::from_secs(5));
-
-        let json_output = cmd!("docker", "compose", "ps", "--format", "json")
-            .dir(root.clone())
-            .read()?;
-
-        // Parse NDJSON output
-        let containers = json_output
-            .lines()
-            .filter_map(
-                |line| match serde_json::from_str::<ComposeContainer>(line) {
-                    Ok(c) if c.service == "vex-client" || c.service == "vex-server" => Some(c.name),
-                    _ => None,
-                },
-            )
-            .collect::<Vec<_>>();
-
-        env.containers = containers;
         Ok(env)
     }
 }
@@ -582,23 +682,28 @@ impl DockerComposeEnv {
 impl Drop for DockerComposeEnv {
     fn drop(&mut self) {
         let logs_dir = self.root.join("test-results/logs");
-        if !self.containers.is_empty() {
-            println!("Saving docker-compose logs...");
-            if let Err(e) = fs::create_dir_all(&logs_dir) {
-                eprintln!("Failed to create logs dir: {e}");
-            }
-        }
-
-        for container in &self.containers {
-            let log_path = logs_dir.join(format!("{container}.log"));
-            match cmd!("docker", "logs", container).read() {
+        println!("Saving docker-compose logs...");
+        let containers = cmd!("docker", "compose", "ps", "--all", "--format", "json")
+            .dir(self.root.as_ref())
+            .read()
+            .unwrap_or_default();
+        // NDJSON, one container per line
+        for container in containers
+            .lines()
+            .filter_map(|line| serde_json::from_str::<ComposeContainer>(line).ok())
+        {
+            let log_path = logs_dir.join(format!("{}.log", container.name));
+            match cmd!("docker", "logs", &container.name)
+                .stderr_to_stdout()
+                .read()
+            {
                 Ok(output) => {
                     if let Err(e) = fs::write(&log_path, output) {
-                        eprintln!("Failed to write logs for {container}: {e}");
+                        eprintln!("Failed to write logs for {}: {e}", container.name);
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to get logs for {container}: {e}");
+                    eprintln!("Failed to get logs for {}: {e}", container.name);
                 }
             }
         }
@@ -617,8 +722,6 @@ impl Drop for DockerComposeEnv {
 struct ComposeContainer {
     #[serde(rename = "Name")]
     name: String,
-    #[serde(rename = "Service")]
-    service: String,
 }
 
 // Helper function to apply network conditions
@@ -720,14 +823,21 @@ fn build_docker(root: &Path) -> Result<(), XTaskError> {
     .dir(&dir)
     .run()?;
     println!("Building all Docker services...");
-    cmd!("docker", "compose", "build", "vex-server", "vex-client")
-        .dir(&dir)
-        .run()?;
+    cmd!(
+        "docker",
+        "compose",
+        "build",
+        "aeron-archive",
+        "vex-server",
+        "vex-client"
+    )
+    .dir(&dir)
+    .run()?;
     println!("Docker images built successfully.");
     Ok(())
 }
 
-fn run_correctness_task(
+async fn run_correctness_task(
     project_root: Box<Path>,
     scenario: &str,
     clients: u32,
@@ -741,7 +851,7 @@ fn run_correctness_task(
     fs::create_dir_all(&test_results_dir)?;
 
     // Wrap docker-compose commands in a struct with a Drop implementation for cleanup
-    let _env = DockerComposeEnv::new(project_root.join("xtask/tests").into_boxed_path(), clients)?;
+    let _env = DockerComposeEnv::new(&project_root, clients).await?;
 
     // --- Scenario-specific setup ---
     apply_scenario_conditions(&project_root.join("xtask/tests"), scenario, clients)?;
@@ -813,7 +923,7 @@ fn run_correctness_task(
     Ok(())
 }
 
-fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
+async fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
     let test_results_dir = root.join("xtask/tests/test-results");
     // Clear up/delete existing contents in the test-results directory
     if test_results_dir.exists() {
@@ -823,7 +933,7 @@ fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
     fs::create_dir_all(&test_results_dir)?;
 
     // Wrap docker-compose commands in a struct with a Drop implementation for cleanup
-    let _env = DockerComposeEnv::new(root.join("xtask/tests").into(), clients)?;
+    let _env = DockerComposeEnv::new(&root, clients).await?;
 
     // Fixed: Use actual message count, not hardcoded duration
     let msg_count_per_client = 10000;

@@ -24,7 +24,8 @@ Test Framework → VexCore → [Journaling, Risk, Orderbook] → Events Handler 
 2. Kafka with a Schema Registry: the server publishes to its configured broker and registers its
    schemas at `schema_registry_url` (default `http://localhost:8081`, override with `VEX__SCHEMA_REGISTRY_URL`); the suite reads the events
    back from `TestConfig::kafka_brokers` (default `localhost:19092`, Redpanda's host listener in
-   `tests/docker-compose.yml`)
+   `tests/docker-compose.yml`). The core's topics must exist: `cargo xtask kafka apply` creates
+   them from `deploy/kafka/topics.toml` (`--single-broker` for a broker of one)
 
 ### Execute
 
@@ -133,16 +134,18 @@ Type-safe fluent API for OrderCommands with compile-time guarantees.
 
 ### Kafka Verification
 
-`KafkaVerifier` (`test_framework/kafka.rs`) consumes the topics the core publishes to, decoding
+`KafkaVerifier` (`test_framework/kafka.rs`) consumes every topic the core publishes to, decoding
 each value with the `processors` crate's protobuf types after stripping its Schema Registry
 framing. When the test context is created it reads each topic from its current end, so a run sees
-only its own events, whatever the topics already hold. It keeps what a downstream reader keeps:
+only its own events, whatever the topics already hold. It records every event's
+`(topic, key, timestamp)`, which identifies the event and every copy a restart re-publishes, and
+keeps what a downstream reader keeps:
 
 | Topic | Key | Message | Kept |
 |-------|-----|---------|------|
-| `balances` | `{user_id}:{asset_id}` | `BalanceEvent` | Latest per key |
+| `balances` | `{user_id}:{asset_id}` | `BalanceEvent` | Latest per key: the greatest timestamp |
 | `trades` | `{taker_order_id}:{maker_order_id}` | `TradeEvent` | Every trade, in publication order |
-| `orderbook` | `{market_id}` | `OrderbookEvent` (levels as JSON) | Latest per key |
+| `orderbook` | `{market_id}` | `OrderbookEvent` (levels as JSON) | Latest per key: the greatest timestamp |
 
 Every read first takes in all the events the broker holds at that moment. The core publishes
 asynchronously, after it has answered the command, so assertions made right after a command

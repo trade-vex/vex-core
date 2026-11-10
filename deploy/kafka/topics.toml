@@ -1,0 +1,31 @@
+# The Kafka topics vex-core produces, and the Schema Registry compatibility of their values: the
+# one source of truth for every environment. `cargo xtask kafka apply` makes a cluster match it
+# (README.md). The core checks the settings its no-loss guarantee rests on at every start, and
+# refuses to start without them.
+
+# Every topic gets this replication factor. With `min.insync.replicas = 2` below, the producer's
+# `acks=all` returns only once two replicas hold an event, so losing one broker loses nothing.
+replication_factor = 3
+
+# The seven topics the events stage publishes (processors/src/events.rs, `EVENT_TOPICS`).
+[event_topics]
+# Fixed for the life of the ledger: adding partitions moves keys, so a key's later events could
+# land in a different partition from its earlier ones. Changing a count is a ledger reset
+# (RUNBOOK.md, "Resetting the ledger"). The counts bound each sink connector's parallelism.
+partitions = { balances = 12, orders = 12, trades = 12, orderbook = 6, cancels = 6, deposits = 3, withdrawals = 3 }
+# Retention must outlast the longest sink outage we intend to ride out: 7 days. A longer outage
+# rebuilds the read model from the journal instead (RUNBOOK.md, "Rebuilding the read model").
+config = { "cleanup.policy" = "delete", "retention.ms" = "604800000", "min.insync.replicas" = "2" }
+# The compatibility of each `<topic>-value` subject. Consumers decode with the writer's schema, by
+# id, so forward compatibility buys nothing, and FULL or FORWARD would reject a new top-level
+# message in trading.proto.
+subject_compatibility = "BACKWARD_TRANSITIVE"
+
+# The delivered watermark: the timestamp of the last command whose events the brokers have all
+# acknowledged, written by the core under one key and read back at every start. The core requires
+# exactly one partition (so that the last record is the latest watermark) and compaction (so that
+# retention never deletes it).
+[delivered_topic]
+name = "vex-core.delivered"
+partitions = 1
+config = { "cleanup.policy" = "compact", "min.insync.replicas" = "2" }

@@ -5,6 +5,7 @@
 
 pub mod client;
 pub mod kafka;
+pub mod stack;
 pub mod types;
 
 use self::client::TestClient;

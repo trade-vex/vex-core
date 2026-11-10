@@ -41,3 +41,7 @@ rdkafka = "0.36"
 schema_registry_converter = { version = "4.7.0", features = ["proto_raw"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
+# Applies deploy/kafka/topics.toml: the file's format, and the Schema Registry's REST API (the
+# same reqwest that schema_registry_converter already builds).
+toml = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
