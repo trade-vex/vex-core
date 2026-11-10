@@ -581,8 +581,6 @@ impl CoreEngine {
         let handle = thread::Builder::new()
             .name("vex-core-server".into())
             .spawn(move || {
-                let replay = replay_control.is_enabled();
-
                 // The dependency joins consumers in the last producer's Drop without a
                 // timeout. Keep a producer alive on fatal recovery/drain failure so the
                 // error can reach the caller even when a consumer is stalled.
@@ -592,7 +590,6 @@ impl CoreEngine {
                     gateway_authentication_key,
                     producer,
                     Arc::clone(&publications),
-                    replay,
                     shutdown_for_thread,
                 )
                 .map_err(|e| {

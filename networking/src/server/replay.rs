@@ -141,9 +141,9 @@ fn holds_commands(record: &RecordingInfo) -> bool {
     record.stop_position > record.start_position
 }
 
-/// The recording `--replay` restores: the newest, unless it holds no command. A newer empty
-/// recording means the latest run started fresh and journaled nothing; replaying an older one
-/// would resurrect the lineage that run discarded. Takes released recordings, oldest first.
+/// The recording a start replays and extends: the newest, unless it holds no command. A newer
+/// empty recording means a run started fresh and journaled nothing; replaying an older one would
+/// resurrect the lineage that run discarded. Takes released recordings, oldest first.
 pub fn replay_lineage(recordings: &[RecordingInfo]) -> Option<&RecordingInfo> {
     recordings.last().filter(|record| holds_commands(record))
 }

@@ -69,8 +69,9 @@ VEX_ENV=development ./docker-scripts.sh start-full
 - Proper service dependencies and health checks
 - **Development only, with no durability.** It runs a media driver but no Aeron Archive, so it
   starts vex-core with an empty archive channel (`VEX__CORE_NETWORKING__REQUEST_CONTROL_CHANNEL=`).
-  Commands are not journaled, nothing survives a restart, and `--replay` is unavailable. Production
-  needs an Aeron Archive; vex-core refuses an empty archive channel with `VEX_ENV=production`
+  Commands are not journaled, so nothing survives a restart, nothing is replayed, and events queued
+  when the process dies are not re-published. Production needs an Aeron Archive; vex-core refuses
+  an empty archive channel with `VEX_ENV=production`
 - `VEX_ENV` must be set to `development` or `test` in the shell that runs compose. Compose passes it
   through; without it vex-core exits at startup (`No environment selected`)
 

@@ -2,22 +2,27 @@
 //!
 //! The core publishes the outcome of every command as protobuf events on Kafka topics, each event
 //! keyed by the entity it describes (`processors::events::KafkaEventsHandler`). This module reads
-//! those topics back, starting where they ended when the run began, and keeps what a downstream
-//! reader of them keeps: the latest event per key, and every trade.
+//! every one of those topics back, starting where they ended when the run began, and keeps what a
+//! downstream reader of them keeps: per key, the event with the greatest timestamp (after a
+//! restart, an older copy can follow a newer event in a partition), and every trade. It also
+//! records every `(topic, key, timestamp)` read, which identifies an event and all its copies.
 
 use crate::test_framework::types::*;
-use hashbrown::HashMap;
-use processors::events::trading_proto::{BalanceEvent, OrderbookEvent, TradeEvent};
+use hashbrown::{HashMap, HashSet};
+use processors::events::EVENT_TOPICS;
+use processors::events::trading_proto::{
+    BalanceEvent, CancelOrderEvent, DepositEvent, OrderEvent, OrderbookEvent, TradeEvent,
+    WithdrawEvent,
+};
 use prost::Message as _;
-use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
-use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, Consumer};
-use rdkafka::error::{KafkaError, RDKafkaErrorCode};
+use rdkafka::error::KafkaError;
 use rdkafka::message::Message;
 use rdkafka::{Offset, TopicPartitionList};
 use schema_registry_converter::proto_resolver::to_index_and_data;
 use schema_registry_converter::schema_registry_common::{BytesResult, get_bytes_result};
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use tracing::{debug, warn};
@@ -28,8 +33,6 @@ const BALANCES_TOPIC: &str = "balances";
 const TRADES_TOPIC: &str = "trades";
 /// `OrderbookEvent`s, keyed `market_id`.
 const ORDERBOOK_TOPIC: &str = "orderbook";
-
-const TOPICS: [&str; 3] = [BALANCES_TOPIC, TRADES_TOPIC, ORDERBOOK_TOPIC];
 
 /// Bound on one broker request, and on reading everything the broker holds.
 const BROKER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -50,23 +53,20 @@ impl KafkaVerifier {
     /// Connect to the brokers and read each event topic from its current end
     ///
     /// Only events published after this call are seen, whatever the topics already hold from
-    /// earlier runs.
+    /// earlier runs. The topics must exist (`deploy/kafka/topics.toml`).
     pub async fn new(brokers: &str) -> TestResult<Self> {
-        let mut config = ClientConfig::new();
-        config.set("bootstrap.servers", brokers);
-        create_topics(&config).await?;
-
         // librdkafka only assigns partitions to a consumer with a group; nothing is committed to it.
         // The broker answers a connection's requests in order, so each watermark query waits for
         // the fetch in flight: keep the fetch long-poll short (the default is 500 ms).
-        let consumer: BaseConsumer = config
+        let consumer: BaseConsumer = ClientConfig::new()
+            .set("bootstrap.servers", brokers)
             .set("group.id", "xtask-integration")
             .set("enable.auto.commit", "false")
             .set("fetch.wait.max.ms", "10")
             .create()?;
         let mut events = Events::default();
         let mut assignment = TopicPartitionList::new();
-        for topic in TOPICS {
+        for topic in EVENT_TOPICS {
             for partition in partitions(&consumer, topic)? {
                 let (_, end) = consumer.fetch_watermarks(topic, partition, BROKER_TIMEOUT)?;
                 assignment.add_partition_offset(topic, partition, Offset::Offset(end))?;
@@ -167,6 +167,57 @@ impl KafkaVerifier {
             .await
     }
 
+    /// Wait until every event in `expected` has been published, at least once (with timeout)
+    pub async fn wait_for_published(
+        &mut self,
+        expected: &HashSet<EventId>,
+        wait_timeout: Duration,
+    ) -> TestResult<()> {
+        let missing = |events: &Events| {
+            let mut missing: Vec<&EventId> = expected.difference(&events.published).collect();
+            missing.sort();
+            missing.into_iter().take(5).cloned().collect::<Vec<_>>()
+        };
+        match self
+            .wait_for(wait_timeout, |events| {
+                missing(events).is_empty().then_some(())
+            })
+            .await
+        {
+            Err(TestError::Timeout { .. }) => Err(TestError::Verification {
+                message: format!(
+                    "{} of {} expected events were not published within {wait_timeout:?}, \
+                     among them {:?}",
+                    expected.difference(&self.events.published).count(),
+                    expected.len(),
+                    missing(&self.events)
+                ),
+            }),
+            result => result,
+        }
+    }
+
+    /// Every distinct `(topic, key, timestamp)` read so far, and how many events were read in
+    /// all, copies included
+    pub fn published(&mut self) -> TestResult<(&HashSet<EventId>, usize)> {
+        self.catch_up()?;
+        Ok((&self.events.published, self.events.read))
+    }
+
+    /// The end offset of every partition of every event topic, as the broker reports it now
+    pub fn end_offsets(&self) -> TestResult<BTreeMap<(String, i32), i64>> {
+        self.events
+            .positions
+            .keys()
+            .map(|(topic, partition)| {
+                let (_, end) = self
+                    .consumer
+                    .fetch_watermarks(topic, *partition, BROKER_TIMEOUT)?;
+                Ok(((topic.clone(), *partition), end))
+            })
+            .collect()
+    }
+
     /// Read until `find` finds something, or `wait_timeout` passes
     async fn wait_for<T>(
         &mut self,
@@ -231,12 +282,24 @@ impl KafkaVerifier {
 struct Events {
     /// Offset of the next event to read, per assigned topic partition
     positions: HashMap<(String, i32), i64>,
-    /// Latest balance per message key
-    balances: HashMap<String, BalanceEvent>,
+    /// Every distinct event read
+    published: HashSet<EventId>,
+    /// How many events were read, copies included
+    read: usize,
+    /// Latest balance per message key, with its timestamp
+    balances: HashMap<String, (u64, BalanceEvent)>,
     /// Every trade, in publication order
     trades: Vec<TradeEvent>,
-    /// Latest orderbook snapshot per message key
-    orderbooks: HashMap<String, OrderbookSnapshot>,
+    /// Latest orderbook snapshot per message key, with its timestamp
+    orderbooks: HashMap<String, (u64, OrderbookSnapshot)>,
+}
+
+/// Keeps `event` as the latest for `key` unless an event with a greater timestamp is there already.
+/// An equal timestamp is a copy of the same event.
+fn keep_latest<T>(latest: &mut HashMap<String, (u64, T)>, key: String, timestamp: u64, event: T) {
+    if latest.get(&key).is_none_or(|(kept, _)| *kept < timestamp) {
+        latest.insert(key, (timestamp, event));
+    }
 }
 
 impl Events {
@@ -259,34 +322,65 @@ impl Events {
             })?
             .to_string();
         let payload = protobuf_payload(message.payload())?;
+        let payload = payload.as_slice();
 
-        match message.topic() {
+        let timestamp = match message.topic() {
             BALANCES_TOPIC => {
-                self.balances
-                    .insert(key, BalanceEvent::decode(payload.as_slice())?);
+                let event = BalanceEvent::decode(payload)?;
+                let timestamp = event.timestamp;
+                keep_latest(&mut self.balances, key.clone(), timestamp, event);
+                timestamp
             }
-            TRADES_TOPIC => self.trades.push(TradeEvent::decode(payload.as_slice())?),
+            TRADES_TOPIC => {
+                let event = TradeEvent::decode(payload)?;
+                let timestamp = event.timestamp;
+                self.trades.push(event);
+                timestamp
+            }
             ORDERBOOK_TOPIC => {
-                let event = OrderbookEvent::decode(payload.as_slice())?;
-                self.orderbooks
-                    .insert(key, OrderbookSnapshot::try_from(event)?);
+                let event = OrderbookEvent::decode(payload)?;
+                let timestamp = event.timestamp;
+                let snapshot = OrderbookSnapshot::try_from(event)?;
+                keep_latest(&mut self.orderbooks, key.clone(), timestamp, snapshot);
+                timestamp
             }
+            "orders" => {
+                OrderEvent::decode(payload)?
+                    .order
+                    .ok_or_else(|| TestError::Parse {
+                        message: format!("OrderEvent {key} without an order"),
+                    })?
+                    .timestamp
+            }
+            "cancels" => CancelOrderEvent::decode(payload)?.timestamp,
+            "deposits" => DepositEvent::decode(payload)?.timestamp,
+            "withdrawals" => WithdrawEvent::decode(payload)?.timestamp,
             topic => {
                 return Err(TestError::Parse {
                     message: format!("Unexpected Kafka topic {}", topic),
                 });
             }
-        }
+        };
+        self.read += 1;
+        self.published.insert(EventId {
+            topic: message.topic().to_string(),
+            key,
+            timestamp,
+        });
 
         Ok(())
     }
 
     fn balance(&self, user_id: u64, asset_id: u16) -> Option<&BalanceEvent> {
-        self.balances.get(&format!("{}:{}", user_id, asset_id))
+        self.balances
+            .get(&format!("{}:{}", user_id, asset_id))
+            .map(|(_, balance)| balance)
     }
 
     fn orderbook(&self, market_id: u32) -> Option<&OrderbookSnapshot> {
-        self.orderbooks.get(&market_id.to_string())
+        self.orderbooks
+            .get(&market_id.to_string())
+            .map(|(_, snapshot)| snapshot)
     }
 
     fn recent_trades(&self, market_id: u32, count: usize) -> Vec<TradeEvent> {
@@ -321,27 +415,6 @@ impl TryFrom<OrderbookEvent> for OrderbookSnapshot {
             asks: levels(&event.asks)?,
         })
     }
-}
-
-/// Create the event topics unless they exist, so their end can be read before the core first
-/// publishes to them. Without this, the core's producer creates each topic on first use.
-async fn create_topics(config: &ClientConfig) -> TestResult<()> {
-    let admin: AdminClient<DefaultClientContext> = config.create()?;
-    let topics = TOPICS.map(|topic| NewTopic::new(topic, 1, TopicReplication::Fixed(1)));
-    let options = AdminOptions::new().operation_timeout(Some(BROKER_TIMEOUT));
-
-    for result in admin.create_topics(&topics, &options).await? {
-        match result {
-            Ok(_) | Err((_, RDKafkaErrorCode::TopicAlreadyExists)) => {}
-            Err((topic, code)) => {
-                return Err(TestError::Configuration {
-                    message: format!("Cannot create Kafka topic {}: {}", topic, code),
-                });
-            }
-        }
-    }
-
-    Ok(())
 }
 
 fn partitions(consumer: &BaseConsumer, topic: &str) -> TestResult<Vec<i32>> {
@@ -401,13 +474,23 @@ mod tests {
     }
 
     fn balance(user_id: u64, asset_id: u32, available: u64, locked: u64) -> BalanceEvent {
+        balance_at(user_id, asset_id, available, locked, 1)
+    }
+
+    fn balance_at(
+        user_id: u64,
+        asset_id: u32,
+        available: u64,
+        locked: u64,
+        timestamp: u64,
+    ) -> BalanceEvent {
         BalanceEvent {
             user_id,
             asset_id,
             available,
             locked,
             total: available + locked,
-            timestamp: 1,
+            timestamp,
         }
     }
 
@@ -455,13 +538,13 @@ mod tests {
                 BALANCES_TOPIC,
                 "1:2",
                 10,
-                framed(&[0], &balance(1, 2, 50, 0)),
+                framed(&[0], &balance_at(1, 2, 50, 0, 1)),
             ),
             kafka_message(
                 BALANCES_TOPIC,
                 "1:2",
                 11,
-                framed(&[0], &balance(1, 2, 30, 20)),
+                framed(&[0], &balance_at(1, 2, 30, 20, 2)),
             ),
             kafka_message(TRADES_TOPIC, "5:4", 3, framed(&[0], &trade(9, 100))),
             kafka_message(TRADES_TOPIC, "6:4", 4, framed(&[0], &trade(9, 101))),
@@ -471,7 +554,7 @@ mod tests {
             events.apply(message).unwrap();
         }
 
-        assert_eq!(events.balance(1, 2), Some(&balance(1, 2, 30, 20)));
+        assert_eq!(events.balance(1, 2), Some(&balance_at(1, 2, 30, 20, 2)));
         assert_eq!(events.balance(2, 1), None);
         assert_eq!(events.trades, vec![trade(9, 100), trade(9, 101)]);
         assert_eq!(
@@ -488,6 +571,104 @@ mod tests {
         assert_eq!(events.positions[&(BALANCES_TOPIC.to_string(), 0)], 12);
         assert_eq!(events.positions[&(TRADES_TOPIC.to_string(), 0)], 5);
         assert_eq!(events.positions[&(ORDERBOOK_TOPIC.to_string(), 0)], 1);
+    }
+
+    #[test]
+    fn a_re_published_older_copy_never_replaces_a_newer_event() {
+        let mut events = Events::default();
+        let newer = balance_at(1, 2, 30, 20, 9);
+        for (offset, event) in [
+            (0, balance_at(1, 2, 50, 0, 5)),
+            (1, newer.clone()),
+            // A restart re-publishes both: copies of events the partition already holds.
+            (2, balance_at(1, 2, 50, 0, 5)),
+            (3, newer.clone()),
+        ] {
+            let message = kafka_message(BALANCES_TOPIC, "1:2", offset, framed(&[0], &event));
+            events.apply(&message).unwrap();
+        }
+
+        assert_eq!(
+            events.balance(1, 2),
+            Some(&newer),
+            "the greatest timestamp wins"
+        );
+        assert_eq!(events.read, 4);
+        assert_eq!(events.published.len(), 2, "two events, two copies of each");
+    }
+
+    #[test]
+    fn every_topic_is_recorded_by_topic_key_and_timestamp() {
+        let mut events = Events::default();
+        let order = OrderEvent {
+            order: Some(processors::events::trading_proto::Order {
+                order_id: 4,
+                timestamp: 13,
+                ..Default::default()
+            }),
+            market_id: 9,
+        };
+        let messages = [
+            ("orders", "4", framed(&[2, 2], &order)),
+            (
+                "cancels",
+                "4",
+                framed(
+                    &[2, 12],
+                    &CancelOrderEvent {
+                        order_id: 4,
+                        timestamp: 14,
+                        ..Default::default()
+                    },
+                ),
+            ),
+            (
+                "deposits",
+                "1",
+                framed(
+                    &[2, 14],
+                    &DepositEvent {
+                        user_id: 1,
+                        timestamp: 11,
+                        ..Default::default()
+                    },
+                ),
+            ),
+            (
+                "withdrawals",
+                "1",
+                framed(
+                    &[2, 16],
+                    &WithdrawEvent {
+                        user_id: 1,
+                        timestamp: 15,
+                        ..Default::default()
+                    },
+                ),
+            ),
+            (TRADES_TOPIC, "5:4", framed(&[2, 4], &trade(9, 100))),
+        ];
+        for (offset, (topic, key, value)) in messages.into_iter().enumerate() {
+            events
+                .apply(&kafka_message(topic, key, offset as i64, value))
+                .unwrap();
+        }
+
+        let id = |topic: &str, key: &str, timestamp| EventId {
+            topic: topic.to_string(),
+            key: key.to_string(),
+            timestamp,
+        };
+        assert_eq!(
+            events.published,
+            HashSet::from([
+                id("orders", "4", 13),
+                id("cancels", "4", 14),
+                id("deposits", "1", 11),
+                id("withdrawals", "1", 15),
+                id(TRADES_TOPIC, "5:4", 0),
+            ])
+        );
     }
 
     #[test]

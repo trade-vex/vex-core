@@ -260,8 +260,10 @@ jobs:
           # executes; doing this afterwards fails with ETXTBSY and takes vex-server down
           # with it through service_completed_successfully.
           docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml run --rm --build --no-deps media-driver
-          # Build with plain progress to see full compilation output
-          docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml --progress plain build vex-server vex-client
+          # Build with plain progress to see full compilation output. aeron-archive is the
+          # ArchivingMediaDriver that journals vex-server's commands; xtask applies the Kafka
+          # topics from deploy/kafka/ itself, since the broker creates none.
+          docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml --progress plain build aeron-archive vex-server vex-client
 
       - name: Run xtask unit tests
         run: cargo test --package xtask --lib
@@ -273,6 +275,9 @@ jobs:
         run: cargo xtask test integration --fail-fast
         env:
           VEX_ENV: development
+
+      - name: Run outbox tests
+        run: cargo xtask test outbox
 
       - name: Show failed test infrastructure
         if: failure()

@@ -179,7 +179,7 @@ fn c8_1_live_term_rotation_and_truncated_replay() {
 
 #[test]
 #[ignore = "needs dedicated live Aeron driver/archive; set VEX_RECOVERY_AERON_DIR and VEX_RECOVERY_ARCHIVE_CHANNEL"]
-fn live_start_reads_the_journal_tail_from_its_last_term_with_and_without_replay() {
+fn live_every_start_replays_the_journal_and_reads_its_tail_from_the_last_term() {
     let fixture = Fixture::new();
     // The first term ends in padding and the last command opens the second.
     let count = (65_536 / FRAMESIZE + 1) as usize;
@@ -191,9 +191,9 @@ fn live_start_reads_the_journal_tail_from_its_last_term_with_and_without_replay(
     VexCoreServer::wait_for_recording_stop(&fixture.archive, id).unwrap();
     publication.close::<AeronNotificationLogger>(None).unwrap();
 
-    // The replaying start extends the recording. The fresh start after it leaves a newer, empty
-    // recording: the last start then replays nothing, but still continues above the tail.
-    for (replay, replayed_commands) in [(true, count), (false, 0), (true, 0)] {
+    // Each start replays the recording and extends it; with nothing journaled in between, the
+    // next start replays the same commands, and continues above the same tail.
+    for _ in 0..2 {
         let publications = Arc::new(Publications::new());
         let replayed = Arc::new(Mutex::new(Vec::new()));
         let producer = collector(Arc::clone(&publications), Arc::clone(&replayed));
@@ -202,12 +202,12 @@ fn live_start_reads_the_journal_tail_from_its_last_term_with_and_without_replay(
             GatewayAuthenticationKey::default(),
             producer,
             Arc::clone(&publications),
-            replay,
             Arc::new(AtomicBool::new(false)),
         )
         .unwrap();
+        assert_eq!(server.recording_id, Some(id));
         assert_eq!(publications.journal_tail(), count as u64);
-        assert_eq!(replayed.lock().unwrap().len(), replayed_commands);
+        assert_eq!(replayed.lock().unwrap().len(), count);
         server.shutdown().unwrap();
     }
 }
@@ -255,7 +255,6 @@ fn c8_2_live_held_terminal_second_recovery_has_no_duplicate_journal_entries() {
             GatewayAuthenticationKey::default(),
             producer,
             worker_publications,
-            true,
             Arc::new(AtomicBool::new(false)),
         )
         .unwrap();
@@ -333,7 +332,6 @@ fn c8_3_live_restart_after_a_crash_mid_recording_replays_and_extends_that_record
         GatewayAuthenticationKey::default(),
         producer,
         publications,
-        true,
         Arc::new(AtomicBool::new(false)),
     )
     .unwrap();
@@ -364,7 +362,6 @@ fn c8_3_live_subscription_left_by_a_crash_before_the_publication_connected_is_st
         GatewayAuthenticationKey::default(),
         producer,
         publications,
-        true,
         Arc::new(AtomicBool::new(false)),
     )
     .expect("restart must not fail with \"recording exists\"");
@@ -389,11 +386,20 @@ fn c7_1_live_queued_shutdown_lagging_archive_survives_recovery() {
     let journal = Arc::clone(&publications);
     let ack = Arc::clone(&publications);
     let (release, gate) = mpsc::channel();
+    // The start replays whatever the archive already holds; only the live commands are held.
+    let live = Arc::new(AtomicBool::new(false));
+    let replayed = Arc::new(Mutex::new(Vec::new()));
+    let (handler_live, handler_replayed) = (Arc::clone(&live), Arc::clone(&replayed));
     let mut producer = build_multi_producer(64, OrderCommand::default, BusySpin)
         .handle_events_with(move |cell, sequence, _| {
-            gate.recv_timeout(DRAIN_TIMEOUT).unwrap();
             // SAFETY: Sole consumer reads the current ring slot.
-            journal.publish_to_archive(unsafe { &*cell.get() });
+            let command = unsafe { &*cell.get() };
+            if handler_live.load(Ordering::Acquire) {
+                gate.recv_timeout(DRAIN_TIMEOUT).unwrap();
+                journal.publish_to_archive(command);
+            } else {
+                handler_replayed.lock().unwrap().push(command.order_id);
+            }
             ack.completed(sequence);
         })
         .build();
@@ -402,11 +408,12 @@ fn c7_1_live_queued_shutdown_lagging_archive_survives_recovery() {
         GatewayAuthenticationKey::default(),
         producer.clone(),
         Arc::clone(&publications),
-        false,
         Arc::new(AtomicBool::new(false)),
     )
     .unwrap();
+    live.store(true, Ordering::Release);
     let id = server.recording_id.unwrap();
+    let extended_from = fixture.archive.get_max_recorded_position(id).unwrap();
     for order_id in 1..=3 {
         publications.submitted(
             producer
@@ -448,7 +455,7 @@ fn c7_1_live_queued_shutdown_lagging_archive_survives_recovery() {
     worker.join().unwrap();
     assert_eq!(
         fixture.archive.get_max_recorded_position(id).unwrap(),
-        3 * FRAMESIZE
+        extended_from + 3 * FRAMESIZE
     );
     drop(server);
     drop(producer);
@@ -461,5 +468,7 @@ fn c7_1_live_queued_shutdown_lagging_archive_survives_recovery() {
             .recording_id,
         id
     );
-    assert_eq!(*recovered.lock().unwrap(), [1, 2, 3]);
+    let mut expected = replayed.lock().unwrap().clone();
+    expected.extend([1, 2, 3]);
+    assert_eq!(*recovered.lock().unwrap(), expected);
 }

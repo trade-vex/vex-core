@@ -1,8 +1,11 @@
+use std::collections::VecDeque;
+use std::ffi::c_void;
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::sync::{Arc, OnceLock};
+use std::ptr;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -15,11 +18,15 @@ use common::UserBalance;
 use common::{base_asset, order_debug, quote_asset};
 use hashbrown::HashMap;
 use prost::Message;
-use rdkafka::ClientContext;
+use rdkafka::admin::{AdminClient, AdminOptions, ConfigResourceResult, ResourceSpecifier};
+use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
+use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext};
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use rdkafka::message::{DeliveryResult, Message as _};
 use rdkafka::producer::{BaseRecord, Producer, ProducerContext, ThreadedProducer};
+use rdkafka::util::IntoOpaque;
+use rdkafka::{ClientContext, Offset, TopicPartitionList};
 use schema_registry_converter::async_impl::proto_raw::ProtoRawEncoder;
 use schema_registry_converter::async_impl::schema_registry::SrSettings;
 use schema_registry_converter::error::SRCError;
@@ -90,10 +97,54 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(20);
 /// well under a second but can block on DNS. Past this the thread is left to process exit.
 const SHUTDOWN_OVERRUN: Duration = Duration::from_secs(5);
 
+const BALANCES: &str = "balances";
+const ORDERS: &str = "orders";
+const ORDERBOOK: &str = "orderbook";
+const CANCELS: &str = "cancels";
+const TRADES: &str = "trades";
+const DEPOSITS: &str = "deposits";
+const WITHDRAWALS: &str = "withdrawals";
+
+/// The topics the events stage publishes to. `deploy/kafka/topics.toml` declares each of them.
+pub const EVENT_TOPICS: [&str; 7] = [
+    BALANCES,
+    ORDERS,
+    ORDERBOOK,
+    CANCELS,
+    TRADES,
+    DEPOSITS,
+    WITHDRAWALS,
+];
+
+/// The compacted, single-partition topic that holds the delivered watermark (see [`Watermark`])
+/// under one key. `deploy/kafka/topics.toml` declares it.
+pub const DELIVERED_TOPIC: &str = "vex-core.delivered";
+
+/// The key of the delivered watermark's records.
+const WATERMARK_KEY: &str = "w";
+
+/// The consumer group of the startup's watermark reader. librdkafka assigns partitions only to a
+/// consumer with a group; the reader takes an explicit assignment, so it never joins the group
+/// and commits nothing.
+const WATERMARK_READER_GROUP: &str = "vex-core.watermark-reader";
+
+/// The longest the sender waits between two writes of an advancing delivered watermark; an idle
+/// sender wakes this often to check.
+const WATERMARK_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Bound on one request to Kafka while the handler starts.
+const STARTUP_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The wait before the handler asks an unreachable Kafka again while it starts.
+const STARTUP_RETRY: Duration = Duration::from_secs(1);
+
 /// One event on its way to Kafka.
 struct OutboundEvent {
     topic: &'static str,
     key: String,
+    /// The timestamp of the command that produced it, which tracks its delivery (see
+    /// [`Watermark`]).
+    command_ts: u64,
     /// Fully qualified protobuf message name, e.g. `trading.BalanceEvent`.
     message_name: &'static str,
     /// The prost-encoded message, not yet framed with its schema id.
@@ -251,6 +302,137 @@ impl Shutdown {
 #[derive(Debug)]
 struct GaveUp;
 
+/// The delivered watermark W: the greatest command timestamp such that every event of every
+/// command up to it has been acknowledged by the brokers (`acks=all`).
+///
+/// Only the sender thread uses it. It keeps one entry per command whose events are in flight, in
+/// submission order, holding the count of that command's events not yet acknowledged. The count
+/// is the event's delivery opaque ([`Tracking`]): the delivery callback decrements it only on a
+/// successful delivery, so a failed, discarded or purged event holds W below its command forever.
+///
+/// An entry closes when the sender takes the next command's first event, or when the channel
+/// closes. Until then the events stage may still submit more events of that command (it submits
+/// them one at a time), so a count of zero alone does not mean the command is done. All of a
+/// command's events reach the channel before any of the next command's: the events stage is the
+/// sole handler of its stage, and journaling stamps each command with a timestamp above the last.
+#[derive(Debug, Default)]
+struct Watermark {
+    /// The commands in flight, oldest first: each command's timestamp, and the count of its
+    /// events not yet acknowledged.
+    in_flight: VecDeque<(u64, Arc<AtomicU32>)>,
+    /// Whether the channel has closed, which closes the newest entry.
+    closed: bool,
+    /// W.
+    delivered: u64,
+    /// The last W that [`Self::persist`] handed on.
+    written: u64,
+}
+
+impl Watermark {
+    /// Starts at the watermark the previous run left: nothing at or below it is published again.
+    fn starting_at(delivered: u64) -> Self {
+        Self {
+            delivered,
+            written: delivered,
+            ..Self::default()
+        }
+    }
+
+    /// Counts one more event of the command stamped `command_ts`. The sender calls this as it
+    /// takes the event from the channel, before it enqueues it.
+    fn track(&mut self, command_ts: u64) -> Tracking {
+        let outstanding = match self.in_flight.back() {
+            Some((timestamp, outstanding)) if *timestamp == command_ts => {
+                outstanding.fetch_add(1, Ordering::AcqRel);
+                Arc::clone(outstanding)
+            }
+            // The previous entry, if any, is closed from here on.
+            _ => {
+                let outstanding = Arc::new(AtomicU32::new(1));
+                self.in_flight
+                    .push_back((command_ts, Arc::clone(&outstanding)));
+                outstanding
+            }
+        };
+        Tracking(Some(outstanding))
+    }
+
+    /// The channel has closed: the newest command can get no more events.
+    fn close(&mut self) {
+        self.closed = true;
+    }
+
+    /// Advances W over the closed, fully acknowledged commands at the front, and returns it.
+    fn advance(&mut self) -> u64 {
+        while let Some((timestamp, outstanding)) = self.in_flight.front() {
+            let open = self.in_flight.len() == 1 && !self.closed;
+            if open || outstanding.load(Ordering::Acquire) > 0 {
+                break;
+            }
+            self.delivered = *timestamp;
+            self.in_flight.pop_front();
+        }
+        self.delivered
+    }
+
+    /// Advances W and hands it to `write` if it has moved since `write` last accepted it. A
+    /// refused write is tried again on the next call.
+    fn persist(&mut self, write: &mut impl FnMut(u64) -> bool) {
+        let delivered = self.advance();
+        if delivered > self.written && write(delivered) {
+            self.written = delivered;
+        }
+    }
+
+    /// Events taken from the channel and not acknowledged: still held by librdkafka, discarded,
+    /// or never enqueued because a shutdown gave up on them.
+    fn outstanding(&self) -> usize {
+        self.in_flight
+            .iter()
+            .map(|(_, outstanding)| outstanding.load(Ordering::Acquire) as usize)
+            .sum()
+    }
+}
+
+/// A record's delivery opaque: the count of its command's events not yet acknowledged (see
+/// [`Watermark`]), or `None` for a watermark record, which nothing tracks.
+struct Tracking(Option<Arc<AtomicU32>>);
+
+impl IntoOpaque for Tracking {
+    fn into_ptr(self) -> *mut c_void {
+        self.0.map_or(ptr::null_mut(), |outstanding| {
+            Arc::into_raw(outstanding).cast_mut().cast()
+        })
+    }
+
+    unsafe fn from_ptr(opaque: *mut c_void) -> Self {
+        // SAFETY: librdkafka hands back exactly the pointer `into_ptr` made, once: null, or a
+        // leaked `Arc`, which this reclaims.
+        Self((!opaque.is_null()).then(|| unsafe { Arc::from_raw(opaque.cast::<AtomicU32>()) }))
+    }
+}
+
+/// The value of a watermark record: W as a big-endian `u64`.
+fn encode_watermark(delivered: u64) -> [u8; 8] {
+    delivered.to_be_bytes()
+}
+
+/// W from the last record of [`DELIVERED_TOPIC`]: `None` (an empty topic, or a tombstone) reads
+/// as 0, which re-publishes the whole journal.
+fn decode_watermark(value: Option<&[u8]>) -> Result<u64, String> {
+    match value {
+        None => Ok(0),
+        Some(value) => <[u8; 8]>::try_from(value)
+            .map(u64::from_be_bytes)
+            .map_err(|_| {
+                format!(
+                    "the last record of topic {DELIVERED_TOPIC} holds {} bytes, not an 8-byte watermark",
+                    value.len()
+                )
+            }),
+    }
+}
+
 /// The single, ordered path from the events stage to Kafka.
 ///
 /// The events stage submits events in engine order into a bounded channel. One worker thread
@@ -339,26 +521,46 @@ impl Drop for OrderedSender {
     }
 }
 
-/// The sender's loop: frame an event, enqueue it, and only then take the next.
+/// The sender's loop: frame an event, enqueue it, and only then take the next. Every
+/// [`WATERMARK_INTERVAL`], between events or after waiting that long for one, it advances
+/// `watermark` and hands W to `persist` if it has moved.
 ///
-/// Returns how many submitted events never reached the producer because the shutdown gave up
-/// first; zero unless it did.
+/// While it is stuck on one event (a registry or broker outage), W is neither advanced nor
+/// persisted; an older W only costs duplicates. Returns once the channel closes, or, if the
+/// shutdown gives up first, how many submitted events it never took from the channel; the event
+/// it gave up on stays outstanding in `watermark`.
 fn run_sender(
     events: Receiver<OutboundEvent>,
     shutdown: &Shutdown,
+    watermark: &mut Watermark,
     mut frame: impl FnMut(&OutboundEvent) -> Result<Vec<u8>, SRCError>,
-    mut enqueue: impl FnMut(&OutboundEvent, &[u8]) -> Result<(), GaveUp>,
+    mut enqueue: impl FnMut(&OutboundEvent, &[u8], Tracking) -> Result<(), GaveUp>,
+    mut persist: impl FnMut(u64) -> bool,
 ) -> usize {
-    let mut events = events.into_iter();
-    while let Some(event) = events.next() {
-        let enqueued = frame_with_retries(&event, shutdown, &mut frame)
-            .and_then(|framed| enqueue(&event, &framed));
-        if enqueued.is_err() {
-            // The shutdown has closed the channel, so this counts what was submitted before it.
-            return 1 + events.count();
+    let mut next_persist = Instant::now() + WATERMARK_INTERVAL;
+    loop {
+        match events.recv_timeout(next_persist.saturating_duration_since(Instant::now())) {
+            Ok(event) => {
+                let tracking = watermark.track(event.command_ts);
+                let enqueued = frame_with_retries(&event, shutdown, &mut frame)
+                    .and_then(|framed| enqueue(&event, &framed, tracking));
+                if enqueued.is_err() {
+                    // The shutdown has closed the channel, so this counts what was submitted
+                    // before it.
+                    return events.iter().count();
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                watermark.close();
+                return 0;
+            }
+        }
+        if Instant::now() >= next_persist {
+            watermark.persist(&mut persist);
+            next_persist = Instant::now() + WATERMARK_INTERVAL;
         }
     }
-    0
 }
 
 /// Frames `event`, trying again after every failure a retry can cure, for as long as it takes.
@@ -439,25 +641,29 @@ fn producer_config(brokers: &str) -> ClientConfig {
     config
 }
 
-/// The producer's context: logs each delivery report and counts the deliveries, and aborts on a
-/// failed delivery. Its callbacks run on the producer's polling thread, and on a thread that
-/// flushes it.
+/// The producer's context: logs each delivery report, counts each acknowledged event off its
+/// command's [`Watermark`] entry, and aborts on a failed delivery of an event. Its callbacks run on
+/// the producer's polling thread, and on a thread that flushes it.
 struct DeliveryLog {
     shutdown: Shutdown,
-    /// Events the broker acknowledged. Every other enqueued event is undelivered: still held by
-    /// librdkafka, or discarded once a shutdown has begun.
-    delivered: AtomicUsize,
+    /// The failed deliveries of watermark records, and when one was last logged.
+    watermark_failures: Mutex<StallLog>,
 }
 
 impl ClientContext for DeliveryLog {}
 
 impl ProducerContext for DeliveryLog {
-    type DeliveryOpaque = ();
+    type DeliveryOpaque = Tracking;
 
-    fn delivery(&self, result: &DeliveryResult<'_>, _: ()) {
+    fn delivery(&self, result: &DeliveryResult<'_>, tracking: Tracking) {
+        let Tracking(Some(outstanding)) = tracking else {
+            return self.watermark_delivered(result);
+        };
         let (error, message) = match result {
             Ok(message) => {
-                self.delivered.fetch_add(1, Ordering::Relaxed);
+                // Only an acknowledgement counts the event off: W must never pass an event that
+                // the brokers do not hold.
+                outstanding.fetch_sub(1, Ordering::AcqRel);
                 debug!(
                     target: "events",
                     component = "kafka_handler",
@@ -473,6 +679,7 @@ impl ProducerContext for DeliveryLog {
         let topic = message.topic();
         let key = String::from_utf8_lossy(message.key().unwrap_or_default());
         match delivery_failure(error, self.shutdown.has_begun()) {
+            // Still outstanding, so W stays below its command and the next start re-publishes it.
             Verdict::Discarded => debug!(
                 target: "events",
                 component = "kafka_handler",
@@ -488,31 +695,57 @@ impl ProducerContext for DeliveryLog {
     }
 }
 
+impl DeliveryLog {
+    /// A watermark record's delivery report. A lost record leaves the previous watermark in
+    /// place, which only makes the next start re-publish more, so a failure is logged
+    /// (rate-limited) and otherwise ignored; it never aborts.
+    fn watermark_delivered(&self, result: &DeliveryResult<'_>) {
+        let Err((error, _)) = result else {
+            return;
+        };
+        let mut failures = self
+            .watermark_failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if failures.failed() {
+            warn!(
+                target: "events",
+                component = "kafka_handler",
+                action = "watermark_not_delivered",
+                topic = DELIVERED_TOPIC,
+                error = %error,
+                failures = failures.failures,
+                "the delivered watermark was not written; a restart re-publishes from an older one"
+            );
+        }
+    }
+}
+
 type EventProducer = ThreadedProducer<DeliveryLog>;
 
 fn create_producer(config: &ClientConfig, shutdown: &Shutdown) -> EventProducer {
     config
         .create_with_context(DeliveryLog {
             shutdown: shutdown.clone(),
-            delivered: AtomicUsize::new(0),
+            watermark_failures: Mutex::default(),
         })
         .expect("Producer creation failed")
 }
 
-/// Waits until the shutdown is overdue for the delivery of the `enqueued` events, then logs how
-/// many are undelivered and returns that count: the `not_enqueued` events the sender gave up on,
-/// plus those librdkafka still holds, which dropping the producer discards. An event in flight
-/// is counted although the broker may yet write it.
-fn flush_at_shutdown(
-    producer: &EventProducer,
+/// Waits until the shutdown is overdue for the delivery of everything enqueued, then logs how many
+/// events are undelivered and returns that count: the `in_channel` events the sender never took,
+/// plus those it took that the brokers have not acknowledged (held by librdkafka, which dropping
+/// the producer discards, discarded already, or given up on). An event in flight is counted
+/// although the brokers may yet write it. The next start re-publishes them all from the journal.
+fn flush_at_shutdown<C: ProducerContext>(
+    producer: &ThreadedProducer<C>,
     shutdown: &Shutdown,
-    not_enqueued: usize,
-    enqueued: usize,
+    in_channel: usize,
+    watermark: &Watermark,
 ) -> usize {
     // Whether the flush timed out shows in the count below.
     let _ = producer.flush(shutdown.time_left());
-    let delivered = producer.context().delivered.load(Ordering::Relaxed);
-    let undelivered = not_enqueued + enqueued.saturating_sub(delivered);
+    let undelivered = in_channel + watermark.outstanding();
     if undelivered == 0 {
         debug!(
             target: "events",
@@ -525,12 +758,45 @@ fn flush_at_shutdown(
             component = "kafka_handler",
             action = "shutdown_with_undelivered_events",
             undelivered,
-            not_enqueued,
+            in_channel,
             grace = ?shutdown.grace,
-            "{undelivered} Kafka events were not delivered before shutdown; replay will not re-publish them"
+            "{undelivered} Kafka events were not delivered before shutdown; replay will re-publish them"
         );
     }
     undelivered
+}
+
+/// Enqueues a record of the delivered watermark on [`DELIVERED_TOPIC`], untracked. Never blocks
+/// or retries: a refused record (a full queue, say) is skipped, logged at most every
+/// [`STALL_LOG_INTERVAL`], and returns false, so that the next cycle writes the then-current W.
+fn write_watermark<C>(
+    producer: &ThreadedProducer<C>,
+    delivered: u64,
+    refusals: &mut StallLog,
+) -> bool
+where
+    C: ProducerContext<DeliveryOpaque = Tracking> + 'static,
+{
+    let value = encode_watermark(delivered);
+    let record = BaseRecord::with_opaque_to(DELIVERED_TOPIC, Tracking(None))
+        .key(WATERMARK_KEY)
+        .payload(&value);
+    match producer.send(record) {
+        Ok(()) => true,
+        Err((error, _)) => {
+            if refusals.failed() {
+                warn!(
+                    target: "events",
+                    component = "kafka_handler",
+                    action = "watermark_write_skipped",
+                    topic = DELIVERED_TOPIC,
+                    error = %error,
+                    skips = refusals.failures
+                );
+            }
+            false
+        }
+    }
 }
 
 /// The schema registered for every topic: the whole `trading.proto`.
@@ -590,12 +856,15 @@ fn enqueue<C>(
     producer: &ThreadedProducer<C>,
     event: &OutboundEvent,
     framed: &[u8],
+    tracking: Tracking,
     shutdown: &Shutdown,
 ) -> Result<(), GaveUp>
 where
-    C: ProducerContext<DeliveryOpaque = ()> + 'static,
+    C: ProducerContext<DeliveryOpaque = Tracking> + 'static,
 {
-    let mut record = BaseRecord::to(event.topic).key(&event.key).payload(framed);
+    let mut record = BaseRecord::with_opaque_to(event.topic, tracking)
+        .key(&event.key)
+        .payload(framed);
     let mut stall = StallLog::default();
     loop {
         let (error, returned) = match producer.send(record) {
@@ -631,6 +900,339 @@ where
     }
 }
 
+/// Whether the core journals its commands, which decides what the handler does before the
+/// pipeline starts.
+#[derive(Clone, Copy, Debug)]
+pub enum Journaling {
+    /// No archive: nothing is replayed, so nothing is re-published, and the handler neither checks
+    /// the topics nor reads or writes the delivered watermark.
+    Disabled,
+    /// Every start replays the journal: the handler checks the topics, then reads the delivered
+    /// watermark, which decides what the replay re-publishes. `production` adds the
+    /// production-only check.
+    Enabled { production: bool },
+}
+
+/// The settings of one of the core's topics that the startup check reads.
+#[derive(Debug)]
+struct TopicSettings {
+    partitions: usize,
+    cleanup_policy: Option<String>,
+    min_insync_replicas: Option<u32>,
+}
+
+/// What is wrong with the core's topic `name`, given its settings (`None` if Kafka does not list
+/// it).
+///
+/// No-loss rests on these, so they are checked rather than trusted: W is the last record of
+/// [`DELIVERED_TOPIC`], which is only defined on one partition, and survives only compaction, not
+/// deletion by retention; and in production, `acks=all` makes an event durable only when every
+/// write needs at least two in-sync replicas.
+fn topic_problem(name: &str, settings: Option<&TopicSettings>, production: bool) -> Option<String> {
+    let Some(settings) = settings else {
+        // Kafka leaves a topic the client may not describe out of a listing of all topics.
+        return Some(format!(
+            "topic {name} does not exist, or the core is not allowed to describe it"
+        ));
+    };
+    if name == DELIVERED_TOPIC {
+        if settings.partitions != 1 {
+            return Some(format!(
+                "topic {name} has {} partitions; it must have exactly 1",
+                settings.partitions
+            ));
+        }
+        if settings.cleanup_policy.as_deref() != Some("compact") {
+            return Some(format!(
+                "topic {name} has cleanup.policy={}; it must be compact",
+                settings
+                    .cleanup_policy
+                    .as_deref()
+                    .unwrap_or("(not reported)")
+            ));
+        }
+    } else if production
+        && settings
+            .min_insync_replicas
+            .is_none_or(|replicas| replicas < 2)
+    {
+        return Some(format!(
+            "topic {name} has min.insync.replicas={}; production requires at least 2",
+            settings.min_insync_replicas.map_or_else(
+                || "(not reported)".to_string(),
+                |replicas| replicas.to_string()
+            )
+        ));
+    }
+    None
+}
+
+/// Why a startup attempt did not answer.
+#[derive(Debug, PartialEq)]
+enum StartupFailure {
+    /// Kafka did not answer (down, paused, unreachable), or is moving a topic: wait and ask again.
+    Unreachable(String),
+    /// Kafka answered, and the core must not start.
+    Refused(String),
+}
+
+fn unreachable(error: KafkaError) -> StartupFailure {
+    StartupFailure::Unreachable(error.to_string())
+}
+
+/// What the start does about Kafka's error `code` for the core's topic `name`, in the topic's
+/// metadata or its configuration.
+///
+/// Only a broker that does not answer, or a cluster that is moving the topic (a leader election,
+/// a broker restart, metadata not yet on every broker), clears by itself: the start waits. Any
+/// other error, such as a denied authorization or an invalid topic, would hold the start forever,
+/// so it refuses, naming the topic.
+fn topic_error(name: &str, code: RDKafkaErrorCode) -> StartupFailure {
+    match code {
+        RDKafkaErrorCode::LeaderNotAvailable
+        | RDKafkaErrorCode::NotLeaderForPartition
+        | RDKafkaErrorCode::ReplicaNotAvailable
+        | RDKafkaErrorCode::BrokerNotAvailable
+        | RDKafkaErrorCode::NotController
+        | RDKafkaErrorCode::UnknownTopicOrPartition
+        | RDKafkaErrorCode::RequestTimedOut
+        | RDKafkaErrorCode::NetworkException
+        | RDKafkaErrorCode::OperationTimedOut
+        | RDKafkaErrorCode::BrokerTransportFailure
+        | RDKafkaErrorCode::AllBrokersDown => {
+            StartupFailure::Unreachable(format!("topic {name}: {code}"))
+        }
+        _ => StartupFailure::Refused(format!(
+            "Kafka answered for topic {name} with an error that waiting cannot clear: {code}"
+        )),
+    }
+}
+
+/// Runs `attempt` until it answers, trying again `retry` after each attempt that found Kafka
+/// unreachable, and logging that at most every [`STALL_LOG_INTERVAL`]. Returns what a refusal says.
+fn wait_for_kafka<T>(
+    retry: Duration,
+    mut attempt: impl FnMut() -> Result<T, StartupFailure>,
+) -> Result<T, String> {
+    let mut stall = StallLog::default();
+    loop {
+        let error = match attempt() {
+            Ok(answer) => {
+                if stall.failures > 0 {
+                    info!(
+                        target: "events",
+                        component = "kafka_handler",
+                        action = "kafka_reachable",
+                        attempts = stall.failures + 1
+                    );
+                }
+                return Ok(answer);
+            }
+            Err(StartupFailure::Refused(reason)) => return Err(reason),
+            Err(StartupFailure::Unreachable(error)) => error,
+        };
+        if stall.failed() {
+            warn!(
+                target: "events",
+                component = "kafka_handler",
+                action = "waiting_for_kafka",
+                error = %error,
+                attempts = stall.failures,
+                "Kafka is unreachable; the core starts once it answers"
+            );
+        }
+        thread::sleep(retry);
+    }
+}
+
+/// Checks the core's topics, then reads the delivered watermark; waits while Kafka is
+/// unreachable. Fails, naming each topic at fault and why, if a topic is missing or misconfigured,
+/// Kafka answers for one with an error that waiting cannot clear (see [`topic_error`]), or it
+/// denies the core the read of the watermark (see [`watermark_error`]).
+fn read_delivered(brokers: &str, production: bool, rt: &Runtime) -> Result<u64, String> {
+    let mut config = ClientConfig::new();
+    config.set("bootstrap.servers", brokers);
+    let admin: AdminClient<DefaultClientContext> = config
+        .create()
+        .map_err(|error| format!("cannot create the Kafka admin client: {error}"))?;
+    let consumer: BaseConsumer<WatermarkReader> = config
+        .set("group.id", WATERMARK_READER_GROUP)
+        .set("enable.auto.commit", "false")
+        .set("enable.partition.eof", "true")
+        .create_with_context(WatermarkReader)
+        .map_err(|error| format!("cannot create the Kafka consumer: {error}"))?;
+
+    let delivered = wait_for_kafka(STARTUP_RETRY, || {
+        let problems: Vec<String> = describe_topics(&admin, rt)?
+            .iter()
+            .filter_map(|(name, settings)| topic_problem(name, settings.as_ref(), production))
+            .collect();
+        if !problems.is_empty() {
+            return Err(StartupFailure::Refused(format!(
+                "the Kafka topics are not as the core requires (apply deploy/kafka/topics.toml): {}",
+                problems.join("; ")
+            )));
+        }
+        read_watermark(&consumer)
+    })?;
+    info!(
+        target: "events",
+        component = "kafka_handler",
+        action = "watermark_read",
+        topic = DELIVERED_TOPIC,
+        delivered
+    );
+    Ok(delivered)
+}
+
+/// The core's topics, each with its settings, or `None` if the brokers do not have it.
+fn describe_topics(
+    admin: &AdminClient<DefaultClientContext>,
+    rt: &Runtime,
+) -> Result<Vec<(&'static str, Option<TopicSettings>)>, StartupFailure> {
+    let metadata = admin
+        .inner()
+        .fetch_metadata(None, STARTUP_REQUEST_TIMEOUT)
+        .map_err(unreachable)?;
+    let mut topics: Vec<(&'static str, Option<TopicSettings>)> = Vec::new();
+    for name in EVENT_TOPICS.into_iter().chain([DELIVERED_TOPIC]) {
+        let found = metadata.topics().iter().find(|topic| topic.name() == name);
+        if let Some(error) = found.and_then(|topic| topic.error()) {
+            return Err(topic_error(name, RDKafkaErrorCode::from(error)));
+        }
+        topics.push((
+            name,
+            found.map(|topic| TopicSettings {
+                partitions: topic.partitions().len(),
+                cleanup_policy: None,
+                min_insync_replicas: None,
+            }),
+        ));
+    }
+
+    let existing: Vec<ResourceSpecifier<'_>> = topics
+        .iter()
+        .filter(|(_, settings)| settings.is_some())
+        .map(|(name, _)| ResourceSpecifier::Topic(name))
+        .collect();
+    if existing.is_empty() {
+        return Ok(topics);
+    }
+    let options = AdminOptions::new().request_timeout(Some(STARTUP_REQUEST_TIMEOUT));
+    let described = rt
+        .block_on(admin.describe_configs(&existing, &options))
+        .map_err(unreachable)?;
+    // librdkafka returns the results in the order requested, which is what names a failed one.
+    for ((name, settings), described) in topics
+        .iter_mut()
+        .filter_map(|(name, settings)| Some((*name, settings.as_mut()?)))
+        .zip(described)
+    {
+        read_configuration(name, described, settings)?;
+    }
+    Ok(topics)
+}
+
+/// Reads the settings that the check needs from `described`, Kafka's description of the
+/// configuration of the core's topic `name`, into `settings`.
+///
+/// Kafka describes every setting of a topic, and rdkafka 0.36 returns a topic that Kafka could not
+/// describe without its error and without settings. So a description without settings failed,
+/// most likely because the core may not describe the topic's configuration, and the start refuses.
+/// A transient failure (a broker whose metadata lags behind a topic just created) refuses too,
+/// since it cannot be told apart; the topics are applied before the core starts, and the next
+/// start asks again.
+fn read_configuration(
+    name: &str,
+    described: ConfigResourceResult,
+    settings: &mut TopicSettings,
+) -> Result<(), StartupFailure> {
+    let resource = described.map_err(|code| topic_error(name, code))?;
+    if resource.entries.is_empty() {
+        return Err(StartupFailure::Refused(format!(
+            "Kafka described no setting of topic {name}; the core may not be allowed to describe \
+             its configuration (DescribeConfigs)"
+        )));
+    }
+    let value = |key| resource.get(key).and_then(|entry| entry.value.clone());
+    settings.cleanup_policy = value("cleanup.policy");
+    settings.min_insync_replicas = value("min.insync.replicas").and_then(|v| v.parse().ok());
+    Ok(())
+}
+
+/// The context of the startup's watermark reader, which logs librdkafka's errors as the default
+/// context does, except the end of the partition: that is how the reader knows it has read the
+/// last record.
+struct WatermarkReader;
+
+impl ClientContext for WatermarkReader {
+    fn error(&self, error: KafkaError, reason: &str) {
+        if error != KafkaError::Global(RDKafkaErrorCode::PartitionEOF) {
+            error!(target: "events", "librdkafka: {error}: {reason}");
+        }
+    }
+}
+
+impl ConsumerContext for WatermarkReader {}
+
+/// What the start does about `error`, met while reading the watermark from [`DELIVERED_TOPIC`].
+///
+/// A denied authorization would hold the start forever, so it refuses, naming the ACLs the reader
+/// needs. Any other error waits: the topic check has found the topic, and what else a consumer
+/// meets (a broker down, a leader epoch moving, an offset not yet available) clears as the
+/// cluster settles. So, unlike [`topic_error`], an error not named here waits.
+fn watermark_error(error: KafkaError) -> StartupFailure {
+    match error.rdkafka_error_code() {
+        Some(
+            RDKafkaErrorCode::TopicAuthorizationFailed
+            | RDKafkaErrorCode::GroupAuthorizationFailed
+            | RDKafkaErrorCode::ClusterAuthorizationFailed,
+        ) => StartupFailure::Refused(format!(
+            "the core may not read the watermark from topic {DELIVERED_TOPIC}: {error}; it needs \
+             Read and Describe on the topic and Describe on the consumer group \
+             {WATERMARK_READER_GROUP} (see the ACLs in deploy/kafka/README.md)"
+        )),
+        _ => unreachable(error),
+    }
+}
+
+/// The delivered watermark: the last record of [`DELIVERED_TOPIC`]'s one partition.
+fn read_watermark(consumer: &BaseConsumer<WatermarkReader>) -> Result<u64, StartupFailure> {
+    let (low, high) = consumer
+        .fetch_watermarks(DELIVERED_TOPIC, 0, STARTUP_REQUEST_TIMEOUT)
+        .map_err(watermark_error)?;
+    if high <= low {
+        return decode_watermark(None).map_err(StartupFailure::Refused);
+    }
+    // Local operations: a failure is the client's, and waiting would not cure it.
+    let refused = |error: KafkaError| {
+        StartupFailure::Refused(format!("cannot read topic {DELIVERED_TOPIC}: {error}"))
+    };
+    let mut assignment = TopicPartitionList::new();
+    assignment
+        .add_partition_offset(DELIVERED_TOPIC, 0, Offset::Offset(high - 1))
+        .map_err(refused)?;
+    consumer.assign(&assignment).map_err(refused)?;
+
+    // Compaction can have removed the record at `high - 1` only if it was a tombstone, which
+    // reads as 0 too; so the last record read before the end of the partition is W.
+    let deadline = Instant::now() + STARTUP_REQUEST_TIMEOUT;
+    let mut last = None;
+    loop {
+        match consumer.poll(deadline.saturating_duration_since(Instant::now())) {
+            Some(Ok(record)) => last = record.payload().map(<[u8]>::to_vec),
+            Some(Err(KafkaError::PartitionEOF(_))) => break,
+            Some(Err(error)) => return Err(watermark_error(error)),
+            None => {
+                return Err(StartupFailure::Unreachable(format!(
+                    "no record of topic {DELIVERED_TOPIC} arrived within {STARTUP_REQUEST_TIMEOUT:?}"
+                )));
+            }
+        }
+    }
+    decode_watermark(last.as_deref()).map_err(StartupFailure::Refused)
+}
+
 /// The balance to publish for each maker in a fill chain: one entry per maker, holding the
 /// snapshot R2 took after that maker's LAST fill.
 ///
@@ -656,21 +1258,20 @@ fn final_maker_balances(
 ///
 /// # Ordering contract (what consumers may rely on)
 ///
-/// 1. **Per key, partition order is engine order.** The events stage hands every event, in
-///    engine order, to one ordered sender: a bounded channel drained by a single thread that
-///    frames each event with its schema id and enqueues it on the producer before it takes the
-///    next. The producer is idempotent, so a broker retry can neither reorder nor duplicate a
-///    partition. Every event about one entity carries the same key on its topic, so a sink that
-///    applies a partition in offset order, last write wins, ends at the entity's latest state:
+/// 1. **Per key, a run publishes in engine order.** The events stage hands every event, in engine
+///    order, to one ordered sender: a bounded channel drained by a single thread that frames each
+///    event with its schema id and enqueues it on the producer before it takes the next. The
+///    producer is idempotent, so a broker retry can neither reorder nor duplicate a partition.
+///    Every event about one entity carries the same key on its topic:
 ///    - `balances`: `user_id:asset_id`, one user's balance in one asset;
 ///    - `orders`, `cancels`: `order_id`; `orderbook`: `market_id`;
 ///    - history only: `trades` `taker_order_id:maker_order_id`, `deposits` and `withdrawals`
 ///      `user_id`.
 /// 2. **`timestamp` strictly increases per command.** Every event a command produces carries the
 ///    command's timestamp, which journaling makes strictly increasing per command. It never
-///    repeats and never steps backwards with the wall clock, and every start, with or without
-///    `--replay`, continues above the last command in the journal. Order ids are derived from it,
-///    so an id is never issued twice either, within a run or across a restart.
+///    repeats and never steps backwards with the wall clock, and every start continues above the
+///    last command in the journal. Order ids are derived from it, so an id is never issued twice
+///    either, within a run or across a restart.
 /// 3. **At most one event per key per command**, on every topic. In particular a maker hit by
 ///    several fills of one taker gets one `balances` event per asset, not one per fill.
 /// 4. **That event holds the key's state after the command.** Balances are snapshotted in R2,
@@ -678,11 +1279,14 @@ fn final_maker_balances(
 ///    never misses an earlier command. It can already include a later command that R1 has
 ///    admitted (a reservation or a deposit).
 ///
-/// So per key the partition order and the `timestamp` order agree, `(key, timestamp)` is unique,
-/// and a reader may take the latest state either from the last event in the partition or from the
-/// greatest `timestamp`.
+/// So `(key, timestamp)` identifies an event, and every copy of it (see the delivery contract)
+/// carries both. **A reader takes a key's latest state from the event with the greatest
+/// `timestamp`**, not from the last one in the partition: a restart re-publishes events that the
+/// previous run may have delivered already, so an older copy can follow a newer event of the same
+/// key. A sink that keeps, per key, the greatest `timestamp` and skips an equal or smaller one ends
+/// at the key's latest state, whatever the order in which copies arrive.
 ///
-/// # Delivery contract: never dropped while the process runs
+/// # Delivery contract: never dropped, re-published after a death
 ///
 /// No event is dropped, skipped or expired while the process runs; a stall back-pressures intake
 /// instead. librdkafka retries an undelivered event for as long as it takes
@@ -698,46 +1302,75 @@ fn final_maker_balances(
 /// an event already queued for a topic a broker then reports missing), an event that the compiled
 /// schema cannot frame, or a panic in the sender.
 ///
-/// Known gap: events still queued when the process dies are not re-published on replay. That
-/// covers a crash, a kill, an abort above, and a graceful shutdown that could not deliver them
-/// within [`SHUTDOWN_GRACE`] (it logs how many) or whose pipeline drain timed out first. Closing
-/// it means re-publishing from the journal, in the connectors work.
+/// **What a process death leaves undelivered, the next start re-publishes from the journal.** The
+/// sender tracks the delivered watermark W (see [`Watermark`]), the greatest command timestamp up
+/// to which every event has been acknowledged, and writes it to the compacted topic
+/// [`DELIVERED_TOPIC`]: at most every [`WATERMARK_INTERVAL`] while it advances, and once more
+/// after a shutdown's final flush. Every start reads W, then replays the journal, re-publishing
+/// the events of every command above W, in engine order, before the first live command; it sends
+/// no gateway response for them, as the run that executed them did. So a crash, a kill, an abort
+/// above, or a shutdown that could not deliver within [`SHUTDOWN_GRACE`] loses no event; it
+/// duplicates the events of the commands after the last W written. A start refuses to run if a
+/// topic is missing or misconfigured, or Kafka answers for one or for the read of W with an error
+/// such as a denied authorization, and waits while Kafka is unreachable.
+///
+/// This rests on two assumptions:
+/// - **A1: Kafka never holds a command that the journal lacks.** It holds when the core process
+///   dies, as the archive outlives it and records what journaling offered. It fails if the media
+///   driver, the archive or the host dies after a command's events or response went out but
+///   before the archive recorded the command (#197): the restart then neither replays that
+///   command nor, on a host whose clock is behind, avoids stamping a new command with its
+///   timestamp and id.
+/// - **A2: replay regenerates each command's events**, up to item 4. Not for market buys (#140):
+///   R1 reads the price cache while matching writes it, so a replayed market buy can lock a
+///   different price than the original run did, and its re-published events then differ from the
+///   copies that Kafka already holds.
 ///
 /// Not covered:
 /// - A registry that rejects the schema (as incompatible, say) is retried like an outage, because
 ///   schema_registry_converter reports both alike; see [`encode_failure`]. Likewise a topic that
-///   is really missing stalls at send rather than aborting; see [`send_failure`].
+///   goes missing while the core runs stalls at send rather than aborting; see [`send_failure`].
 /// - Adding partitions to a topic moves keys: each partition stays ordered, but a key's events
 ///   from before and after the change can sit in different partitions.
-/// - Without journaling (no archive control channel, as `VEX_DISABLE_ARCHIVE` sets) there is no
+/// - Without journaling (no archive control channel) nothing is replayed, so nothing is
+///   re-published: the events still queued when the process dies are lost. Nor is there a
 ///   journal to continue from: timestamps, and the order ids derived from them, follow the wall
-///   clock alone, so a restart on a host whose clock is behind the previous run's can repeat
-///   them. The same holds for balance preload (development and test only), which runs before
-///   the journal is read.
-/// - The journal is what the archive recorded. If the host or media driver dies after a
-///   command's events were sent but before the archive recorded the command, the restart does not
-///   see it and, on a host whose clock is behind, can stamp a new command with its timestamp and
-///   id.
+///   clock alone, so a restart on a host whose clock is behind the previous run's can repeat them.
+/// - Balance preload (development and test only) is never journaled, so it is never published:
+///   a read model shows a preloaded balance only after the key's first journaled command (#198).
 pub struct KafkaEventsHandler {
     sender: OrderedSender,
     publications: Arc<Publications>,
     replay_control: ReplayControl,
+    /// W as the previous run left it: the replay re-publishes only the commands above it.
+    delivered: u64,
 }
 
 impl KafkaEventsHandler {
+    /// Starts the handler. With journaling enabled it first checks the core's topics and reads
+    /// the delivered watermark, waiting while Kafka is unreachable; it fails, naming each topic at
+    /// fault and why, if a topic is missing or misconfigured, or Kafka answers for one, or for the
+    /// read of the watermark, with an error that waiting cannot clear.
     pub fn new(
         brokers: &str,
         schema_registry_url: &str,
         publications: Arc<Publications>,
         replay_control: ReplayControl,
-    ) -> Self {
+        journaling: Journaling,
+    ) -> Result<Self, String> {
+        // Drives the Schema Registry client, whose calls the sender blocks on, and the startup
+        // check's admin requests.
+        let rt = Runtime::new().expect("Failed to create tokio runtime");
+        let delivered = match journaling {
+            Journaling::Disabled => 0,
+            Journaling::Enabled { production } => read_delivered(brokers, production, &rt)?,
+        };
+        let journaled = matches!(journaling, Journaling::Enabled { .. });
+
         let shutdown = Shutdown::with_grace(SHUTDOWN_GRACE);
         let producer = create_producer(&producer_config(brokers), &shutdown);
         let encoder = schema_encoder(schema_registry_url);
         let schema = trading_schema();
-
-        // Drives the Schema Registry client, whose calls the sender blocks on.
-        let rt = Runtime::new().expect("Failed to create tokio runtime");
 
         info!(
             target: "events",
@@ -748,33 +1381,41 @@ impl KafkaEventsHandler {
         );
 
         let sender = OrderedSender::spawn(SENDER_CAPACITY, shutdown.clone(), move |events| {
-            let mut enqueued = 0;
-            let not_enqueued = run_sender(
+            let mut watermark = Watermark::starting_at(delivered);
+            let mut refusals = StallLog::default();
+            // Without a journal nothing replays, so nothing reads W, and nothing writes it.
+            let mut persist =
+                |delivered| !journaled || write_watermark(&producer, delivered, &mut refusals);
+            let in_channel = run_sender(
                 events,
                 &shutdown,
+                &mut watermark,
                 |event| rt.block_on(frame_with_schema(&encoder, &schema, event)),
-                |event, framed| {
-                    enqueue(&producer, event, framed, &shutdown)?;
-                    enqueued += 1;
-                    Ok(())
-                },
+                |event, framed, tracking| enqueue(&producer, event, framed, tracking, &shutdown),
+                &mut persist,
             );
             // The handler is dropped and the channel drained: wait for delivery, within the grace.
-            flush_at_shutdown(&producer, &shutdown, not_enqueued, enqueued);
+            flush_at_shutdown(&producer, &shutdown, in_channel, &watermark);
+            // The closing channel closed the last command: write how far delivery got, within
+            // what is left of the grace.
+            watermark.persist(&mut persist);
+            let _ = producer.flush(shutdown.time_left());
             // A timed-out registry call can leave a DNS lookup running; do not wait for it.
             rt.shutdown_background();
         });
 
-        Self {
+        Ok(Self {
             sender,
             publications,
             replay_control,
-        }
+            delivered,
+        })
     }
 
-    /// Hands one event to the ordered sender, blocking while its channel is full.
+    /// Hands one of `cmd`'s events to the ordered sender, blocking while its channel is full.
     fn publish_proto<T: Message>(
         &self,
+        cmd: &OrderCommand,
         topic_name: &'static str,
         message_key: &str,
         full_name: &'static str,
@@ -783,6 +1424,7 @@ impl KafkaEventsHandler {
         self.sender.submit(OutboundEvent {
             topic: topic_name,
             key: message_key.to_string(),
+            command_ts: cmd.timestamp(),
             message_name: full_name,
             payload: data.encode_to_vec(),
         });
@@ -802,9 +1444,10 @@ impl KafkaEventsHandler {
                 timestamp: cmd.timestamp(),
             };
 
-            let topic_name = "balances";
+            let topic_name = BALANCES;
             let composite_key = format!("{}:{}", user_id, asset_id);
             self.publish_proto(
+                cmd,
                 topic_name,
                 &composite_key,
                 "trading.BalanceEvent",
@@ -834,9 +1477,10 @@ impl KafkaEventsHandler {
             timestamp: cmd.timestamp(),
         };
 
-        let topic_name = "balances";
+        let topic_name = BALANCES;
         let composite_key = format!("{}:{}", cmd.user_id(), asset_id);
         self.publish_proto(
+            cmd,
             topic_name,
             &composite_key,
             "trading.BalanceEvent",
@@ -896,8 +1540,9 @@ impl KafkaEventsHandler {
             market_id: cmd.market_id(),
         };
 
-        let topic_name = "orders";
+        let topic_name = ORDERS;
         self.publish_proto(
+            cmd,
             topic_name,
             &cmd.order_id().to_string(),
             "trading.OrderEvent",
@@ -949,8 +1594,9 @@ impl KafkaEventsHandler {
             market_id,
         };
 
-        let topic_name = "orders";
+        let topic_name = ORDERS;
         self.publish_proto(
+            cmd,
             topic_name,
             &event.matched_order_id.to_string(),
             "trading.OrderEvent",
@@ -992,9 +1638,15 @@ impl KafkaEventsHandler {
             timestamp: cmd.timestamp(),
         };
 
-        let topic_name = "trades";
+        let topic_name = TRADES;
         let trade_key = format!("{}:{}", taker_order_id, event.matched_order_id);
-        self.publish_proto(topic_name, &trade_key, "trading.TradeEvent", trade_event);
+        self.publish_proto(
+            cmd,
+            topic_name,
+            &trade_key,
+            "trading.TradeEvent",
+            trade_event,
+        );
         debug!(
             target: "events",
             component = "kafka_handler",
@@ -1038,8 +1690,9 @@ impl KafkaEventsHandler {
             timestamp: cmd.timestamp(),
         };
 
-        let topic_name = "cancels";
+        let topic_name = CANCELS;
         self.publish_proto(
+            cmd,
             topic_name,
             &cmd.order_id().to_string(),
             "trading.CancelOrderEvent",
@@ -1087,8 +1740,9 @@ impl KafkaEventsHandler {
                 timestamp: cmd.timestamp(),
             };
 
-            let topic_name = "orderbook";
+            let topic_name = ORDERBOOK;
             self.publish_proto(
+                cmd,
                 topic_name,
                 &market_id.to_string(),
                 "trading.OrderbookEvent",
@@ -1113,8 +1767,9 @@ impl KafkaEventsHandler {
             timestamp: cmd.timestamp(),
         };
 
-        let topic_name = "deposits";
+        let topic_name = DEPOSITS;
         self.publish_proto(
+            cmd,
             topic_name,
             &cmd.user_id().to_string(),
             "trading.DepositEvent",
@@ -1139,8 +1794,9 @@ impl KafkaEventsHandler {
             timestamp: cmd.timestamp(),
         };
 
-        let topic_name = "withdrawals";
+        let topic_name = WITHDRAWALS;
         self.publish_proto(
+            cmd,
             topic_name,
             &cmd.user_id().to_string(),
             "trading.WithdrawEvent",
@@ -1157,30 +1813,8 @@ impl KafkaEventsHandler {
         );
     }
 
-    fn publish_response(&self, cmd: &OrderCommand) {
-        self.publications.publish_response(cmd);
-    }
-}
-
-impl EventsHandler for KafkaEventsHandler {
-    fn handle_processed_command(&self, cmd: &mut OrderCommand) {
-        if self.replay_control.is_enabled() {
-            order_debug!(
-                "events_skip_replay",
-                cmd,
-                stage = "events",
-                handler = "kafka"
-            );
-            return;
-        }
-
-        order_debug!(
-            "command_processed",
-            cmd,
-            stage = "events",
-            handler = "kafka"
-        );
-
+    /// Publishes `cmd`'s events.
+    fn publish_events(&self, cmd: &OrderCommand) {
         // Handle deposit and withdraw commands separately
         match cmd.command {
             OrderCommandType::DepositFunds => {
@@ -1194,7 +1828,6 @@ impl EventsHandler for KafkaEventsHandler {
                     self.publish_deposit_event(cmd);
                     self.publish_deposit_withdrawal_event(cmd);
                 }
-                self.publish_response(cmd);
                 return;
             }
             OrderCommandType::WithdrawFunds => {
@@ -1208,7 +1841,6 @@ impl EventsHandler for KafkaEventsHandler {
                     self.publish_withdraw_event(cmd);
                     self.publish_deposit_withdrawal_event(cmd);
                 }
-                self.publish_response(cmd);
                 return;
             }
             _ => {
@@ -1298,8 +1930,59 @@ impl EventsHandler for KafkaEventsHandler {
                 self.publish_orderbook_event(cmd);
             }
         }
-        // Always publish the response back to the gateway
-        self.publish_response(cmd);
+    }
+}
+
+/// What the events stage sends for a command.
+#[derive(Debug, PartialEq)]
+enum Outcome {
+    /// A live command: its events, then its response.
+    EventsAndResponse,
+    /// A replayed command above the delivered watermark: its events again, which the previous run
+    /// may not have delivered. That run answered its gateway.
+    Events,
+    /// A replayed command at or below the delivered watermark: Kafka holds its events already.
+    Nothing,
+}
+
+fn outcome(replayed: bool, timestamp: u64, delivered: u64) -> Outcome {
+    match (replayed, timestamp > delivered) {
+        (false, _) => Outcome::EventsAndResponse,
+        (true, true) => Outcome::Events,
+        (true, false) => Outcome::Nothing,
+    }
+}
+
+impl EventsHandler for KafkaEventsHandler {
+    fn handle_processed_command(&self, cmd: &mut OrderCommand) {
+        let replayed = self.replay_control.is_enabled();
+        match outcome(replayed, cmd.timestamp(), self.delivered) {
+            Outcome::EventsAndResponse => {
+                order_debug!(
+                    "command_processed",
+                    cmd,
+                    stage = "events",
+                    handler = "kafka"
+                );
+                self.publish_events(cmd);
+                self.publications.publish_response(cmd);
+            }
+            Outcome::Events => {
+                order_debug!(
+                    "events_republish_replay",
+                    cmd,
+                    stage = "events",
+                    handler = "kafka"
+                );
+                self.publish_events(cmd);
+            }
+            Outcome::Nothing => order_debug!(
+                "events_skip_replay",
+                cmd,
+                stage = "events",
+                handler = "kafka"
+            ),
+        }
     }
 }
 
@@ -1381,16 +2064,37 @@ mod tests {
             sender,
             publications: Arc::new(Publications::new()),
             replay_control: ReplayControl::disabled(),
+            delivered: 0,
         }
     }
 
     fn outbound(key: &str) -> OutboundEvent {
+        outbound_at(key, 1)
+    }
+
+    /// An event of the command stamped `command_ts`.
+    fn outbound_at(key: &str, command_ts: u64) -> OutboundEvent {
         OutboundEvent {
-            topic: "balances",
+            topic: BALANCES,
             key: key.to_string(),
+            command_ts,
             message_name: "trading.BalanceEvent",
             payload: Vec::new(),
         }
+    }
+
+    /// The delivery opaque of an event no test looks at.
+    fn untracked_event() -> Tracking {
+        Tracking(Some(Arc::new(AtomicU32::new(1))))
+    }
+
+    /// The broker acknowledges the event `tracking` belongs to, as [`DeliveryLog`] counts it.
+    fn acknowledge(tracking: &Tracking) {
+        tracking
+            .0
+            .as_ref()
+            .expect("an event's opaque")
+            .fetch_sub(1, Ordering::AcqRel);
     }
 
     /// What the encoder returns while the registry is down.
@@ -1407,19 +2111,41 @@ mod tests {
         let (enqueued_tx, enqueued) = mpsc::channel();
         let shutdown = Shutdown::with_grace(SHUTDOWN_GRACE);
         let sender = OrderedSender::spawn(capacity, shutdown.clone(), move |events| {
-            run_sender(events, &shutdown, frame, |event, _| {
-                enqueued_tx.send((event.topic, event.key.clone())).unwrap();
-                Ok(())
-            });
+            run_sender(
+                events,
+                &shutdown,
+                &mut Watermark::default(),
+                frame,
+                |event, _, _| {
+                    enqueued_tx.send((event.topic, event.key.clone())).unwrap();
+                    Ok(())
+                },
+                |_| true,
+            );
         });
         (sender, enqueued)
     }
 
     /// The topic and key of every event that `commands` publish, in order.
     fn published(commands: &mut [OrderCommand]) -> Vec<(&'static str, String)> {
+        published_by(ReplayControl::disabled(), 0, commands)
+    }
+
+    /// The topic and key of every event that `commands` publish, in order, through a handler
+    /// whose replay flag is `replay_control` and whose previous run left the watermark
+    /// `delivered`.
+    fn published_by(
+        replay_control: ReplayControl,
+        delivered: u64,
+        commands: &mut [OrderCommand],
+    ) -> Vec<(&'static str, String)> {
         let (sender, enqueued) =
             recording_sender(SENDER_CAPACITY, |event| Ok(event.payload.clone()));
-        let handler = handler_with(sender);
+        let handler = KafkaEventsHandler {
+            replay_control,
+            delivered,
+            ..handler_with(sender)
+        };
         for cmd in commands {
             handler.handle_processed_command(cmd);
         }
@@ -1506,11 +2232,21 @@ mod tests {
     #[test]
     fn a_shutdown_gives_up_after_its_grace_and_counts_the_events_it_could_not_send() {
         const GRACE: Duration = Duration::from_millis(100);
-        let (not_enqueued_tx, not_enqueued) = mpsc::channel();
+        let (counts_tx, counts) = mpsc::channel();
         let shutdown = Shutdown::with_grace(GRACE);
         let sender = OrderedSender::spawn(8, shutdown.clone(), move |events| {
-            let given_up = run_sender(events, &shutdown, |_| Err(registry_down()), |_, _| Ok(()));
-            not_enqueued_tx.send(given_up).unwrap();
+            let mut watermark = Watermark::default();
+            let in_channel = run_sender(
+                events,
+                &shutdown,
+                &mut watermark,
+                |_| Err(registry_down()),
+                |_, _, _| Ok(()),
+                |_| true,
+            );
+            counts_tx
+                .send((in_channel, watermark.outstanding(), watermark.advance()))
+                .unwrap();
         });
         for key in ["0", "1", "2"] {
             sender.submit(outbound(key));
@@ -1532,9 +2268,10 @@ mod tests {
             "it keeps trying through the grace ({took:?})"
         );
         assert_eq!(
-            not_enqueued.recv().unwrap(),
-            3,
-            "the event being retried and the two behind it"
+            counts.recv().unwrap(),
+            (2, 1, 0),
+            "the two events behind the one being retried, which stays outstanding, so W never \
+             passes it"
         );
     }
 
@@ -1542,14 +2279,25 @@ mod tests {
     fn a_shutdown_flush_is_bounded_and_counts_what_librdkafka_still_holds() {
         let shutdown = Shutdown::with_grace(Duration::from_millis(100));
         let producer = create_producer(&producer_config(NO_BROKER), &shutdown);
-        enqueue(&producer, &outbound("discarded"), b"0", &shutdown).unwrap();
+        let mut watermark = Watermark::default();
+        let discarded = watermark.track(1);
+        enqueue(
+            &producer,
+            &outbound("discarded"),
+            b"0",
+            discarded,
+            &shutdown,
+        )
+        .unwrap();
         shutdown.begin();
         // As a fatal error during the grace would: the event's report comes back, undelivered.
         producer.purge(PurgeConfig::default().queue());
-        enqueue(&producer, &outbound("held"), b"1", &shutdown).unwrap();
+        let held = watermark.track(1);
+        enqueue(&producer, &outbound("held"), b"1", held, &shutdown).unwrap();
+        watermark.close();
 
         let started = Instant::now();
-        let undelivered = flush_at_shutdown(&producer, &shutdown, 2, 2);
+        let undelivered = flush_at_shutdown(&producer, &shutdown, 2, &watermark);
 
         assert!(
             started.elapsed() < Duration::from_secs(2),
@@ -1557,8 +2305,9 @@ mod tests {
         );
         assert_eq!(
             undelivered, 4,
-            "two never enqueued, one discarded and one librdkafka still holds"
+            "two never taken, one discarded and one librdkafka still holds"
         );
+        assert_eq!(watermark.advance(), 0, "W passes neither");
         // Dropping the producer discards the held event, which a begun shutdown expects.
     }
 
@@ -1627,7 +2376,9 @@ mod tests {
             &format!("http://{NO_BROKER}"),
             Arc::new(Publications::new()),
             ReplayControl::disabled(),
-        );
+            Journaling::Disabled,
+        )
+        .unwrap();
 
         let started = Instant::now();
         drop(handler);
@@ -1646,11 +2397,13 @@ mod tests {
             run_sender(
                 events,
                 &shutdown,
+                &mut Watermark::default(),
                 |event| Ok(event.payload.clone()),
-                |event, _| {
+                |event, _, _| {
                     enqueued_tx.send(event.key.clone()).unwrap();
                     Ok(())
                 },
+                |_| true,
             );
         }));
         sender.submit(outbound("0"));
@@ -1697,42 +2450,75 @@ mod tests {
         let _producer = create_producer(&config, &Shutdown::with_grace(SHUTDOWN_GRACE));
     }
 
-    /// A producer context that records what librdkafka reports, where [`DeliveryLog`] would act
-    /// on it (and abort the test process).
-    #[derive(Default)]
+    /// A producer context that sends each failed delivery, as its key and error, to the test,
+    /// where [`DeliveryLog`] would act on it (and abort the test process).
+    ///
+    /// A delivery report waits while the test holds `reports_held`. librdkafka frees an event's
+    /// place in its queue only once the event's report has returned, so holding the reports keeps
+    /// a full queue full.
     struct Recorder {
-        failed_deliveries: Mutex<Vec<KafkaError>>,
+        failed: mpsc::Sender<(String, KafkaError)>,
+        reports_held: Mutex<()>,
     }
 
     impl ClientContext for Recorder {}
 
     impl ProducerContext for Recorder {
-        type DeliveryOpaque = ();
+        type DeliveryOpaque = Tracking;
 
-        fn delivery(&self, result: &DeliveryResult<'_>, _: ()) {
-            if let Err((error, _)) = result {
-                self.failed_deliveries.lock().unwrap().push(error.clone());
+        fn delivery(&self, result: &DeliveryResult<'_>, _: Tracking) {
+            drop(self.reports_held.lock());
+            if let Err((error, message)) = result {
+                let key = String::from_utf8_lossy(message.key().unwrap_or_default());
+                // A test that does not look at the reports has dropped the receiver.
+                let _ = self.failed.send((key.into_owned(), error.clone()));
             }
         }
     }
 
-    fn recording_producer(config: &ClientConfig) -> ThreadedProducer<Recorder> {
-        config.create_with_context(Recorder::default()).unwrap()
+    /// A producer whose failed deliveries arrive on the returned receiver.
+    fn recording_producer(
+        config: &ClientConfig,
+    ) -> (ThreadedProducer<Recorder>, Receiver<(String, KafkaError)>) {
+        let (failed, reports) = mpsc::channel();
+        let recorder = Recorder {
+            failed,
+            reports_held: Mutex::default(),
+        };
+        (config.create_with_context(recorder).unwrap(), reports)
     }
+
+    /// The failed delivery that a purge reports for the queued event `key`.
+    fn purged(key: &str) -> (String, KafkaError) {
+        (
+            key.to_string(),
+            KafkaError::MessageProduction(RDKafkaErrorCode::PurgeQueue),
+        )
+    }
+
+    /// Bound on the wait for librdkafka to report or settle what a test has just made happen.
+    const REPORT_TIMEOUT: Duration = Duration::from_secs(10);
 
     #[test]
     fn a_full_producer_queue_holds_the_event_back_until_it_has_room() {
         let mut config = producer_config(NO_BROKER);
         config.set("queue.buffering.max.messages", "1");
-        let producer = recording_producer(&config);
+        let (producer, failed) = recording_producer(&config);
         let shutdown = Shutdown::with_grace(SHUTDOWN_GRACE);
-        enqueue(&producer, &outbound("0"), b"0", &shutdown).unwrap();
+        enqueue(
+            &producer,
+            &outbound("0"),
+            b"0",
+            untracked_event(),
+            &shutdown,
+        )
+        .unwrap();
 
         thread::scope(|scope| {
             let (done_tx, done) = mpsc::channel();
             let (producer, shutdown) = (&producer, &shutdown);
             scope.spawn(move || {
-                enqueue(producer, &outbound("1"), b"1", shutdown).unwrap();
+                enqueue(producer, &outbound("1"), b"1", untracked_event(), shutdown).unwrap();
                 done_tx.send(()).unwrap();
             });
             assert!(
@@ -1740,17 +2526,28 @@ mod tests {
                 "a full queue must hold the event back, not drop it"
             );
             // A broker would make room by acknowledging the first event; without one, discard it.
+            // The purge sweeps the queue twice, before and after it waits for the broker threads,
+            // and the second sweep would discard the second event too if it got in between. So
+            // the first event's report, which frees its place, waits until the purge returns.
+            let reports_held = producer.context().reports_held.lock().unwrap();
             producer.purge(PurgeConfig::default().queue());
-            done.recv_timeout(Duration::from_secs(5))
+            drop(reports_held);
+            assert_eq!(failed.recv_timeout(REPORT_TIMEOUT), Ok(purged("0")));
+            done.recv_timeout(REPORT_TIMEOUT)
                 .expect("the event is enqueued once the queue has room");
         });
-        assert_eq!(producer.in_flight_count(), 1, "the second event is queued");
 
         let overdue = Shutdown::with_grace(Duration::ZERO);
         overdue.begin();
         assert!(
-            enqueue(&producer, &outbound("2"), b"2", &overdue).is_err(),
+            enqueue(&producer, &outbound("2"), b"2", untracked_event(), &overdue).is_err(),
             "an overdue shutdown gives up on a full queue"
+        );
+        producer.purge(PurgeConfig::default().queue());
+        assert_eq!(
+            failed.recv_timeout(REPORT_TIMEOUT),
+            Ok(purged("1")),
+            "the queue held the second event"
         );
     }
 
@@ -1758,11 +2555,12 @@ mod tests {
     fn a_fatal_producer_error_aborts_instead_of_dropping_the_queue() {
         use rdkafka::bindings::{rd_kafka_resp_err_t as RespErr, rd_kafka_test_fatal_error};
 
-        let producer = recording_producer(&producer_config(NO_BROKER));
+        let (producer, failed) = recording_producer(&producer_config(NO_BROKER));
         enqueue(
             &producer,
             &outbound("queued"),
             b"0",
+            untracked_event(),
             &Shutdown::with_grace(SHUTDOWN_GRACE),
         )
         .unwrap();
@@ -1778,23 +2576,16 @@ mod tests {
 
         // librdkafka reports it twice, and the verdict on each is to abort. The queued event is
         // purged, which before any shutdown means it is lost,
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let purged = loop {
-            let purged = producer.context().failed_deliveries.lock().unwrap().clone();
-            if !purged.is_empty() {
-                break purged;
-            }
-            assert!(Instant::now() < deadline, "a fatal error purges the queue");
-            thread::sleep(Duration::from_millis(10));
-        };
-        assert_eq!(
-            purged,
-            [KafkaError::MessageProduction(RDKafkaErrorCode::PurgeQueue)]
-        );
-        assert_eq!(delivery_failure(&purged[0], false), Verdict::Abort);
+        let report = failed
+            .recv_timeout(REPORT_TIMEOUT)
+            .expect("a fatal error purges the queue");
+        assert_eq!(report, purged("queued"));
+        assert_eq!(delivery_failure(&report.1, false), Verdict::Abort);
         // and the next event is refused.
-        let Err((refused, _)) = producer.send(BaseRecord::to("balances").key("next").payload("1"))
-        else {
+        let next = BaseRecord::with_opaque_to(BALANCES, untracked_event())
+            .key("next")
+            .payload("1");
+        let Err((refused, _)) = producer.send(next) else {
             panic!("a producer in a fatal state refuses every event");
         };
         assert_eq!(
@@ -2189,5 +2980,499 @@ mod tests {
         let event = trading_proto::OrderbookEvent::decode(payload.as_slice()).unwrap();
         assert_eq!(event.market_id, MARKET_ID);
         assert_eq!(event.timestamp, 1006, "the command's timestamp");
+    }
+
+    #[test]
+    fn the_watermark_advances_only_over_the_fully_acknowledged_prefix() {
+        let mut watermark = Watermark::default();
+        let first = watermark.track(10);
+        let second = watermark.track(10);
+        let b = watermark.track(20);
+        let c = watermark.track(30);
+        let _open = watermark.track(40);
+
+        // Acknowledgements arrive out of order across commands.
+        acknowledge(&c);
+        acknowledge(&b);
+        acknowledge(&first);
+        assert_eq!(watermark.advance(), 0, "command 10 has an event in flight");
+        acknowledge(&second);
+        assert_eq!(watermark.advance(), 30);
+        assert_eq!(watermark.outstanding(), 1, "command 40's event");
+    }
+
+    #[test]
+    fn a_command_with_one_unacknowledged_event_holds_the_watermark_at_the_previous_command() {
+        let mut watermark = Watermark::default();
+        acknowledge(&watermark.track(10));
+        let held = watermark.track(20);
+        acknowledge(&watermark.track(20));
+        acknowledge(&watermark.track(30));
+        watermark.close();
+
+        assert_eq!(watermark.advance(), 10);
+        acknowledge(&held);
+        assert_eq!(watermark.advance(), 30);
+    }
+
+    #[test]
+    fn a_command_is_not_delivered_while_it_can_still_get_events() {
+        let mut watermark = Watermark::default();
+        acknowledge(&watermark.track(10));
+        assert_eq!(
+            watermark.advance(),
+            0,
+            "its first event is acknowledged, but the events stage may submit a second"
+        );
+        let second = watermark.track(10);
+        let _next = watermark.track(20);
+        assert_eq!(watermark.advance(), 0, "the second is in flight");
+        acknowledge(&second);
+        assert_eq!(watermark.advance(), 10);
+    }
+
+    #[test]
+    fn the_last_command_before_an_idle_spell_is_delivered_once_the_next_command_or_shutdown_closes_it()
+     {
+        let mut watermark = Watermark::default();
+        acknowledge(&watermark.track(10));
+        assert_eq!(watermark.advance(), 0);
+        let next = watermark.track(20);
+        assert_eq!(
+            watermark.advance(),
+            10,
+            "the next command's first event closes it"
+        );
+
+        acknowledge(&next);
+        assert_eq!(watermark.advance(), 10);
+        watermark.close();
+        assert_eq!(watermark.advance(), 20, "the closing channel closes it");
+        assert_eq!(watermark.outstanding(), 0);
+    }
+
+    #[test]
+    fn a_discarded_event_never_counts_as_delivered() {
+        let shutdown = Shutdown::with_grace(SHUTDOWN_GRACE);
+        let producer = create_producer(&producer_config(NO_BROKER), &shutdown);
+        let mut watermark = Watermark::default();
+        let tracking = watermark.track(10);
+        enqueue(&producer, &outbound_at("k", 10), b"0", tracking, &shutdown).unwrap();
+        watermark.close();
+        // Once a shutdown has begun, a purged event is discarded instead of aborting.
+        shutdown.begin();
+        producer.purge(PurgeConfig::default().queue());
+        // A flush returns once librdkafka holds nothing, so once the report has been handled.
+        producer
+            .flush(REPORT_TIMEOUT)
+            .expect("the purge reports the event");
+
+        assert_eq!(
+            watermark.outstanding(),
+            1,
+            "the discarded event stays outstanding"
+        );
+        assert_eq!(watermark.advance(), 0, "so W never passes its command");
+    }
+
+    #[test]
+    fn a_watermark_record_round_trips_and_an_empty_topic_or_a_tombstone_reads_as_zero() {
+        for delivered in [0, 1, 1_762_000_000_123_456_789, u64::MAX] {
+            assert_eq!(
+                decode_watermark(Some(&encode_watermark(delivered))),
+                Ok(delivered)
+            );
+        }
+        assert_eq!(
+            encode_watermark(0x0102_0304_0506_0708),
+            [1, 2, 3, 4, 5, 6, 7, 8],
+            "big-endian"
+        );
+        assert_eq!(decode_watermark(None), Ok(0));
+        let error = decode_watermark(Some(b"seven b")).unwrap_err();
+        assert!(error.contains(DELIVERED_TOPIC), "{error}");
+    }
+
+    #[test]
+    fn a_watermark_write_into_a_full_queue_is_skipped_instead_of_waited_out() {
+        let mut config = producer_config(NO_BROKER);
+        config.set("queue.buffering.max.messages", "1");
+        let (producer, _) = recording_producer(&config);
+        let shutdown = Shutdown::with_grace(SHUTDOWN_GRACE);
+        enqueue(
+            &producer,
+            &outbound("0"),
+            b"0",
+            untracked_event(),
+            &shutdown,
+        )
+        .unwrap();
+        let mut refusals = StallLog::default();
+
+        assert!(!write_watermark(&producer, 7, &mut refusals));
+        assert_eq!(refusals.failures, 1, "the full queue refused it");
+        // A broker would make room by acknowledging the event; without one, discard it. Its place
+        // frees only once its report has been handled, after the report returns, so this waits
+        // for librdkafka to hold nothing rather than for the report.
+        producer.purge(PurgeConfig::default().queue());
+        producer
+            .flush(REPORT_TIMEOUT)
+            .expect("the purge reports the event");
+        assert!(write_watermark(&producer, 7, &mut refusals));
+    }
+
+    #[test]
+    fn a_skipped_watermark_write_is_made_on_the_next_cycle() {
+        let (writes_tx, writes) = mpsc::channel();
+        let shutdown = Shutdown::with_grace(SHUTDOWN_GRACE);
+        let sender = OrderedSender::spawn(8, shutdown.clone(), move |events| {
+            let mut skip = true;
+            run_sender(
+                events,
+                &shutdown,
+                &mut Watermark::default(),
+                |event| Ok(event.payload.clone()),
+                // The broker acknowledges every event at once.
+                |_, _, tracking| {
+                    acknowledge(&tracking);
+                    Ok(())
+                },
+                |delivered| {
+                    writes_tx.send((delivered, Instant::now())).unwrap();
+                    !std::mem::replace(&mut skip, false)
+                },
+            );
+        });
+        sender.submit(outbound_at("a", 10));
+        sender.submit(outbound_at("b", 20));
+
+        let (skipped, at) = writes.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (written, again) = writes.recv_timeout(Duration::from_secs(5)).unwrap();
+        drop(sender);
+
+        assert_eq!(
+            (skipped, written),
+            (10, 10),
+            "the skipped W is written next"
+        );
+        assert!(again - at >= WATERMARK_INTERVAL, "{:?}", again - at);
+        assert!(
+            writes.try_iter().next().is_none(),
+            "and not again while W stands still"
+        );
+    }
+
+    #[test]
+    fn a_failed_watermark_delivery_is_logged_and_never_aborts() {
+        // No shutdown has begun, so a failed delivery of an event would abort the test process.
+        let producer = create_producer(
+            &producer_config(NO_BROKER),
+            &Shutdown::with_grace(SHUTDOWN_GRACE),
+        );
+        assert!(write_watermark(&producer, 7, &mut StallLog::default()));
+        // As a lost record would, its delivery fails.
+        producer.purge(PurgeConfig::default().queue());
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while producer
+            .context()
+            .watermark_failures
+            .lock()
+            .unwrap()
+            .failures
+            == 0
+        {
+            assert!(Instant::now() < deadline, "the purge reports the record");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn deposit_at(user_id: u64, timestamp: u64) -> OrderCommand {
+        let mut deposit = OrderCommand::deposit_funds(user_id, 1_000, 1);
+        deposit.set_status(Status::Processed);
+        deposit.timestamp = timestamp;
+        deposit
+    }
+
+    fn placed_at(user_id: u64, timestamp: u64) -> OrderCommand {
+        let mut order = OrderCommand::place_order(
+            common::TimeInForce::Gtc,
+            user_id,
+            1_000,
+            1,
+            Side::Bid,
+            MARKET_ID,
+            user_id,
+        );
+        order.order_id = timestamp;
+        order.set_status(Status::Placed);
+        order.timestamp = timestamp;
+        order
+    }
+
+    #[test]
+    fn replay_re_publishes_exactly_the_live_events_of_the_commands_above_the_watermark() {
+        let journal = || {
+            [
+                deposit_at(1, 10),
+                placed_at(1, 20),
+                deposit_at(2, 30),
+                placed_at(2, 40),
+            ]
+        };
+        let mut above_w = journal()[2..].to_vec();
+
+        let replayed = published_by(ReplayControl::enabled(), 20, &mut journal());
+        assert_eq!(
+            replayed,
+            published(&mut above_w),
+            "as they were published live"
+        );
+        assert_eq!(replayed.len(), 5);
+        assert!(
+            published_by(ReplayControl::enabled(), 40, &mut journal()).is_empty(),
+            "nothing at or below W"
+        );
+    }
+
+    #[test]
+    fn only_a_live_command_is_answered() {
+        assert_eq!(outcome(false, 30, 20), Outcome::EventsAndResponse);
+        assert_eq!(
+            outcome(false, 10, 20),
+            Outcome::EventsAndResponse,
+            "W applies to replayed commands only"
+        );
+        assert_eq!(outcome(true, 30, 20), Outcome::Events, "no response");
+        assert_eq!(outcome(true, 20, 20), Outcome::Nothing);
+        assert_eq!(outcome(true, 10, 20), Outcome::Nothing);
+        assert_eq!(
+            outcome(true, 0, 0),
+            Outcome::Nothing,
+            "balance preload, unstamped, is never published"
+        );
+    }
+
+    fn settings(partitions: usize, cleanup_policy: &str, min_insync: Option<u32>) -> TopicSettings {
+        TopicSettings {
+            partitions,
+            cleanup_policy: Some(cleanup_policy.to_string()),
+            min_insync_replicas: min_insync,
+        }
+    }
+
+    #[test]
+    fn the_startup_check_refuses_a_missing_or_misconfigured_topic() {
+        let event = settings(12, "delete", Some(2));
+        let delivered = settings(1, "compact", Some(2));
+        for production in [false, true] {
+            for name in EVENT_TOPICS {
+                assert_eq!(topic_problem(name, Some(&event), production), None);
+            }
+            assert_eq!(
+                topic_problem(DELIVERED_TOPIC, Some(&delivered), production),
+                None
+            );
+            for name in EVENT_TOPICS.into_iter().chain([DELIVERED_TOPIC]) {
+                let missing = topic_problem(name, None, production).expect("missing refuses");
+                assert!(missing.contains(&format!("topic {name} does not exist")));
+                assert!(
+                    missing.contains("or the core is not allowed to describe it"),
+                    "a listing leaves out a topic the core may not describe: {missing}"
+                );
+            }
+            for (wrong, why) in [
+                (settings(2, "compact", Some(2)), "has 2 partitions"),
+                (settings(1, "delete", Some(2)), "cleanup.policy=delete"),
+                (
+                    settings(1, "compact,delete", Some(2)),
+                    "cleanup.policy=compact,delete",
+                ),
+            ] {
+                let problem = topic_problem(DELIVERED_TOPIC, Some(&wrong), production).expect(why);
+                assert!(problem.contains(DELIVERED_TOPIC), "{problem}");
+                assert!(problem.contains(why), "{problem}");
+            }
+        }
+
+        // An event topic whose writes need fewer than two in-sync replicas: production only.
+        for min_insync in [Some(1), None] {
+            let weak = settings(12, "delete", min_insync);
+            assert_eq!(topic_problem(ORDERS, Some(&weak), false), None);
+            let problem = topic_problem(ORDERS, Some(&weak), true).expect("production refuses");
+            assert!(problem.contains("topic orders has min.insync.replicas="));
+        }
+        assert_eq!(
+            topic_problem(
+                DELIVERED_TOPIC,
+                Some(&settings(1, "compact", Some(1))),
+                true
+            ),
+            None,
+            "a lost watermark costs duplicates, never an event"
+        );
+    }
+
+    #[test]
+    fn a_topic_error_is_waited_out_only_while_kafka_is_unavailable_or_moving_the_topic() {
+        use RDKafkaErrorCode::*;
+
+        for code in [
+            LeaderNotAvailable,
+            NotLeaderForPartition,
+            ReplicaNotAvailable,
+            BrokerNotAvailable,
+            NotController,
+            UnknownTopicOrPartition,
+            RequestTimedOut,
+            NetworkException,
+            OperationTimedOut,
+            BrokerTransportFailure,
+            AllBrokersDown,
+        ] {
+            assert_eq!(
+                topic_error(ORDERS, code),
+                StartupFailure::Unreachable(format!("topic orders: {code}"))
+            );
+        }
+        for code in [
+            TopicAuthorizationFailed,
+            ClusterAuthorizationFailed,
+            InvalidTopic,
+            InvalidReplicationFactor,
+            InvalidRequest,
+            PolicyViolation,
+            KafkaStorageError,
+            Unknown,
+        ] {
+            let StartupFailure::Refused(reason) = topic_error(DELIVERED_TOPIC, code) else {
+                panic!("waiting cannot clear {code:?}, so the start refuses");
+            };
+            assert!(
+                reason.contains(&format!("topic {DELIVERED_TOPIC} ")),
+                "{reason}"
+            );
+            assert!(reason.contains(&code.to_string()), "{reason}");
+        }
+    }
+
+    #[test]
+    fn a_denied_watermark_read_refuses_and_any_other_reader_error_is_waited_out() {
+        use RDKafkaErrorCode::*;
+
+        // fetch_watermarks fails with MetadataFetch, the read itself with MessageConsumption.
+        for error in [
+            KafkaError::MetadataFetch(TopicAuthorizationFailed),
+            KafkaError::MessageConsumption(TopicAuthorizationFailed),
+            KafkaError::MessageConsumption(GroupAuthorizationFailed),
+            KafkaError::MessageConsumption(ClusterAuthorizationFailed),
+        ] {
+            let StartupFailure::Refused(reason) = watermark_error(error.clone()) else {
+                panic!("waiting cannot clear {error}, so the start refuses");
+            };
+            assert!(
+                reason.contains(&format!("topic {DELIVERED_TOPIC}: {error};")),
+                "{reason}"
+            );
+            assert!(
+                reason.contains(&format!("consumer group {WATERMARK_READER_GROUP}")),
+                "{reason}"
+            );
+        }
+        for error in [
+            KafkaError::MetadataFetch(OperationTimedOut),
+            KafkaError::MetadataFetch(AllBrokersDown),
+            KafkaError::MetadataFetch(LeaderNotAvailable),
+            KafkaError::MetadataFetch(UnknownTopicOrPartition),
+            KafkaError::MessageConsumption(BrokerTransportFailure),
+            KafkaError::MessageConsumption(NotLeaderForPartition),
+            KafkaError::MessageConsumption(FencedLeaderEpoch),
+            KafkaError::MessageConsumption(UnknownLeaderEpoch),
+            KafkaError::MessageConsumption(OffsetNotAvailable),
+            KafkaError::MessageConsumption(AutoOffsetReset),
+        ] {
+            assert_eq!(
+                watermark_error(error.clone()),
+                StartupFailure::Unreachable(error.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn a_topic_configuration_that_kafka_could_not_describe_refuses_the_start() {
+        use rdkafka::admin::{ConfigEntry, ConfigResource, ConfigSource, OwnedResourceSpecifier};
+
+        let described = |entries: &[(&str, &str)]| -> ConfigResourceResult {
+            Ok(ConfigResource {
+                specifier: OwnedResourceSpecifier::Topic(DELIVERED_TOPIC.to_string()),
+                entries: entries
+                    .iter()
+                    .map(|(name, value)| ConfigEntry {
+                        name: name.to_string(),
+                        value: Some(value.to_string()),
+                        source: ConfigSource::DynamicTopic,
+                        is_read_only: false,
+                        is_default: false,
+                        is_sensitive: false,
+                    })
+                    .collect(),
+            })
+        };
+        let mut read = settings(1, "", None);
+        let entries = [
+            ("cleanup.policy", "compact"),
+            ("min.insync.replicas", "2"),
+            ("retention.ms", "-1"),
+        ];
+        assert_eq!(
+            read_configuration(DELIVERED_TOPIC, described(&entries), &mut read),
+            Ok(())
+        );
+        assert_eq!(read.cleanup_policy.as_deref(), Some("compact"));
+        assert_eq!(read.min_insync_replicas, Some(2));
+
+        // How rdkafka 0.36 returns a topic that Kafka could not describe.
+        let Err(StartupFailure::Refused(reason)) =
+            read_configuration(DELIVERED_TOPIC, described(&[]), &mut read)
+        else {
+            panic!("a description without settings refuses");
+        };
+        assert!(
+            reason.contains(&format!("topic {DELIVERED_TOPIC};")),
+            "{reason}"
+        );
+        assert!(reason.contains("DescribeConfigs"), "{reason}");
+
+        let denied = RDKafkaErrorCode::TopicAuthorizationFailed;
+        assert_eq!(
+            read_configuration(ORDERS, Err(denied), &mut read),
+            Err(topic_error(ORDERS, denied))
+        );
+    }
+
+    #[test]
+    fn startup_waits_while_kafka_is_unreachable_and_stops_at_a_refusal() {
+        let mut attempts = 0;
+        let answer = wait_for_kafka(Duration::from_millis(1), || {
+            attempts += 1;
+            if attempts < 3 {
+                Err(StartupFailure::Unreachable("connection refused".into()))
+            } else {
+                Ok(7)
+            }
+        });
+        assert_eq!((answer, attempts), (Ok(7), 3));
+
+        let mut attempts = 0;
+        let refused: Result<(), _> = wait_for_kafka(Duration::from_millis(1), || {
+            attempts += 1;
+            Err(StartupFailure::Refused(
+                "topic vex-core.delivered does not exist".into(),
+            ))
+        });
+        assert_eq!(
+            (refused, attempts),
+            (Err("topic vex-core.delivered does not exist".into()), 1)
+        );
     }
 }

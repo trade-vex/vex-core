@@ -143,7 +143,6 @@ fn test_client_server_communication() {
             GATEWAY_AUTHENTICATION_KEY.into(),
             producer,
             publications,
-            false,
             shutdown_flag,
         )
         .unwrap();
@@ -195,7 +194,6 @@ fn test_every_gateway_receives_its_handshake_reply() {
                 GATEWAY_AUTHENTICATION_KEY.into(),
                 producer,
                 Arc::new(Publications::new()),
-                false,
                 shutdown,
             )
             .unwrap()

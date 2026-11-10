@@ -5,7 +5,7 @@ use common::CoreMarketSpecification;
 use engine::{CoreEngine, EngineResult, OrderProducer};
 use hashbrown::HashMap;
 use processors::{
-    events::KafkaEventsHandler,
+    events::{Journaling, KafkaEventsHandler},
     journaling::{JournalingProcessor, ReplayControl},
 };
 use std::{
@@ -77,12 +77,12 @@ impl RunningEngine {
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let config = VexConfig::new(Environment::Development);
-/// let _engine = start(config, false)?;
+/// let _engine = start(config)?;
 /// // Server runs until _engine is dropped
 /// # Ok(())
 /// # }
 /// ```
-pub fn start(mut config: VexConfig, replay: bool) -> Result<RunningEngine, EngineError> {
+pub fn start(mut config: VexConfig) -> Result<RunningEngine, EngineError> {
     config
         .validate()
         .map_err(|error| EngineError::Configuration(error.to_string()))?;
@@ -90,12 +90,19 @@ pub fn start(mut config: VexConfig, replay: bool) -> Result<RunningEngine, Engin
     report_disabled_journaling(&config);
     resolve_gateway_authentication(&mut config);
 
+    let journaling = if config.core_networking.request_control_channel.is_empty() {
+        Journaling::Disabled
+    } else {
+        Journaling::Enabled {
+            production: config.is_production(),
+        }
+    };
     #[allow(unused_mut)] // mut needed when balance-preload feature is enabled
     let ((engine, mut producer), replay_control) = init_internal(
         config.symbols.symbols.clone(),
         config.kafka_broker.clone(),
         config.schema_registry_url.clone(),
-        replay,
+        journaling,
         config.core_networking.enable_core_pinning,
         config.environment.clone(),
     )?;
@@ -142,9 +149,12 @@ pub fn start(mut config: VexConfig, replay: bool) -> Result<RunningEngine, Engin
 /// Publishes the configured deposits, then waits until every one has cleared the pipeline.
 ///
 /// Preload is re-applied on every start, so it must never be journaled: a journaled deposit
-/// would be credited twice on replay. Journaling skips commands while no archive publication
-/// is installed, and `CoreEngine::run` installs it only after this returns, so the wait makes
-/// "never journaled" a guarantee instead of a race against archive initialization.
+/// would be credited twice on replay. It runs while the replay flag is set, as every start sets
+/// it until the journal is replayed, so journaling passes it through unstamped (timestamp 0) and
+/// the events stage, which re-publishes only replayed commands above the delivered watermark,
+/// never publishes it. Journaling also skips commands while no archive publication is installed,
+/// and `CoreEngine::run` installs it only after this returns, so the wait makes "never journaled"
+/// a guarantee instead of a race against archive initialization.
 #[cfg(feature = "balance-preload")]
 fn preload_balances(
     preload: &vex_config::BalancePreloadConfig,
@@ -216,21 +226,21 @@ fn resolve_gateway_authentication(config: &mut VexConfig) {
 
 /// Internal initialization function
 ///
-/// Creates the core engine with all necessary components. This is used by both
-/// the production `start()` function and the test `setup()` function.
+/// Creates the core engine with all necessary components. With journaling enabled, the events
+/// handler first checks the Kafka topics and reads the delivered watermark, before the pipeline
+/// starts; a missing or misconfigured topic fails this.
+///
+/// The replay flag starts enabled: every start replays the journal (an empty or absent one
+/// replays nothing), and `CoreEngine::run` clears the flag once the replay has drained.
 pub fn init_internal(
     symbol_specs: HashMap<u32, CoreMarketSpecification>,
     kafka_broker: String,
     schema_registry_url: String,
-    replay: bool,
+    journaling: Journaling,
     enable_core_pinning: bool,
     environment: vex_config::Environment,
 ) -> EngineResult<((CoreEngine, OrderProducer), ReplayControl)> {
-    let replay_control = if replay {
-        ReplayControl::enabled()
-    } else {
-        ReplayControl::disabled()
-    };
+    let replay_control = ReplayControl::enabled();
     let publications = Arc::new(Publications::new());
     let journaling_processor =
         JournalingProcessor::new(Arc::clone(&publications), replay_control.clone());
@@ -240,7 +250,9 @@ pub fn init_internal(
         &schema_registry_url,
         Arc::clone(&publications),
         replay_control.clone(),
-    );
+        journaling,
+    )
+    .map_err(EngineError::ServerInitialization)?;
 
     // Use no-pinning for Development environment to avoid CPU affinity issues
     let core_pinning = if matches!(environment, vex_config::Environment::Development) {
@@ -441,10 +453,7 @@ mod tests {
         let mut config = VexConfig::new(vex_config::Environment::Production);
         config.balance_preload.enabled = true;
 
-        assert!(matches!(
-            start(config, false),
-            Err(EngineError::Configuration(_))
-        ));
+        assert!(matches!(start(config), Err(EngineError::Configuration(_))));
     }
 
     #[cfg(feature = "balance-preload")]
@@ -466,9 +475,10 @@ mod tests {
         );
         let (_engine, mut producer) = TestEngineBuilder::new()
             .with_symbol_specs(specs)
+            // Preload runs while the replay flag is set, as `init_internal` sets it at every start.
             .with_journaling_processor(JournalingProcessor::new(
                 Arc::clone(&publications),
-                ReplayControl::disabled(),
+                ReplayControl::enabled(),
             ))
             .with_events_handler(test::GatewayResponsesOnly(Arc::clone(&publications)))
             .with_publications(Arc::clone(&publications))

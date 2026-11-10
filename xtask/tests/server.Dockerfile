@@ -49,11 +49,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 # Copy the built test server binary
 COPY --from=builder /usr/src/app/target/release/test_server /usr/local/bin/test_server
-# Copy the Aeron media driver and the entrypoint script
+# Copy the Aeron libraries; the media driver runs in the aeron-archive container
 COPY ./xtask/tests/bin/lib /usr/local/lib/
 RUN ldconfig
-COPY ./xtask/tests/bin/aeronmd /usr/local/bin/aeronmd
-COPY ./xtask/tests/start-server.sh /usr/local/bin/start-server.sh
-RUN chmod +x /usr/local/bin/start-server.sh
 
-ENTRYPOINT ["/usr/local/bin/start-server.sh"]
+ENTRYPOINT ["/usr/local/bin/test_server"]

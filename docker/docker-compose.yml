@@ -46,8 +46,9 @@ services:
       - VEX_ENV
       - RUST_LOG=info
       # This stack runs only a media driver, no Aeron Archive, so the archive channel is empty:
-      # commands are not journaled and `--replay` is unavailable. Production rejects an empty
-      # channel, so VEX_ENV=production fails at startup here.
+      # commands are not journaled, so nothing is replayed, and events queued when the process
+      # dies are not re-published. Production rejects an empty channel, so VEX_ENV=production
+      # fails at startup here.
       - VEX__CORE_NETWORKING__REQUEST_CONTROL_CHANNEL=
       # Kafka and its Schema Registry, passed through from the calling shell. This stack runs
       # neither; unset, the dev defaults point at localhost, which here is the container itself.

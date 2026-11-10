@@ -12,7 +12,11 @@ use vex_config::GatewayNetworkingConfig;
 use vex_networking::client::{OrderCommandHandler, Publisher, VexGateway};
 
 /// Test client for interacting with VexCore
+///
+/// Dropping it stops the gateway's polling thread, so a test can connect again, to a restarted
+/// core, without leaving the previous connection spinning.
 pub struct TestClient {
+    gateway: VexGateway,
     publisher: Publisher,
     receiver: Receiver<OrderCommand>,
     timeout: Duration,
@@ -52,6 +56,7 @@ impl TestClient {
         debug!("Test client {} started successfully", client_id);
 
         Ok(Self {
+            gateway,
             publisher,
             receiver: rx,
             timeout,
@@ -169,5 +174,13 @@ impl TestClient {
             );
         }
         responses
+    }
+}
+
+impl Drop for TestClient {
+    fn drop(&mut self) {
+        if let Err(e) = self.gateway.shutdown() {
+            error!("Client {} did not shut down: {}", self.client_id, e);
+        }
     }
 }

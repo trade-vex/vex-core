@@ -28,17 +28,28 @@ impl PipelineProgress {
         self.completed.store(sequence, Ordering::Release);
     }
 
-    pub(crate) fn drain(&self, timeout: Duration) -> Result<(), ServerError> {
+    /// Waits until the terminal handler has completed every sequence submitted so far. Fails only
+    /// once `stall` passes without `completed` advancing, as `replay::drain_replay` does:
+    /// a drain that re-publishes a replay waits for Kafka, which can take as long as Kafka needs,
+    /// but a pipeline that stops (Kafka down, a stuck stage) still fails.
+    pub(crate) fn drain(&self, stall: Duration) -> Result<(), ServerError> {
         let target = self.submitted.load(Ordering::Acquire);
-        wait_until(timeout, || {
-            Ok(self.completed.load(Ordering::Acquire) >= target)
-        })
-        .map_err(|error| {
-            ServerError::DrainError(format!(
-                "terminal consumer at {}, submitted sequence {target}: {error}",
-                self.completed.load(Ordering::Acquire)
-            ))
-        })
+        let mut completed = self.completed.load(Ordering::Acquire);
+        let mut last_progress = Instant::now();
+        while completed < target {
+            if last_progress.elapsed() >= stall {
+                return Err(ServerError::DrainError(format!(
+                    "terminal consumer stalled at {completed} for {stall:?}, submitted sequence {target}"
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+            let now = self.completed.load(Ordering::Acquire);
+            if now > completed {
+                completed = now;
+                last_progress = Instant::now();
+            }
+        }
+        Ok(())
     }
 }
 
@@ -90,6 +101,41 @@ mod tests {
         assert!(progress.drain(Duration::from_millis(20)).is_err());
         release.send(()).unwrap();
         progress.drain(Duration::from_secs(1)).unwrap();
+    }
+
+    #[test]
+    fn a_drain_that_keeps_advancing_outlasts_its_stall_timeout() {
+        const STALL: Duration = Duration::from_millis(300);
+        let progress = Arc::new(PipelineProgress::new());
+        progress.submitted(19);
+        let terminal = {
+            let progress = Arc::clone(&progress);
+            std::thread::spawn(move || {
+                // Slower in total than the stall timeout, but never stalled that long.
+                for sequence in 0..=19 {
+                    std::thread::sleep(Duration::from_millis(30));
+                    progress.completed(sequence);
+                }
+            })
+        };
+
+        let started = Instant::now();
+        progress.drain(STALL).unwrap();
+        assert!(started.elapsed() > STALL, "{:?}", started.elapsed());
+        terminal.join().unwrap();
+    }
+
+    #[test]
+    fn a_drain_that_stops_advancing_fails_after_its_stall_timeout() {
+        const STALL: Duration = Duration::from_millis(50);
+        let progress = PipelineProgress::new();
+        progress.submitted(9);
+        progress.completed(3);
+
+        let started = Instant::now();
+        let error = progress.drain(STALL).unwrap_err();
+        assert!(started.elapsed() >= STALL);
+        assert!(error.to_string().contains("stalled at 3"), "{error}");
     }
 
     #[test]

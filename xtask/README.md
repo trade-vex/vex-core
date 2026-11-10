@@ -19,13 +19,36 @@ cargo xtask --help
 
 ### Build Docker Images
 
-Builds the necessary Docker images for the `vex-server` and `vex-client` services, which are used in all testing scenarios.
+Builds the necessary Docker images for the `aeron-archive`, `vex-server` and `vex-client` services, which are used in all testing scenarios.
 
 **Usage:**
 ```sh
 docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml up media-driver --build
 cargo xtask build-docker
 ```
+
+### Kafka Topics
+
+Applies `deploy/kafka/topics.toml`, the source of truth for the Kafka topics the core produces and
+their Schema Registry subjects, to a cluster: creates the missing topics and sets every topic's
+configuration and every subject's compatibility to what the file declares. A deploy job runs it
+for every environment (`deploy/kafka/README.md`).
+
+**Usage:**
+```sh
+cargo xtask kafka apply --brokers <bootstrap servers> --schema-registry <url> [--single-broker]
+```
+
+`--single-broker` gives every topic one replica and `min.insync.replicas=1`, for a development or
+test cluster of one broker.
+
+### The Test Stack
+
+`xtask/tests/docker-compose.yml` runs Redpanda (with its Schema Registry, and no topic
+auto-creation), an Aeron `ArchivingMediaDriver` (`aeron-archive`) and the core (`vex-server`),
+which joins the archive's network and IPC namespaces: commands are journaled, and every start
+replays the journal, as in production. Before vex-server starts, xtask applies
+`deploy/kafka/topics.toml` to Redpanda with `--single-broker`.
 
 ### Unified Test Command
 
@@ -35,6 +58,7 @@ All tests are now run through the unified `cargo xtask test` command with subcom
 cargo xtask test
   ├── e2e [OPTIONS]           # Docker-based network E2E tests
   ├── integration [SUITE]     # Integration tests
+  ├── outbox                  # Re-publication, startup wait and topic check (Docker)
   ├── benchmark               # Performance benchmarks
   └── unit                    # Run cargo test for xtask
 ```
@@ -99,6 +123,21 @@ cargo xtask test integration gtc --verbose
 
 # Run balance tests and stop on first failure
 cargo xtask test integration balance --fail-fast
+```
+
+#### Outbox Tests
+
+Runs the core's outbox scenarios, in order, on one continuous ledger: a `kill -9` with events
+queued behind a paused broker, a graceful shutdown that runs out of its delivery grace with the
+broker paused, a start while the broker does not answer, a clean restart, and starts that must
+refuse a missing or non-compacted `vex-core.delivered`. The oracle is the test client's own ledger,
+built from the core's responses: Kafka must hold every event it expects, by
+`(topic, key, timestamp)`, and its latest balance per key must equal the ledger's. The orders are
+limit orders only, because replay does not regenerate a market buy's events exactly (#140).
+
+**Usage:**
+```sh
+cargo xtask test outbox
 ```
 
 #### Benchmarks

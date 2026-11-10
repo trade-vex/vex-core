@@ -112,8 +112,8 @@ impl Publications {
     /// stamps every live command above. The server sets it before it accepts any command.
     ///
     /// 0 while there is none: an empty archive, or journaling disabled (no archive control
-    /// channel, as `VEX_DISABLE_ARCHIVE` sets). Timestamps, and the order ids derived from them,
-    /// then follow the wall clock alone.
+    /// channel). Timestamps, and the order ids derived from them, then follow the wall clock
+    /// alone.
     pub fn journal_tail(&self) -> u64 {
         self.journal_tail.load(Ordering::Acquire)
     }

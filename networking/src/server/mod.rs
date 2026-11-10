@@ -185,7 +185,6 @@ impl VexCoreServer {
         authentication_key: GatewayAuthenticationKey,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
         publications: Arc<Publications>,
-        replay: bool,
         shutdown: Arc<AtomicBool>,
     ) -> Result<Self, ServerError> {
         // Validate configuration
@@ -214,21 +213,22 @@ impl VexCoreServer {
             let archive = Self::initialize_archive(&config, &aeron)?;
             let recordings = Self::list_recordings(&archive)?;
 
-            // With or without replay, every live command is stamped above the journal's last
-            // command, and its order id is derived from that timestamp.
+            // Every live command is stamped above the journal's last command, and its order id
+            // is derived from that timestamp.
             let journal_tail = match tail_recording(&recordings) {
                 Some(record) => Self::read_journal_tail(&aeron, &archive, record, &shutdown)?,
                 None => 0,
             };
             publications.set_journal_tail(journal_tail);
 
-            let recording = match (replay, replay_lineage(&recordings)) {
-                (false, _) => None,
-                (true, None) => {
+            // Every start replays the journal, and extends the recording it replayed. An empty
+            // archive holds nothing to replay, so the start is fresh.
+            let recording = match replay_lineage(&recordings) {
+                None => {
                     info!(target: "replay", action = "no_recording_available");
                     None
                 }
-                (true, Some(record)) => Some(Self::start_replay(
+                Some(record) => Some(Self::start_replay(
                     &aeron,
                     &archive,
                     record,
@@ -242,7 +242,7 @@ impl VexCoreServer {
             let (subscription_id, channel) = Self::start_recording(&archive, recording)?;
             // If startup fails from here on, stop the recording explicitly: a publication that
             // never connected leaves no image for `auto_stop`, and the archive would then refuse
-            // the next non-replay start with "recording exists".
+            // to start or extend the next recording with "recording exists".
             let recording_archive = archive.clone();
             stop_recording_on_error = Some(UndoOnError::new(move || {
                 if let Err(error) = recording_archive.stop_recording_subscription(subscription_id) {
