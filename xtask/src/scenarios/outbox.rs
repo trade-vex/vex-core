@@ -35,19 +35,14 @@ const ASKER: u64 = 102;
 /// fewer than the 108,000 it takes to fill its queues and answer `Busy`.
 const QUEUED_ORDER_PAIRS: u64 = 25;
 
-/// How long the core gets to accept a gateway after a start: the topic check, the replay and its
-/// re-publication.
+/// How long the core gets to accept a gateway after a start: the topic check, after a `kill -9`
+/// the wait for the media driver to release the dead core's journal (up to its client liveness
+/// timeout, 10 s, and 5 s), the replay and its re-publication.
 const START_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How long a stopping core gets to exit: a graceful shutdown with the broker paused spends the
 /// 20 s delivery grace, plus up to 5 s, after its pipeline drain.
 const STOP_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// How long the media driver takes to release the publications of a client that died without
-/// closing them: its client liveness timeout (10 s), and a margin. A core started sooner after a
-/// `kill -9` finds its journal's publication still held by the dead process, and fails to start
-/// ("existing publication has different 'term-offset'"; #201).
-const DEAD_CLIENT_RELEASE: Duration = Duration::from_secs(15);
 
 /// What the client's responses say Kafka must hold.
 #[derive(Default)]
@@ -298,7 +293,8 @@ impl Outbox {
         self.verify().await
     }
 
-    /// `kill -9` with events queued behind a paused broker: the restart re-publishes them.
+    /// `kill -9` with events queued behind a paused broker, and a restart at once: it waits for the
+    /// media driver to release the dead core's journal, then re-publishes the events.
     async fn kill_with_events_queued(&mut self) -> TestResult<()> {
         {
             let _paused = Paused::new(BROKER)?;
@@ -307,8 +303,14 @@ impl Outbox {
             stack::signal(CORE, "KILL")?;
             stack::wait_exited(CORE, STOP_TIMEOUT)?;
         }
-        tokio::time::sleep(DEAD_CLIENT_RELEASE).await;
+        let since = stack::now();
         self.start_core()?;
+        let logs = stack::logs_since(CORE, &since)?;
+        if !logs.contains("waiting_for_journal_release") {
+            return Err(TestError::Assertion {
+                message: format!("the restart began after the journal's release:\n{logs}"),
+            });
+        }
         self.verify().await
     }
 

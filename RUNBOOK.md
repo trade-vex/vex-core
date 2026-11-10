@@ -210,6 +210,9 @@ kill -TERM <pid>
 
 # Force stop (use only if graceful shutdown fails)
 kill -9 <pid>
+# The next start waits until the media driver releases the killed process's journal, about the
+# driver's client liveness timeout (10 s by default) after the kill, logging
+# `waiting_for_journal_release`.
 ```
 
 ### Stop Media Driver
@@ -233,12 +236,22 @@ Every start, with journaling configured:
 1. **Checks the Kafka topics and reads the delivered watermark**, before the pipeline starts (see
    [Kafka Topics](#kafka-topics)). While Kafka does not answer, the core waits, logging
    `waiting_for_kafka` every 10 s; it logs `watermark_read` once it has read the watermark.
-2. **Replays the journal**: the newest recording that holds commands, which the start then
+2. **Waits until no killed process holds the journal.** A process that died while journaling (a
+   crash, `kill -9`, an orchestrator's kill) holds it until the media driver's client liveness
+   timeout passes (`aeron.client.liveness.timeout`, 10 s by default): the driver keeps its
+   publication, and the archive keeps recording it. The start waits for the driver to release it
+   and for the archive to stop that recording at its final position, so that the replay holds
+   every command the dead process journaled. It logs `waiting_for_journal_release` every 5 s, and
+   `journal_released` once done. A start right after a crash therefore takes about that timeout
+   longer, instead of failing. After a graceful stop, the driver frees the closed publication
+   within two of its timer checks (draining, then lingering; `aeron.timer.interval`, 1 s by
+   default), so a start right after it waits up to about 2 s.
+3. **Replays the journal**: the newest recording that holds commands, which the start then
    extends. An empty archive holds nothing to replay, so the start is fresh. The replay
    re-publishes the events of every command above the watermark, the events a previous run may
    not have delivered, and answers no gateway. It takes as long as Kafka needs to accept them,
    and fails only once 10 s pass without progress (`DrainError`).
-3. **Stamps every live command above the last journaled command** (`journal_tail_read`), so
+4. **Stamps every live command above the last journaled command** (`journal_tail_read`), so
    order ids and timestamps never repeat any the archive holds, even if this host's clock is
    behind. A start fails if it cannot read it.
 
@@ -283,6 +296,7 @@ ls -la config.dev.yaml config.test.yaml config.prod.yaml 2>/dev/null
 - `Kafka answered for topic <topic> with an error that waiting cannot clear` or `Kafka described no setting of topic <topic>`: usually a denied ACL (`Topic authorization failed`, or no DescribeConfigs); grant the ACLs in `deploy/kafka/README.md`
 - `the core may not read the watermark from topic vex-core.delivered`: grant the core Read on `vex-core.delivered` and Describe on the consumer group `vex-core.watermark-reader` (`deploy/kafka/README.md`, "ACLs")
 - The process runs but never accepts gateways, logging `waiting_for_kafka`: the configured `kafka_broker` (or `VEX__KAFKA_BROKER`) does not answer. The core waits for it before it starts
+- `the journal (aeron:ipc stream 2001) is still held after ...`: a live recording of the journal, or a publication of it, outlasted the media driver's client liveness timeout and 5 s more. A killed core holds them only until that timeout passes and the archive has recorded the rest of its publication. So either another process is journaling to this media driver and archive (run one core per archive), or the archive is lagging: it is still recording a large backlog that the killed core's publication held unrecorded (its recording position still advances; start again once the recording has stopped). The error lists the recordings and the publications' session ids (`make aeron-stat` shows the publications)
 - A config file must set `schema_registry_url`, or `VEX__SCHEMA_REGISTRY_URL` must; only the built-in dev/test defaults, used when no file exists, supply one. A value that is not an `http://` or `https://` URL is rejected
 - Check that `/dev/shm` has sufficient space for Aeron
 - Verify symbol configuration is valid (market_id, assets, fees)

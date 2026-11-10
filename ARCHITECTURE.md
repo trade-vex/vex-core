@@ -1200,11 +1200,12 @@ Session ID isolation ensures replay stream doesn't interfere with concurrent liv
 Polls replay subscription, processing fragments and publishing to disruptor. Tracks position from `start_position` to `stop_position` in fixed frame size increments. Busy-spins when no fragments available.
 
 **Startup**: every start with an archive configured replays the journal; there is no start without replay.
-1. Calls `list_recordings_for_uri()` to find the recordings, and reads the journal tail: the last command of the newest recording that holds any
-2. Calls `start_replay()` on the newest recording, unless it holds no command (an empty archive starts fresh)
-3. Creates subscription to receive replayed messages
-4. Polls subscription, publishing each message to disruptor, then waits for the pipeline to drain: it fails only after 10 s without progress, since the events stage may be re-publishing to a slow Kafka
-5. Calls `extend_recording()` to append future messages to the replayed recording, or `start_recording()` for a fresh start
+1. Waits until no process that died while journaling holds the journal: the archive lists no live recording of it, and the media driver holds no publication of it (its publisher limit counters). A killed core holds both until the driver's client liveness timeout passes; the driver then releases its publication, and the archive records what that publication still held and stops the recording at its final position. Stopping the recording sooner would lose the commands it had not recorded yet, and the extension's publication would meet the dead one ("existing publication has different 'term-offset'"). After a clean stop, the driver frees the closed publication within two timer checks (draining, then lingering; about 2 s). The wait logs `waiting_for_journal_release` every 5 s, and fails once the driver's client liveness timeout (read from its CnC file) and 5 s more have passed: another process is journaling, or the archive is still recording a large backlog the dead process left unrecorded. It then stops a recording subscription left without an image (a process killed between starting its recording and connecting its publication)
+2. Calls `list_recordings_for_uri()` to find the recordings, and reads the journal tail: the last command of the newest recording that holds any
+3. Calls `start_replay()` on the newest recording, unless it holds no command (an empty archive starts fresh)
+4. Creates subscription to receive replayed messages
+5. Polls subscription, publishing each message to disruptor, then waits for the pipeline to drain: it fails only after 10 s without progress, since the events stage may be re-publishing to a slow Kafka
+6. Calls `extend_recording()` to append future messages to the replayed recording, or `start_recording()` for a fresh start
 
 During the replay, journaling skips every command (they are journaled already), and the events handler re-publishes only the commands above the delivered watermark and answers no gateway (see Events Handler).
 

@@ -3,10 +3,19 @@ use rusteron_archive::{
     AeronArchiveRecordingDescriptor, AeronArchiveRecordingDescriptorConsumerFuncCallback,
     AeronUriStringBuilder, IntoCString,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use tracing::debug;
+use tracing::{debug, info};
 
-use crate::server::{RECORDING_CHANNEL, ServerError};
+use crate::server::{RECORDING_CHANNEL, RECORDING_STREAM_ID, ServerError};
+
+/// How often a start that waits for the journal's release asks what still holds it.
+const JOURNAL_RELEASE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// How often a start that waits for the journal's release logs what it waits for.
+const JOURNAL_RELEASE_LOG_INTERVAL: Duration = Duration::from_secs(5);
+/// Type id of the publisher limit counter that the media driver keeps for as long as it holds a
+/// publication (Aeron's `AERON_COUNTER_PUBLISHER_LIMIT_TYPE_ID`).
+const PUBLISHER_LIMIT_COUNTER_TYPE_ID: i32 = 1;
 
 pub struct ExtendedRecordingDescriptor {
     pub recording_id: i64,
@@ -77,24 +86,121 @@ impl RecorderDescriptorReader {
     }
 }
 
-/// Returns the recording's final position. A live descriptor belongs to a process killed while
-/// recording; the stop issued before listing ends that recording, so wait for its final position.
-pub(super) fn release_recording(
-    record: &RecordingInfo,
-    await_stop: impl FnOnce(i64) -> Result<i64, ServerError>,
-) -> Result<i64, ServerError> {
-    let stop = if is_live_recording(record.stop_position) {
-        await_stop(record.recording_id)?
-    } else {
-        record.stop_position
-    };
-    if stop < record.start_position {
-        return Err(ServerError::ReplayError(format!(
-            "recording {} has invalid positions: start {}, stop {stop}",
-            record.recording_id, record.start_position
-        )));
+/// What holds the journal while a start waits for it (see [`await_journal_release`]).
+#[derive(Debug, Default)]
+pub(super) struct JournalHolders {
+    /// The archive's live recordings of the journal, by recording id.
+    pub live_recordings: Vec<i64>,
+    /// The journal publications that the media driver holds, by session id.
+    pub publications: Vec<i32>,
+}
+
+impl JournalHolders {
+    fn is_empty(&self) -> bool {
+        self.live_recordings.is_empty() && self.publications.is_empty()
     }
-    Ok(stop)
+}
+
+/// Waits until nothing holds the journal, asking `holders` what does, for at most `timeout`.
+///
+/// A process that died while journaling holds the journal: the media driver keeps its publication
+/// until the driver's client liveness timeout passes, and the archive keeps recording that
+/// publication until then. Once the driver releases it, the archive records what it still held
+/// and stops the recording by itself, at its final position. A process that stopped cleanly
+/// closed its publication, which the driver frees within two of its timer checks (draining, then
+/// lingering). Replaying sooner could miss commands the dead process journaled, and the
+/// extension's publication would meet the dead one ("existing publication has different
+/// 'term-offset'"). Logs what it waits for every few seconds; fails once `timeout` passes, or when
+/// `shutdown` is set.
+pub(super) fn await_journal_release(
+    timeout: Duration,
+    shutdown: &AtomicBool,
+    mut holders: impl FnMut() -> Result<JournalHolders, ServerError>,
+) -> Result<(), ServerError> {
+    let start = Instant::now();
+    let mut next_log = start;
+    let mut waited = false;
+    loop {
+        let held = holders()?;
+        let elapsed = start.elapsed();
+        if held.is_empty() {
+            if waited {
+                info!(
+                    target: "replay",
+                    action = "journal_released",
+                    waited_ms = elapsed.as_millis()
+                );
+            }
+            return Ok(());
+        }
+        if elapsed >= timeout {
+            return Err(ServerError::ReplayError(format!(
+                "the journal ({RECORDING_CHANNEL} stream {RECORDING_STREAM_ID}) is still held after \
+                 {timeout:?}: live recordings {:?}, publications (session ids) {:?}. A process that \
+                 died while journaling holds it only until the media driver's client liveness \
+                 timeout passes and the archive has recorded the rest of its publication: either \
+                 another process is journaling to it, or the archive is lagging, still recording a \
+                 large backlog that a dead process's publication held unrecorded",
+                held.live_recordings, held.publications
+            )));
+        }
+        if shutdown.load(Ordering::Acquire) {
+            return Err(ServerError::ReplayError(
+                "start cancelled while waiting for the journal's release".into(),
+            ));
+        }
+        if Instant::now() >= next_log {
+            info!(
+                target: "replay",
+                action = "waiting_for_journal_release",
+                live_recordings = ?held.live_recordings,
+                publications = ?held.publications,
+                waited_s = elapsed.as_secs(),
+                timeout_s = timeout.as_secs(),
+                "the media driver or the archive still holds a previous process's journal; one \
+                 that died while journaling holds it until the driver's client liveness timeout \
+                 passes"
+            );
+            next_log += JOURNAL_RELEASE_LOG_INTERVAL;
+        }
+        waited = true;
+        std::thread::sleep(JOURNAL_RELEASE_POLL_INTERVAL.min(timeout - elapsed));
+    }
+}
+
+/// The session id of the journal publication whose publisher limit is the media driver counter of
+/// type `type_id` and key `key`, if it is one. The key is Aeron's stream counter key, in native
+/// byte order: registration id (i64), session id (i32), stream id (i32), then the channel as its
+/// length (i32) and its ASCII bytes.
+pub(super) fn journal_publication(type_id: i32, key: &[u8]) -> Option<i32> {
+    if type_id != PUBLISHER_LIMIT_COUNTER_TYPE_ID {
+        return None;
+    }
+    let int = |offset: usize| {
+        let bytes = key.get(offset..offset + 4)?;
+        Some(i32::from_ne_bytes(bytes.try_into().ok()?))
+    };
+    let (session_id, stream_id) = (int(8)?, int(12)?);
+    let channel_length = usize::try_from(int(16)?).ok()?;
+    let channel = key.get(20..20 + channel_length)?;
+    (stream_id == RECORDING_STREAM_ID && channel.starts_with(RECORDING_CHANNEL.as_bytes()))
+        .then_some(session_id)
+}
+
+/// Fails if a recording is live. Listed once nothing held the journal, a live recording means
+/// another process started journaling to it meanwhile.
+pub(super) fn ensure_stopped_recordings(recordings: &[RecordingInfo]) -> Result<(), ServerError> {
+    match recordings
+        .iter()
+        .find(|record| is_live_recording(record.stop_position))
+    {
+        Some(record) => Err(ServerError::ReplayError(format!(
+            "recording {} of the journal became live while this core was starting: another \
+             process is journaling to it",
+            record.recording_id
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// The image cursor includes padding, including polls which deliver no data fragments.
@@ -136,21 +242,21 @@ fn is_valid_recording(start_position: i64, stop_position: i64) -> bool {
     is_live_recording(stop_position) || start_position <= stop_position
 }
 
-/// Whether a released recording (see [`release_recording`]) holds any command.
+/// Whether a stopped recording holds any command.
 fn holds_commands(record: &RecordingInfo) -> bool {
     record.stop_position > record.start_position
 }
 
 /// The recording a start replays and extends: the newest, unless it holds no command. A newer
 /// empty recording means a run started fresh and journaled nothing; replaying an older one would
-/// resurrect the lineage that run discarded. Takes released recordings, oldest first.
+/// resurrect the lineage that run discarded. Takes stopped recordings, oldest first.
 pub fn replay_lineage(recordings: &[RecordingInfo]) -> Option<&RecordingInfo> {
     recordings.last().filter(|record| holds_commands(record))
 }
 
 /// The recording that holds the last command in the journal: the newest one holding any. A newer
 /// empty recording discards an older lineage's state, not the ids and timestamps it issued.
-/// Takes released recordings, oldest first.
+/// Takes stopped recordings, oldest first.
 pub fn tail_recording(recordings: &[RecordingInfo]) -> Option<&RecordingInfo> {
     recordings
         .iter()
@@ -158,7 +264,7 @@ pub fn tail_recording(recordings: &[RecordingInfo]) -> Option<&RecordingInfo> {
         .find(|record| holds_commands(record))
 }
 
-/// Where reading a released recording's last command starts: the start of the term that holds
+/// Where reading a stopped recording's last command starts: the start of the term that holds
 /// the recording's last byte, or the recording's own start if that is later. Both are frame
 /// boundaries. A term ends in padding only where the next command did not fit, so the term that
 /// holds the last byte also holds the last command, and finding it replays at most one term.
@@ -320,30 +426,99 @@ mod tests {
         drain_replay(65_472, 65_536, Duration::ZERO, || Ok((65_536, true))).unwrap();
     }
 
+    fn held(live_recordings: &[i64], publications: &[i32]) -> JournalHolders {
+        JournalHolders {
+            live_recordings: live_recordings.to_vec(),
+            publications: publications.to_vec(),
+        }
+    }
+
     #[test]
-    fn c8_3_live_recording_is_awaited_and_stopped_recording_is_used_as_is() {
-        let record = |stop_position| recording(0, stop_position);
-        let live = record(i64::from(AERON_NULL_POSITION));
-
-        let stop = release_recording(&live, |id| {
-            assert_eq!(id, 7);
-            Ok(FRAMESIZE)
+    fn c8_3_a_start_waits_until_nothing_holds_the_journal() {
+        // A dead process's live recording and publication, then its publication alone, then
+        // nothing.
+        let mut answers = [held(&[7], &[42]), held(&[], &[42]), held(&[], &[])].into_iter();
+        let mut polls = 0;
+        await_journal_release(Duration::from_secs(5), &AtomicBool::new(false), || {
+            polls += 1;
+            Ok(answers.next().expect("no poll after the release"))
         })
         .unwrap();
-        assert_eq!(stop, FRAMESIZE);
+        assert_eq!(polls, 3);
+    }
+
+    #[test]
+    fn c8_3_a_journal_still_held_at_the_timeout_fails_the_start_naming_its_holders() {
+        const TIMEOUT: Duration = Duration::from_millis(250);
+        let started = Instant::now();
+        let error =
+            await_journal_release(TIMEOUT, &AtomicBool::new(false), || Ok(held(&[7], &[42])))
+                .unwrap_err()
+                .to_string();
+        assert!(started.elapsed() >= TIMEOUT);
         assert!(
-            release_recording(&live, |_| Err(ServerError::ReplayError(
-                "not released".into()
-            )))
-            .is_err()
+            error.contains("still held") && error.contains("[7]") && error.contains("[42]"),
+            "{error}"
         );
-        assert!(release_recording(&live, |_| Ok(-1)).is_err());
-
-        let stop = release_recording(&record(FRAMESIZE * 2), |_| {
-            panic!("a stopped recording has its final position already")
+        // It names both causes: another process journaling, and an archive lagging behind.
+        assert!(
+            error.contains("another process is journaling") && error.contains("archive is lagging"),
+            "{error}"
+        );
+        // Nothing to wait for: no timeout applies.
+        await_journal_release(Duration::ZERO, &AtomicBool::new(false), || {
+            Ok(held(&[], &[]))
         })
         .unwrap();
-        assert_eq!(stop, FRAMESIZE * 2);
+    }
+
+    #[test]
+    fn c8_3_shutdown_cancels_the_wait_for_the_journal() {
+        let error = await_journal_release(Duration::from_secs(60), &AtomicBool::new(true), || {
+            Ok(held(&[7], &[]))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("cancelled"), "{error}");
+    }
+
+    /// A publisher limit counter's key, as the media driver lays it out.
+    fn stream_counter_key(session_id: i32, stream_id: i32, channel: &str) -> Vec<u8> {
+        let mut key = 99_i64.to_ne_bytes().to_vec();
+        key.extend(session_id.to_ne_bytes());
+        key.extend(stream_id.to_ne_bytes());
+        key.extend((channel.len() as i32).to_ne_bytes());
+        key.extend(channel.as_bytes());
+        key.resize(112, 0);
+        key
+    }
+
+    #[test]
+    fn journal_publications_are_found_by_their_publisher_limit_counters() {
+        let extension = "aeron:ipc?init-term-id=1|term-length=65536|term-id=1|term-offset=96";
+        let journal = |channel| stream_counter_key(42, RECORDING_STREAM_ID, channel);
+        assert_eq!(journal_publication(1, &journal(extension)), Some(42));
+        assert_eq!(
+            journal_publication(1, &journal(RECORDING_CHANNEL)),
+            Some(42)
+        );
+        // Another counter type, stream or medium is not a journal publication's limit.
+        assert_eq!(journal_publication(12, &journal(extension)), None);
+        let replay = stream_counter_key(42, crate::server::REPLAY_STREAM_ID, extension);
+        assert_eq!(journal_publication(1, &replay), None);
+        assert_eq!(
+            journal_publication(1, &journal("aeron:udp?endpoint=localhost:2001")),
+            None
+        );
+        // A key shorter than the channel it declares.
+        assert_eq!(journal_publication(1, &journal(extension)[..30]), None);
+    }
+
+    #[test]
+    fn a_recording_live_once_the_journal_was_released_fails_the_start() {
+        assert!(ensure_stopped_recordings(&[recording(0, 0), recording(0, FRAMESIZE)]).is_ok());
+        let live = recording(0, i64::from(AERON_NULL_POSITION));
+        let error = ensure_stopped_recordings(&[recording(0, FRAMESIZE), live]).unwrap_err();
+        assert!(error.to_string().contains("recording 7"), "{error}");
     }
 
     #[test]
