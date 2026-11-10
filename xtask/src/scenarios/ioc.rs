@@ -714,12 +714,9 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
         initial_usd_balance.available, initial_btc_balance.available
     );
 
-    // Calculate expected conservative price
-    // According to ARCHITECTURE.md:
-    // conservative_price = best_ask + (best_ask * slippage_bps / 10000)
-    // Assuming slippage = 50 bps (0.5%)
-    let slippage_bps = 50;
-    let slippage_adjustment = (best_ask_price * slippage_bps) / 10_000;
+    // R1 caps a market buy at best_ask + best_ask * slippage_bps / 10_000, with the market's
+    // configured slippage, and returns that cap as the response price.
+    let slippage_adjustment = best_ask_price * u64::from(market_spec.slippage) / 10_000;
     let expected_conservative_price = best_ask_price + slippage_adjustment;
     info!(
         "  → Expected conservative price: {} (best_ask={}, slippage={})",
@@ -736,6 +733,7 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
 
     let market_response = ctx.execute_command(market_buy)?;
     ResponseVerifier::assert_filled(&market_response)?;
+    ResponseVerifier::assert_price(&market_response, expected_conservative_price)?;
     info!(
         "  → Alice's market buy filled: order_id={}",
         market_response.order_id

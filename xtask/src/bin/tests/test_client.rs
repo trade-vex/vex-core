@@ -135,13 +135,23 @@ fn run_correctness_test(
         received_ids.len()
     );
 
-    // Write received IDs to file
-    let mut file = File::create("/results/received_ids.txt")?;
-    for id in &received_ids {
-        writeln!(file, "{}", client_id * 1_000_000 + id)?;
-    }
+    write_received_ids(client_id, received_ids)?;
 
     println!("Client-{client_id} finished.");
+    Ok(())
+}
+
+/// Write the ids this client got a response for, offset by `client_id * 1_000_000`, to
+/// `/results/received_ids-<client_id>.txt`, where xtask reads them back. Every client has its own
+/// file because all of them write to the same `/results` mount.
+fn write_received_ids(
+    client_id: u64,
+    ids: impl IntoIterator<Item = u64>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut file = File::create(format!("/results/received_ids-{client_id}.txt"))?;
+    for id in ids {
+        writeln!(file, "{}", client_id * 1_000_000 + id)?;
+    }
     Ok(())
 }
 
@@ -156,6 +166,7 @@ fn run_latency_test(
     let quote_asset_id = 1;
     // Market ID: base asset in lower 16 bits, quote in upper 16
     let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
+    let mut received_ids = Vec::new();
 
     for i in 0..samples {
         let user_id = i + 1000;
@@ -182,6 +193,7 @@ fn run_latency_test(
             println!("Client-{client_id} received ack for order_id: {client_order_id}");
             let rtt = start_time.elapsed().as_micros() as u64;
             histogram.record(rtt).unwrap();
+            received_ids.push(i);
         }
     }
 
@@ -194,5 +206,5 @@ fn run_latency_test(
     println!("Max:           {} µs", histogram.max());
     println!("---------------------------------\n");
 
-    Ok(())
+    write_received_ids(client_id, received_ids)
 }

@@ -826,8 +826,9 @@ async fn test_market_buy_fok_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Test 1: Alice market buy FOK for 4 BTC (should fill)");
 
     let buy_size_1 = 4;
-    let slippage_bps = 50;
-    let slippage = (best_ask_price * slippage_bps) / 10_000;
+    // R1 caps a market buy at best_ask + best_ask * slippage_bps / 10_000, with the market's
+    // configured slippage, and returns that cap as the response price.
+    let slippage = best_ask_price * u64::from(ctx.market_spec().slippage) / 10_000;
     let conservative_price = best_ask_price + slippage;
     info!(
         "  → Conservative price: {} (best_ask={} + slippage={})",
@@ -845,6 +846,7 @@ async fn test_market_buy_fok_section(ctx: &mut TestContext) -> TestResult<()> {
 
     let response1 = ctx.execute_command(market_buy1)?;
     ResponseVerifier::assert_filled(&response1)?;
+    ResponseVerifier::assert_price(&response1, conservative_price)?;
     info!(
         "  → Alice's market buy FOK filled: {} BTC @ {}",
         buy_size_1, best_ask_price
