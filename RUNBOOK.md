@@ -194,7 +194,12 @@ VEX_ENV=development make server
 # Graceful shutdown (SIGTERM or Ctrl+C)
 kill -TERM <pid>
 
-# vex-core handles Ctrl+C and performs graceful shutdown
+# vex-core handles Ctrl+C and performs graceful shutdown, with gateways connected or not:
+# it closes every gateway session, drains the pipeline, waits for the archive to record every
+# accepted command, then delivers the events still queued and writes the delivered watermark.
+# It logs `flush_complete` once the brokers have acknowledged every event, or
+# `shutdown_with_undelivered_events` with the count of those the next start re-publishes.
+# A shutdown that delivers everything leaves the next start nothing to re-publish.
 
 # A graceful shutdown can take about 45 s when Kafka is slow or down: pipeline drain
 # (fails once 10 s pass without progress), archive catch-up (up to 10 s), Kafka delivery

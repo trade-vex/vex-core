@@ -62,27 +62,32 @@ impl Duologue {
         }
     }
 
+    /// Closes the session's subscription, and releases its ring producer before returning.
+    ///
+    /// The fragment handler holds the session's clone of the ring producer, and the pipeline joins
+    /// its consumers when the last clone drops. Aeron calls the handler only inside
+    /// [`Self::poll`], on this thread, so nothing can reach it once the session stops polling:
+    /// it is released here. The close notification runs on Aeron's conductor thread: at shutdown,
+    /// after the server thread has dropped its own producers, or never once the Aeron client is
+    /// torn down. Holding the clone, it made the pipeline join on that thread, or not at all, and
+    /// the process exited without the events stage's shutdown (#200). The image handlers are
+    /// registered with the subscription, and Aeron's conductor may call them until the close
+    /// completes, so the close notification releases them.
     pub fn close(&mut self) -> Result<(), AeronCError> {
-        // taking ownership of the handlers to move into the close notification
-        // this is required because, the subscription.close() is an async operation,
-        // hence it is unsafe to release the handlers immediately after calling close()
-        let fragment_handler = self.fragment_handler.take();
-        let on_image_available_handler = self.on_image_available_handler.take();
-        let on_image_unavailable_handler = self.on_image_unavailable_handler.take();
+        if let Some(mut fragment_handler) = self.fragment_handler.take() {
+            fragment_handler.release();
+        }
 
-        if let (Some(fh), Some(iah), Some(iuh)) = (
-            fragment_handler,
-            on_image_available_handler,
-            on_image_unavailable_handler,
+        if let (Some(on_image_available_handler), Some(on_image_unavailable_handler)) = (
+            self.on_image_available_handler.take(),
+            self.on_image_unavailable_handler.take(),
         ) {
-            let close_notification = DuologueCloseNotification {
+            let closed = Handler::leak(DuologueCloseNotification {
                 gateway_id: self.gateway_id,
-                fragment_handler: fh,
-                on_image_available_handler: iah,
-                on_image_unavailable_handler: iuh,
-            };
-            self.subscription
-                .close(Some(&Handler::leak(close_notification)))?;
+                on_image_available_handler,
+                on_image_unavailable_handler,
+            });
+            self.subscription.close(Some(&closed))?;
         } else {
             self.subscription.close::<DuologueCloseNotification>(None)?;
         }
@@ -199,17 +204,16 @@ impl AeronUnavailableImageCallback for DuologueImageUnavailable {
     }
 }
 
+/// Releases a gateway subscription's image handlers once Aeron has closed the subscription: until
+/// then, Aeron's conductor may still call them.
 pub struct DuologueCloseNotification {
     pub gateway_id: u8,
-    pub fragment_handler: Handler<FragmentHandler>,
     pub on_image_available_handler: Handler<DuologueImageAvailable>,
     pub on_image_unavailable_handler: Handler<DuologueImageUnavailable>,
 }
 
 impl AeronNotificationCallback for DuologueCloseNotification {
     fn handle_aeron_notification(&mut self) {
-        // Only release handlers after the subscription is fully closed
-        self.fragment_handler.release();
         self.on_image_available_handler.release();
         self.on_image_unavailable_handler.release();
 

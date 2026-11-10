@@ -1126,7 +1126,7 @@ aeron:udp?endpoint={address}:{port}|session-id={session}
 
 **Unavailable Image**: Fires when remote publication disconnects. Triggers gateway cleanup via mpsc channel to GatewayManager.
 
-**Asynchronous Close**: Handler release deferred until `subscription.close()` completes. Handlers moved into close notification callback to prevent premature deallocation.
+**Asynchronous Close**: `subscription.close()` completes on Aeron's conductor thread, which may call the image handlers until then, so they move into the close notification, which releases them. The fragment handler runs only inside `poll`, on the server thread, so closing a session releases it at once, and with it the session's clone of the ring producer. The pipeline joins its consumers when its last producer drops, and that must happen on the server thread, which the process waits for: at shutdown the notification runs after the server thread has dropped its own producers, or never once the Aeron client is torn down.
 
 ### Publications Array for Response Routing
 
@@ -1223,11 +1223,11 @@ During the replay, journaling skips every command (they are journaled already), 
 3. `GatewayManager.poll()` receives cleanup request
 4. Closes duologue, removes publication, releases resources
 
-**Shutdown**:
-1. Closes all gateway duologues
-2. Stops archive recording via `stop_recording_subscription()`
-3. Releases all handlers
-4. Closes archive connection
+**Shutdown** (on the server thread, once the shutdown flag is set):
+1. Closes every gateway duologue, connected or not, releasing its ring producer (see Asynchronous Close), then the handshake subscription and its handlers
+2. Drains the pipeline, then waits until the archive has recorded everything journaling offered
+3. Stops archive recording via `stop_recording_subscription()` and closes the archive connection
+4. Drops the server, with its Aeron client, then the last ring producer: the pipeline joins its consumers, and the events stage delivers what it holds within its 20 s grace and writes the delivered watermark
 
 ### Message Encoding
 

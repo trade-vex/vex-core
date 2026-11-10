@@ -747,10 +747,11 @@ fn flush_at_shutdown<C: ProducerContext>(
     let _ = producer.flush(shutdown.time_left());
     let undelivered = in_channel + watermark.outstanding();
     if undelivered == 0 {
-        debug!(
+        info!(
             target: "events",
             component = "kafka_handler",
-            action = "flush_complete"
+            action = "flush_complete",
+            "every Kafka event was delivered before shutdown"
         );
     } else {
         error!(

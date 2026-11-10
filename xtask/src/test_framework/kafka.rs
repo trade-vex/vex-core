@@ -9,11 +9,11 @@
 
 use crate::test_framework::types::*;
 use hashbrown::{HashMap, HashSet};
-use processors::events::EVENT_TOPICS;
 use processors::events::trading_proto::{
     BalanceEvent, CancelOrderEvent, DepositEvent, OrderEvent, OrderbookEvent, TradeEvent,
     WithdrawEvent,
 };
+use processors::events::{DELIVERED_TOPIC, EVENT_TOPICS};
 use prost::Message as _;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, Consumer};
@@ -45,6 +45,7 @@ const RETRY_INTERVAL: Duration = Duration::from_millis(50);
 /// Every read first takes in all the events the broker holds at that moment, so it reflects
 /// everything the core has published so far.
 pub struct KafkaVerifier {
+    brokers: String,
     consumer: BaseConsumer,
     events: Events,
 }
@@ -80,7 +81,11 @@ impl KafkaVerifier {
             brokers, events.positions
         );
 
-        Ok(Self { consumer, events })
+        Ok(Self {
+            brokers: brokers.to_string(),
+            consumer,
+            events,
+        })
     }
 
     /// Get the latest balance published for a user and asset
@@ -216,6 +221,39 @@ impl KafkaVerifier {
                 Ok(((topic.clone(), *partition), end))
             })
             .collect()
+    }
+
+    /// The delivered watermark the core wrote last: the value of the last record of
+    /// `vex-core.delivered`, 8 bytes big-endian, which the core reads at every start
+    pub fn delivered_watermark(&self) -> TestResult<u64> {
+        let (low, high) = self
+            .consumer
+            .fetch_watermarks(DELIVERED_TOPIC, 0, BROKER_TIMEOUT)?;
+        if high <= low {
+            return Err(TestError::Verification {
+                message: format!("topic {DELIVERED_TOPIC} holds no watermark"),
+            });
+        }
+        let reader: BaseConsumer = ClientConfig::new()
+            .set("bootstrap.servers", &self.brokers)
+            .set("group.id", "xtask-integration")
+            .set("enable.auto.commit", "false")
+            .create()?;
+        let mut assignment = TopicPartitionList::new();
+        assignment.add_partition_offset(DELIVERED_TOPIC, 0, Offset::Offset(high - 1))?;
+        reader.assign(&assignment)?;
+        let record = reader.poll(BROKER_TIMEOUT).ok_or(TestError::Timeout {
+            timeout: BROKER_TIMEOUT,
+        })??;
+        record
+            .payload()
+            .and_then(|value| <[u8; 8]>::try_from(value).ok())
+            .map(u64::from_be_bytes)
+            .ok_or_else(|| TestError::Parse {
+                message: format!(
+                    "the last record of topic {DELIVERED_TOPIC} is not an 8-byte watermark"
+                ),
+            })
     }
 
     /// Read until `find` finds something, or `wait_timeout` passes
