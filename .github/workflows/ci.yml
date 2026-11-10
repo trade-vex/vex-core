@@ -25,10 +25,13 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# Every job sets timeout-minutes well above its longest normal run, so a stalled step (an apt
+# mirror hang) fails the job instead of running for GitHub's 6-hour default.
 jobs:
   test:
     name: Build and Test
     runs-on: ubuntu-latest
+    timeout-minutes: 50
 
     services:
       redpanda:
@@ -91,6 +94,7 @@ jobs:
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
@@ -103,6 +107,7 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -149,6 +154,7 @@ jobs:
   coverage:
     name: Code coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     if: >-
       github.event_name != 'pull_request' ||
       github.base_ref == 'develop' ||
@@ -195,6 +201,7 @@ jobs:
   audit:
     name: Security audit
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -211,6 +218,7 @@ jobs:
   xtask-tests:
     name: End-to-end tests
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     if: >-
       github.event_name != 'pull_request' ||
       github.base_ref == 'develop' ||
@@ -297,6 +305,7 @@ jobs:
     if: ${{ always() }}
     needs: [test, fmt, clippy, audit, coverage, xtask-tests]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Enforce required results
         env:
