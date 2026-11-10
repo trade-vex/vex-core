@@ -53,10 +53,10 @@ pub struct RecordingInfo {
     pub source_identity_length: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct RecorderDescriptorReader {
-    pub last_recording: Option<RecordingInfo>,
-    pub skipped_empty: usize,
+    /// Recordings with valid positions, oldest first: live, empty or holding commands.
+    pub recordings: Vec<RecordingInfo>,
     pub skipped_invalid: usize,
 }
 
@@ -73,11 +73,7 @@ impl AeronArchiveRecordingDescriptorConsumerFuncCallback for RecordingCounter {
 
 impl RecorderDescriptorReader {
     pub fn new() -> Self {
-        Self {
-            last_recording: None,
-            skipped_empty: 0,
-            skipped_invalid: 0,
-        }
+        Self::default()
     }
 }
 
@@ -136,8 +132,40 @@ pub fn is_live_recording(stop_position: i64) -> bool {
     stop_position == i64::from(AERON_NULL_POSITION)
 }
 
-fn is_replayable_recording(start_position: i64, stop_position: i64) -> bool {
-    is_live_recording(stop_position) || (stop_position > 0 && start_position < stop_position)
+fn is_valid_recording(start_position: i64, stop_position: i64) -> bool {
+    is_live_recording(stop_position) || start_position <= stop_position
+}
+
+/// Whether a released recording (see [`release_recording`]) holds any command.
+fn holds_commands(record: &RecordingInfo) -> bool {
+    record.stop_position > record.start_position
+}
+
+/// The recording `--replay` restores: the newest, unless it holds no command. A newer empty
+/// recording means the latest run started fresh and journaled nothing; replaying an older one
+/// would resurrect the lineage that run discarded. Takes released recordings, oldest first.
+pub fn replay_lineage(recordings: &[RecordingInfo]) -> Option<&RecordingInfo> {
+    recordings.last().filter(|record| holds_commands(record))
+}
+
+/// The recording that holds the last command in the journal: the newest one holding any. A newer
+/// empty recording discards an older lineage's state, not the ids and timestamps it issued.
+/// Takes released recordings, oldest first.
+pub fn tail_recording(recordings: &[RecordingInfo]) -> Option<&RecordingInfo> {
+    recordings
+        .iter()
+        .rev()
+        .find(|record| holds_commands(record))
+}
+
+/// Where reading a released recording's last command starts: the start of the term that holds
+/// the recording's last byte, or the recording's own start if that is later. Both are frame
+/// boundaries. A term ends in padding only where the next command did not fit, so the term that
+/// holds the last byte also holds the last command, and finding it replays at most one term.
+pub(super) fn tail_window_start(record: &RecordingInfo) -> i64 {
+    let term_length = i64::from(record.term_buffer_length);
+    let last_byte = record.stop_position - 1;
+    (last_byte - last_byte % term_length).max(record.start_position)
 }
 
 pub fn ensure_replayable_recording(skipped_invalid: usize) -> Result<(), ServerError> {
@@ -185,7 +213,7 @@ impl AeronArchiveRecordingDescriptorConsumerFuncCallback for RecorderDescriptorR
         &mut self,
         recording_descriptor: AeronArchiveRecordingDescriptor,
     ) {
-        if is_replayable_recording(
+        if is_valid_recording(
             recording_descriptor.start_position,
             recording_descriptor.stop_position,
         ) {
@@ -198,7 +226,7 @@ impl AeronArchiveRecordingDescriptorConsumerFuncCallback for RecorderDescriptorR
             );
             // Performing a deep copy here is essential;
             // the descriptor lifetime ends after the callback.
-            let recording_info = RecordingInfo {
+            self.recordings.push(RecordingInfo {
                 control_session_id: recording_descriptor.control_session_id,
                 correlation_id: recording_descriptor.correlation_id,
                 recording_id: recording_descriptor.recording_id,
@@ -215,18 +243,9 @@ impl AeronArchiveRecordingDescriptorConsumerFuncCallback for RecorderDescriptorR
                 stripped_channel_length: recording_descriptor.stripped_channel_length,
                 original_channel_length: recording_descriptor.original_channel_length,
                 source_identity_length: recording_descriptor.source_identity_length,
-            };
-            self.last_recording = Some(recording_info);
+            });
         } else {
-            if recording_descriptor.start_position == recording_descriptor.stop_position {
-                self.skipped_empty += 1;
-                // Descriptors arrive oldest first. A newer empty recording means the latest run
-                // started fresh and journaled nothing; replaying an older one would resurrect
-                // the lineage that run discarded.
-                self.last_recording = None;
-            } else {
-                self.skipped_invalid += 1;
-            }
+            self.skipped_invalid += 1;
             debug!(
                 target: "replay",
                 action = "recording_skipped",
@@ -242,6 +261,29 @@ impl AeronArchiveRecordingDescriptorConsumerFuncCallback for RecorderDescriptorR
 mod tests {
     use super::*;
     use common::FRAMESIZE;
+
+    const TERM_LENGTH: i64 = 65_536;
+
+    fn recording(start_position: i64, stop_position: i64) -> RecordingInfo {
+        RecordingInfo {
+            control_session_id: 0,
+            correlation_id: 0,
+            recording_id: 7,
+            start_timestamp: 0,
+            stop_timestamp: 0,
+            start_position,
+            stop_position,
+            initial_term_id: 1,
+            segment_file_length: TERM_LENGTH as i32,
+            term_buffer_length: TERM_LENGTH as i32,
+            mtu_length: 1408,
+            session_id: 17,
+            stream_id: 2001,
+            stripped_channel_length: 0,
+            original_channel_length: 0,
+            source_identity_length: 0,
+        }
+    }
 
     #[test]
     fn c8_1_replay_across_term_boundary_includes_padding() {
@@ -280,24 +322,7 @@ mod tests {
 
     #[test]
     fn c8_3_live_recording_is_awaited_and_stopped_recording_is_used_as_is() {
-        let record = |stop_position| RecordingInfo {
-            control_session_id: 0,
-            correlation_id: 0,
-            recording_id: 7,
-            start_timestamp: 0,
-            stop_timestamp: 0,
-            start_position: 0,
-            stop_position,
-            initial_term_id: 1,
-            segment_file_length: 65_536,
-            term_buffer_length: 65_536,
-            mtu_length: 1408,
-            session_id: 17,
-            stream_id: 2001,
-            stripped_channel_length: 0,
-            original_channel_length: 0,
-            source_identity_length: 0,
-        };
+        let record = |stop_position| recording(0, stop_position);
         let live = record(i64::from(AERON_NULL_POSITION));
 
         let stop = release_recording(&live, |id| {
@@ -329,11 +354,11 @@ mod tests {
     }
 
     #[test]
-    fn live_and_non_empty_stopped_recordings_are_replayable() {
-        assert!(is_replayable_recording(0, i64::from(AERON_NULL_POSITION)));
-        assert!(is_replayable_recording(0, 96));
-        assert!(!is_replayable_recording(0, 0));
-        assert!(!is_replayable_recording(96, 96));
+    fn live_empty_and_non_empty_recordings_are_valid() {
+        assert!(is_valid_recording(0, i64::from(AERON_NULL_POSITION)));
+        assert!(is_valid_recording(0, 96));
+        assert!(is_valid_recording(0, 0));
+        assert!(is_valid_recording(96, 96));
     }
 
     #[test]
@@ -374,16 +399,13 @@ mod tests {
 
     #[test]
     fn archive_with_only_empty_recordings_is_allowed() {
-        let reader = RecorderDescriptorReader {
-            last_recording: None,
-            skipped_empty: 2,
-            skipped_invalid: 0,
-        };
+        let reader = listed(&[(1, 0, 0), (2, FRAMESIZE, FRAMESIZE)]);
 
-        assert!(reader.last_recording.is_none());
-        assert_eq!(reader.skipped_empty, 2);
+        assert_eq!(reader.recordings.len(), 2);
         assert_eq!(reader.skipped_invalid, 0);
         assert!(ensure_replayable_recording(reader.skipped_invalid).is_ok());
+        assert!(replay_lineage(&reader.recordings).is_none());
+        assert!(tail_recording(&reader.recordings).is_none());
     }
 
     fn descriptor(recording_id: i64, start: i64, stop: i64) -> AeronArchiveRecordingDescriptor {
@@ -411,7 +433,9 @@ mod tests {
         .unwrap()
     }
 
-    fn newest_replayable(descriptors: &[(i64, i64, i64)]) -> Option<i64> {
+    /// The archive's `(recording_id, start, stop)` descriptors, oldest first, as the reader keeps
+    /// them.
+    fn listed(descriptors: &[(i64, i64, i64)]) -> RecorderDescriptorReader {
         let mut reader = RecorderDescriptorReader::new();
         for &(recording_id, start, stop) in descriptors {
             reader.handle_aeron_archive_recording_descriptor_consumer_func(descriptor(
@@ -420,25 +444,61 @@ mod tests {
                 stop,
             ));
         }
-        reader.last_recording.map(|record| record.recording_id)
+        reader
+    }
+
+    fn replayed(descriptors: &[(i64, i64, i64)]) -> Option<i64> {
+        replay_lineage(&listed(descriptors).recordings).map(|record| record.recording_id)
+    }
+
+    fn tail(descriptors: &[(i64, i64, i64)]) -> Option<i64> {
+        tail_recording(&listed(descriptors).recordings).map(|record| record.recording_id)
     }
 
     #[test]
     fn newer_empty_recording_is_not_bypassed_for_an_older_journal() {
         let live = i64::from(AERON_NULL_POSITION);
-        assert_eq!(newest_replayable(&[(1, 0, FRAMESIZE), (2, 0, 0)]), None);
-        assert_eq!(newest_replayable(&[(1, 0, live), (2, 0, 0)]), None);
-        assert_eq!(newest_replayable(&[(1, 0, 0), (2, 0, FRAMESIZE)]), Some(2));
+        assert_eq!(replayed(&[(1, 0, FRAMESIZE), (2, 0, 0)]), None);
+        assert_eq!(replayed(&[(1, 0, live), (2, 0, 0)]), None);
+        assert_eq!(replayed(&[(1, 0, 0), (2, 0, FRAMESIZE)]), Some(2));
         assert_eq!(
-            newest_replayable(&[(1, 0, FRAMESIZE), (2, 0, 0), (3, 0, FRAMESIZE)]),
+            replayed(&[(1, 0, FRAMESIZE), (2, 0, 0), (3, 0, FRAMESIZE)]),
             Some(3)
         );
     }
 
     #[test]
+    fn journal_tail_is_in_the_newest_recording_holding_commands() {
+        assert_eq!(tail(&[]), None);
+        assert_eq!(tail(&[(1, 0, 0)]), None);
+        // A fresh start that journaled nothing does not hide the ids issued before it.
+        assert_eq!(tail(&[(1, 0, FRAMESIZE), (2, 0, 0)]), Some(1));
+        assert_eq!(
+            tail(&[(1, 0, FRAMESIZE), (2, 0, 0), (3, 0, FRAMESIZE), (4, 0, 0)]),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn journal_tail_is_read_from_the_term_that_holds_it() {
+        let window = |start, stop| tail_window_start(&recording(start, stop));
+
+        assert_eq!(window(0, 3 * FRAMESIZE), 0);
+        // The first term ended in padding and the last command opened the second.
+        assert_eq!(window(0, TERM_LENGTH + FRAMESIZE), TERM_LENGTH);
+        // Ends in padding: the command that did not fit was never recorded.
+        assert_eq!(window(0, TERM_LENGTH), 0);
+        assert_eq!(window(0, 2 * TERM_LENGTH + 5 * FRAMESIZE), 2 * TERM_LENGTH);
+        // Never before the recording's own start.
+        assert_eq!(window(10 * FRAMESIZE, 12 * FRAMESIZE), 10 * FRAMESIZE);
+    }
+
+    #[test]
     fn corrupt_recording_is_fatal() {
-        assert!(!is_replayable_recording(96, 95));
-        assert!(ensure_replayable_recording(1).is_err());
+        assert!(!is_valid_recording(96, 95));
+        let reader = listed(&[(1, 96, 95)]);
+        assert!(reader.recordings.is_empty());
+        assert!(ensure_replayable_recording(reader.skipped_invalid).is_err());
     }
 
     #[test]

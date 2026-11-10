@@ -7,7 +7,13 @@ use rusteron_archive::{
         AERON_PUBLICATION_NOT_CONNECTED,
     },
 };
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 use tracing::{debug, error};
 
 use super::ServerError;
@@ -64,12 +70,14 @@ fn offer_response(retry_limit: usize, mut offer: impl FnMut() -> i64) -> i64 {
 pub struct Publications {
     gateways: [ArcSwapOption<AeronPublication>; MAX_GATEWAYS + 1],
     progress: PipelineProgress,
+    journal_tail: AtomicU64,
 }
 
 impl Publications {
     pub fn new() -> Self {
         Self {
             progress: PipelineProgress::new(),
+            journal_tail: AtomicU64::new(0),
             gateways: core::array::from_fn::<
                 ArcSwapOption<AeronPublication>,
                 { MAX_GATEWAYS + 1 },
@@ -98,6 +106,20 @@ impl Publications {
 
     pub fn set_archive_publication(&self, publication: AeronPublication) {
         self.gateways[MAX_GATEWAYS].store(Some(Arc::new(publication)));
+    }
+
+    /// Timestamp of the last command in the journal when this process started, which journaling
+    /// stamps every live command above. The server sets it before it accepts any command.
+    ///
+    /// 0 while there is none: an empty archive, or journaling disabled (no archive control
+    /// channel, as `VEX_DISABLE_ARCHIVE` sets). Timestamps, and the order ids derived from them,
+    /// then follow the wall clock alone.
+    pub fn journal_tail(&self) -> u64 {
+        self.journal_tail.load(Ordering::Acquire)
+    }
+
+    pub fn set_journal_tail(&self, timestamp: u64) {
+        self.journal_tail.store(timestamp, Ordering::Release);
     }
 
     pub fn set(

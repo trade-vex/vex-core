@@ -1,7 +1,6 @@
 use std::error::Error;
 use std::fmt;
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const NODE_BITS: u8 = 4;
 const STEP_BITS: u8 = 12;
@@ -14,6 +13,8 @@ const TIME_GRANULARITY_SHIFT: u8 = 10;
 const NODE_MAX: u64 = (1 << NODE_BITS) - 1;
 const STEP_MAX: u16 = (1 << STEP_BITS) - 1;
 const TIMESTAMP_MAX: u64 = (1 << TIMESTAMP_BITS) - 1;
+/// The nanoseconds within a tick (0-1023), which become the id's sequence.
+const TICK_NANOS_MASK: u64 = (1 << TIME_GRANULARITY_SHIFT) - 1;
 
 const TIMESTAMP_SHIFT: u8 = STEP_BITS + NODE_BITS; // 12 + 4 = 16
 const SEQUENCE_SHIFT: u8 = NODE_BITS; // 4
@@ -25,10 +26,9 @@ const DEFAULT_EPOCH: u64 = 1735689600000000000;
 #[derive(Debug)]
 pub enum SnowflakeError {
     MachineIdOutOfRange,
-    SequenceOverflow,
     EpochInTheFuture,
     EpochTooOld, // Triggered if Epoch is > ~9 years old
-    TimeBackwards,
+    BeforeEpoch,
     TimestampOverflow, // Triggered if running > ~9 years
 }
 
@@ -38,14 +38,11 @@ impl fmt::Display for SnowflakeError {
             SnowflakeError::MachineIdOutOfRange => {
                 write!(f, "Machine ID is out of range (must be 0-{})", NODE_MAX)
             }
-            SnowflakeError::SequenceOverflow => {
-                write!(f, "Sequence overflow: cannot generate a unique ID")
-            }
             SnowflakeError::EpochInTheFuture => write!(f, "Epoch is set in the future"),
             SnowflakeError::EpochTooOld => {
                 write!(f, "Epoch is too old for Shift-10 (Max ~9 years)")
             }
-            SnowflakeError::TimeBackwards => write!(f, "System time moved backwards"),
+            SnowflakeError::BeforeEpoch => write!(f, "Timestamp is before the epoch"),
             SnowflakeError::TimestampOverflow => {
                 write!(f, "Critical: Timestamp limit reached (Redeploy needed)")
             }
@@ -57,20 +54,19 @@ impl Error for SnowflakeError {}
 
 /// Snowflake ID generator
 ///
-/// This struct implements the Snowflake algorithm for generating unique monotonically increasing IDs.
-/// Each ID is composed of:
-/// - Timestamp (48 bits, representing ~1.024µs ticks)
-/// - Sequence number (12 bits)
-/// - Node ID (4 bits)
+/// An id is the timestamp journaling stamped on the command, plus the gateway that sent it:
+/// - Timestamp (48 bits): ~1.024µs ticks since the epoch (nanoseconds right-shifted by 10)
+/// - Sequence (12 bits): the timestamp's nanoseconds within its tick (0-1023)
+/// - Node (4 bits): the gateway id
 ///
-/// Uses Shift-10 encoding: nanoseconds are right-shifted by 10 bits (divided by 1024) to fit
-/// ~9.13 years of time range into 48 bits. This provides ~1.024 microsecond resolution.
+/// Ids therefore order exactly as their timestamps do, whatever their gateways: commands in one
+/// tick are sequenced by their nanoseconds. Journaling stamps every command strictly above the
+/// previous one and above the last command in the journal, so an id is never issued twice, within
+/// a process or across a restart.
+///
+/// Shift-10 fits ~9.13 years of time range into 48 bits.
 pub struct Snowflake {
-    start_time: Instant,  // Monotonic clock for duration measurement
-    start_system_ns: u64, // Wall-clock start time
-    epoch_ns: u64,        // Configured epoch
-    last_tick: u64,       // Last used time bucket (Shifted value)
-    sequence: u16,        // Sequence within the bucket
+    epoch_ns: u64, // Configured epoch
 }
 
 impl Snowflake {
@@ -95,39 +91,31 @@ impl Snowflake {
             return Err(SnowflakeError::EpochTooOld);
         }
 
-        Ok(Snowflake {
-            epoch_ns,
-            start_time: Instant::now(),
-            start_system_ns: current_unix_ns,
-            last_tick: 0,
-            sequence: 0,
-        })
+        Ok(Snowflake { epoch_ns })
     }
 
-    pub fn generate(&mut self, gateway: u64) -> Result<u64, SnowflakeError> {
+    /// The id of a command stamped `timestamp_ns` (nanoseconds since the Unix epoch) that
+    /// `gateway` sent.
+    pub fn generate(&self, timestamp_ns: u64, gateway: u64) -> Result<u64, SnowflakeError> {
         if gateway > NODE_MAX {
             return Err(SnowflakeError::MachineIdOutOfRange);
         }
 
-        let mut current_tick = self.current_tick()?;
+        let since_epoch = timestamp_ns
+            .checked_sub(self.epoch_ns)
+            .ok_or(SnowflakeError::BeforeEpoch)?;
 
-        if current_tick == self.last_tick {
-            // We are in the same 1.024µs bucket. Increment sequence.
-            self.sequence += 1;
-
-            if self.sequence > STEP_MAX {
-                // We burned through 4096 IDs in less than 1µs.
-                // Wait for the next bucket.
-                current_tick = self.wait_next_tick(current_tick)?;
-                self.sequence = 0;
-            }
-        } else {
-            // New bucket (new microsecond). Reset sequence.
-            self.sequence = 0;
+        // CRITICAL: Shift bits to fit 9 years into 48 bits
+        let tick = since_epoch >> TIME_GRANULARITY_SHIFT;
+        if tick > TIMESTAMP_MAX {
+            return Err(SnowflakeError::TimestampOverflow);
         }
 
-        self.last_tick = current_tick;
-        Ok(self.create_id(current_tick, self.sequence, gateway))
+        Ok(Self::create_id(
+            tick,
+            since_epoch & TICK_NANOS_MASK,
+            gateway,
+        ))
     }
 
     /// Parses a Snowflake ID into its components based on the new layout.
@@ -140,52 +128,9 @@ impl Snowflake {
         (timestamp, node, sequence)
     }
 
-    /// Returns the current time in "Compressed Ticks" (approx 1.024µs chunks)
-    fn current_tick(&self) -> Result<u64, SnowflakeError> {
-        // We use Instant to ensure monotonicity within the process lifespan
-        let elapsed_ns = self.start_time.elapsed().as_nanos() as u64;
-        let current_ns = self.start_system_ns + elapsed_ns;
-
-        if current_ns < self.epoch_ns {
-            return Err(SnowflakeError::TimeBackwards);
-        }
-
-        let delta_ns = current_ns - self.epoch_ns;
-
-        // CRITICAL: Shift bits to fit 9 years into 48 bits
-        let shifted_time = delta_ns >> TIME_GRANULARITY_SHIFT;
-        if shifted_time > TIMESTAMP_MAX {
-            return Err(SnowflakeError::TimestampOverflow);
-        }
-
-        Ok(shifted_time)
-    }
-
-    /// Busy-wait loop until the next time bucket arrives
-    fn wait_next_tick(&self, last_tick: u64) -> Result<u64, SnowflakeError> {
-        let deadline = Instant::now() + Duration::from_micros(100);
-
-        loop {
-            // Spin with CPU hint first
-            for _ in 0..64 {
-                let current = self.current_tick()?;
-                if current > last_tick {
-                    return Ok(current);
-                }
-                std::hint::spin_loop();
-            }
-
-            // Fall back to yield if spinning too long
-            if Instant::now() > deadline {
-                return Err(SnowflakeError::SequenceOverflow);
-            }
-            thread::yield_now();
-        }
-    }
-
     /// Creates the final ID using the Timestamp-Sequence-Node layout.
-    fn create_id(&self, timestamp: u64, sequence: u16, gateway: u64) -> u64 {
-        (timestamp << TIMESTAMP_SHIFT) | ((sequence as u64) << SEQUENCE_SHIFT) | gateway
+    fn create_id(timestamp: u64, sequence: u64, gateway: u64) -> u64 {
+        (timestamp << TIMESTAMP_SHIFT) | (sequence << SEQUENCE_SHIFT) | gateway
     }
 
     /// Extracts the Gateway ID from an ID based on the new layout.
@@ -206,6 +151,11 @@ impl Snowflake {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The first nanosecond of tick `tick` under the default epoch.
+    fn tick_start(tick: u64) -> u64 {
+        DEFAULT_EPOCH + (tick << TIME_GRANULARITY_SHIFT)
+    }
 
     #[test]
     fn test_new_with_default_epoch() {
@@ -254,168 +204,105 @@ mod tests {
 
     #[test]
     fn test_machine_id_out_of_range() {
-        let mut snowflake = Snowflake::new(None).unwrap();
-        let result = snowflake.generate(NODE_MAX + 1);
+        let snowflake = Snowflake::new(None).unwrap();
+        let result = snowflake.generate(tick_start(1), NODE_MAX + 1);
         assert!(matches!(result, Err(SnowflakeError::MachineIdOutOfRange)));
     }
 
     #[test]
-    fn test_basic_id_generation() {
-        let mut snowflake = Snowflake::new(None).unwrap();
-        let id = snowflake.generate(5).unwrap();
-        assert!(id > 0);
+    fn timestamps_outside_the_epoch_range_are_rejected() {
+        let snowflake = Snowflake::new(None).unwrap();
+
+        assert!(matches!(
+            snowflake.generate(DEFAULT_EPOCH - 1, 0),
+            Err(SnowflakeError::BeforeEpoch)
+        ));
+        assert!(snowflake.generate(tick_start(TIMESTAMP_MAX), 0).is_ok());
+        assert!(matches!(
+            snowflake.generate(tick_start(TIMESTAMP_MAX + 1), 0),
+            Err(SnowflakeError::TimestampOverflow)
+        ));
     }
 
     #[test]
-    fn test_monotonic_increase() {
-        let mut snowflake = Snowflake::new(None).unwrap();
-        let mut prev_id = 0u64;
+    fn same_tick_ids_are_sequenced_by_their_nanoseconds() {
+        let snowflake = Snowflake::new(None).unwrap();
+        let start = tick_start(5);
 
-        for _ in 0..100 {
-            let id = snowflake.generate(3).unwrap();
-            assert!(id > prev_id, "ID should be monotonically increasing");
-            prev_id = id;
-        }
+        let ids: Vec<u64> = [start, start + 1, start + 2, start + 1023, start + 1024]
+            .into_iter()
+            .map(|timestamp| snowflake.generate(timestamp, 3).unwrap())
+            .collect();
+
+        let parsed: Vec<_> = ids.iter().map(|&id| Snowflake::parse_id(id)).collect();
+        assert_eq!(
+            parsed,
+            [(5, 3, 0), (5, 3, 1), (5, 3, 2), (5, 3, 1023), (6, 3, 0)]
+        );
+        assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
     }
 
     #[test]
-    fn test_uniqueness() {
-        let mut snowflake = Snowflake::new(None).unwrap();
-        let mut ids = std::collections::HashSet::new();
+    fn ids_order_as_their_timestamps_whatever_the_gateway() {
+        let snowflake = Snowflake::new(None).unwrap();
+        let earlier = tick_start(7) + 500;
 
-        for _ in 0..1000 {
-            let id = snowflake.generate(7).unwrap();
-            assert!(ids.insert(id), "Generated duplicate ID: {}", id);
+        for later in [earlier + 1, tick_start(8)] {
+            assert!(
+                snowflake.generate(earlier, NODE_MAX).unwrap()
+                    < snowflake.generate(later, 0).unwrap()
+            );
         }
+        // One timestamp is one command, so this tie never happens in practice; the gateway
+        // still keeps the ids apart.
+        assert!(snowflake.generate(earlier, 0).unwrap() < snowflake.generate(earlier, 1).unwrap());
     }
 
     #[test]
     fn test_parse_id() {
-        let mut snowflake = Snowflake::new(None).unwrap();
+        let snowflake = Snowflake::new(None).unwrap();
         let gateway = 5;
-        let id = snowflake.generate(gateway).unwrap();
+        let id = snowflake.generate(tick_start(42) + 17, gateway).unwrap();
 
         let (timestamp, node, sequence) = Snowflake::parse_id(id);
 
         assert_eq!(node, gateway as u8);
-        assert!(timestamp > 0);
-        assert_eq!(sequence, 0); // First ID should have sequence 0
-    }
-
-    #[test]
-    fn test_sequence_increment() {
-        let mut snowflake = Snowflake::new(None).unwrap();
-        let gateway = 3;
-
-        // Generate multiple IDs rapidly to ensure same tick
-        let ids: Vec<u64> = (0..10)
-            .map(|_| snowflake.generate(gateway).unwrap())
-            .collect();
-
-        // Parse and check sequences
-        for (i, &id) in ids.iter().enumerate() {
-            let (_, node, sequence) = Snowflake::parse_id(id);
-            assert_eq!(node, gateway as u8);
-            // Sequence should increment (though may reset if tick changes)
-            if i > 0 {
-                let (prev_ts, _, prev_seq) = Snowflake::parse_id(ids[i - 1]);
-                let (curr_ts, _, _) = Snowflake::parse_id(id);
-
-                if prev_ts == curr_ts {
-                    assert_eq!(
-                        sequence,
-                        prev_seq + 1,
-                        "Sequence should increment within same tick"
-                    );
-                }
-            }
-        }
+        assert_eq!(timestamp, 42);
+        assert_eq!(sequence, 17);
     }
 
     #[test]
     fn test_different_gateways() {
-        let mut snowflake = Snowflake::new(None).unwrap();
+        let snowflake = Snowflake::new(None).unwrap();
 
         for gateway in 0..=NODE_MAX {
-            let id = snowflake.generate(gateway).unwrap();
+            let id = snowflake.generate(tick_start(1), gateway).unwrap();
             let (_, node, _) = Snowflake::parse_id(id);
             assert_eq!(node, gateway as u8);
         }
     }
 
     #[test]
-    fn test_timestamp_component() {
-        let mut snowflake = Snowflake::new(None).unwrap();
-
-        let id1 = snowflake.generate(0).unwrap();
-        let (ts1, _, _) = Snowflake::parse_id(id1);
-
-        // Sleep for a bit to ensure timestamp advances
-        std::thread::sleep(std::time::Duration::from_millis(10));
-
-        let id2 = snowflake.generate(0).unwrap();
-        let (ts2, _, _) = Snowflake::parse_id(id2);
-
-        assert!(ts2 >= ts1, "Timestamp should not go backwards");
-    }
-
-    #[test]
-    fn test_sequence_overflow_handling() {
-        let mut snowflake = Snowflake::new(None).unwrap();
-
-        // Try to generate more IDs than STEP_MAX in rapid succession
-        // This should trigger overflow handling
-        let mut ids = Vec::new();
-        for _ in 0..5000 {
-            match snowflake.generate(1) {
-                Ok(id) => ids.push(id),
-                Err(_) => break, // Might timeout in rare cases
-            }
-        }
-
-        // All generated IDs should be unique
-        let unique_ids: std::collections::HashSet<_> = ids.iter().collect();
-        assert_eq!(unique_ids.len(), ids.len(), "All IDs should be unique");
-    }
-
-    #[test]
-    fn test_burst_throughput() {
-        // Can we generate 4096 IDs instantly without error?
-        // More robust: just verify monotonicity
-        let mut snowflake = Snowflake::new(None).unwrap();
-        let mut prev_id = 0u64;
-
-        for _ in 0..5000 {
-            let id = snowflake.generate(1).unwrap();
-            assert!(id > prev_id, "IDs must be strictly monotonic");
-            prev_id = id;
-        }
-    }
-
-    #[test]
     fn test_bit_layout() {
-        let mut snowflake = Snowflake::new(None).unwrap();
+        let snowflake = Snowflake::new(None).unwrap();
         let gateway = 0b1111; // All bits set (15)
 
-        // Generate ID and verify bit layout
-        let id = snowflake.generate(gateway).unwrap();
+        // The last nanosecond of the last tick: every field at its maximum.
+        let id = snowflake
+            .generate(tick_start(TIMESTAMP_MAX) + TICK_NANOS_MASK, gateway)
+            .unwrap();
         let (timestamp, node, sequence) = Snowflake::parse_id(id);
 
-        // Verify node bits are correct
         assert_eq!(node, gateway as u8);
-
-        // Verify timestamp doesn't overflow into node bits
-        assert!(timestamp <= TIMESTAMP_MAX);
-
-        // Verify sequence doesn't overflow into node bits
-        assert!(sequence <= STEP_MAX);
+        assert_eq!(timestamp, TIMESTAMP_MAX);
+        assert_eq!(u64::from(sequence), TICK_NANOS_MASK);
     }
 
     #[test]
     fn test_gateway_from_id() {
-        let mut snowflake = Snowflake::new(None).unwrap();
+        let snowflake = Snowflake::new(None).unwrap();
         for gateway in 0..=NODE_MAX {
-            let id = snowflake.generate(gateway).unwrap();
+            let id = snowflake.generate(tick_start(1), gateway).unwrap();
             let extracted_gateway = Snowflake::gateway_from_id(id);
             assert_eq!(
                 extracted_gateway, gateway as u8,

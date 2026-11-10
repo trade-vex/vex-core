@@ -188,7 +188,7 @@ fn report_disabled_journaling(config: &VexConfig) {
             action = "journaling_disabled",
             archive_recording = false,
             environment = %config.environment,
-            "JOURNALING IS DISABLED: commands will not be recoverable by replay"
+            "JOURNALING IS DISABLED: commands will not be recoverable by replay, and timestamps and order ids follow the wall clock alone across restarts"
         );
     }
 }
