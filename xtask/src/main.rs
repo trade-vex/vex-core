@@ -1,10 +1,17 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use duct::cmd;
 use serde::Deserialize;
-use std::{collections::HashSet, env, fs, path::Path, process::Child, time::Instant};
+use std::{
+    collections::HashSet,
+    env, fs,
+    path::{Path, PathBuf},
+    process::Child,
+    time::Instant,
+};
 use thiserror::Error;
 use tracing::{error, info};
 use tracing_subscriber::FmtSubscriber;
+use vex_config::GatewayNetworkingConfig;
 
 use xtask::scenarios;
 use xtask::test_framework::TestContext;
@@ -186,54 +193,104 @@ async fn run_all_e2e_scenarios(project_root: Box<Path>) -> Result<(), XTaskError
 /// Docker server IP from the docker-compose vex-testing-net subnet
 const DOCKER_SERVER_IP: &str = "172.28.1.10";
 
-/// Start a host-side Aeron media driver process
-fn start_host_media_driver(root: &Path) -> Result<Child, XTaskError> {
-    let aeronmd_path = root.join("xtask/tests/bin/aeronmd");
-    let lib_path = root.join("xtask/tests/bin/lib");
-
-    if !aeronmd_path.exists() {
-        return Err(XTaskError::Unexpected(format!(
-            "aeronmd binary not found at {:?}. Run 'docker compose up media-driver --build' first.",
-            aeronmd_path
-        )));
-    }
-
-    println!("Starting host-side Aeron media driver...");
-    let child = std::process::Command::new(&aeronmd_path)
-        .env("AERON_DIR", "/dev/shm/aeron-test-client")
-        .env(
-            "LD_LIBRARY_PATH",
-            format!(
-                "{}:{}",
-                lib_path.display(),
-                env::var("LD_LIBRARY_PATH").unwrap_or_default()
-            ),
-        )
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| XTaskError::Unexpected(format!("Failed to start aeronmd: {}", e)))?;
-
-    Ok(child)
+/// The host-side Aeron media driver the integration test client connects through
+///
+/// It runs in the Aeron directory the test client uses, which it owns for the length of one run.
+/// Dropping it stops the driver and deletes that directory whenever xtask returns or unwinds. A
+/// signal that ends xtask (Ctrl-C, SIGKILL) skips Drop and can leave the directory behind, which is
+/// why starting empties it first. A killed driver leaves its CnC file there with a recent
+/// heartbeat: reusing the directory makes the next driver exit at once ("active driver detected")
+/// while the client maps the stale file and fails with "no driver heartbeat".
+struct HostMediaDriver {
+    process: Child,
+    dir: PathBuf,
 }
 
-/// Wait for the Aeron CnC file to be created by the media driver
-fn wait_for_cnc_file(timeout: std::time::Duration) -> Result<(), XTaskError> {
-    let cnc_path = Path::new("/dev/shm/aeron-test-client/cnc.dat");
-    let start = Instant::now();
+impl HostMediaDriver {
+    fn start(root: &Path, timeout: std::time::Duration) -> Result<Self, XTaskError> {
+        let aeronmd_path = root.join("xtask/tests/bin/aeronmd");
+        let lib_path = root.join("xtask/tests/bin/lib");
 
-    while !cnc_path.exists() {
-        if start.elapsed() > timeout {
-            return Err(XTaskError::Unexpected(
-                "Timed out waiting for Aeron CnC file at /dev/shm/aeron-test-client/cnc.dat"
-                    .to_string(),
-            ));
+        if !aeronmd_path.exists() {
+            return Err(XTaskError::Unexpected(format!(
+                "aeronmd binary not found at {:?}. Run 'cargo xtask build-docker' first.",
+                aeronmd_path
+            )));
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let dir = PathBuf::from(GatewayNetworkingConfig::test_defaults().context_dir);
+        remove_dir_if_present(&dir).map_err(|e| {
+            XTaskError::Unexpected(format!("Failed to clear {}: {e}", dir.display()))
+        })?;
+
+        println!(
+            "Starting host-side Aeron media driver in {}...",
+            dir.display()
+        );
+        let process = std::process::Command::new(&aeronmd_path)
+            .env("AERON_DIR", &dir)
+            .env(
+                "LD_LIBRARY_PATH",
+                format!(
+                    "{}:{}",
+                    lib_path.display(),
+                    env::var("LD_LIBRARY_PATH").unwrap_or_default()
+                ),
+            )
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| XTaskError::Unexpected(format!("Failed to start aeronmd: {}", e)))?;
+
+        // From here on, dropping the driver on an error stops it and removes its directory.
+        let mut driver = Self { process, dir };
+        driver.wait_for_cnc_file(timeout)?;
+        Ok(driver)
     }
 
-    println!("Aeron media driver ready (CnC file created).");
-    Ok(())
+    /// Wait for the driver to create its CnC file, failing early if the driver exits
+    fn wait_for_cnc_file(&mut self, timeout: std::time::Duration) -> Result<(), XTaskError> {
+        let cnc_path = self.dir.join("cnc.dat");
+        let start = Instant::now();
+
+        while !cnc_path.exists() {
+            if let Some(status) = self.process.try_wait()? {
+                return Err(XTaskError::Unexpected(format!(
+                    "aeronmd exited ({status}) before creating {}",
+                    cnc_path.display()
+                )));
+            }
+            if start.elapsed() > timeout {
+                return Err(XTaskError::Unexpected(format!(
+                    "Timed out waiting for Aeron CnC file at {}",
+                    cnc_path.display()
+                )));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        println!("Aeron media driver ready (CnC file created).");
+        Ok(())
+    }
+}
+
+impl Drop for HostMediaDriver {
+    fn drop(&mut self) {
+        println!("Stopping host-side Aeron media driver...");
+        if let Err(e) = self.process.kill().and_then(|()| self.process.wait()) {
+            eprintln!("Warning: Failed to stop aeronmd: {e}");
+        }
+        if let Err(e) = remove_dir_if_present(&self.dir) {
+            eprintln!("Warning: Failed to remove {}: {e}", self.dir.display());
+        }
+    }
+}
+
+fn remove_dir_if_present(dir: &Path) -> std::io::Result<()> {
+    match fs::remove_dir_all(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
 }
 
 /// Run integration tests directly (inlined from run_test_suite binary)
@@ -260,15 +317,18 @@ async fn run_integration_tests(
     info!("Starting VEX-CORE Integration Test Suite");
     info!("========================================");
 
-    // Start host-side Aeron media driver for the test client
-    let mut media_driver = start_host_media_driver(root)?;
-    wait_for_cnc_file(std::time::Duration::from_secs(10))?;
+    // Start the host-side Aeron media driver for the test client. It is stopped and its directory
+    // removed when this function returns, whichever way it returns; after a signal that skips
+    // that, the next start empties the directory instead.
+    let _media_driver = HostMediaDriver::start(root, std::time::Duration::from_secs(10))?;
 
-    // Start docker-compose services (redpanda, vex-server)
+    // Start redpanda and vex-server. The stack is torn down when this function returns, a failed
+    // `docker compose up` included.
     println!("Starting infrastructure services...");
-    cmd!("docker", "compose", "up", "-d", "redpanda", "vex-server")
-        .dir(root.join("xtask/tests"))
-        .run()?;
+    let compose = DockerComposeEnv::up(
+        root.join("xtask/tests").into_boxed_path(),
+        &["redpanda", "vex-server"],
+    )?;
 
     println!("Waiting for services to stabilize...");
     tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
@@ -283,8 +343,6 @@ async fn run_integration_tests(
         Ok(ctx) => ctx,
         Err(e) => {
             error!("Failed to initialize test context: {}", e);
-            let _ = media_driver.kill();
-            cleanup_docker(root);
             return Err(XTaskError::IntegrationTest(format!(
                 "Failed to initialize test context: {}",
                 e
@@ -306,8 +364,7 @@ async fn run_integration_tests(
         Err(e) => {
             error!("Test suite failed: {}", e);
             if fail_fast {
-                cleanup_ctx_and_docker(&mut ctx, root);
-                let _ = media_driver.kill();
+                ctx.cleanup();
                 return Err(XTaskError::IntegrationTest(e));
             }
         }
@@ -316,8 +373,8 @@ async fn run_integration_tests(
     suite_result.duration = start.elapsed();
 
     // Cleanup
-    cleanup_ctx_and_docker(&mut ctx, root);
-    let _ = media_driver.kill();
+    ctx.cleanup();
+    drop(compose);
 
     // Print summary
     info!("");
@@ -403,21 +460,6 @@ async fn run_suite_tests(
     }
 }
 
-fn cleanup_ctx_and_docker(ctx: &mut TestContext, root: &Path) {
-    ctx.cleanup();
-    cleanup_docker(root);
-}
-
-fn cleanup_docker(root: &Path) {
-    println!("Cleaning up services...");
-    if let Err(e) = cmd!("docker", "compose", "down", "-v")
-        .dir(root.join("xtask/tests"))
-        .run()
-    {
-        eprintln!("Warning: Failed to clean up docker-compose services: {}", e);
-    }
-}
-
 /// Run xtask unit tests
 fn run_unit_tests(root: &Path, filter: Option<String>) -> Result<(), XTaskError> {
     println!("Running xtask unit tests...");
@@ -435,26 +477,33 @@ fn run_unit_tests(root: &Path, filter: Option<String>) -> Result<(), XTaskError>
     Ok(())
 }
 
-// Helper struct for automatic cleanup
+/// A docker-compose stack in `root`, torn down (`docker compose down -v`) when dropped
+///
+/// Every constructor creates the guard before `docker compose up` runs, so a start that fails part
+/// of the way through is torn down too. The logs of `containers` are saved before the teardown.
 struct DockerComposeEnv {
     root: Box<Path>,
     containers: Vec<String>,
 }
 impl DockerComposeEnv {
+    /// Run `docker compose up -d` with `args` (services, `--scale`, ...)
+    fn up(root: Box<Path>, args: &[&str]) -> Result<Self, XTaskError> {
+        let env = Self {
+            root,
+            containers: Vec::new(),
+        };
+        cmd("docker", ["compose", "up", "-d"].iter().chain(args))
+            .dir(env.root.as_ref())
+            .run()?;
+        Ok(env)
+    }
+
+    /// Start the e2e stack with `clients` client containers and wait for vex-server to be healthy
     fn new(root: Box<Path>, clients: u32) -> Result<Self, XTaskError> {
         fs::create_dir_all(root.join("test-results"))?;
 
         println!("Bringing up docker-compose environment...");
-        cmd!(
-            "docker",
-            "compose",
-            "up",
-            "-d",
-            "--scale",
-            format!("vex-client={clients}")
-        )
-        .dir(root.clone())
-        .run()?;
+        let mut env = Self::up(root.clone(), &["--scale", &format!("vex-client={clients}")])?;
 
         // Wait for vex-server to be healthy (has healthcheck in docker-compose.yml)
         println!("Waiting for vex-server to be healthy...");
@@ -525,17 +574,19 @@ impl DockerComposeEnv {
             )
             .collect::<Vec<_>>();
 
-        Ok(Self { root, containers })
+        env.containers = containers;
+        Ok(env)
     }
 }
 
 impl Drop for DockerComposeEnv {
     fn drop(&mut self) {
-        println!("Saving docker-compose logs...");
         let logs_dir = self.root.join("test-results/logs");
-
-        if let Err(e) = fs::create_dir_all(&logs_dir) {
-            eprintln!("Failed to create logs dir: {e}");
+        if !self.containers.is_empty() {
+            println!("Saving docker-compose logs...");
+            if let Err(e) = fs::create_dir_all(&logs_dir) {
+                eprintln!("Failed to create logs dir: {e}");
+            }
         }
 
         for container in &self.containers {
@@ -654,7 +705,7 @@ fn apply_scenario_conditions(root: &Path, scenario: &str, clients: u32) -> Resul
 fn build_docker(root: &Path) -> Result<(), XTaskError> {
     let dir = root.join("xtask/tests");
     // Export the media driver first, while nothing is executing it. The exporter copies
-    // aeronmd into ./bin, which is the path `start_host_media_driver` later runs, so
+    // aeronmd into ./bin, which is the path `HostMediaDriver::start` later runs, so
     // exporting afterwards fails with ETXTBSY.
     println!("Exporting the Aeron media driver...");
     cmd!(
@@ -733,10 +784,8 @@ fn run_correctness_task(
     // --- Verify Results ---
     println!("Verifying results...");
 
-    let results_file = test_results_dir.join("received_ids.txt");
-    let received_ids: HashSet<u64> = fs::read_to_string(results_file)?
-        .lines()
-        .map(|line| line.parse().unwrap())
+    let received_ids: HashSet<u64> = read_received_ids(&test_results_dir, clients)?
+        .into_iter()
         .collect();
 
     // Assertion 1: Check for completeness
@@ -830,28 +879,8 @@ fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
 
     println!("All clients finished execution.");
 
-    // Read and analyze results
-    let results_file = test_results_dir.join("received_ids.txt");
-
-    // Better error handling for results file
-    let messages_received = if results_file.exists() {
-        let content = fs::read_to_string(&results_file)?;
-        let unique_messages: std::collections::HashSet<_> = content.lines().collect();
-
-        // Check for duplicates
-        let total_lines = content.lines().count();
-        if total_lines != unique_messages.len() {
-            println!(
-                "Warning: {} duplicate messages detected",
-                total_lines - unique_messages.len()
-            );
-        }
-
-        unique_messages.len()
-    } else {
-        eprintln!("Warning: Results file not found at {results_file:?}");
-        0
-    };
+    // Read and analyze results. Each client writes every id at most once.
+    let messages_received = read_received_ids(&test_results_dir, clients)?.len();
 
     let success_rate = (messages_received as f64 / total_expected_messages as f64) * 100.0;
 
@@ -884,4 +913,25 @@ fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
         println!("\n Benchmark completed successfully!");
     }
     Ok(())
+}
+
+/// Read the ids each e2e or benchmark client wrote to `received_ids-<client id>.txt`
+/// (`write_received_ids` in `test_client`)
+fn read_received_ids(results_dir: &Path, clients: u32) -> Result<Vec<u64>, XTaskError> {
+    let mut ids = Vec::new();
+    for client_id in 0..clients {
+        let path = results_dir.join(format!("received_ids-{client_id}.txt"));
+        let content = fs::read_to_string(&path).map_err(|e| {
+            XTaskError::Unexpected(format!(
+                "Client {client_id} wrote no results to {}: {e}",
+                path.display()
+            ))
+        })?;
+        for line in content.lines() {
+            ids.push(line.parse().map_err(|e| {
+                XTaskError::Unexpected(format!("Invalid id {line:?} in {}: {e}", path.display()))
+            })?);
+        }
+    }
+    Ok(ids)
 }

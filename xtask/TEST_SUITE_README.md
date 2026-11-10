@@ -166,11 +166,16 @@ Wait-based APIs handle eventual consistency:
 
 ## Market Configuration
 
+The suites use market 65538 as `config.dev.yaml` specifies it, loaded by `TestContext::market_spec`:
+
 - **Market ID**: 65538 (0x00010002)
-- **Base Asset**: 2 (BTC)
-- **Quote Asset**: 1 (USD)
-- **Maker Fee**: 10bp (0.1%)
-- **Taker Fee**: 20bp (0.2%)
+- **Base Asset**: 2 (BTC), native scale 10^8
+- **Quote Asset**: 1 (USD), native scale 10^6, `quote_scale_k` 1
+- **Maker Fee**: 0bp, **Taker Fee**: 0bp
+- **Slippage**: 150bp (the market-buy price cap above the best ask)
+
+Locked and settled quote amounts are `calculate_quote_cost(price, size)`, not `price * size`: a bid of
+size 10 at 40,000 locks 4,000 USD units (ARCHITECTURE.md, Balance Locking Logic).
 
 ## Example Usage
 
@@ -198,9 +203,10 @@ async fn test_example() -> TestResult<()> {
     // Phase 1: Response verification
     ResponseVerifier::assert_placed(&response)?;
 
-    // Phase 2: Kafka verification
+    // Phase 2: Kafka verification: the bid locks its quote cost (5,000 on market 65538)
+    let locked = ctx.market_spec().calculate_quote_cost(50_000, 10).expect("fits in u64");
     let mut verifier = BalanceVerifier::new(&mut ctx.kafka);
-    verifier.assert_locked_eq(1, 1, 500_000).await?;
+    verifier.assert_locked_eq(1, 1, locked).await?;
 
     Ok(())
 }

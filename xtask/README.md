@@ -144,7 +144,7 @@ cargo xtask test unit --filter parse
 
 After running tests or benchmarks, the following artifacts are generated:
 
-* **Test Results:** Raw data from tests is stored in `xtask/tests/test-results/`.
+* **Test Results:** Raw data from tests is stored in `xtask/tests/test-results/`. Each e2e or benchmark client writes the ids it got a response for to `received_ids-<client id>.txt`, which the run reads back to check completeness.
 * **Docker Logs:** Logs for each container (`vex-server`, `vex-client`) are saved in `xtask/tests/test-results/logs/`.
 
 The environment is automatically torn down after each run, but the artifacts are preserved for inspection.

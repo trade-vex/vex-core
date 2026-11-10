@@ -67,12 +67,13 @@
 //!
 //! ## Market Configuration
 //!
-//! Default test market:
+//! Default test market, as `config.dev.yaml` specifies it. `TestContext::market_spec` loads that
+//! specification, so expected amounts follow it:
 //! - Market ID: 65538 (0x00010002)
-//! - Base Asset: 2 (BTC)
-//! - Quote Asset: 1 (USD)
-//! - Maker Fee: 10bp (0.1%)
-//! - Taker Fee: 20bp (0.2%)
+//! - Base Asset: 2 (BTC), native scale 10^8
+//! - Quote Asset: 1 (USD), native scale 10^6, `quote_scale_k` 1
+//! - Maker Fee: 0bp, Taker Fee: 0bp
+//! - Slippage: 150bp (the market-buy price cap above the best ask)
 
 pub mod builders;
 pub mod fixtures;

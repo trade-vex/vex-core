@@ -238,31 +238,41 @@ During replay, OrderCommands already have assigned order_ids and timestamps from
 let shard_id = user_id & shard_mask;
 ```
 
-**Balance Locking Logic**:
+**Balance Locking Logic** (`RiskEngine::reserve_funds_for_order` and `bid_amount`, `processors/src/risk_engine.rs`):
+
+A quote amount is not simply `price * size`: it goes through the market's native scales in `CoreMarketSpecification::calculate_quote_cost` (`common/src/market_specification.rs`):
+
+```
+quote_cost(price, size) = price * size * quote_native_scale / (base_native_scale * quote_scale_k)
+```
+
+computed in `u128` and rounded down. An overflow, a result above `u64::MAX` or a zero denominator rejects the order. On the development market 65538 (`base_native_scale` 10^8, `quote_native_scale` 10^6, `quote_scale_k` 1) a bid of size 10 at 40,000 locks `quote_cost = 4,000`, not 400,000.
 
 For a BID order (buying base asset with quote asset):
 ```
-locked_amount = price * size
+locked_amount = quote_cost(price, size)   // rejected when it is 0
 asset_to_lock = quote_asset(market_id)
 ```
 
 For an ASK order (selling base asset for quote asset):
 ```
-locked_amount = size
+locked_amount = size                      // a limit ask whose quote_cost(price, size) is 0 is rejected
 asset_to_lock = base_asset(market_id)
 ```
+
+R1 also records each bid's locked amount as that order's collateral. Every fill spends `quote_cost(fill_price, fill_size)` of it, plus any price-improvement refund, and R2 releases what is left when the order completes or is cancelled. After a partial fill at its own price a bid therefore still locks `quote_cost(price, size) - quote_cost(price, filled)`, which can exceed `quote_cost(price, size - filled)` by one atomic unit of rounding.
 
 **Market Orders** (price = u64::MAX for bids, price = 0 for asks):
 
 Market orders require special handling since the execution price is unknown at fund reservation time. Risk R1 uses the PriceCache to obtain conservative price estimates:
 
 ```rust
-// For market buy (BID): Lock enough quote currency
-let best_ask = price_cache.get_best_ask(market_id);
-let slippage_adjustment = (best_ask * slippage_bps) / 10000;
+// For market buy (BID): lock enough quote currency. `spec.slippage` is in basis points.
+let best_ask = price_cache.get_prices(market_id).map_or(0, |(_, best_ask)| best_ask);
+let slippage_adjustment = best_ask * spec.slippage / 10_000;  // in u128, rounded down
 let conservative_price = best_ask + slippage_adjustment;
-cmd.price = conservative_price;  // Mutate price field
-locked_amount = conservative_price * size;
+cmd.price = conservative_price;  // Mutate price field; the response returns it
+locked_amount = spec.calculate_quote_cost(conservative_price, size);
 ```
 
 For market sell (ASK): Lock base asset only (price doesn't affect locked amount).
@@ -278,15 +288,15 @@ The PriceCache is a shared, read-only snapshot of top-of-book prices across all 
 
 **Price Ceiling Enforcement**:
 
-The matching engine respects the conservative price as a ceiling. For a market buy with `conservative_price = 50,351`:
+The matching engine respects the conservative price as a ceiling. For a market buy with `conservative_price = 50,350`:
 
 ```rust
 // Matching engine price check for BID
 if taker_price >= maker_price { /* match */ }
-// With conservative_price: if 50,351 >= maker_ask { /* match */ }
+// With conservative_price: if 50,350 >= maker_ask { /* match */ }
 ```
 
-The order will ONLY match against asks priced at or below the conservative price. If all available asks are above 50,351 (e.g., best ask moved to 50,400), the order matches nothing. Since market orders are typically IOC/FOK, the unfilled order is cancelled rather than resting on book. This guarantees the matching engine cannot spend more than the locked funds.
+The order will ONLY match against asks priced at or below the conservative price. If all available asks are above 50,350 (e.g., best ask moved to 50,400), the order matches nothing. Since market orders are typically IOC/FOK, the unfilled order is cancelled rather than resting on book. This guarantees the matching engine cannot spend more than the locked funds.
 
 **Price Improvement Refund**: If actual execution is better than conservative estimate, R2 refunds the difference to available balance.
 
@@ -390,15 +400,17 @@ For each MatcherTradeEvent in the linked list:
 
 ```
 Taker (BID - buying base for quote):
-  1. Subtract locked quote: locked_quote -= (price * size)
+  1. Subtract locked quote: locked_quote -= quote_cost(price, size)
   2. Calculate taker fee: fee = ceil(size * taker_fee_bps / 10000)
   3. Add base asset: available_base += (size - fee)
 
 Maker (ASK - selling base for quote):
   1. Subtract locked base: locked_base -= size
-  2. Calculate maker fee: fee = ceil(price * size * maker_fee_bps / 10000)
-  3. Add quote asset: available_quote += (price * size - fee)
+  2. Calculate maker fee: fee = ceil(quote_cost(price, size) * maker_fee_bps / 10000)
+  3. Add quote asset: available_quote += (quote_cost(price, size) - fee)
 ```
+
+`quote_cost` is `CoreMarketSpecification::calculate_quote_cost`, as in R1 (`RiskEngine::settle_trade`).
 
 **Fee Structure**: Maker and taker fees configured per market in basis points. Each fee is rounded up per fill, so a fill pays its exact share plus less than one atomic unit: slicing an order into many fills can never pay less than one fill would, and over-pays by at most one unit per fill.
 
@@ -406,7 +418,7 @@ Maker (ASK - selling base for quote):
 
 If a taker BID order executes at a better price than the limit:
 ```
-execution_price < limit_price  =>  refund = (limit_price - execution_price) * size
+execution_price < limit_price  =>  refund = quote_cost(limit_price - execution_price, size)
 ```
 
 The refund is moved from locked back to available quote currency.
@@ -535,6 +547,7 @@ The following examples trace order processing through all pipeline stages with c
 - 4 shards for both Risk and Matching engines
 - Taker fee: 10 bps (0.1%), Maker fee: 5 bps (0.05%)
 - Market slippage: 50 bps (0.5%)
+- Amounts in whole units with no native scaling, so `quote_cost(price, size) = price * size` (real markets scale; see Balance Locking Logic)
 
 #### Example 1: GTC Limit Order (Maker - Rests on Book)
 
@@ -693,19 +706,19 @@ The following examples trace order processing through all pipeline stages with c
   ```
   best_ask = price_cache.get_best_ask(1) = 50,100
   slippage = 50 bps = 0.005
-  slippage_adjustment = 50,100 * 0.005 = 250.5 → 251
-  conservative_price = 50,100 + 251 = 50,351
+  slippage_adjustment = floor(50,100 * 50 / 10,000) = floor(250.5) = 250
+  conservative_price = 50,100 + 250 = 50,350
   ```
-- Price mutation: `cmd.price = 50,351` (conservative estimate)
+- Price mutation: `cmd.price = 50,350` (conservative estimate)
 - Balance check:
   ```
-  required = 50,351 * 3 = 151,053 USD
+  required = 50,350 * 3 = 151,050 USD
   available_usd = 500,000 USD
   ```
 - Fund locking:
   ```
-  available_usd: 500,000 → 348,947
-  locked_usd: 0 → 151,053
+  available_usd: 500,000 → 348,950
+  locked_usd: 0 → 151,050
   ```
 
 **Stage 3: Matching Engine**
@@ -714,7 +727,7 @@ The following examples trace order processing through all pipeline stages with c
 
 **Match 1** (Ask @ 50,100):
 ```
-Taker order: 3 BTC @ conservative 50,351
+Taker order: 3 BTC @ conservative 50,350
 Maker order: 2 BTC @ 50,100 (user 101)
 Fill: 2 BTC @ 50,100
 ```
@@ -772,7 +785,7 @@ l2_data: Updated orderbook snapshot
 **Stage 4: Risk Engine R2 (Settlement)**
 
 **Taker Settlement** (User 200, Shard 0):
-- Initial locked: 151,053 USD
+- Initial locked: 151,050 USD
 - Process event chain:
 
 Event 1:
@@ -795,17 +808,17 @@ Receive base: available_btc += (1 - 0.001) = 0.999 BTC
 
 Price improvement refund:
 ```
-Conservative price: 50,351
+Conservative price: 50,350
 Actual spent: 100,200 + 50,200 = 150,400
-Refund: 151,053 - 150,400 = 653 USD
-Unlock refund: locked_usd -= 653
-Return to available: available_usd += 653
+Refund: 151,050 - 150,400 = 650 USD
+Unlock refund: locked_usd -= 650
+Return to available: available_usd += 650
 ```
 
 Final taker balance (after settlement):
 ```
 BTC: available = 2.997, locked = 0
-USD: available = 348,947 + 653 = 349,600, locked = 0
+USD: available = 348,950 + 650 = 349,600, locked = 0
 ```
 
 Update command balance fields:

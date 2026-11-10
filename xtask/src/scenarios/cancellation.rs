@@ -337,8 +337,11 @@ async fn cancel_resting_bid_section(ctx: &mut TestContext) -> TestResult<()> {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Verify funds are locked
-    let locked_amount = price * size; // 40,000 * 5 = 200,000
+    // Verify funds are locked: a bid locks its quote cost at the market's native scales
+    let locked_amount = ctx
+        .market_spec()
+        .calculate_quote_cost(price, size)
+        .expect("scenario notional fits in u64");
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
@@ -546,7 +549,10 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Verify Charlie's funds locked for full order
-    let locked_amount = price * charlie_size; // 50,000 * 10 = 500,000
+    let market_spec = ctx.market_spec().clone();
+    let locked_amount = market_spec
+        .calculate_quote_cost(price, charlie_size)
+        .expect("scenario notional fits in u64");
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
@@ -589,8 +595,11 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
         info!("  → Trade executed: {} BTC @ {}", alice_size, price);
     }
 
-    // Verify Charlie's locked amount decreased by filled portion
-    let remaining_locked = price * remaining_size; // 50,000 * 7 = 350,000
+    // Verify Charlie's locked amount decreased by the quote cost of the filled portion
+    let remaining_locked = locked_amount
+        - market_spec
+            .calculate_quote_cost(price, alice_size)
+            .expect("scenario notional fits in u64");
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
@@ -875,8 +884,11 @@ async fn cancel_and_replace_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify correct locked amount (only size2 locked now)
     {
+        let locked_amount = ctx
+            .market_spec()
+            .calculate_quote_cost(price, size2)
+            .expect("scenario notional fits in u64");
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
-        let locked_amount = price * size2;
         balance_verifier
             .assert_locked_eq(
                 users::ALICE,
