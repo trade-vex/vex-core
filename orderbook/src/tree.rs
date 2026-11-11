@@ -77,7 +77,9 @@ impl BookSide for BTreeAskSide {
     }
 
     fn best_price(&self) -> u64 {
-        self.tree.first_key_value().map_or(u64::MAX, |(price, _)| *price)
+        self.tree
+            .first_key_value()
+            .map_or(u64::MAX, |(price, _)| *price)
     }
 }
 
