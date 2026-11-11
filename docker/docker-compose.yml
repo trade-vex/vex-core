@@ -57,11 +57,3 @@ services:
     volumes:
       - /dev/shm/aeron:/dev/shm/aeron
     restart: unless-stopped
-    healthcheck:
-      # The image sets the Aeron dir to /dev/shm/aeron via VEX__CORE_NETWORKING__CONTEXT_DIR;
-      # vex-core does not read AERON_DIR.
-      test: ["CMD-SHELL", "test -s /dev/shm/aeron/cnc.dat || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s

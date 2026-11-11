@@ -70,9 +70,4 @@ ENV RUST_LOG=info \
     VEX__CORE_NETWORKING__LOCAL_ADDRESS=0.0.0.0 \
     VEX__CORE_NETWORKING__CONTEXT_DIR=/dev/shm/aeron
 
-# Health check. The image sets the Aeron directory to /dev/shm/aeron via
-# VEX__CORE_NETWORKING__CONTEXT_DIR; vex-core does not read AERON_DIR.
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD test -s /dev/shm/aeron/cnc.dat || exit 1
-
 CMD ["vex-core"]
