@@ -525,6 +525,8 @@ Seq: 0     1     2     3     4     5     6     7     8     9     ...
 - All settlement must complete before publishing
 - Guarantees external consumers see consistent state
 
+**R1 decides on the settled ledger.** Barrier 1 lets R1 handle sequence s before R2 has settled s-1, which may still owe the user proceeds or released collateral, and a replay publishes the journal back to back. So each `RiskEngine` records the highest sequence its R2 has settled (R1 and R2 of a shard share it), and R1 waits on it (`create_risk_handler!`): a market buy, deposit or withdrawal waits until R2 has settled s-1 before deciding; any other order decides at once and, only if rejected, waits and decides once more (R2 only raises `available` and lowers `locked`, so an early pass stands). Every decision is then a function of the ledger and book after s-1, which a replay reproduces. The wait needs each consumer cursor published per event, not per batch (trade-vex/disruptor-rs `per-event-cursor`): R2(s-1) needs Matching(s-1), which needs R1's cursor past s-1 while R1 is still inside its batch.
+
 ### Wait Strategy: BusySpin
 
 **Implementation**: Processors continuously poll their barrier without yielding the CPU.
@@ -1331,7 +1333,7 @@ The PriceCache is essential to the market order execution protocol:
 
 2. **Fund Safety**: Conservative pricing (best price + slippage) locks MORE funds than minimally required. The price ceiling enforcement in matching (only matches at or below conservative price) guarantees no overspend. IOC/FOK semantics cancel unfilled portions.
 
-3. **Acceptable Staleness**: Stale reads don't violate safety (user locked enough funds). In worst case, order gets fewer fills than expected, never overspends.
+3. **No Staleness**: R1 prices a market buy only once R2 has settled every earlier sequence, so every Matching shard has handled them and the cache holds the book after s-1 (see Dependency Barriers). A replay therefore locks the same price.
 
 4. **Update Protocol**:
 ```rust

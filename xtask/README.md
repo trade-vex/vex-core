@@ -135,8 +135,10 @@ refuse a missing or non-compacted `vex-core.delivered`. Every graceful shutdown 
 gateway connected, as gateways are in production; the clean one must deliver everything and write
 the watermark of the last command, so that the restart re-publishes nothing. The oracle is the
 test client's own ledger, built from the core's responses: Kafka must hold every event it expects,
-by `(topic, key, timestamp)`, and its latest balance per key must equal the ledger's. The orders
-are limit orders only, because replay does not regenerate a market buy's events exactly (#140).
+by `(topic, key, timestamp)`, and its latest balance per key must equal the ledger's. Each round
+rests a bid and an ask, cancels the bid and re-places it without waiting for the cancel's
+response, and lifts the ask with a market buy, all of which every replay must re-decide as the
+live run did.
 
 **Usage:**
 ```sh

@@ -1213,9 +1213,10 @@ mod tests {
         );
     }
 
-    /// R1(k) waits only on journaling(k), so R1 can apply a deposit before R2 has settled an
-    /// EARLIER trade of the same user. Drive the stages in exactly that legal interleaving: the
-    /// deposit's published balance must still include the trade.
+    /// R2 snapshots a deposit's balance in sequence order with its settlements. Drive the stages
+    /// by hand so that R1 applies a deposit before R2 has settled an EARLIER trade of the same
+    /// user (the pipeline's R1 waits for that settlement first): the published balance must still
+    /// include the trade.
     #[test]
     fn deposit_balance_includes_an_earlier_trade_settled_after_r1_applied_the_deposit() {
         let mut specs = HashMap::new();
@@ -1285,7 +1286,7 @@ mod tests {
         router.process_order(&mut bid, Arc::clone(&price_cache));
         assert_eq!(bid.status, Status::Filled);
 
-        // Deposit D > N: its R1 runs ahead of N's R2.
+        // Deposit D > N: its R1 runs before N's R2.
         let deposit_amount = 1_000;
         let mut deposit = OrderCommand::deposit_funds(taker_id, deposit_amount, base_asset_id);
         r1(&mut deposit);
