@@ -368,9 +368,6 @@ netstat -tuln | grep -E "40001|3521"
 # Verify the gateway's [core] section matches core
 # Gateway: core.address, core.port, core.control_port (override: APP__CORE__<KEY>)
 # Core: initial_port, initial_control_port (from config)
-
-# Check session ID limits
-# reserved_session_id_low/high in config
 ```
 
 **Solutions**:
