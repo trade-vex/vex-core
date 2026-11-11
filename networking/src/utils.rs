@@ -169,12 +169,11 @@ pub fn send_message_with_retries(
     Ok(())
 }
 
-/// Port allocator that randomly selects ports from a given range.
+/// Port allocator that hands out the lowest free ports of a range.
 /// Does not track allocated ports - the Session struct is the source of truth.
 /// Tracks recently freed ports to avoid OS-level port binding race conditions.
 #[derive(Debug)]
 pub struct PortAllocator {
-    port_range: std::ops::RangeInclusive<u16>,
     low: u16,
     high: u16,
     /// Tracks ports that were recently freed with their timestamp
@@ -184,7 +183,7 @@ pub struct PortAllocator {
 
 /// Time to wait before reusing a freed port (in seconds)
 /// This allows the OS to fully release the UDP port binding
-const PORT_COOLDOWN_SECONDS: u64 = 10;
+pub(crate) const PORT_COOLDOWN_SECONDS: u64 = 10;
 
 impl PortAllocator {
     /// Create a new port allocator.
@@ -217,22 +216,15 @@ impl PortAllocator {
             ));
         }
         let port_hi = hi_u32 as u16;
-        let port_range = port_base..=port_hi;
 
         Ok(Self {
-            port_range,
             low: port_base,
             high: port_hi,
             recently_freed_ports: std::sync::RwLock::new(std::collections::HashMap::new()),
         })
     }
 
-    /// Get the total number of ports in the range
-    pub fn total_ports(&self) -> usize {
-        self.port_range.clone().count()
-    }
-
-    /// Allocate `count` ports randomly, avoiding the ports already in use and recently freed ports.
+    /// Allocate the `count` lowest ports that are neither in use nor recently freed.
     ///
     /// # Arguments
     /// * `count` - The number of ports that will be allocated
@@ -242,66 +234,23 @@ impl PortAllocator {
     /// A vector of allocated ports
     ///
     /// # Errors
-    /// Returns `ResourceAllocationError` if there are fewer than `count` ports available to allocate
-    /// or if unable to find free ports after reasonable attempts
+    /// Returns `ResourceAllocationError` if fewer than `count` ports are free
     pub fn allocate(&self, count: usize, ports_in_use: &[u16]) -> Result<Vec<u16>, ServerError> {
-        if count == 0 {
-            return Ok(Vec::new());
-        }
-
-        // Clean up expired entries from recently_freed_ports
         self.cleanup_expired_ports();
-
-        // Get list of ports that are still in cooldown
-        let recently_freed: Vec<u16> = {
-            let freed = self.recently_freed_ports.read().unwrap();
-            freed.keys().copied().collect()
-        };
-
-        let total = self.total_ports();
-        let used = ports_in_use.len();
-        let in_cooldown = recently_freed.len();
-
-        // Account for ports in cooldown when checking availability
-        if count > total.saturating_sub(used).saturating_sub(in_cooldown) {
+        let recently_freed = self.recently_freed_ports.read().unwrap();
+        let ports: Vec<u16> = (self.low..=self.high)
+            .filter(|port| !ports_in_use.contains(port) && !recently_freed.contains_key(port))
+            .take(count)
+            .collect();
+        if ports.len() < count {
             return Err(ServerError::ResourceAllocationError(format!(
-                "Requested {count} ports, but only {} available ({} in use, {} in cooldown)",
-                total.saturating_sub(used).saturating_sub(in_cooldown),
-                used,
-                in_cooldown
+                "Requested {count} ports, {} free ({} in use, {} in cooldown)",
+                ports.len(),
+                ports_in_use.len(),
+                recently_freed.len()
             )));
         }
-
-        let mut result = Vec::with_capacity(count);
-        let mut rng = rand::thread_rng();
-        let max_attempts = (total * 2).max(100); // Try at most 2x the total ports or 100 attempts
-        let mut attempts = 0;
-
-        while result.len() < count {
-            if attempts >= max_attempts {
-                return Err(ServerError::ResourceAllocationError(format!(
-                    "Failed to allocate {} ports after {} attempts ({} already allocated, {} in cooldown)",
-                    count,
-                    max_attempts,
-                    result.len(),
-                    in_cooldown
-                )));
-            }
-
-            let port = rng.gen_range(self.low..=self.high);
-
-            // Check if port is not in use, not in cooldown, and not already in result
-            if !ports_in_use.contains(&port)
-                && !recently_freed.contains(&port)
-                && !result.contains(&port)
-            {
-                result.push(port);
-            }
-
-            attempts += 1;
-        }
-
-        Ok(result)
+        Ok(ports)
     }
 
     /// Mark ports as recently freed. They will be unavailable for allocation for PORT_COOLDOWN_SECONDS.
@@ -420,6 +369,22 @@ mod tests {
         assert_eq!(scripted(&[admin, 0]), (0, 2));
         assert_eq!(scripted(&[back_pressured]), (i64::from(back_pressured), 1));
         assert_eq!(scripted(&[admin, admin]), (i64::from(admin), 2));
+    }
+
+    #[test]
+    fn allocator_hands_out_the_last_free_ports() {
+        let allocator = PortAllocator::new(10_000, 64).unwrap();
+        let in_use: Vec<u16> = (10_000..10_064).filter(|port| port % 31 != 0).collect();
+        assert_eq!(in_use.len(), 62);
+
+        for _ in 0..1_000 {
+            assert_eq!(
+                allocator.allocate(2, &in_use).unwrap(),
+                vec![10_013, 10_044]
+            );
+        }
+        allocator.mark_freed(&[10_013]);
+        assert!(allocator.allocate(2, &in_use).is_err());
     }
 
     #[test]

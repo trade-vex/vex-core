@@ -8,7 +8,7 @@
 //! - High-performance gateway connection management
 //! - Concurrent session handling with lock-free data structures
 //! - Automatic resource cleanup and connection lifecycle management
-//! - Configurable connection limits and authentication
+//! - Up to `MAX_GATEWAYS` gateways, with handshake authentication
 //!
 //! ## Rchitecture
 //! The server is built around three main components:
@@ -472,11 +472,6 @@ impl VexCoreServer {
 
     /// Validates the core configuration
     fn validate_config(config: &CoreNetworkingConfig) -> Result<(), ServerError> {
-        if config.max_gateways == 0 {
-            return Err(ServerError::ConfigurationError(
-                "Max gateways must be greater than 0".to_string(),
-            ));
-        }
         if config.core_id.is_empty() {
             return Err(ServerError::ConfigurationError(
                 "Core ID cannot be empty".to_string(),

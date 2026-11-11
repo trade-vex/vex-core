@@ -6,7 +6,6 @@ environment = "Development"
 [core_networking]
 core_id = 0
 initial_port = 8080
-max_gateways = 16
 enable_authentication = false
 
 [gateway_networking]

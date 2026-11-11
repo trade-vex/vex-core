@@ -47,7 +47,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Authentication enabled: {}",
             config.core_networking.enable_authentication
         );
-        println!("Max gateways: {}", config.core_networking.max_gateways);
         println!("Log format: {:?}", config.logging.format);
         println!("Gateway ID: {}", config.gateway_networking.gateway_id);
         println!();

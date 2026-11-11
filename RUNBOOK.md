@@ -376,7 +376,9 @@ netstat -tuln | grep -E "40001|3521"
 **Solutions**:
 - Ensure vex-core is running and media driver is up
 - Verify the gateway's `[core]` `address`, `port` and `control_port` (`APP__CORE__ADDRESS`, `APP__CORE__PORT`, `APP__CORE__CONTROL_PORT`) match vex-core's address, `initial_port` and `initial_control_port`
-- Check `max_gateways` is not exceeded
+- At most 16 gateways (`gateway_id` 0-15) can be connected; the core opens UDP
+  `base_gateway_port..base_gateway_port+63` for them. `Core unavailable, retry after 10 seconds` on
+  the gateway means no pair of ports was free (each freed port waits 10 s before reuse)
 - Gateway authentication (required in production, which refuses to start without both):
   `VEX__CORE_NETWORKING__ENABLE_AUTHENTICATION=true` and
   `VEX__GATEWAY_NETWORKING__GATEWAY_AUTHENTICATION_KEY=<at least 32 characters; openssl rand -hex 32>`
@@ -526,7 +528,7 @@ top -p $(pgrep vex-core)
 
 3. **Check Config**
    - The gateway's `[core]` `address`, `port` and `control_port` must match vex-core
-   - Ensure `max_gateways` and session ID limits are not exceeded
+   - At most 16 gateways can be connected at once
 
 ### Need to Recover from Journal
 

@@ -42,7 +42,6 @@ type = "stdout"
 [core_networking]
 initial_port = 46001
 enable_authentication = true
-max_gateways = 50
 
 [logging]
 level = "info"
@@ -100,10 +99,6 @@ version = "1.0.0"
         base_config.core_networking.enable_authentication
     );
     println!(
-        "     - Max gateways: {}",
-        base_config.core_networking.max_gateways
-    );
-    println!(
         "     - Async logging: {}",
         base_config.logging.async_logging
     );
@@ -115,10 +110,6 @@ version = "1.0.0"
     println!(
         "     - Authentication: {}",
         base_config.core_networking.enable_authentication
-    );
-    println!(
-        "     - Max gateways: {}",
-        base_config.core_networking.max_gateways
     );
     println!(
         "     - Async logging: {}",
@@ -181,7 +172,6 @@ version = "1.0.0"
 
     // Customize core networking
     custom_config.core_networking.core_id = "my-custom-core".to_string();
-    custom_config.core_networking.max_gateways = 25;
     custom_config.core_networking.enable_authentication = true;
 
     // Customize logging
@@ -198,10 +188,6 @@ version = "1.0.0"
 
     println!("Custom configuration created:");
     println!("Core ID: {}", custom_config.core_networking.core_id);
-    println!(
-        "Max gateways: {}",
-        custom_config.core_networking.max_gateways
-    );
     println!(
         "Networking log level: {:?}",
         custom_config.logging.get_module_level("networking")

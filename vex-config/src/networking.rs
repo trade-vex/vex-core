@@ -65,8 +65,6 @@ pub struct CoreNetworkingConfig {
     pub initial_control_port: u16,
     /// The base port to use for individual gateway connections
     pub base_gateway_port: u16,
-    /// The maximum number of gateways to support
-    pub max_gateways: u16,
     /// Reserved session id lower bound
     pub reserved_session_id_low: i32,
     /// Reserved session id upper bound
@@ -113,7 +111,6 @@ impl CoreNetworkingConfig {
             initial_port: 40001,
             initial_control_port: 40002,
             base_gateway_port: 50000,
-            max_gateways: 15,
             reserved_session_id_low: 1,
             reserved_session_id_high: i32::MAX,
             enable_authentication: false,
@@ -136,7 +133,6 @@ impl CoreNetworkingConfig {
             initial_port: 40001,
             initial_control_port: 40002,
             base_gateway_port: 50000,
-            max_gateways: 15,
             reserved_session_id_low: 1,
             reserved_session_id_high: i32::MAX,
             enable_authentication: true,
@@ -159,7 +155,6 @@ impl CoreNetworkingConfig {
             initial_port: 3521,
             initial_control_port: 3522,
             base_gateway_port: 50000,
-            max_gateways: 1000,
             reserved_session_id_low: 1,
             reserved_session_id_high: i32::MAX,
             enable_authentication: true,
@@ -188,10 +183,6 @@ impl CoreNetworkingConfig {
             return Err(ConfigError::network(
                 "Initial port and control port cannot be the same",
             ));
-        }
-
-        if self.max_gateways == 0 {
-            return Err(ConfigError::network("Max gateways must be greater than 0"));
         }
 
         if self.reserved_session_id_low >= self.reserved_session_id_high {

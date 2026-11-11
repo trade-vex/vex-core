@@ -1082,11 +1082,7 @@ aeron:udp?endpoint={address}:{port}|session-id={session}
 
 ### Port Allocation
 
-**PortAllocator**: Randomly selects ports from `[base_gateway_port, base_gateway_port + max_gateways)`.
-
-**Why Random**: Reduces effectiveness of sequential port scanning. Avoids predictable port assignment patterns.
-
-**Collision Detection**: Tracks allocated ports in `Session` struct. Allocation loops until finding unused port or reaching max attempts.
+**PortAllocator**: Hands out the lowest free ports of `[base_gateway_port, base_gateway_port + 64)`: two per gateway for the 16 slots (`MAX_GATEWAYS`), and as many again for ports in their 10 s cooldown after a full turnover. The ports in use are read from the `Session` struct; when no pair is free, the core answers `UNAVAILABLE 10`.
 
 **Two Ports Per Gateway**:
 - Data port: Gateway sends orders to core

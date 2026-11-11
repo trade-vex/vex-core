@@ -3,7 +3,7 @@ use crate::server::duologue::{
     DuologueImageUnavailable,
 };
 use crate::server::gateway_publications::Publications;
-use crate::utils::{PortAllocator, SessionAllocator, send_message};
+use crate::utils::{PORT_COOLDOWN_SECONDS, PortAllocator, SessionAllocator, send_message};
 use common::{MAX_GATEWAYS, OrderCommand};
 use disruptor::{MultiProducer, SingleConsumerBarrier};
 use rusteron_archive::{
@@ -35,10 +35,9 @@ enum GatewaySlotState {
 }
 
 const PORTS_PER_GATEWAY: usize = 2;
-
-fn gateway_port_capacity(max_gateways: u16) -> usize {
-    usize::from(max_gateways) * PORTS_PER_GATEWAY
-}
+/// Every slot's ports, and as many again in their cooldown after a full turnover: the UDP range
+/// `base_gateway_port..base_gateway_port + 63` that gateways reach.
+const PORT_POOL: usize = 2 * MAX_GATEWAYS * PORTS_PER_GATEWAY;
 
 pub struct Session {
     slots: [Option<GatewaySlot>; MAX_GATEWAYS],
@@ -295,11 +294,8 @@ impl GatewayManager {
         Ok(Self {
             gateway_sessions: RwLock::new(Session::new()),
             aeron,
-            port_allocator: PortAllocator::new(
-                config.base_gateway_port,
-                gateway_port_capacity(config.max_gateways),
-            )
-            .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?,
+            port_allocator: PortAllocator::new(config.base_gateway_port, PORT_POOL)
+                .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?,
             session_allocator: SessionAllocator::new(
                 config.reserved_session_id_low,
                 config.reserved_session_id_high,
@@ -512,14 +508,19 @@ impl GatewayManager {
 
         self.check_duplicate_connection(publication, session_id, gateway_id)?;
 
-        self.allocate_gateway_session(
+        if let Err(e) = self.allocate_gateway_session(
             gateway_id,
             session_id,
             encryption_key,
             publication,
             source,
             now,
-        )?;
+        ) {
+            // Ports in their cooldown or a failed Aeron registration pass: say when to retry.
+            let msg = format!("{session_id} {gateway_id_str} UNAVAILABLE {PORT_COOLDOWN_SECONDS}");
+            send_message(publication, msg.as_bytes())?;
+            return Err(e);
+        }
 
         Ok(())
     }
@@ -1478,6 +1479,65 @@ mod tests {
         answer_gateway_2();
     }
 
+    /// Runs an embedded media driver; the handshake reply uses IPC, so it binds no port.
+    #[test]
+    fn allocation_failure_after_authentication_answers_unavailable() {
+        let driver = EmbeddedDriver::launch(format!(
+            "/dev/shm/vex-unavailable-test-{}",
+            std::process::id()
+        ));
+        let mut config = CoreNetworkingConfig::test_defaults();
+        config.context_dir = driver.dir.clone();
+        let aeron = VexCoreServer::initialize_aeron(&config).unwrap();
+        let producer = build_multi_producer(64, OrderCommand::default, BusySpin)
+            .handle_events_with(|_, _, _| {})
+            .build();
+        let manager = GatewayManager::new(
+            config.clone(),
+            GatewayAuthenticationKey::default(),
+            aeron.clone(),
+            producer,
+            Arc::new(Publications::new()),
+        )
+        .unwrap();
+        // Every port of the pool in its cooldown, as after a burst of reconnects.
+        let pool: Vec<u16> = (config.base_gateway_port..).take(PORT_POOL).collect();
+        manager.port_allocator.mark_freed(&pool);
+
+        let channel = "aeron:ipc".into_c_string();
+        let replies = aeron
+            .add_subscription(
+                &channel,
+                DUOLOGUE_STREAM_ID,
+                None::<&Handler<AeronAvailableImageLogger>>,
+                None::<&Handler<AeronUnavailableImageLogger>>,
+                DRAIN_TIMEOUT,
+            )
+            .unwrap();
+        let handshake = aeron
+            .add_publication(&channel, DUOLOGUE_STREAM_ID, DRAIN_TIMEOUT)
+            .unwrap();
+        wait_until(DRAIN_TIMEOUT, || Ok(handshake.is_connected())).unwrap();
+
+        let hello = b"HELLO gateway-1 - 3";
+        assert!(matches!(
+            manager.process_handshake_message(&handshake, 7, "127.0.0.1:40000", hello),
+            Err(ServerError::ResourceAllocationError(_))
+        ));
+
+        let mut reply = String::new();
+        wait_until(DRAIN_TIMEOUT, || {
+            let read = replies.poll_once(
+                |message, _| reply = String::from_utf8_lossy(message).into_owned(),
+                1,
+            )?;
+            Ok(read == 1)
+        })
+        .unwrap();
+        assert_eq!(reply, "7 gateway-1 UNAVAILABLE 10");
+        assert!(!manager.is_gateway_connected(1));
+    }
+
     #[test]
     fn handshake_rate_limit_uses_a_rolling_window() {
         let start = Instant::now();
@@ -1532,16 +1592,5 @@ mod tests {
         assert!(
             validate_authentication_config(false, &GatewayAuthenticationKey::default()).is_ok()
         );
-    }
-
-    #[test]
-    fn port_allocator_has_two_ports_for_every_gateway() {
-        let allocator = PortAllocator::new(
-            10_000,
-            gateway_port_capacity(MAX_GATEWAYS.try_into().unwrap()),
-        )
-        .unwrap();
-
-        assert_eq!(allocator.total_ports(), MAX_GATEWAYS * PORTS_PER_GATEWAY);
     }
 }
