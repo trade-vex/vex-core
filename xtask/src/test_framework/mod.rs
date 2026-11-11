@@ -164,7 +164,12 @@ impl TestContext {
         // Wait for the balance to be published to Kafka
         let balance = self
             .kafka
-            .wait_for_balance_update(user_id, asset_id, self.config.event_timeout)
+            .wait_for_balance_after(
+                user_id,
+                asset_id,
+                response.timestamp,
+                self.config.event_timeout,
+            )
             .await?;
 
         if balance.total != amount {

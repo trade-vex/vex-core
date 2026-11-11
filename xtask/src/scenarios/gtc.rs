@@ -3,8 +3,6 @@
 //! This module contains test scenarios for GTC limit orders.
 //! All tests run in a single session without restarting the server.
 
-use std::time::Duration;
-
 use crate::builders::OrderBuilder;
 use crate::fixtures::{assets, prices, users};
 use crate::test_framework::TestContext;
@@ -207,7 +205,10 @@ async fn test_gtc_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
         .market_spec()
         .calculate_quote_cost(price, size)
         .expect("scenario notional fits in u64");
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let event_timeout = ctx.config().event_timeout;
+    ctx.kafka
+        .wait_for_balance_after(users::ALICE, assets::USD, response.timestamp, event_timeout)
+        .await?;
 
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
@@ -217,11 +218,10 @@ async fn test_gtc_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
         info!("  → Funds locked: {} USD", locked_amount);
     }
 
-    let event_timeout = ctx.config().event_timeout;
     {
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_depth(market_id, 1, 0, event_timeout)
+            .wait_and_assert_depth(market_id, 1, 0, response.timestamp, event_timeout)
             .await?;
         orderbook_verifier
             .assert_level(market_id, Side::Bid, price, size)
@@ -257,8 +257,6 @@ async fn test_gtc_full_match_section(ctx: &mut TestContext) -> TestResult<()> {
     ResponseVerifier::assert_placed(&maker_response)?;
     info!("  → Bob's ask placed: order_id={}", maker_response.order_id);
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
     // Charlie (taker) places matching bid
     let taker_order = OrderBuilder::place_limit()
         .user(users::CHARLIE)
@@ -276,8 +274,6 @@ async fn test_gtc_full_match_section(ctx: &mut TestContext) -> TestResult<()> {
     );
 
     // Verify trade on Kafka
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
     let criteria = TradeCriteria::new()
         .market_id(market_id)
         .maker_user_id(users::BOB)
@@ -287,9 +283,10 @@ async fn test_gtc_full_match_section(ctx: &mut TestContext) -> TestResult<()> {
         .maker_order_id(maker_response.order_id)
         .taker_order_id(taker_response.order_id);
 
+    let event_timeout = ctx.config().event_timeout;
     let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
     trade_verifier
-        .wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2))
+        .wait_and_assert_trade(market_id, &criteria, event_timeout)
         .await?;
     info!("  → Trade executed: {} BTC @ {}", size, price);
 
@@ -321,7 +318,6 @@ async fn test_gtc_partial_match_section(ctx: &mut TestContext) -> TestResult<()>
 
     ctx.execute_command(maker_order)?;
     info!("  → Alice's ask placed for {} BTC", maker_size);
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Bob (taker) places larger bid
     let taker_order = OrderBuilder::place_limit()
@@ -341,20 +337,21 @@ async fn test_gtc_partial_match_section(ctx: &mut TestContext) -> TestResult<()>
     );
 
     // Verify trade and remaining order
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
+    let event_timeout = ctx.config().event_timeout;
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
-        let criteria = TradeCriteria::new().market_id(market_id).size(maker_size);
+        let criteria = TradeCriteria::new()
+            .market_id(market_id)
+            .size(maker_size)
+            .taker_order_id(taker_response.order_id);
         trade_verifier
-            .assert_trade_exists(market_id, &criteria)
+            .wait_and_assert_trade(market_id, &criteria, event_timeout)
             .await?;
         info!("  → Trade executed for matched portion: {} BTC", maker_size);
     }
 
     {
         // Wait for orderbook to update with remaining order
-        let event_timeout = ctx.config().event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
             .wait_and_assert_level(

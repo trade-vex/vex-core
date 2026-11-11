@@ -132,15 +132,21 @@ impl KafkaVerifier {
             }))
     }
 
-    /// Wait for a balance to be published for a user and asset (with timeout)
-    pub async fn wait_for_balance_update(
+    /// Wait for the balance of a user and asset as of the command stamped `after`, or later
+    ///
+    /// `after` is the timestamp of a command that publishes this balance, from its response.
+    pub async fn wait_for_balance_after(
         &mut self,
         user_id: u64,
         asset_id: u16,
+        after: u64,
         wait_timeout: Duration,
     ) -> TestResult<BalanceEvent> {
         self.wait_for(wait_timeout, |events| {
-            events.balance(user_id, asset_id).cloned()
+            events
+                .balance(user_id, asset_id)
+                .filter(|balance| balance.timestamp >= after)
+                .cloned()
         })
         .await
     }
@@ -162,14 +168,23 @@ impl KafkaVerifier {
         .await
     }
 
-    /// Wait for an orderbook snapshot to be published for a market (with timeout)
-    pub async fn wait_for_orderbook_update(
+    /// Wait for the orderbook of a market as of the command stamped `after`, or later
+    ///
+    /// `after` is the timestamp of a command that reaches the book, from its response.
+    pub async fn wait_for_orderbook_after(
         &mut self,
         market_id: u32,
+        after: u64,
         wait_timeout: Duration,
     ) -> TestResult<OrderbookSnapshot> {
-        self.wait_for(wait_timeout, |events| events.orderbook(market_id).cloned())
-            .await
+        self.wait_for(wait_timeout, |events| {
+            events
+                .orderbooks
+                .get(&market_id.to_string())
+                .filter(|(timestamp, _)| *timestamp >= after)
+                .map(|(_, snapshot)| snapshot.clone())
+        })
+        .await
     }
 
     /// Wait until every event in `expected` has been published, at least once (with timeout)

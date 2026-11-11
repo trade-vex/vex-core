@@ -4,8 +4,6 @@
 //! IOC orders execute immediately against available liquidity and cancel any unfilled portion.
 //! All tests run in a single session without restarting the server.
 
-use std::time::Duration;
-
 use crate::builders::OrderBuilder;
 use crate::fixtures::{assets, prices, users};
 use crate::test_framework::TestContext;
@@ -269,6 +267,7 @@ async fn test_ioc_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
     );
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
     let price = prices::LOW; // 40,000 - no asks at this price
     let size = 5;
 
@@ -299,7 +298,12 @@ async fn test_ioc_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
     );
 
     // Verify Kafka events
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    ctx.kafka
+        .wait_for_balance_after(users::ALICE, assets::USD, response.timestamp, event_timeout)
+        .await?;
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, response.timestamp, event_timeout)
+        .await?;
 
     {
         // Verify no funds were locked (order was immediately cancelled)
@@ -342,6 +346,7 @@ async fn test_ioc_full_match_section(ctx: &mut TestContext) -> TestResult<()> {
     );
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
     let price = prices::MID; // 50,000
     let size = 8;
 
@@ -361,8 +366,6 @@ async fn test_ioc_full_match_section(ctx: &mut TestContext) -> TestResult<()> {
         maker_response.order_id
     );
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Alice (taker) places IOC bid
     let taker_order = OrderBuilder::place_ioc()
         .user(users::ALICE)
@@ -380,8 +383,6 @@ async fn test_ioc_full_match_section(ctx: &mut TestContext) -> TestResult<()> {
     );
 
     // Verify trade on Kafka
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
         let criteria = TradeCriteria::new()
@@ -394,11 +395,14 @@ async fn test_ioc_full_match_section(ctx: &mut TestContext) -> TestResult<()> {
             .taker_order_id(taker_response.order_id);
 
         trade_verifier
-            .wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2))
+            .wait_and_assert_trade(market_id, &criteria, event_timeout)
             .await?;
         info!("  → Trade executed: {} BTC @ {}", size, price);
     }
 
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, taker_response.timestamp, event_timeout)
+        .await?;
     {
         // Verify orderbook is empty (both orders filled)
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
@@ -418,6 +422,7 @@ async fn test_ioc_partial_match_section(ctx: &mut TestContext) -> TestResult<()>
     );
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
     let price = prices::MID;
     let maker_size = 3;
     let taker_size = 10;
@@ -436,8 +441,6 @@ async fn test_ioc_partial_match_section(ctx: &mut TestContext) -> TestResult<()>
     let maker_response = ctx.execute_command(maker_order)?;
     ResponseVerifier::assert_placed(&maker_response)?;
     info!("  → Charlie's GTC ask placed for {} BTC", maker_size);
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Bob (taker) places larger IOC bid
     let taker_order = OrderBuilder::place_ioc()
@@ -458,22 +461,24 @@ async fn test_ioc_partial_match_section(ctx: &mut TestContext) -> TestResult<()>
     );
 
     // Verify trade and orderbook state
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
         let criteria = TradeCriteria::new()
             .market_id(market_id)
             .maker_user_id(users::CHARLIE)
             .taker_user_id(users::BOB)
-            .size(filled_size);
+            .size(filled_size)
+            .taker_order_id(taker_response.order_id);
 
         trade_verifier
-            .assert_trade_exists(market_id, &criteria)
+            .wait_and_assert_trade(market_id, &criteria, event_timeout)
             .await?;
         info!("  → Trade executed for filled portion: {} BTC", filled_size);
     }
 
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, taker_response.timestamp, event_timeout)
+        .await?;
     {
         // Verify orderbook is empty (maker filled, taker IOC doesn't rest)
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
@@ -496,6 +501,7 @@ async fn test_ioc_multiple_levels_section(ctx: &mut TestContext) -> TestResult<(
     );
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
     let level1_price = prices::MID; // 50,000
     let level2_price = prices::MID + 1000; // 51,000
     let level3_price = prices::MID + 2000; // 52,000
@@ -512,8 +518,6 @@ async fn test_ioc_multiple_levels_section(ctx: &mut TestContext) -> TestResult<(
     let response1 = ctx.execute_command(order1)?;
     info!("  → Level 1 placed: order_id={}", response1.order_id);
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
     // Level 2: Charlie asks 3 BTC @ 51,000 (changed from Bob to Charlie)
     let order2 = OrderBuilder::place_limit()
         .user(users::CHARLIE)
@@ -524,8 +528,6 @@ async fn test_ioc_multiple_levels_section(ctx: &mut TestContext) -> TestResult<(
         .build();
     let response2 = ctx.execute_command(order2)?;
     info!("  → Level 2 placed: order_id={}", response2.order_id);
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Level 3: Bob asks 4 BTC @ 52,000 (changed from Charlie to Bob)
     let order3 = OrderBuilder::place_limit()
@@ -538,14 +540,11 @@ async fn test_ioc_multiple_levels_section(ctx: &mut TestContext) -> TestResult<(
     let response3 = ctx.execute_command(order3)?;
     info!("  → Level 3 placed: order_id={}", response3.order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Verify orderbook has 3 ask levels
     {
-        let event_timeout = ctx.config().event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_depth(market_id, 0, 3, event_timeout)
+            .wait_and_assert_depth(market_id, 0, 3, response3.timestamp, event_timeout)
             .await?;
         info!("  → Orderbook ready: 3 ask levels");
     }
@@ -566,13 +565,8 @@ async fn test_ioc_multiple_levels_section(ctx: &mut TestContext) -> TestResult<(
     info!("  → Alice's IOC bid filled: 6 BTC across multiple levels");
 
     // Verify trades
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
-
-        // Should have at least 3 more trades (one per level matched)
-        trade_verifier.assert_min_trade_count(market_id, 5).await?; // 2 from previous sections + 3 new
 
         // Verify trade at level 1 (2 BTC @ 50,000)
         let criteria1 = TradeCriteria::new()
@@ -582,7 +576,7 @@ async fn test_ioc_multiple_levels_section(ctx: &mut TestContext) -> TestResult<(
             .price(level1_price)
             .size(2);
         trade_verifier
-            .assert_trade_exists(market_id, &criteria1)
+            .wait_and_assert_trade(market_id, &criteria1, event_timeout)
             .await?;
         info!("  → Trade 1: 2 BTC @ {}", level1_price);
 
@@ -594,7 +588,7 @@ async fn test_ioc_multiple_levels_section(ctx: &mut TestContext) -> TestResult<(
             .price(level2_price)
             .size(3);
         trade_verifier
-            .assert_trade_exists(market_id, &criteria2)
+            .wait_and_assert_trade(market_id, &criteria2, event_timeout)
             .await?;
         info!("  → Trade 2: 3 BTC @ {}", level2_price);
 
@@ -606,17 +600,16 @@ async fn test_ioc_multiple_levels_section(ctx: &mut TestContext) -> TestResult<(
             .price(level3_price)
             .size(1);
         trade_verifier
-            .assert_trade_exists(market_id, &criteria3)
+            .wait_and_assert_trade(market_id, &criteria3, event_timeout)
             .await?;
         info!("  → Trade 3: 1 BTC @ {}", level3_price);
     }
 
     {
         // Verify orderbook now has 1 ask level (remaining 3 BTC @ 52,000)
-        let event_timeout = ctx.config().event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_depth(market_id, 0, 1, event_timeout)
+            .wait_and_assert_depth(market_id, 0, 1, ioc_response.timestamp, event_timeout)
             .await?;
         orderbook_verifier
             .assert_level(market_id, Side::Ask, level3_price, 3)
@@ -642,6 +635,7 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Alice places market buy for 4 BTC");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
     let best_ask_price = 53_000;
     let second_ask_price = 54_000;
     let buy_size = 4;
@@ -655,8 +649,7 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
         .side(Side::Bid)
         .market_id(market_id)
         .build();
-    ctx.execute_command(clear_order)?;
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    let clear_response = ctx.execute_command(clear_order)?;
     info!("  → Cleared leftover 3 BTC @ 52k");
 
     // Setup: Create orderbook with asks
@@ -671,8 +664,6 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
     let ask1_response = ctx.execute_command(ask1)?;
     info!("  → Ask 1 placed: order_id={}", ask1_response.order_id);
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
     // Bob places ask @ 54,000
     let ask2 = OrderBuilder::place_limit()
         .user(users::BOB)
@@ -684,31 +675,34 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
     let ask2_response = ctx.execute_command(ask2)?;
     info!("  → Ask 2 placed: order_id={}", ask2_response.order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Verify orderbook setup (cleared leftover, now just our 2 asks)
     {
-        let event_timeout = ctx.config().event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_depth(market_id, 0, 2, event_timeout)
+            .wait_and_assert_depth(market_id, 0, 2, ask2_response.timestamp, event_timeout)
             .await?;
         info!("  → Orderbook ready: 0 bids, 2 asks (53k, 54k)");
     }
 
-    // Record Alice's initial balance
-    let initial_usd_balance = {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
-        balance_verifier
-            .get_balance(users::ALICE, assets::USD)
-            .await?
-    };
-    let initial_btc_balance = {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
-        balance_verifier
-            .get_balance(users::ALICE, assets::BTC)
-            .await?
-    };
+    // Record Alice's initial balance, as the clearing order left it
+    let initial_usd_balance = ctx
+        .kafka
+        .wait_for_balance_after(
+            users::ALICE,
+            assets::USD,
+            clear_response.timestamp,
+            event_timeout,
+        )
+        .await?;
+    let initial_btc_balance = ctx
+        .kafka
+        .wait_for_balance_after(
+            users::ALICE,
+            assets::BTC,
+            clear_response.timestamp,
+            event_timeout,
+        )
+        .await?;
     info!(
         "  → Alice initial: {} USD, {} BTC",
         initial_usd_balance.available, initial_btc_balance.available
@@ -740,8 +734,6 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
     );
 
     // Verify trade execution
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
 
@@ -754,7 +746,7 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
             .size(buy_size);
 
         trade_verifier
-            .assert_trade_exists(market_id, &criteria)
+            .wait_and_assert_trade(market_id, &criteria, event_timeout)
             .await?;
         info!(
             "  → Trade executed: {} BTC @ {} (at best ask, below conservative ceiling)",
@@ -763,11 +755,7 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
     }
 
     // Verify balances reflect trade + price improvement refund
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
     {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
-
         // Calculate expected costs
         let actual_cost = market_spec
             .calculate_quote_cost(best_ask_price, buy_size)
@@ -781,11 +769,23 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
         let taker_fee_bps = market_spec.taker_fee;
         let taker_fee_btc = (buy_size * taker_fee_bps).div_ceil(10_000);
 
-        let final_usd_balance = balance_verifier
-            .get_balance(users::ALICE, assets::USD)
+        let final_usd_balance = ctx
+            .kafka
+            .wait_for_balance_after(
+                users::ALICE,
+                assets::USD,
+                market_response.timestamp,
+                event_timeout,
+            )
             .await?;
-        let final_btc_balance = balance_verifier
-            .get_balance(users::ALICE, assets::BTC)
+        let final_btc_balance = ctx
+            .kafka
+            .wait_for_balance_after(
+                users::ALICE,
+                assets::BTC,
+                market_response.timestamp,
+                event_timeout,
+            )
             .await?;
 
         // Verify BTC received (size - fee)
@@ -829,10 +829,9 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify orderbook state (ask1 partially filled, ask2 untouched)
     {
-        let event_timeout = ctx.config().event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_depth(market_id, 0, 2, event_timeout)
+            .wait_and_assert_depth(market_id, 0, 2, market_response.timestamp, event_timeout)
             .await?;
         orderbook_verifier
             .assert_level(market_id, Side::Ask, best_ask_price, 1)
@@ -862,6 +861,7 @@ async fn test_market_sell_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Charlie places market sell for 10 BTC");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
     let best_bid_price = 52_000;
     let second_bid_price = 51_000;
     let sell_size = 10;
@@ -879,8 +879,6 @@ async fn test_market_sell_section(ctx: &mut TestContext) -> TestResult<()> {
     let bid1_response = ctx.execute_command(bid1)?;
     info!("  → Bid 1 placed: order_id={}", bid1_response.order_id);
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
     // Bob places bid @ 51,000
     let bid2 = OrderBuilder::place_limit()
         .user(users::BOB)
@@ -892,14 +890,11 @@ async fn test_market_sell_section(ctx: &mut TestContext) -> TestResult<()> {
     let bid2_response = ctx.execute_command(bid2)?;
     info!("  → Bid 2 placed: order_id={}", bid2_response.order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Verify orderbook setup (Section 6 left 2 asks, we added 2 bids)
     {
-        let event_timeout = ctx.config().event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_depth(market_id, 2, 2, event_timeout)
+            .wait_and_assert_depth(market_id, 2, 2, bid2_response.timestamp, event_timeout)
             .await?;
         info!("  → Orderbook ready: 2 bids (new), 2 asks (from Section 6)");
     }
@@ -938,8 +933,6 @@ async fn test_market_sell_section(ctx: &mut TestContext) -> TestResult<()> {
     );
 
     // Verify trade execution
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
 
@@ -952,7 +945,7 @@ async fn test_market_sell_section(ctx: &mut TestContext) -> TestResult<()> {
             .size(sell_size);
 
         trade_verifier
-            .assert_trade_exists(market_id, &criteria)
+            .wait_and_assert_trade(market_id, &criteria, event_timeout)
             .await?;
         info!(
             "  → Trade executed: {} BTC @ {} (at best bid)",
@@ -961,11 +954,7 @@ async fn test_market_sell_section(ctx: &mut TestContext) -> TestResult<()> {
     }
 
     // Verify balances reflect trade
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
     {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
-
         // Calculate expected revenue
         let gross_revenue = market_spec
             .calculate_quote_cost(best_bid_price, sell_size)
@@ -974,11 +963,23 @@ async fn test_market_sell_section(ctx: &mut TestContext) -> TestResult<()> {
         let taker_fee_usd = (gross_revenue * taker_fee_bps).div_ceil(10_000);
         let expected_usd = gross_revenue.saturating_sub(taker_fee_usd);
 
-        let final_usd_balance = balance_verifier
-            .get_balance(users::CHARLIE, assets::USD)
+        let final_usd_balance = ctx
+            .kafka
+            .wait_for_balance_after(
+                users::CHARLIE,
+                assets::USD,
+                market_response.timestamp,
+                event_timeout,
+            )
             .await?;
-        let final_btc_balance = balance_verifier
-            .get_balance(users::CHARLIE, assets::BTC)
+        let final_btc_balance = ctx
+            .kafka
+            .wait_for_balance_after(
+                users::CHARLIE,
+                assets::BTC,
+                market_response.timestamp,
+                event_timeout,
+            )
             .await?;
 
         // Ask taker fee is charged on the received quote asset, not the base asset.
@@ -1015,10 +1016,9 @@ async fn test_market_sell_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify orderbook state (bid1 partially filled, bid2 untouched, 2 asks remain)
     {
-        let event_timeout = ctx.config().event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_depth(market_id, 2, 2, event_timeout)
+            .wait_and_assert_depth(market_id, 2, 2, market_response.timestamp, event_timeout)
             .await?;
         orderbook_verifier
             .assert_level(market_id, Side::Bid, best_bid_price, 90)

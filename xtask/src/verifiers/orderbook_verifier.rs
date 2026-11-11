@@ -144,17 +144,18 @@ impl<'a> OrderbookVerifier<'a> {
         Ok(())
     }
 
-    /// Wait for orderbook update and then verify depth
+    /// Wait for the orderbook as of the command stamped `after`, then verify its depth
     pub async fn wait_and_assert_depth(
         &mut self,
         market_id: u32,
         expected_bid_levels: usize,
         expected_ask_levels: usize,
+        after: u64,
         timeout: Duration,
     ) -> TestResult<()> {
         let orderbook = self
             .kafka
-            .wait_for_orderbook_update(market_id, timeout)
+            .wait_for_orderbook_after(market_id, after, timeout)
             .await?;
 
         if orderbook.bids.len() != expected_bid_levels
@@ -179,17 +180,6 @@ impl<'a> OrderbookVerifier<'a> {
         );
 
         Ok(())
-    }
-
-    /// Wait for orderbook update
-    pub async fn wait_for_orderbook_update(
-        &mut self,
-        market_id: u32,
-        timeout: Duration,
-    ) -> TestResult<OrderbookSnapshot> {
-        self.kafka
-            .wait_for_orderbook_update(market_id, timeout)
-            .await
     }
 
     /// Get current orderbook

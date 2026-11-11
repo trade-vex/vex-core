@@ -145,16 +145,18 @@ keeps what a downstream reader keeps:
 | `orderbook` | `{market_id}` | `OrderbookEvent` (levels as JSON) | Latest per key: the greatest timestamp |
 
 Every read first takes in all the events the broker holds at that moment. The core publishes
-asynchronously, after it has answered the command, so assertions made right after a command
-either wait first or use a wait-based API.
+asynchronously, and the response can arrive before the events, so an assertion about a command
+first waits for that command's event. Every event a command publishes carries the command's
+timestamp, which its response carries too.
 
 ### Wait-Based APIs
 
 Wait-based APIs handle eventual consistency:
+- `wait_for_balance_after()` / `wait_for_orderbook_after()` - Wait for the key's state as of the
+  command stamped `after` (its response's `timestamp`)
 - `wait_for_trade()` - Poll until trade matching criteria appears
-- `wait_for_orderbook_update()` - Wait for orderbook publication
 - `wait_and_assert_level()` - Wait for specific price level
-- `wait_and_assert_depth()` - Wait for orderbook depth
+- `wait_and_assert_depth()` - Wait for the orderbook as of a command, then check its depth
 
 ## System Invariants
 
@@ -205,6 +207,8 @@ async fn test_example() -> TestResult<()> {
 
     // Phase 2: Kafka verification: the bid locks its quote cost (5,000 on market 65538)
     let locked = ctx.market_spec().calculate_quote_cost(50_000, 10).expect("fits in u64");
+    let timeout = ctx.config().event_timeout;
+    ctx.kafka.wait_for_balance_after(1, 1, response.timestamp, timeout).await?;
     let mut verifier = BalanceVerifier::new(&mut ctx.kafka);
     verifier.assert_locked_eq(1, 1, locked).await?;
 
@@ -219,7 +223,7 @@ When adding tests:
 2. Use wait-based APIs for Kafka verification
 3. Handle leftover state from previous sections
 4. Document expected state transitions
-5. Add proper sleep delays between operations, perfomance optmization is not the goal for the test suite, they must be handled separately
+5. Wait for a command's events by its response's `timestamp`, never with a fixed sleep
 
 ## Security
 This test suite is the **security backbone** of VEX-CORE. All changes must maintain type safety, test isolation principles, and comprehensive error handling.

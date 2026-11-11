@@ -161,17 +161,18 @@ impl<'a> BalanceVerifier<'a> {
         Ok(())
     }
 
-    /// Wait for balance update and then verify
+    /// Wait for the balance as of the command stamped `after`, then verify it
     pub async fn wait_and_assert_balance(
         &mut self,
         user_id: u64,
         asset_id: u16,
         expected: Balance,
+        after: u64,
         timeout: Duration,
     ) -> TestResult<()> {
         let actual = self
             .kafka
-            .wait_for_balance_update(user_id, asset_id, timeout)
+            .wait_for_balance_after(user_id, asset_id, after, timeout)
             .await?;
 
         if actual.available != expected.available
@@ -199,18 +200,6 @@ impl<'a> BalanceVerifier<'a> {
         );
 
         Ok(())
-    }
-
-    /// Wait for balance update (any value)
-    pub async fn wait_for_balance_update(
-        &mut self,
-        user_id: u64,
-        asset_id: u16,
-        timeout: Duration,
-    ) -> TestResult<BalanceEvent> {
-        self.kafka
-            .wait_for_balance_update(user_id, asset_id, timeout)
-            .await
     }
 
     /// Assert available balance increased by expected amount

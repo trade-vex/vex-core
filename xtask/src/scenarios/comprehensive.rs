@@ -8,8 +8,6 @@
 //! This replaces the Commands::All approach which didn't preserve state
 //! between different scenario suites.
 
-use std::time::Duration;
-
 use crate::builders::OrderBuilder;
 use crate::fixtures::{assets, users};
 use crate::test_framework::TestContext;
@@ -383,8 +381,6 @@ async fn build_initial_orderbook_section(ctx: &mut TestContext) -> TestResult<()
     ResponseVerifier::assert_placed(&resp1)?;
     info!("  → Bid level 1: order_id={} (Alice)", resp1.order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Wait for first bid to appear on orderbook
     {
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
@@ -404,8 +400,6 @@ async fn build_initial_orderbook_section(ctx: &mut TestContext) -> TestResult<()
     let resp2 = ctx.execute_command(bid2)?;
     ResponseVerifier::assert_placed(&resp2)?;
     info!("  → Bid level 2: order_id={} (Bob)", resp2.order_id);
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Wait for second bid to appear
     {
@@ -427,8 +421,6 @@ async fn build_initial_orderbook_section(ctx: &mut TestContext) -> TestResult<()
     ResponseVerifier::assert_placed(&resp3)?;
     info!("  → Ask level 1: order_id={} (Charlie)", resp3.order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Wait for first ask to appear
     {
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
@@ -449,8 +441,6 @@ async fn build_initial_orderbook_section(ctx: &mut TestContext) -> TestResult<()
     ResponseVerifier::assert_placed(&resp4)?;
     info!("  → Ask level 2: order_id={} (Bob)", resp4.order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Wait for second ask to appear and verify final orderbook structure
     {
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
@@ -458,7 +448,7 @@ async fn build_initial_orderbook_section(ctx: &mut TestContext) -> TestResult<()
             .wait_and_assert_level(market_id, Side::Ask, 60_000, 8, event_timeout)
             .await?;
         orderbook_verifier
-            .wait_and_assert_depth(market_id, 2, 2, event_timeout)
+            .wait_and_assert_depth(market_id, 2, 2, resp4.timestamp, event_timeout)
             .await?;
         info!("  → Orderbook verified: 2 bid levels, 2 ask levels");
     }
@@ -473,6 +463,7 @@ async fn ioc_against_orderbook_section(ctx: &mut TestContext) -> TestResult<()> 
     info!("  2. Charlie IOC sell @ 44k for 7 BTC → Partial fill (crosses 45k bid)");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
 
     // Bob places IOC buy @ 56,000 for 5 BTC
     // This crosses Charlie's ask @ 55,000 (12 BTC available)
@@ -489,8 +480,6 @@ async fn ioc_against_orderbook_section(ctx: &mut TestContext) -> TestResult<()> 
     ResponseVerifier::assert_filled(&ioc_resp1)?;
     info!("  → IOC buy filled: 5 BTC @ 55,000");
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
     // Verify trade
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
@@ -501,11 +490,14 @@ async fn ioc_against_orderbook_section(ctx: &mut TestContext) -> TestResult<()> 
             .price(55_000)
             .size(5);
         trade_verifier
-            .wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2))
+            .wait_and_assert_trade(market_id, &criteria, event_timeout)
             .await?;
     }
 
     // Verify remaining ask @ 55k is 7 BTC
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, ioc_resp1.timestamp, event_timeout)
+        .await?;
     {
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
@@ -529,8 +521,6 @@ async fn ioc_against_orderbook_section(ctx: &mut TestContext) -> TestResult<()> 
     ResponseVerifier::assert_filled(&ioc_resp2)?;
     info!("  → IOC sell filled: 7 BTC @ 45,000");
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
     // Verify trade
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
@@ -541,11 +531,14 @@ async fn ioc_against_orderbook_section(ctx: &mut TestContext) -> TestResult<()> 
             .price(45_000)
             .size(7);
         trade_verifier
-            .wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2))
+            .wait_and_assert_trade(market_id, &criteria, event_timeout)
             .await?;
     }
 
     // Verify remaining bid @ 45k is 3 BTC
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, ioc_resp2.timestamp, event_timeout)
+        .await?;
     {
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
@@ -565,6 +558,7 @@ async fn fok_orders_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("  2. Bob FOK buy @ 61k for 20 BTC → Should reject (insufficient liquidity)");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
 
     // FOK buy for exact available liquidity @ 55k (7 BTC)
     let fok_buy1 = OrderBuilder::place_fok()
@@ -579,8 +573,6 @@ async fn fok_orders_section(ctx: &mut TestContext) -> TestResult<()> {
     ResponseVerifier::assert_filled(&fok_resp1)?;
     info!("  → FOK buy filled: 7 BTC @ 55,000");
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
     // Verify trade
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
@@ -589,7 +581,7 @@ async fn fok_orders_section(ctx: &mut TestContext) -> TestResult<()> {
             .price(55_000)
             .size(7);
         trade_verifier
-            .wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2))
+            .wait_and_assert_trade(market_id, &criteria, event_timeout)
             .await?;
     }
 
@@ -619,6 +611,7 @@ async fn cancellations_during_trading_section(ctx: &mut TestContext) -> TestResu
     info!("  3. Bob cancels his bid @ 40k");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
 
     // Charlie places new ask
     let new_ask = OrderBuilder::place_limit()
@@ -634,8 +627,6 @@ async fn cancellations_during_trading_section(ctx: &mut TestContext) -> TestResu
     let charlie_order_id = ask_resp.order_id;
     info!("  → Charlie placed ask: order_id={}", charlie_order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Charlie cancels it
     let cancel1 = OrderBuilder::cancel(users::CHARLIE)
         .order_id(charlie_order_id)
@@ -647,7 +638,9 @@ async fn cancellations_during_trading_section(ctx: &mut TestContext) -> TestResu
     ResponseVerifier::assert_cancelled(&cancel_resp1)?;
     info!("  → Charlie cancelled order_id={}", charlie_order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, cancel_resp1.timestamp, event_timeout)
+        .await?;
 
     // Verify Charlie's order removed
     {
@@ -677,8 +670,6 @@ async fn cancellations_during_trading_section(ctx: &mut TestContext) -> TestResu
     let bob_resp = ctx.execute_command(bob_bid)?;
     let bob_order_id = bob_resp.order_id;
     info!("  → Bob placed new bid: order_id={}", bob_order_id);
-
-    tokio::time::sleep(Duration::from_millis(150)).await;
 
     let cancel2 = OrderBuilder::cancel(users::BOB)
         .order_id(bob_order_id)
@@ -718,8 +709,6 @@ async fn mixed_order_types_stress_section(ctx: &mut TestContext) -> TestResult<(
             price, gtc_resp.order_id
         );
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
         // IOC order that might match
         let ioc = OrderBuilder::place_ioc()
             .user(users::BOB)
@@ -731,8 +720,6 @@ async fn mixed_order_types_stress_section(ctx: &mut TestContext) -> TestResult<(
 
         ctx.execute_command(ioc)?;
         info!("  → IOC bid placed @ {}", price - 1000);
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     info!("  → Completed rapid sequence of 10 orders");
@@ -747,6 +734,7 @@ async fn edge_cases_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("  2. Zero-size edge (if applicable)");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
 
     // Alice places ask @ 48k
     let alice_ask = OrderBuilder::place_limit()
@@ -759,8 +747,6 @@ async fn edge_cases_section(ctx: &mut TestContext) -> TestResult<()> {
 
     let ask_resp = ctx.execute_command(alice_ask)?;
     info!("  → Alice placed ask @ 48k: order_id={}", ask_resp.order_id);
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Alice places a bid @ 49k that would cross her own ask: self-trade prevention cancels the
     // ask (STP_CANCEL_MAKER) and the bid rests
@@ -779,7 +765,9 @@ async fn edge_cases_section(ctx: &mut TestContext) -> TestResult<()> {
     );
 
     // Verify no trade occurred (self-match prevented)
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, bid_resp.timestamp, event_timeout)
+        .await?;
 
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
@@ -797,10 +785,9 @@ async fn edge_cases_section(ctx: &mut TestContext) -> TestResult<()> {
     }
 
     {
-        let event_timeout = ctx.config().event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_level(market_id, Side::Bid, 49_000, 3, event_timeout)
+            .assert_level(market_id, Side::Bid, 49_000, 3)
             .await?;
         let orderbook = orderbook_verifier.get_orderbook(market_id).await?;
         if orderbook.asks.iter().any(|level| level.price == 48_000) {
@@ -821,6 +808,7 @@ async fn multi_level_interactions_section(ctx: &mut TestContext) -> TestResult<(
     info!("  Note: First clean up leftover orders, then test multi-level matching");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
 
     // First, clean up any leftover asks from previous sections (e.g., 60k ask from Section 2)
     // Use Alice's IOC to consume any asks below 64k
@@ -833,8 +821,6 @@ async fn multi_level_interactions_section(ctx: &mut TestContext) -> TestResult<(
         .market_id(market_id)
         .build();
     ctx.execute_command(cleanup)?;
-
-    tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Use higher prices to avoid overlap with existing orders from previous sections
     // Place 3 asks at different levels
@@ -851,8 +837,6 @@ async fn multi_level_interactions_section(ctx: &mut TestContext) -> TestResult<(
         .build();
     ctx.execute_command(level1)?;
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
     let level2 = OrderBuilder::place_limit()
         .user(users::CHARLIE)
         .price(level2_price)
@@ -861,8 +845,6 @@ async fn multi_level_interactions_section(ctx: &mut TestContext) -> TestResult<(
         .market_id(market_id)
         .build();
     ctx.execute_command(level2)?;
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let level3 = OrderBuilder::place_limit()
         .user(users::BOB)
@@ -874,8 +856,6 @@ async fn multi_level_interactions_section(ctx: &mut TestContext) -> TestResult<(
     ctx.execute_command(level3)?;
 
     info!("  → Placed 3 ask levels: 3@65k, 4@66k, 5@67k");
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Place IOC bid that crosses all 3 levels
     let big_bid = OrderBuilder::place_ioc()
@@ -890,8 +870,6 @@ async fn multi_level_interactions_section(ctx: &mut TestContext) -> TestResult<(
     info!("  → Placed IOC bid for 12 BTC @ 68k (crosses all 3 levels)");
     info!("  → Response: {:?}", big_resp.status);
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
     // Verify trades at all 3 levels
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
@@ -899,28 +877,31 @@ async fn multi_level_interactions_section(ctx: &mut TestContext) -> TestResult<(
         // Check for trade @ 65k (3 BTC)
         let criteria1 = TradeCriteria::new()
             .market_id(market_id)
+            .taker_order_id(big_resp.order_id)
             .price(level1_price)
             .size(3);
         trade_verifier
-            .assert_trade_exists(market_id, &criteria1)
+            .wait_and_assert_trade(market_id, &criteria1, event_timeout)
             .await?;
 
         // Check for trade @ 66k (4 BTC)
         let criteria2 = TradeCriteria::new()
             .market_id(market_id)
+            .taker_order_id(big_resp.order_id)
             .price(level2_price)
             .size(4);
         trade_verifier
-            .assert_trade_exists(market_id, &criteria2)
+            .wait_and_assert_trade(market_id, &criteria2, event_timeout)
             .await?;
 
         // Check for trade @ 67k (5 BTC)
         let criteria3 = TradeCriteria::new()
             .market_id(market_id)
+            .taker_order_id(big_resp.order_id)
             .price(level3_price)
             .size(5);
         trade_verifier
-            .assert_trade_exists(market_id, &criteria3)
+            .wait_and_assert_trade(market_id, &criteria3, event_timeout)
             .await?;
 
         info!("  → Verified: 3 trades across 3 price levels (3+4+5=12 BTC)");
@@ -938,6 +919,7 @@ async fn partial_fills_with_cancel_section(ctx: &mut TestContext) -> TestResult<
     info!("  4. Alice cancels remaining");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
 
     // First, clean up any leftover bids from previous sections
     info!("  → Cleaning up leftover bids above 38k");
@@ -949,8 +931,6 @@ async fn partial_fills_with_cancel_section(ctx: &mut TestContext) -> TestResult<
         .market_id(market_id)
         .build();
     ctx.execute_command(cleanup)?;
-
-    tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Alice places large bid @ 38k for 20 BTC (using lower price to avoid conflicts)
     let large_bid = OrderBuilder::place_limit()
@@ -968,8 +948,6 @@ async fn partial_fills_with_cancel_section(ctx: &mut TestContext) -> TestResult<
         alice_order_id
     );
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Bob partially fills with IOC sell for 6 BTC
     let partial_fill = OrderBuilder::place_ioc()
         .user(users::BOB)
@@ -979,10 +957,8 @@ async fn partial_fills_with_cancel_section(ctx: &mut TestContext) -> TestResult<
         .market_id(market_id)
         .build();
 
-    ctx.execute_command(partial_fill)?;
+    let fill_resp = ctx.execute_command(partial_fill)?;
     info!("  → Bob IOC sell for 6 BTC @ 37k (partially fills Alice)");
-
-    tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Verify partial fill trade
     {
@@ -994,12 +970,15 @@ async fn partial_fills_with_cancel_section(ctx: &mut TestContext) -> TestResult<
             .price(38_000)
             .size(6);
         trade_verifier
-            .wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2))
+            .wait_and_assert_trade(market_id, &criteria, event_timeout)
             .await?;
         info!("  → Verified trade: 6 BTC @ 38k");
     }
 
     // Verify remaining 14 BTC on orderbook
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, fill_resp.timestamp, event_timeout)
+        .await?;
     {
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
@@ -1019,7 +998,9 @@ async fn partial_fills_with_cancel_section(ctx: &mut TestContext) -> TestResult<
     ResponseVerifier::assert_cancelled(&cancel_resp)?;
     info!("  → Alice cancelled remaining 14 BTC");
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, cancel_resp.timestamp, event_timeout)
+        .await?;
 
     // Verify removal
     {
