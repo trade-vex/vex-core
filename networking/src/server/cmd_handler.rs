@@ -56,7 +56,6 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
 }
 
 pub struct ReplayFragmentHandler {
-    pub gateway_id: u8,
     pub producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
     pub commands_published: i64,
     pub publications: Arc<Publications>,
@@ -65,39 +64,12 @@ pub struct ReplayFragmentHandler {
 }
 
 impl AeronFragmentHandlerCallback for ReplayFragmentHandler {
-    fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) {
-        if cfg!(debug_assertions) {
-            let values = match header.get_values() {
-                Ok(values) => values,
-                Err(e) => {
-                    self.replay_error = Some(format!("failed to decode replay header: {e}"));
-                    error!(
-                        target: "replay_fragment",
-                        gateway_id = self.gateway_id,
-                        error = %e,
-                        "failed to decode header values"
-                    );
-                    return;
-                }
-            };
-            debug!(
-                target: "replay_fragment",
-                gateway_id = self.gateway_id,
-                session_id = values.frame.session_id,
-                stream_id = values.frame.stream_id,
-                term_id = values.frame.term_id,
-                term_offset = values.frame.term_offset,
-                frame_size = values.position_bits_to_shift(),
-                "received replay fragment"
-            );
-        }
-
+    fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], _header: AeronHeader) {
         match decode_order_command(buffer) {
             Ok(mut order_command) => {
                 order_command.status = Status::Processing;
                 info!(
                     target: "replay_fragment",
-                    gateway_id = self.gateway_id,
                     time_stamp = ?order_command.timestamp,
                     client_order_id = ?order_command.client_order_id,
                     "processing replay order command"
@@ -124,7 +96,6 @@ impl AeronFragmentHandlerCallback for ReplayFragmentHandler {
                 self.replay_error = Some(format!("failed to decode replay order command: {e:?}"));
                 error!(
                     target: "replay_fragment",
-                    gateway_id = self.gateway_id,
                     error = ?e,
                     "failed to decode replay order command"
                 );

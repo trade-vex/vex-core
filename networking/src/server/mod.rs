@@ -686,7 +686,6 @@ impl VexCoreServer {
         );
         let mut message_handler = Handler::leak(ReplayFragmentHandler {
             producer,
-            gateway_id: 0,
             commands_published: 0,
             replay_error: None,
             publications: Arc::clone(&publications),
