@@ -6,25 +6,15 @@
 //!
 //! ## Key Features
 //! - High-performance gateway connection management
-//! - Concurrent session handling with lock-free data structures
+//! - Session handling on one thread, without locks
 //! - Automatic resource cleanup and connection lifecycle management
 //! - Up to `MAX_GATEWAYS` gateways, with handshake authentication
 //!
-//! ## Rchitecture
+//! ## Architecture
 //! The server is built around three main components:
 //! - `VexCoreServer`: Main server orchestrating connections and cleanup
 //! - `GatewayManager`: Handles individual gateway sessions and handshakes
 //! - Message handlers: Process Aeron image and fragment events
-//!
-//! ## Usage
-//! ```ignore, rust,no_run
-//! use networking::server::{VexCoreServer};
-//! use vex_config::CoreNetworkingConfig;
-//!
-//! let config = CoreNetworkingConfig::test_defaults();
-//! let mut server = VexCoreServer::new(config).unwrap();
-//! server.start().unwrap(); // Runs indefinitely
-//! ```
 
 mod cmd_handler;
 mod duologue;
