@@ -16,7 +16,7 @@
 
 use crate::builders::OrderBuilder;
 use crate::kafka_topics::{self, KafkaTopics};
-use crate::test_framework::client::TestClient;
+use crate::test_framework::client::{START_TIMEOUT, TestClient};
 use crate::test_framework::kafka::KafkaVerifier;
 use crate::test_framework::scenario;
 use crate::test_framework::stack::{self, BROKER, CORE, Paused};

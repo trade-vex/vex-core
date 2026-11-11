@@ -14,7 +14,7 @@ use vex_networking::client::{OrderCommandHandler, Publisher, VexGateway};
 /// How long the core gets to accept a gateway after a start: the topic check, after a `kill -9`
 /// the wait for the media driver to release the dead core's journal (up to its client liveness
 /// timeout, 10 s, and 5 s), the replay and its re-publication.
-const START_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const START_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Test client for interacting with VexCore
 ///
