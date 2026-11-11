@@ -504,19 +504,20 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
 
     /// Create a snapshot of the orderbook data with specified depth
     pub fn record_snapshot(&self, cmd: &mut OrderCommand) {
-        // `new` pre-sizes the price and volume vectors to the snapshot depth.
-        let mut l2_data = L2MarketData::new();
+        let mut l2_data = L2MarketData::default();
 
         // Fill bid levels (highest price first)
         for (price, level) in self.get_bids().take(L2SIZE) {
-            l2_data.bid_prices.push(price);
-            l2_data.bid_volumes.push(level.get_total_volume());
+            l2_data.bid_prices[l2_data.bid_depth] = price;
+            l2_data.bid_volumes[l2_data.bid_depth] = level.get_total_volume();
+            l2_data.bid_depth += 1;
         }
 
         // Fill ask levels (lowest price first)
         for (price, level) in self.get_asks().take(L2SIZE) {
-            l2_data.ask_prices.push(price);
-            l2_data.ask_volumes.push(level.get_total_volume());
+            l2_data.ask_prices[l2_data.ask_depth] = price;
+            l2_data.ask_volumes[l2_data.ask_depth] = level.get_total_volume();
+            l2_data.ask_depth += 1;
         }
 
         cmd.l2_data = Some(l2_data);

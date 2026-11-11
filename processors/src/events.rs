@@ -1723,19 +1723,19 @@ impl KafkaEventsHandler {
     fn publish_orderbook_event(&self, cmd: &OrderCommand) {
         if let Some(snapshot) = &cmd.l2_data {
             let market_id = cmd.market_id();
-            let bids_vec: Vec<_> = (0..snapshot.bid_depth())
-                .map(|i| JsonOrderbookLevel {
-                    price: snapshot.bid_prices[i],
-                    size: snapshot.bid_volumes[i],
-                })
+            let (prices, sizes) = snapshot.bids();
+            let bids_vec: Vec<_> = prices
+                .iter()
+                .zip(sizes)
+                .map(|(&price, &size)| JsonOrderbookLevel { price, size })
                 .collect();
             let bids_json = serde_json::to_string(&bids_vec).unwrap_or_else(|_| "[]".to_string());
 
-            let asks_vec: Vec<_> = (0..snapshot.ask_depth())
-                .map(|i| JsonOrderbookLevel {
-                    price: snapshot.ask_prices[i],
-                    size: snapshot.ask_volumes[i],
-                })
+            let (prices, sizes) = snapshot.asks();
+            let asks_vec: Vec<_> = prices
+                .iter()
+                .zip(sizes)
+                .map(|(&price, &size)| JsonOrderbookLevel { price, size })
                 .collect();
             let asks_json = serde_json::to_string(&asks_vec).unwrap_or_else(|_| "[]".to_string());
 
@@ -3103,9 +3103,10 @@ mod tests {
         cmd.order_id = 12349;
         cmd.set_status(Status::Placed);
         cmd.timestamp = 1006;
-        let mut book = L2MarketData::new();
-        book.bid_prices.push(1000);
-        book.bid_volumes.push(100);
+        let mut book = L2MarketData::default();
+        book.bid_prices[0] = 1000;
+        book.bid_volumes[0] = 100;
+        book.bid_depth = 1;
         cmd.l2_data = Some(book);
 
         let (orderbooks_tx, orderbooks) = mpsc::channel();

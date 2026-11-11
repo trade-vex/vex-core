@@ -386,15 +386,13 @@ mod test {
         book.place_order(&mut ask, price_cache);
 
         let snapshot = ask.l2_data.as_ref().unwrap();
-        assert_eq!(snapshot.bid_prices, [99]);
-        assert_eq!(snapshot.bid_volumes, [25]);
-        assert_eq!(snapshot.ask_prices, [101]);
-        assert_eq!(snapshot.ask_volumes, [40]);
-        // PR #182 removed the unused bid_orders/ask_orders/reference_seq fields, so PR #177's
-        // assertions that they stay empty no longer apply. The pre-sizing PR #177 added is
-        // asserted on the vectors that survived.
-        assert_eq!(snapshot.bid_prices.capacity(), common::L2SIZE);
-        assert_eq!(snapshot.ask_prices.capacity(), common::L2SIZE);
+        assert_eq!(snapshot.bids(), (&[99][..], &[25][..]));
+        assert_eq!(snapshot.asks(), (&[101][..], &[40][..]));
+        // The levels are stored inline: no heap buffer behind them.
+        assert_eq!(
+            std::mem::size_of::<L2MarketData>(),
+            4 * 8 * L2SIZE + 2 * std::mem::size_of::<usize>()
+        );
     }
 
     #[test]
@@ -2968,10 +2966,7 @@ mod test {
         book.record_snapshot(&mut cmd1);
 
         let snapshot1 = cmd1.l2_data.as_ref().unwrap();
-        assert!(snapshot1.bid_prices.is_empty());
-        assert!(snapshot1.bid_volumes.is_empty());
-        assert!(snapshot1.ask_prices.is_empty());
-        assert!(snapshot1.ask_volumes.is_empty());
+        assert_eq!(*snapshot1, L2MarketData::default());
 
         // --- Scenario 2: Build a book with more than L2SIZE levels ---
         // Place 12 bid levels (99 down to 88)
@@ -2999,8 +2994,8 @@ mod test {
         let snapshot2 = cmd2.l2_data.as_ref().unwrap();
 
         // Snapshot should contain exactly L2SIZE (10) levels
-        assert_eq!(snapshot2.bid_prices.len(), L2SIZE);
-        assert_eq!(snapshot2.ask_prices.len(), L2SIZE);
+        assert_eq!(snapshot2.bid_depth, L2SIZE);
+        assert_eq!(snapshot2.ask_depth, L2SIZE);
 
         // Verify bids (descending price)
         for i in 0..L2SIZE {

@@ -1791,8 +1791,8 @@ mod tests {
         let response = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(response.status, Status::Placed);
         let l2 = response.l2_data.as_ref().unwrap();
-        assert_eq!(l2.bid_prices, [90]);
-        assert_eq!(l2.ask_prices, [100, 120]);
+        assert_eq!(l2.bids().0, [90]);
+        assert_eq!(l2.asks().0, [100, 120]);
     }
 
     #[test]
@@ -1977,8 +1977,7 @@ mod tests {
         );
 
         let l2 = response.l2_data.as_ref().unwrap();
-        assert_eq!(l2.ask_prices, [110, 120]);
-        assert_eq!(l2.ask_volumes, [10, 10]);
+        assert_eq!(l2.asks(), (&[110, 120][..], &[10, 10][..]));
     }
 
     #[test]
