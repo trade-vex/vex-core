@@ -1,19 +1,22 @@
 version: '3.8'
 
 services:
-  # Aeron Media Driver - built from source
+  # Aeron's ArchivingMediaDriver (aeron-all 1.49.0, the driver every stack runs; RUNBOOK): the
+  # media driver vex-core uses, and the Aeron Archive that journals its commands. Its Aeron
+  # directory is /dev/shm/aeron-test-server, in the host's /dev/shm.
   media-driver:
     build:
-      context: ./media-driver
-      dockerfile: Dockerfile
-      cache_from:
-        - ubuntu:22.04
+      context: ../xtask/tests
+      dockerfile: archive.Dockerfile
     container_name: vex-media-driver
     shm_size: "512m"            # 🆕 Set shm-size like docker run
     ipc: "shareable"            # 🆕 Enable shared IPC namespace
     restart: unless-stopped
-    environment:
-      - AERON_DIR=/dev/shm/aeron
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /dev/shm/aeron-test-server/cnc.dat"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
     volumes:
       - /dev/shm:/dev/shm
 
@@ -42,18 +45,16 @@ services:
       media-driver:
         condition: service_healthy
     environment:
-      # Passed through from the calling shell, and required: development or test (see below).
+      # Passed through from the calling shell, and required: development or test.
       - VEX_ENV
       - RUST_LOG=info
-      # This stack runs only a media driver, no Aeron Archive, so the archive channel is empty:
-      # commands are not journaled, so nothing is replayed, and events queued when the process
-      # dies are not re-published. Production rejects an empty channel, so VEX_ENV=production
-      # fails at startup here.
-      - VEX__CORE_NETWORKING__REQUEST_CONTROL_CHANNEL=
+      # The media driver's Aeron directory, instead of the image's /dev/shm/aeron. The archive
+      # control channel is the development and test default, which the archive listens on.
+      - VEX__CORE_NETWORKING__CONTEXT_DIR=/dev/shm/aeron-test-server
       # Kafka and its Schema Registry, passed through from the calling shell. This stack runs
       # neither; unset, the dev defaults point at localhost, which here is the container itself.
       - VEX__KAFKA_BROKER
       - VEX__SCHEMA_REGISTRY_URL
     volumes:
-      - /dev/shm/aeron:/dev/shm/aeron
+      - /dev/shm:/dev/shm
     restart: unless-stopped
