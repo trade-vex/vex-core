@@ -463,6 +463,9 @@ top -p $(pgrep vex-core)
    tail -100 /var/log/vex/vex-core.log
    # Or wherever logs are configured
    ```
+   A `settlement_failed` error before the exit is a deliberate abort: a fill R1 admitted could not
+   settle, so the ledger or an asset's `max_supply` is wrong. Page; do not restart in a loop, as
+   the replay reaches the same command and aborts again.
 
 4. **Restart**
    ```bash

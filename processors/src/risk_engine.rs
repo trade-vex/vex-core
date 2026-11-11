@@ -164,7 +164,9 @@ impl RiskEngine {
     }
 
     /// Handles a single trade event from the matching engine to settle funds
-    /// This is called by the R2 handler for each individual event in the linked list
+    /// This is called by the R2 handler for each individual event in the linked list.
+    /// A settlement that fails aborts the process: R1 admitted both orders, so it cannot happen
+    /// unless the ledger is already wrong.
     pub fn handle_trade_event(
         &self,
         user_id: u64,
@@ -211,17 +213,13 @@ impl RiskEngine {
                 price = event.price,
                 size = event.size,
                 taker_order = ?taker_order,
-                error = ?err
+                error = ?err,
+                "R1 admitted both orders, so this is a ledger invariant violation; aborting the exchange rather than settle one side"
             );
-            // The zeroed snapshot would otherwise become the maker's latest row. Publish what the
-            // store actually holds: unchanged if settlement failed before its commit, or the
-            // committed state if a later step (bid-collateral release) failed after it.
-            if user_id == event.maker_user_id {
-                event.maker_balance = [
-                    self.get_balance(user_id, base_asset(market_id)),
-                    self.get_balance(user_id, quote_asset(market_id)),
-                ];
-            }
+            // The counterparty may already be settled on another shard. Stopping here keeps the
+            // events stage from publishing a one-sided trade; the journal replays to this command,
+            // so this is a page, not a restart.
+            std::process::abort();
         } else {
             debug!(
                 target: "risk_engine",
@@ -334,14 +332,9 @@ impl RiskEngine {
         // Compute and validate every mutation against copies before changing the store.
         let mut store = self.balances.lock();
 
-        // Fee accrual is computed and overflow-checked BEFORE any balance mutation, so a
-        // saturated accumulator can never leave a half-settled trade (PR #173 accounting
-        // inside PR #153's copy-then-commit). Lock order stays balances -> accrued_fees.
-        let mut accrued_fees = if fee_amount == 0 {
-            None
-        } else {
-            Some(self.accrued_fees.lock())
-        };
+        // Fee accrual is overflow-checked here too, so a saturated accumulator can never leave a
+        // half-settled trade. Lock order everywhere: balances -> accrued_fees -> bid_collateral.
+        let mut accrued_fees = (fee_amount != 0).then(|| self.accrued_fees.lock());
         let accrued_fee_total = accrued_fees
             .as_ref()
             .map(|fees| {
@@ -353,84 +346,79 @@ impl RiskEngine {
             })
             .transpose()?;
 
-        let mut balance_sub = store.get_balance(user_id, asset_to_subtract);
-
-        if balance_sub.locked < refund_amount {
-            return Err(BalanceError::InsufficientLockedFunds {
-                locked: balance_sub.locked,
-                needed: refund_amount,
-            }
-            .into());
-        }
-        balance_sub.locked -= refund_amount;
-        balance_sub.available = balance_sub
-            .available
-            .checked_add(refund_amount)
+        // A bid's collateral record decides what this fill consumes and, when the order completes,
+        // the rounding residue R1 locked beyond its fills. Decided here so the residue's unlock is
+        // part of the one commit below.
+        let mut collateral = (user_side == Side::Bid).then(|| self.bid_collateral.lock());
+        let consumed = refund_amount
+            .checked_add(amount_to_subtract)
+            .ok_or(BalanceError::Overflow)?;
+        let residue = match collateral.as_deref() {
+            Some(collateral) if order_completed => match collateral.get(&order_id) {
+                Some(locked) => locked.saturating_sub(consumed),
+                None => {
+                    warn!(
+                        target: "risk_engine",
+                        event = "missing_bid_collateral",
+                        shard_id = self.shard_id,
+                        order_id,
+                        user_id
+                    );
+                    0
+                }
+            },
+            _ => 0,
+        };
+        let locked_needed = consumed
+            .checked_add(residue)
+            .ok_or(BalanceError::Overflow)?;
+        let back_to_available = refund_amount
+            .checked_add(residue)
             .ok_or(BalanceError::Overflow)?;
 
-        if balance_sub.locked < amount_to_subtract {
+        let mut balance_sub = store.get_balance(user_id, asset_to_subtract);
+        if balance_sub.locked < locked_needed {
             return Err(BalanceError::InsufficientLockedFunds {
                 locked: balance_sub.locked,
-                needed: amount_to_subtract,
+                needed: locked_needed,
             }
             .into());
         }
-        balance_sub.locked -= amount_to_subtract;
-
-        let mut balance_add = if asset_to_add == asset_to_subtract {
-            balance_sub
-        } else {
-            store.get_balance(user_id, asset_to_add)
-        };
+        balance_sub.locked -= locked_needed;
+        balance_sub.available = balance_sub
+            .available
+            .checked_add(back_to_available)
+            .ok_or(BalanceError::Overflow)?;
+        // A separate copy: the config rejects a market whose base and quote are one asset.
+        let mut balance_add = store.get_balance(user_id, asset_to_add);
         balance_add.available = balance_add
             .available
             .checked_add(amount_to_add)
             .ok_or(BalanceError::Overflow)?;
 
-        // PR #178 made get_balance_mut fallible so a REJECTED operation can no longer insert
-        // an empty row. This is the commit point: every validation above has passed, so the
-        // write must succeed even for an asset the user is receiving for the first time.
-        // set_balance inserts-or-updates, which keeps #153's all-or-nothing commit intact.
-        if asset_to_add == asset_to_subtract {
-            store.set_balance(user_id, asset_to_add, balance_add);
-        } else {
-            store.set_balance(user_id, asset_to_subtract, balance_sub);
-            store.set_balance(user_id, asset_to_add, balance_add);
-        }
-
+        // Commit. Nothing below can fail. set_balance inserts-or-updates, so an asset the user
+        // receives for the first time gets its row here.
+        store.set_balance(user_id, asset_to_subtract, balance_sub);
+        store.set_balance(user_id, asset_to_add, balance_add);
         if let (Some(fees), Some(total)) = (accrued_fees.as_mut(), accrued_fee_total) {
             fees.insert(fee_asset, total);
         }
-
-        // PR #171 collateral bookkeeping runs AFTER the balances commit, so a
-        // failed settlement cannot desynchronise the tracked reservation.
-        if refund_amount > 0 {
-            self.subtract_bid_collateral(order_id, refund_amount);
-        }
-        if user_side == Side::Bid {
-            self.subtract_bid_collateral(order_id, amount_to_subtract);
-        }
-
-        if user_side == Side::Bid && order_completed {
-            self.release_remaining_bid_collateral(
-                &mut store,
-                order_id,
-                user_id,
-                quote_asset(market_id),
-            )?;
-            balance_sub = store.get_balance(user_id, asset_to_subtract);
+        if let Some(collateral) = collateral.as_mut() {
+            if order_completed {
+                collateral.remove(&order_id);
+            } else if let Some(locked) = collateral.get_mut(&order_id) {
+                *locked = locked.saturating_sub(consumed);
+            }
         }
 
         if is_maker {
-            if asset_to_subtract == base_asset(market_id) {
+            event.maker_balance = if asset_to_subtract == base_asset(market_id) {
                 // Maker was on ASK side, selling base for quote.
-                event.maker_balance[0] = balance_sub;
-                event.maker_balance[1] = balance_add;
+                [balance_sub, balance_add]
             } else {
                 // Maker was on BID side, buying base with quote.
-                event.maker_balance[0] = balance_add;
-                event.maker_balance[1] = balance_sub;
-            }
+                [balance_add, balance_sub]
+            };
         }
         Ok(())
     }
@@ -608,13 +596,6 @@ impl RiskEngine {
             Side::Ask => store
                 .unlock_funds(user_id, base_asset(market_id), size)
                 .map_err(RiskEngineError::BalanceError),
-        }
-    }
-
-    fn subtract_bid_collateral(&self, order_id: u64, amount: u64) {
-        let mut collateral = self.bid_collateral.lock();
-        if let Some(remaining) = collateral.get_mut(&order_id) {
-            *remaining = remaining.saturating_sub(amount);
         }
     }
 
@@ -1537,33 +1518,6 @@ mod tests {
     }
 
     #[test]
-    fn failed_maker_settlement_publishes_the_unchanged_balance_not_zeros() {
-        let base_asset_id = 2u16;
-        let quote_asset_id = 1u16;
-        let market_id = ((quote_asset_id as u32) << 16) | base_asset_id as u32;
-        let mut specs = HashMap::new();
-        specs.insert(market_id, get_spec(market_id));
-        let engine = RiskEngine::new(specs, 0, 1);
-        let maker_id = 101;
-        let size = 10;
-
-        // The maker's locked base cannot cover the fill, so settlement fails.
-        engine.set_balance(maker_id, base_asset_id, UserBalance::new(5, size - 1));
-        engine.set_balance(maker_id, quote_asset_id, UserBalance::new(11, 0));
-
-        let mut trade_event = MatcherTradeEvent::default();
-        trade_event.price = 100;
-        trade_event.size = size;
-        trade_event.maker_user_id = maker_id;
-        engine.handle_trade_event(maker_id, market_id, Side::Ask, &mut trade_event, None);
-
-        assert_eq!(
-            trade_event.maker_balance,
-            [UserBalance::new(5, size - 1), UserBalance::new(11, 0)]
-        );
-    }
-
-    #[test]
     fn test_trade_settlement_subtract_failure_leaves_balances_unchanged() {
         let base_asset_id = 2u16;
         let quote_asset_id = 1u16;
@@ -1610,8 +1564,8 @@ mod tests {
             result,
             Err(RiskEngineError::BalanceError(
                 BalanceError::InsufficientLockedFunds {
-                    locked: 50,
-                    needed: 1_000,
+                    locked: 150,
+                    needed: 1_100,
                 }
             ))
         );
@@ -1624,6 +1578,58 @@ mod tests {
             ],
             balances_before
         );
+    }
+
+    #[test]
+    fn settle_trade_failure_leaves_the_store_and_collateral_untouched() {
+        let base_asset_id = 2u16;
+        let quote_asset_id = 1u16;
+        let market_id = ((quote_asset_id as u32) << 16) | base_asset_id as u32;
+        let spec = get_spec(market_id);
+        let mut specs = HashMap::new();
+        specs.insert(market_id, spec.clone());
+        let engine = RiskEngine::new(specs, 0, 1);
+        let user_id = 102;
+        let order_id = 7;
+
+        // The order's record says 100 is locked, the store only 60: this completing fill of 50
+        // also releases the 50 residue, which the store cannot cover.
+        engine.bid_collateral.lock().insert(order_id, 100);
+        engine.set_balance(user_id, quote_asset_id, UserBalance::new(0, 60));
+        let mut trade_event = MatcherTradeEvent::default();
+        trade_event.price = 1;
+        trade_event.size = 50;
+        trade_event.maker_user_id = 101;
+        trade_event.active_order_completed = true;
+
+        let result = engine.settle_trade(
+            user_id,
+            market_id,
+            Side::Bid,
+            &mut trade_event,
+            &spec,
+            Some((order_id, 1)),
+        );
+
+        assert_eq!(
+            result,
+            Err(RiskEngineError::BalanceError(
+                BalanceError::InsufficientLockedFunds {
+                    locked: 60,
+                    needed: 100,
+                }
+            ))
+        );
+        assert_eq!(
+            engine.get_balance(user_id, quote_asset_id),
+            UserBalance::new(0, 60)
+        );
+        assert_eq!(
+            engine.get_balance(user_id, base_asset_id),
+            UserBalance::default()
+        );
+        assert_eq!(engine.bid_collateral.lock().get(&order_id), Some(&100));
+        assert_eq!(engine.get_accrued_fee(base_asset_id), 0);
     }
 
     #[test]
@@ -2081,6 +2087,13 @@ mod tests {
     #[test]
     fn test_shipped_eth_bid_full_fill_has_no_collateral_residue() {
         assert_shipped_eth_bid_accounting(30_000, &[333_333_334, 666_666_666], true);
+    }
+
+    #[test]
+    fn test_shipped_eth_bid_full_fill_releases_rounding_residue() {
+        // At 30_001 the lock is 3_000_100_000 and the fills cost 1_000_033_335 + 2_000_066_664:
+        // the last fill releases the 1 unit residue along with its own settlement.
+        assert_shipped_eth_bid_accounting(30_001, &[333_333_334, 666_666_666], true);
     }
 
     #[test]
