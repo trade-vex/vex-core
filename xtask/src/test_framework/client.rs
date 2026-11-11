@@ -140,56 +140,10 @@ impl TestClient {
         }
     }
 
-    /// Receive with custom timeout
-    pub fn recv_timeout(&mut self, timeout: Duration) -> TestResult<OrderCommand> {
-        match self.receiver.recv_timeout(timeout) {
-            Ok(response) => {
-                debug!(
-                    "Client {} received response: order_id={}, status={:?}",
-                    self.client_id, response.order_id, response.status
-                );
-                Ok(response)
-            }
-            Err(RecvTimeoutError::Timeout) => {
-                error!(
-                    "Client {} receive timeout after {:?}",
-                    self.client_id, timeout
-                );
-                Err(TestError::Timeout { timeout })
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                error!("Client {} channel disconnected", self.client_id);
-                Err(TestError::Network(
-                    "Client channel disconnected".to_string(),
-                ))
-            }
-        }
-    }
-
     /// Send command and wait for response (convenience method)
     pub fn send_and_recv(&mut self, cmd: OrderCommand) -> TestResult<OrderCommand> {
         self.send(&cmd)?;
         self.recv()
-    }
-
-    /// Send command and wait for response with custom timeout
-    pub fn send_and_recv_timeout(
-        &mut self,
-        cmd: OrderCommand,
-        timeout: Duration,
-    ) -> TestResult<OrderCommand> {
-        self.send(&cmd)?;
-        self.recv_timeout(timeout)
-    }
-
-    /// Get the client ID
-    pub fn client_id(&self) -> u8 {
-        self.client_id
-    }
-
-    /// Set default timeout
-    pub fn set_timeout(&mut self, timeout: Duration) {
-        self.timeout = timeout;
     }
 
     /// Drain any pending responses (useful for cleanup between tests)

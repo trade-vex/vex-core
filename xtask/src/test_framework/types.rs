@@ -3,7 +3,6 @@
 //! This module defines all the data structures used for test execution,
 //! verification, and result reporting.
 
-use hashbrown::HashMap;
 pub use processors::events::trading_proto::{BalanceEvent, TradeEvent};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -33,20 +32,11 @@ pub enum TestError {
     #[error("Verification failed: {message}")]
     Verification { message: String },
 
-    #[error("Invalid state: {message}")]
-    InvalidState { message: String },
-
     #[error("Configuration error: {message}")]
     Configuration { message: String },
 
     #[error("Parse error: {message}")]
     Parse { message: String },
-
-    #[error("Channel receive error: {0}")]
-    ChannelRecv(#[from] std::sync::mpsc::RecvTimeoutError),
-
-    #[error("Other error: {0}")]
-    Other(#[from] anyhow::Error),
 }
 
 /// Test result type
@@ -88,38 +78,6 @@ pub struct OrderbookSnapshot {
 pub struct OrderbookLevel {
     pub price: u64,
     pub size: u64,
-}
-
-/// User state tracker for test context
-#[derive(Debug, Clone)]
-pub struct UserState {
-    pub user_id: u64,
-    /// Tracks expected balances for verification
-    pub expected_balances: HashMap<u16, Balance>,
-    /// Tracks active orders
-    pub active_orders: Vec<u64>,
-}
-
-impl UserState {
-    pub fn new(user_id: u64) -> Self {
-        Self {
-            user_id,
-            expected_balances: HashMap::new(),
-            active_orders: Vec::new(),
-        }
-    }
-
-    pub fn set_expected_balance(&mut self, asset_id: u16, balance: Balance) {
-        self.expected_balances.insert(asset_id, balance);
-    }
-
-    pub fn add_active_order(&mut self, order_id: u64) {
-        self.active_orders.push(order_id);
-    }
-
-    pub fn remove_active_order(&mut self, order_id: u64) {
-        self.active_orders.retain(|&id| id != order_id);
-    }
 }
 
 /// Balance expectation for verification

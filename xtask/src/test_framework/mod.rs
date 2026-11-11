@@ -12,8 +12,6 @@ use self::client::TestClient;
 use self::kafka::KafkaVerifier;
 use self::types::*;
 use common::{CoreMarketSpecification, OrderCommand};
-use hashbrown::HashMap;
-use std::time::Duration;
 use tracing::{debug, info};
 
 /// Main test context that orchestrates test execution
@@ -21,7 +19,6 @@ use tracing::{debug, info};
 /// The TestContext manages:
 /// - Test client for sending/receiving OrderCommands
 /// - Kafka verifier for state validation
-/// - User state tracking
 /// - Test configuration
 ///
 /// # Example
@@ -55,8 +52,6 @@ pub struct TestContext {
     pub quote_asset_id: u16,
     /// Market specification used by the development test server
     market_spec: CoreMarketSpecification,
-    /// User state tracker
-    users: HashMap<u64, UserState>,
     /// Test configuration
     config: TestConfig,
 }
@@ -102,16 +97,8 @@ impl TestContext {
             base_asset_id: config.base_asset_id,
             quote_asset_id: config.quote_asset_id,
             market_spec,
-            users: HashMap::new(),
             config,
         })
-    }
-
-    /// Get or create user state
-    pub fn user(&mut self, user_id: u64) -> &mut UserState {
-        self.users
-            .entry(user_id)
-            .or_insert_with(|| UserState::new(user_id))
     }
 
     /// Execute an OrderCommand and return the response
@@ -124,19 +111,6 @@ impl TestContext {
             cmd.command, cmd.user_id
         );
         self.client.send_and_recv(cmd)
-    }
-
-    /// Execute an OrderCommand with custom timeout
-    pub fn execute_command_timeout(
-        &mut self,
-        cmd: OrderCommand,
-        timeout: Duration,
-    ) -> TestResult<OrderCommand> {
-        debug!(
-            "Executing command (timeout={:?}): {:?} for user {}",
-            timeout, cmd.command, cmd.user_id
-        );
-        self.client.send_and_recv_timeout(cmd, timeout)
     }
 
     /// Fund a user with a specific asset (send deposit command)
@@ -181,10 +155,6 @@ impl TestContext {
             });
         }
 
-        // Update expected state
-        self.user(user_id)
-            .set_expected_balance(asset_id, Balance::from_total(amount));
-
         debug!("User {} funded successfully", user_id);
         Ok(())
     }
@@ -209,24 +179,5 @@ impl TestContext {
         self.client.drain_responses();
 
         debug!("Test context cleaned up successfully");
-    }
-
-    /// Verify system-wide invariants
-    ///
-    /// This checks that the system state is consistent across all users.
-    /// Should be called periodically during long-running tests.
-    pub async fn verify_invariants(&mut self) -> TestResult<()> {
-        debug!("Verifying system invariants");
-
-        // Verify balance invariants for all users
-        for user in self.users.values() {
-            for (&asset_id, _) in &user.expected_balances {
-                let balance = self.kafka.get_balance(user.user_id, asset_id).await?;
-                verify_balance_invariant(&balance)?;
-            }
-        }
-
-        debug!("System invariants verified successfully");
-        Ok(())
     }
 }
