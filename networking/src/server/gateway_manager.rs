@@ -330,6 +330,17 @@ impl GatewayManager {
         }
     }
 
+    /// Gives `gateway_id` a slot without a handshake, so a test can hold a session open.
+    #[cfg(test)]
+    pub(super) fn reserve_slot(&self, gateway_id: u8, session_id: i32) -> bool {
+        self.gateway_sessions.write().unwrap().reserve(
+            gateway_id,
+            session_id,
+            [10_000, 10_001],
+            Instant::now(),
+        )
+    }
+
     /// Applies liveness changes reported by Aeron image callbacks.
     fn process_session_events(&self) {
         loop {

@@ -1225,10 +1225,11 @@ During the replay, journaling skips every command (they are journaled already), 
 4. Closes duologue, removes publication, releases resources
 
 **Shutdown** (on the server thread, once the shutdown flag is set):
-1. Closes every gateway duologue, connected or not, releasing its ring producer (see Asynchronous Close), then the handshake subscription and its handlers
-2. Drains the pipeline, then waits until the archive has recorded everything journaling offered
+1. Closes the handshake subscription and its handlers; the poll loop has stopped, so no command is read any more
+2. Drains the pipeline, which answers every accepted command through the still-open sessions, then waits until the archive has recorded everything journaling offered
 3. Stops archive recording via `stop_recording_subscription()` and closes the archive connection
-4. Drops the server, with its Aeron client, then the last ring producer: the pipeline joins its consumers, and the events stage delivers what it holds within its 20 s grace and writes the delivered watermark
+4. Closes every gateway duologue, connected or not, releasing its ring producer (see Asynchronous Close)
+5. Drops the server, with its Aeron client, then the last ring producer: the pipeline joins its consumers, and the events stage delivers what it holds within its 20 s grace and writes the delivered watermark
 
 ### Message Encoding
 

@@ -50,7 +50,7 @@ use crate::server::replay::{
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
 use common::{OrderCommand, decode_order_command};
 use disruptor::{MultiProducer, SingleConsumerBarrier};
-use progress::{DRAIN_TIMEOUT, finish_shutdown, wait_until};
+use progress::{DRAIN_TIMEOUT, wait_until};
 use rusteron_archive::bindings::AERON_NULL_COUNTER_ID;
 use rusteron_archive::{
     Aeron, AeronArchiveAsyncConnect, AeronArchiveReplayParams, AeronAvailableImageLogger,
@@ -408,7 +408,7 @@ impl VexCoreServer {
 
     /// Gracefully shuts down the core server
     ///
-    /// Closes all active gateway connections and cleans up resources.
+    /// Drains the pipeline, waits for the archive, then closes every gateway session.
     /// This method should only be called when the shutdown flag is already set.
     ///
     /// # Returns
@@ -420,50 +420,47 @@ impl VexCoreServer {
             core_id = %self.config.core_id
         );
 
-        self.gateways.shutdown_all_gateways()?;
+        // The poll loop has returned, so no command is read any more. Sessions stay open: the
+        // drain answers every accepted command through them.
+        // shortcut: a gateway's orders offered after this point, before it sees its session close
+        // (<= publication.connection.timeout, 5 s), are never read and end as 408 at the gateway;
+        // upgrade to a CLOSING notice on the reply stream when deploys under load show it.
         self.subscription.close::<AeronNotificationLogger>(None)?;
         self.image_available_handler.release();
         self.image_unavailable_handler.release();
         self.handshake_handler.release();
-        // Ingress is closed. Keep the recording subscription and client alive until
-        // accepted commands finish journaling and the archive catches the publication.
-        finish_shutdown(
-            || self.publications.drain_pipeline(),
-            || {
-                if let (Some(archive), Some(recording_id), Some(publication)) = (
-                    self.archive.as_ref(),
-                    self.recording_id,
-                    self.publications.archive_publication(),
-                ) {
-                    let target = publication.position();
-                    if target < 0 {
-                        return Err(ServerError::DrainError(format!(
-                            "archive publication position: {target}"
-                        )));
-                    }
-                    wait_until(DRAIN_TIMEOUT, || {
-                        Ok(archive.get_max_recorded_position(recording_id)? >= target)
-                    })
-                    .map_err(|error| {
-                        ServerError::DrainError(format!(
-                            "recording {recording_id} did not reach publication position {target}: {error}"
-                        ))
-                    })?;
-                }
-                Ok(())
-            },
-            || {
-                if let Some(sub_id) = self.subscription_id
-                    && let Some(ref archive) = self.archive
-                {
-                    archive.stop_recording_subscription(sub_id)?;
-                }
-                if let Some(ref archive) = self.archive {
-                    archive.close()?;
-                }
-                Ok(())
-            },
-        )?;
+        // A failure below leaves the recording open on purpose: the next start needs it.
+        self.publications.drain_pipeline()?;
+        if let (Some(archive), Some(recording_id), Some(publication)) = (
+            self.archive.as_ref(),
+            self.recording_id,
+            self.publications.archive_publication(),
+        ) {
+            let target = publication.position();
+            if target < 0 {
+                return Err(ServerError::DrainError(format!(
+                    "archive publication position: {target}"
+                )));
+            }
+            wait_until(DRAIN_TIMEOUT, || {
+                Ok(archive.get_max_recorded_position(recording_id)? >= target)
+            })
+            .map_err(|error| {
+                ServerError::DrainError(format!(
+                    "recording {recording_id} did not reach publication position {target}: {error}"
+                ))
+            })?;
+        }
+        if let Some(sub_id) = self.subscription_id
+            && let Some(ref archive) = self.archive
+        {
+            archive.stop_recording_subscription(sub_id)?;
+        }
+        if let Some(ref archive) = self.archive {
+            archive.close()?;
+        }
+        // Every reply went out during the drain; only now drop the gateway sessions.
+        self.gateways.shutdown_all_gateways()?;
 
         info!(
             target: "core_server",

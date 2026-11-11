@@ -195,8 +195,9 @@ VEX_ENV=development make server
 kill -TERM <pid>
 
 # vex-core handles Ctrl+C and performs graceful shutdown, with gateways connected or not:
-# it closes every gateway session, drains the pipeline, waits for the archive to record every
-# accepted command, then delivers the events still queued and writes the delivered watermark.
+# it stops ingress, drains the pipeline and answers every accepted command, waits for the archive
+# to record every accepted command, closes every gateway session, then delivers the events still
+# queued and writes the delivered watermark.
 # It logs `flush_complete` once the brokers have acknowledged every event, or
 # `shutdown_with_undelivered_events` with the count of those the next start re-publishes.
 # A shutdown that delivers everything leaves the next start nothing to re-publish.
