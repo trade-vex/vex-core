@@ -2851,38 +2851,6 @@ mod test {
     }
 
     #[test]
-    fn test_fok_order_insufficient_liquidity() {
-        let (mut book, price_cache) = create_test_orderbook();
-        let mut counter = TestCounter::new();
-
-        // Place insufficient liquidity
-        let mut bid_order = TestOrderBuilder::new()
-            .order_id(counter.next_order_id())
-            .timestamp(counter.next_timestamp())
-            .side(Side::Bid)
-            .price(1000)
-            .size(50)
-            .build_place_order();
-
-        book.place_order(&mut bid_order, price_cache.clone());
-
-        // Place FOK ask order that cannot be completely filled
-        let mut fok_ask = TestOrderBuilder::new()
-            .order_id(counter.next_order_id())
-            .timestamp(counter.next_timestamp())
-            .side(Side::Ask)
-            .price(1000)
-            .size(100)
-            .time_in_force(TimeInForce::Fok)
-            .build_place_order();
-
-        book.place_order(&mut fok_ask, price_cache.clone());
-        assert_eq!(fok_ask.status(), Status::Cancelled);
-        // Original bid should remain untouched
-        assert_order_book_state(&book, &[(1000, 50)], &[]);
-    }
-
-    #[test]
     fn test_market_order_buy_check() {
         let (mut book, price_cache) = create_test_orderbook();
         let mut counter = TestCounter::new();
@@ -3500,6 +3468,63 @@ mod test {
 
         assert_eq!(market_buy.status(), Status::Cancelled);
         assert!(market_buy.events().is_none());
+    }
+
+    /// Users 1, 2 and 3 rest 10 each at one ask level; user 2 bids 25 through it.
+    #[test]
+    fn taker_meets_its_own_order_in_the_middle_of_a_level() {
+        // (taker's time in force, status, size left, fills as (maker, size), best bid, best ask)
+        let cases = [
+            (
+                TimeInForce::Ioc,
+                Status::PartiallyFilled,
+                5,
+                vec![(1, 10), (3, 10)],
+                None,
+                Some((100, 10)),
+            ),
+            (
+                TimeInForce::Gtc,
+                Status::PartiallyFilled,
+                5,
+                vec![(1, 10), (3, 10)],
+                Some((100, 5)),
+                Some((100, 10)),
+            ),
+            (
+                TimeInForce::Fok,
+                Status::Cancelled,
+                25,
+                vec![],
+                None,
+                Some((100, 30)),
+            ),
+        ];
+        for (tif, status, size_left, fills, best_bid, best_ask) in cases {
+            let (mut book, price_cache) = create_test_orderbook();
+            let harness = TestHarness::new(1);
+            for user in [1, 2, 3] {
+                let mut ask =
+                    harness.create_place_order_cmd(user, Side::Ask, 100, 10, TimeInForce::Gtc);
+                book.place_order(&mut ask, price_cache.clone());
+            }
+
+            let mut bid = harness.create_place_order_cmd(2, Side::Bid, 100, 25, tif);
+            book.place_order(&mut bid, price_cache.clone());
+
+            assert_eq!((bid.status(), bid.size()), (status, size_left), "{tif:?}");
+            let events: Vec<_> = collect_trade_events(bid)
+                .iter()
+                .map(|e| (e.maker_user_id, e.size))
+                .collect();
+            assert_eq!(events, fills, "{tif:?}");
+            assert_eq!(
+                (book.best_bid(), book.best_ask()),
+                (best_bid, best_ask),
+                "{tif:?}"
+            );
+            assert_eq!(book.verify_state(), Ok(()), "{tif:?}");
+        }
     }
 
     #[test]
