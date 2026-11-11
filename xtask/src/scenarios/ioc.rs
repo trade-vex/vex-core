@@ -6,11 +6,11 @@
 
 use crate::builders::OrderBuilder;
 use crate::fixtures::{assets, prices, users};
-use crate::test_framework::TestContext;
 use crate::test_framework::types::*;
+use crate::test_framework::{TestContext, scenario};
 use crate::verifiers::{BalanceVerifier, OrderbookVerifier, ResponseVerifier, TradeVerifier};
 use common::Side;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Comprehensive IOC test suite - runs all scenarios in a single session
 ///
@@ -23,25 +23,6 @@ use tracing::{info, warn};
 ///
 /// State is maintained across sections - no cleanup between tests.
 pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
-    info!("╔════════════════════════════════════════╗");
-    info!("║   IOC COMPREHENSIVE TEST SUITE         ║");
-    info!("╚════════════════════════════════════════╝");
-    info!(
-        "Market ID: {} (Base: {}, Quote: {})",
-        ctx.market_id, ctx.base_asset_id, ctx.quote_asset_id
-    );
-    info!("");
-
-    let suite_start = std::time::Instant::now();
-    let mut results = Vec::new();
-
-    // ========================================================================
-    // SECTION 1: Setup - Fund all test users
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 1: Initial Setup                │");
-    info!("└─────────────────────────────────────────┘");
-
     info!("Funding test users...");
     ctx.fund_user(users::ALICE, 10_000_000, assets::USD).await?; // 10M USD
     ctx.fund_user(users::ALICE, 1_000, assets::BTC).await?; // 1000 BTC
@@ -52,210 +33,22 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     ctx.fund_user(users::CHARLIE, 1_000, assets::BTC).await?; // 1000 BTC
 
     info!("✓ All users funded successfully");
-    info!("");
 
-    // ========================================================================
-    // SECTION 2: IOC No Match - Order fully cancelled
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 2: IOC No Match                 │");
-    info!("│ (Order fully cancelled)                 │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_ioc_no_match_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 2 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "ioc_no_match".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 2 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "ioc_no_match".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 3: IOC Full Match - Complete fill
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 3: IOC Full Match               │");
-    info!("│ (Order completely filled)               │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_ioc_full_match_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 3 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "ioc_full_match".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 3 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "ioc_full_match".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 4: IOC Partial Match - Partial fill + cancel
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 4: IOC Partial Match            │");
-    info!("│ (Partial fill + cancel remainder)       │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_ioc_partial_match_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 4 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "ioc_partial_match".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 4 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "ioc_partial_match".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 5: IOC Multiple Levels - Crosses multiple price levels
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 5: IOC Multiple Levels          │");
-    info!("│ (Crosses multiple price levels)         │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_ioc_multiple_levels_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 5 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "ioc_multiple_levels".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 5 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "ioc_multiple_levels".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 6: Market Buy Order - Tests PriceCache + Slippage
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 6: Market Buy Order             │");
-    info!("│ (PriceCache + Slippage + Refund)        │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_market_buy_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 6 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("market_buy".to_string(), duration));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 6 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "market_buy".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 7: Market Sell Order - Tests Market Sell at Best Bid
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 7: Market Sell Order            │");
-    info!("│ (Executes against best bid)             │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_market_sell_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 7 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("market_sell".to_string(), duration));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 7 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "market_sell".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // Final Summary
-    // ========================================================================
-    let total_duration = suite_start.elapsed();
-    let passed = results.iter().filter(|r| r.success).count();
-    let failed = results.len() - passed;
-
-    info!("╔════════════════════════════════════════╗");
-    info!("║   TEST SUITE SUMMARY                   ║");
-    info!("╚════════════════════════════════════════╝");
-    info!("Total Sections: {}", results.len());
-    info!("Passed:         {} ✓", passed);
-    info!("Failed:         {} ✗", failed);
-    info!("Total Time:     {:?}", total_duration);
-    info!("╚════════════════════════════════════════╝");
-
+    let mut results = Vec::new();
+    scenario!(results, "ioc_no_match", test_ioc_no_match_section(ctx));
+    scenario!(results, "ioc_full_match", test_ioc_full_match_section(ctx));
+    scenario!(
+        results,
+        "ioc_partial_match",
+        test_ioc_partial_match_section(ctx)
+    );
+    scenario!(
+        results,
+        "ioc_multiple_levels",
+        test_ioc_multiple_levels_section(ctx)
+    );
+    scenario!(results, "market_buy", test_market_buy_section(ctx));
+    scenario!(results, "market_sell", test_market_sell_section(ctx));
     Ok(results)
 }
 

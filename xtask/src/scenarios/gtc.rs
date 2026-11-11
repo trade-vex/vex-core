@@ -5,11 +5,11 @@
 
 use crate::builders::OrderBuilder;
 use crate::fixtures::{assets, prices, users};
-use crate::test_framework::TestContext;
 use crate::test_framework::types::*;
+use crate::test_framework::{TestContext, scenario};
 use crate::verifiers::{BalanceVerifier, OrderbookVerifier, ResponseVerifier, TradeVerifier};
 use common::Side;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Comprehensive GTC test suite - runs all scenarios in a single session
 ///
@@ -21,25 +21,6 @@ use tracing::{info, warn};
 /// State is maintained across sections - no cleanup between tests since
 /// the VexCore server holds orderbook and balances in memory.
 pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
-    info!("╔════════════════════════════════════════╗");
-    info!("║   GTC COMPREHENSIVE TEST SUITE         ║");
-    info!("╚════════════════════════════════════════╝");
-    info!(
-        "Market ID: {} (Base: {}, Quote: {})",
-        ctx.market_id, ctx.base_asset_id, ctx.quote_asset_id
-    );
-    info!("");
-
-    let suite_start = std::time::Instant::now();
-    let mut results = Vec::new();
-
-    // ========================================================================
-    // SECTION 1: Setup - Fund all test users
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 1: Initial Setup                │");
-    info!("└─────────────────────────────────────────┘");
-
     info!("Funding test users...");
     ctx.fund_user(users::ALICE, 10_000_000, assets::USD).await?; // 10M USD for Alice
     ctx.fund_user(users::ALICE, 1_000, assets::BTC).await?; // 1000 BTC for Alice
@@ -50,120 +31,15 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     ctx.fund_user(users::CHARLIE, 1_000, assets::BTC).await?; // 1000 BTC for Charlie
 
     info!("✓ All users funded successfully");
-    info!("");
 
-    // ========================================================================
-    // SECTION 2: GTC No Match - Orders rest on book
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 2: GTC No Match                 │");
-    info!("│ (Orders rest on book)                   │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_gtc_no_match_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 2 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "gtc_no_match".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 2 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "gtc_no_match".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 3: GTC Full Match - Complete fills
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 3: GTC Full Match               │");
-    info!("│ (Orders fully matched)                  │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_gtc_full_match_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 3 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "gtc_full_match".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 3 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "gtc_full_match".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 4: GTC Partial Match - Partial fills
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 4: GTC Partial Match           │");
-    info!("│ (Partial fill + rest on book)          │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_gtc_partial_match_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 4 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "gtc_partial_match".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 4 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "gtc_partial_match".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // Final Summary
-    // ========================================================================
-    let total_duration = suite_start.elapsed();
-    let passed = results.iter().filter(|r| r.success).count();
-    let failed = results.len() - passed;
-
-    info!("╔════════════════════════════════════════╗");
-    info!("║   TEST SUITE SUMMARY                   ║");
-    info!("╚════════════════════════════════════════╝");
-    info!("Total Sections: {}", results.len());
-    info!("Passed:         {} ✓", passed);
-    info!("Failed:         {} ✗", failed);
-    info!("Total Time:     {:?}", total_duration);
-    info!("╚════════════════════════════════════════╝");
-
+    let mut results = Vec::new();
+    scenario!(results, "gtc_no_match", test_gtc_no_match_section(ctx));
+    scenario!(results, "gtc_full_match", test_gtc_full_match_section(ctx));
+    scenario!(
+        results,
+        "gtc_partial_match",
+        test_gtc_partial_match_section(ctx)
+    );
     Ok(results)
 }
 

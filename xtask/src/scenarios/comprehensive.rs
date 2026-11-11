@@ -10,12 +10,12 @@
 
 use crate::builders::OrderBuilder;
 use crate::fixtures::{assets, users};
-use crate::test_framework::TestContext;
 use crate::test_framework::types::*;
+use crate::test_framework::{TestContext, scenario};
 use crate::verifiers::{OrderbookVerifier, ResponseVerifier, TradeVerifier};
 use common::Side;
 use processors::events::trading_proto;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Comprehensive integration test - single massive test combining all order types
 ///
@@ -31,26 +31,6 @@ use tracing::{info, warn};
 /// The test validates that the exchange behaves correctly under complex
 /// realistic conditions where different order types interact.
 pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
-    info!("╔════════════════════════════════════════════════╗");
-    info!("║   COMPREHENSIVE INTEGRATION TEST SUITE         ║");
-    info!("║   All Order Types + Edge Cases + Load          ║");
-    info!("╚════════════════════════════════════════════════╝");
-    info!(
-        "Market ID: {} (Base: {}, Quote: {})",
-        ctx.market_id, ctx.base_asset_id, ctx.quote_asset_id
-    );
-    info!("");
-
-    let suite_start = std::time::Instant::now();
-    let mut results = Vec::new();
-
-    // ========================================================================
-    // SECTION 1: Setup - Fund all test users
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 1: Initial Setup                       │");
-    info!("└────────────────────────────────────────────────┘");
-
     info!("Funding test users with substantial amounts for comprehensive testing...");
     ctx.fund_user(users::ALICE, 50_000_000, assets::USD).await?; // 50M USD
     ctx.fund_user(users::ALICE, 5_000, assets::BTC).await?; // 5000 BTC
@@ -61,271 +41,36 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     ctx.fund_user(users::CHARLIE, 5_000, assets::BTC).await?; // 5000 BTC
 
     info!("✓ All users funded successfully");
-    info!("");
 
-    // ========================================================================
-    // SECTION 2: Build Initial Order Book with GTC Orders
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 2: Build Initial Order Book (GTC)      │");
-    info!("│ Create multi-level orderbook depth             │");
-    info!("└────────────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match build_initial_orderbook_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 2 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "build_orderbook".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 2 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "build_orderbook".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 3: IOC Orders Against Existing Liquidity
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 3: IOC Orders vs Existing Liquidity    │");
-    info!("│ Test IOC partial fills and cancellations       │");
-    info!("└────────────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match ioc_against_orderbook_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 3 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "ioc_vs_liquidity".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 3 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "ioc_vs_liquidity".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 4: FOK Orders - All or Nothing Tests
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 4: FOK Orders (All-or-Nothing)         │");
-    info!("│ Test FOK success and rejection scenarios       │");
-    info!("└────────────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match fok_orders_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 4 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("fok_orders".to_string(), duration));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 4 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "fok_orders".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 5: Cancellations During Active Trading
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 5: Cancellations During Trading        │");
-    info!("│ Cancel orders with active orderbook            │");
-    info!("└────────────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match cancellations_during_trading_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 5 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "active_cancellations".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 5 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "active_cancellations".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 6: Edge Cases - Self-Match Prevention & Boundary Tests
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 6: Edge Cases & Boundary Tests         │");
-    info!("│ Self-match prevention, partial fills, etc      │");
-    info!("└────────────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match edge_cases_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 6 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("edge_cases".to_string(), duration));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 6 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "edge_cases".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 7: Multi-Level Orderbook Interactions
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 7: Multi-Level Orderbook Interactions  │");
-    info!("│ Orders crossing multiple price levels          │");
-    info!("└────────────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match multi_level_interactions_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 7 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("multi_level".to_string(), duration));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 7 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "multi_level".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 8: Partial Fills with Cancellations
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 8: Partial Fills + Cancellations       │");
-    info!("│ Cancel partially filled orders                 │");
-    info!("└────────────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match partial_fills_with_cancel_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 8 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "partial_cancel".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 8 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "partial_cancel".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 9: Conservation - every asset adds up to its deposits
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 9: Conservation                        │");
-    info!("│ Balances plus trade fees = deposits            │");
-    info!("└────────────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match conservation_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 9 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "conservation".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 9 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "conservation".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // Final Summary
-    // ========================================================================
-    let total_duration = suite_start.elapsed();
-    let passed = results.iter().filter(|r| r.success).count();
-    let failed = results.len() - passed;
-
-    info!("╔════════════════════════════════════════════════╗");
-    info!("║   COMPREHENSIVE TEST SUITE SUMMARY             ║");
-    info!("╚════════════════════════════════════════════════╝");
-    info!("Total Sections: {}", results.len());
-    info!("Passed:         {} ✓", passed);
-    info!("Failed:         {} ✗", failed);
-    info!("Total Time:     {:?}", total_duration);
-    info!("╚════════════════════════════════════════════════╝");
-
+    let mut results = Vec::new();
+    scenario!(
+        results,
+        "build_orderbook",
+        build_initial_orderbook_section(ctx)
+    );
+    scenario!(
+        results,
+        "ioc_vs_liquidity",
+        ioc_against_orderbook_section(ctx)
+    );
+    scenario!(results, "fok_orders", fok_orders_section(ctx));
+    scenario!(
+        results,
+        "active_cancellations",
+        cancellations_during_trading_section(ctx)
+    );
+    scenario!(results, "edge_cases", edge_cases_section(ctx));
+    scenario!(
+        results,
+        "multi_level",
+        multi_level_interactions_section(ctx)
+    );
+    scenario!(
+        results,
+        "partial_cancel",
+        partial_fills_with_cancel_section(ctx)
+    );
+    scenario!(results, "conservation", conservation_section(ctx));
     Ok(results)
 }
 

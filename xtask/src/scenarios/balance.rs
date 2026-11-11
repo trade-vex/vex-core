@@ -4,8 +4,8 @@
 
 use crate::builders::OrderBuilder;
 use crate::fixtures::{assets, users};
-use crate::test_framework::TestContext;
 use crate::test_framework::types::*;
+use crate::test_framework::{TestContext, scenario};
 use crate::verifiers::{BalanceVerifier, ResponseVerifier};
 use common::Status;
 use tracing::info;
@@ -202,60 +202,16 @@ pub async fn test_deposits_different_assets(ctx: &mut TestContext) -> TestResult
 /// Run all balance test scenarios
 pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     let mut results = Vec::new();
-
-    // Test 1: Single deposit
-    let start = std::time::Instant::now();
-    match test_single_deposit(ctx).await {
-        Ok(_) => {
-            results.push(ScenarioResult::success(
-                "single_deposit".to_string(),
-                start.elapsed(),
-            ));
-        }
-        Err(e) => {
-            results.push(ScenarioResult::failure(
-                "single_deposit".to_string(),
-                start.elapsed(),
-                e,
-            ));
-        }
-    }
-
-    // Test 2: Multiple deposits same asset
-    let start = std::time::Instant::now();
-    match test_multiple_deposits_same_asset(ctx).await {
-        Ok(_) => {
-            results.push(ScenarioResult::success(
-                "multiple_deposits_same_asset".to_string(),
-                start.elapsed(),
-            ));
-        }
-        Err(e) => {
-            results.push(ScenarioResult::failure(
-                "multiple_deposits_same_asset".to_string(),
-                start.elapsed(),
-                e,
-            ));
-        }
-    }
-
-    // Test 3: Deposits different assets
-    let start = std::time::Instant::now();
-    match test_deposits_different_assets(ctx).await {
-        Ok(_) => {
-            results.push(ScenarioResult::success(
-                "deposits_different_assets".to_string(),
-                start.elapsed(),
-            ));
-        }
-        Err(e) => {
-            results.push(ScenarioResult::failure(
-                "deposits_different_assets".to_string(),
-                start.elapsed(),
-                e,
-            ));
-        }
-    }
-
+    scenario!(results, "single_deposit", test_single_deposit(ctx));
+    scenario!(
+        results,
+        "multiple_deposits_same_asset",
+        test_multiple_deposits_same_asset(ctx)
+    );
+    scenario!(
+        results,
+        "deposits_different_assets",
+        test_deposits_different_assets(ctx)
+    );
     Ok(results)
 }

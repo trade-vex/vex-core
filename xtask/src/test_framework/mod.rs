@@ -14,6 +14,32 @@ use self::types::*;
 use common::{CoreMarketSpecification, OrderCommand};
 use tracing::{debug, info};
 
+/// Runs one scenario of a suite, `$run` (a future yielding `TestResult<()>`), and records its
+/// result in `$results`. At the first failure it returns `Ok($results)` from the calling suite:
+/// each scenario starts from the state the previous ones left.
+macro_rules! scenario {
+    ($results:ident, $name:literal, $run:expr) => {{
+        tracing::info!("Scenario: {}", $name);
+        let started = std::time::Instant::now();
+        match $run.await {
+            Ok(()) => $results.push($crate::test_framework::types::ScenarioResult::success(
+                $name.to_string(),
+                started.elapsed(),
+            )),
+            Err(e) => {
+                tracing::error!("Scenario {} failed: {e}", $name);
+                $results.push($crate::test_framework::types::ScenarioResult::failure(
+                    $name.to_string(),
+                    started.elapsed(),
+                    e,
+                ));
+                return Ok($results);
+            }
+        }
+    }};
+}
+pub(crate) use scenario;
+
 /// Main test context that orchestrates test execution
 ///
 /// The TestContext manages:
@@ -179,5 +205,38 @@ impl TestContext {
         self.client.drain_responses();
 
         debug!("Test context cleaned up successfully");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::types::{ScenarioResult, TestError, TestResult};
+
+    async fn suite(first_fails: bool) -> TestResult<Vec<ScenarioResult>> {
+        let mut results = Vec::new();
+        scenario!(results, "first", async {
+            if first_fails {
+                return Err(TestError::Assertion {
+                    message: "failed".to_string(),
+                });
+            }
+            Ok(())
+        });
+        scenario!(results, "second", async { Ok(()) });
+        Ok(results)
+    }
+
+    #[tokio::test]
+    async fn a_failed_scenario_ends_the_suite() {
+        let outcomes = |results: Vec<ScenarioResult>| {
+            results
+                .into_iter()
+                .map(|r| (r.name, r.success))
+                .collect::<Vec<_>>()
+        };
+        let passed = outcomes(suite(false).await.unwrap());
+        assert_eq!(passed, [("first".into(), true), ("second".into(), true)]);
+        let failed = outcomes(suite(true).await.unwrap());
+        assert_eq!(failed, [("first".into(), false)]);
     }
 }

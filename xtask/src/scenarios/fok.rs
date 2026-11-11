@@ -6,11 +6,11 @@
 
 use crate::builders::OrderBuilder;
 use crate::fixtures::{assets, prices, users};
-use crate::test_framework::TestContext;
 use crate::test_framework::types::*;
+use crate::test_framework::{TestContext, scenario};
 use crate::verifiers::{BalanceVerifier, OrderbookVerifier, ResponseVerifier, TradeVerifier};
 use common::Side;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Comprehensive FOK test suite - runs all scenarios in a single session
 ///
@@ -23,25 +23,6 @@ use tracing::{info, warn};
 ///
 /// State is maintained across sections - no cleanup between tests.
 pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
-    info!("╔════════════════════════════════════════╗");
-    info!("║   FOK COMPREHENSIVE TEST SUITE         ║");
-    info!("╚════════════════════════════════════════╝");
-    info!(
-        "Market ID: {} (Base: {}, Quote: {})",
-        ctx.market_id, ctx.base_asset_id, ctx.quote_asset_id
-    );
-    info!("");
-
-    let suite_start = std::time::Instant::now();
-    let mut results = Vec::new();
-
-    // ========================================================================
-    // SECTION 1: Setup - Fund all test users
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 1: Initial Setup                │");
-    info!("└─────────────────────────────────────────┘");
-
     info!("Funding test users...");
     ctx.fund_user(users::ALICE, 10_000_000, assets::USD).await?; // 10M USD
     ctx.fund_user(users::ALICE, 1_000, assets::BTC).await?; // 1000 BTC
@@ -52,248 +33,35 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     ctx.fund_user(users::CHARLIE, 1_000, assets::BTC).await?; // 1000 BTC
 
     info!("✓ All users funded successfully");
-    info!("");
 
-    // ========================================================================
-    // SECTION 2: FOK No Match - Order fully rejected
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 2: FOK No Match                 │");
-    info!("│ (Order fully rejected)                  │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_fok_no_match_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 2 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "fok_no_match".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 2 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "fok_no_match".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 3: FOK Insufficient Liquidity - Order rejected (partial available)
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 3: FOK Insufficient Liquidity   │");
-    info!("│ (Order rejected, partial available)     │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_fok_insufficient_liquidity_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 3 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "fok_insufficient_liquidity".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 3 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "fok_insufficient_liquidity".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 4: FOK Exact Match - Order completely filled
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 4: FOK Exact Match              │");
-    info!("│ (Order completely filled)               │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_fok_exact_match_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 4 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "fok_exact_match".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 4 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "fok_exact_match".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 5: FOK Excess Liquidity - Order filled, remainder stays
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 5: FOK Excess Liquidity         │");
-    info!("│ (Order filled, excess remains on book)  │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_fok_excess_liquidity_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 5 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "fok_excess_liquidity".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 5 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "fok_excess_liquidity".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 6: FOK Multiple Levels - All-or-nothing across levels
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 6: FOK Multiple Levels          │");
-    info!("│ (All-or-nothing across price levels)    │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_fok_multiple_levels_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 6 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "fok_multiple_levels".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 6 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "fok_multiple_levels".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 7: Market Buy FOK - All-or-nothing with PriceCache
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 7: Market Buy FOK                │");
-    info!("│ (All-or-nothing with slippage ceiling)  │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_market_buy_fok_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 7 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "market_buy_fok".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 7 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "market_buy_fok".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 8: Market Sell FOK - All-or-nothing against best bid
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 8: Market Sell FOK               │");
-    info!("│ (All-or-nothing against best bid)       │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_market_sell_fok_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 8 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "market_sell_fok".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 8 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "market_sell_fok".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // Final Summary
-    // ========================================================================
-    let total_duration = suite_start.elapsed();
-    let passed = results.iter().filter(|r| r.success).count();
-    let failed = results.len() - passed;
-
-    info!("╔════════════════════════════════════════╗");
-    info!("║   TEST SUITE SUMMARY                   ║");
-    info!("╚════════════════════════════════════════╝");
-    info!("Total Sections: {}", results.len());
-    info!("Passed:         {} ✓", passed);
-    info!("Failed:         {} ✗", failed);
-    info!("Total Time:     {:?}", total_duration);
-    info!("╚════════════════════════════════════════╝");
-
+    let mut results = Vec::new();
+    scenario!(results, "fok_no_match", test_fok_no_match_section(ctx));
+    scenario!(
+        results,
+        "fok_insufficient_liquidity",
+        test_fok_insufficient_liquidity_section(ctx)
+    );
+    scenario!(
+        results,
+        "fok_exact_match",
+        test_fok_exact_match_section(ctx)
+    );
+    scenario!(
+        results,
+        "fok_excess_liquidity",
+        test_fok_excess_liquidity_section(ctx)
+    );
+    scenario!(
+        results,
+        "fok_multiple_levels",
+        test_fok_multiple_levels_section(ctx)
+    );
+    scenario!(results, "market_buy_fok", test_market_buy_fok_section(ctx));
+    scenario!(
+        results,
+        "market_sell_fok",
+        test_market_sell_fok_section(ctx)
+    );
     Ok(results)
 }
 

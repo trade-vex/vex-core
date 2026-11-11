@@ -18,6 +18,7 @@ use crate::builders::OrderBuilder;
 use crate::kafka_topics::{self, KafkaTopics};
 use crate::test_framework::client::TestClient;
 use crate::test_framework::kafka::KafkaVerifier;
+use crate::test_framework::scenario;
 use crate::test_framework::stack::{self, BROKER, CORE, Paused};
 use crate::test_framework::types::*;
 use common::{CoreMarketSpecification, OrderCommand, Side, Status, base_asset, quote_asset};
@@ -27,7 +28,7 @@ use rdkafka::admin::{AdminClient, AdminOptions};
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
 use std::time::{Duration, Instant};
-use tracing::{error, info};
+use tracing::info;
 
 const BIDDER: u64 = 101;
 const ASKER: u64 = 102;
@@ -587,27 +588,36 @@ pub async fn run_all(
     outbox.connect()?;
 
     let mut results = Vec::new();
-    macro_rules! scenario {
-        ($name:ident) => {
-            let name = stringify!($name).to_string();
-            info!("Scenario: {name}");
-            let started = Instant::now();
-            match outbox.$name().await {
-                Ok(()) => results.push(ScenarioResult::success(name, started.elapsed())),
-                Err(e) => {
-                    error!("Scenario {name} failed: {e}");
-                    results.push(ScenarioResult::failure(name, started.elapsed(), e));
-                    return Ok(results);
-                }
-            }
-        };
-    }
-    scenario!(baseline);
-    scenario!(kill_with_events_queued);
-    scenario!(shutdown_past_the_grace);
-    scenario!(broker_down_at_start);
-    scenario!(clean_restart_re_publishes_nothing);
-    scenario!(missing_delivered_topic_refuses);
-    scenario!(non_compacted_delivered_topic_refuses);
+    scenario!(results, "baseline", outbox.baseline());
+    scenario!(
+        results,
+        "kill_with_events_queued",
+        outbox.kill_with_events_queued()
+    );
+    scenario!(
+        results,
+        "shutdown_past_the_grace",
+        outbox.shutdown_past_the_grace()
+    );
+    scenario!(
+        results,
+        "broker_down_at_start",
+        outbox.broker_down_at_start()
+    );
+    scenario!(
+        results,
+        "clean_restart_re_publishes_nothing",
+        outbox.clean_restart_re_publishes_nothing()
+    );
+    scenario!(
+        results,
+        "missing_delivered_topic_refuses",
+        outbox.missing_delivered_topic_refuses()
+    );
+    scenario!(
+        results,
+        "non_compacted_delivered_topic_refuses",
+        outbox.non_compacted_delivered_topic_refuses()
+    );
     Ok(results)
 }

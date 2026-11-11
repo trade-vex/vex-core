@@ -6,11 +6,11 @@
 
 use crate::builders::OrderBuilder;
 use crate::fixtures::{assets, prices, users};
-use crate::test_framework::TestContext;
 use crate::test_framework::types::*;
+use crate::test_framework::{TestContext, scenario};
 use crate::verifiers::{BalanceVerifier, OrderbookVerifier, ResponseVerifier, TradeVerifier};
 use common::{Side, Status};
-use tracing::{info, warn};
+use tracing::info;
 
 /// Comprehensive cancellation test suite - runs all scenarios in a single session
 ///
@@ -26,25 +26,6 @@ use tracing::{info, warn};
 /// State is maintained across sections - no cleanup between tests since
 /// the VexCore server holds orderbook and balances in memory.
 pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
-    info!("╔════════════════════════════════════════╗");
-    info!("║   CANCELLATION COMPREHENSIVE SUITE     ║");
-    info!("╚════════════════════════════════════════╝");
-    info!(
-        "Market ID: {} (Base: {}, Quote: {})",
-        ctx.market_id, ctx.base_asset_id, ctx.quote_asset_id
-    );
-    info!("");
-
-    let suite_start = std::time::Instant::now();
-    let mut results = Vec::new();
-
-    // ========================================================================
-    // SECTION 1: Setup - Fund all test users
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 1: Initial Setup                │");
-    info!("└─────────────────────────────────────────┘");
-
     info!("Funding test users...");
     ctx.fund_user(users::ALICE, 10_000_000, assets::USD).await?; // 10M USD for Alice
     ctx.fund_user(users::ALICE, 1_000, assets::BTC).await?; // 1000 BTC for Alice
@@ -55,248 +36,43 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     ctx.fund_user(users::CHARLIE, 1_000, assets::BTC).await?; // 1000 BTC for Charlie
 
     info!("✓ All users funded successfully");
-    info!("");
 
-    // ========================================================================
-    // SECTION 2: Cancel Resting Bid Order
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 2: Cancel Resting Bid Order     │");
-    info!("│ (Funds should unlock)                   │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match cancel_resting_bid_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 2 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "cancel_resting_bid".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 2 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "cancel_resting_bid".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 3: Cancel Resting Ask Order
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 3: Cancel Resting Ask Order     │");
-    info!("│ (Funds should unlock)                   │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match cancel_resting_ask_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 3 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "cancel_resting_ask".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 3 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "cancel_resting_ask".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 4: Cancel Partially Filled Order
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 4: Cancel Partially Filled Order│");
-    info!("│ (Only remaining size unlocks)           │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match cancel_partially_filled_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 4 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "cancel_partially_filled".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 4 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "cancel_partially_filled".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 5: Cancel Non-existent Order
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 5: Cancel Non-existent Order    │");
-    info!("│ (Should handle gracefully)              │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match cancel_nonexistent_order_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 5 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "cancel_nonexistent_order".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 5 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "cancel_nonexistent_order".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 6: Cancel Already Filled Order
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 6: Cancel Already Filled Order  │");
-    info!("│ (Should handle gracefully)              │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match cancel_filled_order_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 6 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "cancel_filled_order".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 6 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "cancel_filled_order".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 7: Cancel and Replace at Same Price
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 7: Cancel and Replace Order     │");
-    info!("│ (Cancel then place new at same price)  │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match cancel_and_replace_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 7 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "cancel_and_replace".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 7 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "cancel_and_replace".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 8: Multiple Sequential Cancellations
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 8: Multiple Cancellations       │");
-    info!("│ (Cancel several orders in sequence)    │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match multiple_cancellations_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 8 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "multiple_cancellations".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 8 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "multiple_cancellations".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // Final Summary
-    // ========================================================================
-    let total_duration = suite_start.elapsed();
-    let passed = results.iter().filter(|r| r.success).count();
-    let failed = results.len() - passed;
-
-    info!("╔════════════════════════════════════════╗");
-    info!("║   TEST SUITE SUMMARY                   ║");
-    info!("╚════════════════════════════════════════╝");
-    info!("Total Sections: {}", results.len());
-    info!("Passed:         {} ✓", passed);
-    info!("Failed:         {} ✗", failed);
-    info!("Total Time:     {:?}", total_duration);
-    info!("╚════════════════════════════════════════╝");
-
+    let mut results = Vec::new();
+    scenario!(
+        results,
+        "cancel_resting_bid",
+        cancel_resting_bid_section(ctx)
+    );
+    scenario!(
+        results,
+        "cancel_resting_ask",
+        cancel_resting_ask_section(ctx)
+    );
+    scenario!(
+        results,
+        "cancel_partially_filled",
+        cancel_partially_filled_section(ctx)
+    );
+    scenario!(
+        results,
+        "cancel_nonexistent_order",
+        cancel_nonexistent_order_section(ctx)
+    );
+    scenario!(
+        results,
+        "cancel_filled_order",
+        cancel_filled_order_section(ctx)
+    );
+    scenario!(
+        results,
+        "cancel_and_replace",
+        cancel_and_replace_section(ctx)
+    );
+    scenario!(
+        results,
+        "multiple_cancellations",
+        multiple_cancellations_section(ctx)
+    );
     Ok(results)
 }
 
