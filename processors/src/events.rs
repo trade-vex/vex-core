@@ -2166,6 +2166,30 @@ mod tests {
         enqueued.iter().collect()
     }
 
+    /// The payloads that `commands` publish on `topic`, in order, decoded as `M`.
+    fn published_on<M: Message + Default>(
+        topic: &'static str,
+        commands: &mut [OrderCommand],
+    ) -> Vec<M> {
+        let (payloads_tx, payloads) = mpsc::channel();
+        // `_enqueued` stays alive: the recorder unwraps each send to it.
+        let (sender, _enqueued) = recording_sender(SENDER_CAPACITY, move |event| {
+            if event.topic == topic {
+                payloads_tx.send(event.payload.clone()).unwrap();
+            }
+            Ok(event.payload.clone())
+        });
+        let handler = handler_with(sender);
+        for cmd in commands {
+            handler.handle_processed_command(cmd);
+        }
+        drop(handler);
+        payloads
+            .try_iter()
+            .map(|payload: Vec<u8>| M::decode(payload.as_slice()).unwrap())
+            .collect()
+    }
+
     #[test]
     fn events_reach_the_producer_in_engine_order_whatever_each_encode_costs() {
         let mut framed = 0u64;
@@ -2967,7 +2991,7 @@ mod tests {
 
         let (base, quote) = (base_asset(MARKET_ID), quote_asset(MARKET_ID));
         assert_eq!(
-            published(&mut [cmd]),
+            published(&mut [cmd.clone()]),
             [
                 ("orders", "1".to_string()),
                 ("cancels", "1".to_string()),
@@ -2976,18 +3000,29 @@ mod tests {
                 ("orders", "2".to_string()),
             ]
         );
+        let orders: Vec<trading_proto::OrderEvent> = published_on(ORDERS, &mut [cmd]);
+        let maker = orders[0].order.as_ref().unwrap();
+        assert_eq!(
+            (maker.order_id, maker.status, maker.size, maker.filled_size),
+            (1, trading_proto::Status::Cancelled as i32, 5, 2)
+        );
+    }
+
+    /// A cancel's `orders` row carries the order's original size and what of it filled.
+    #[test]
+    fn a_cancel_publishes_its_orders_size_and_filled_size() {
+        let mut cmd = OrderCommand::cancel_order(7, 1001, Side::Ask, MARKET_ID);
+        cmd.set_status(Status::Cancelled);
+        cmd.original_size = 10;
+        cmd.size = 4;
+
+        let orders: Vec<trading_proto::OrderEvent> = published_on(ORDERS, &mut [cmd]);
+        let order = orders[0].order.as_ref().unwrap();
+        assert_eq!((order.order_id, order.size, order.filled_size), (7, 10, 6));
     }
 
     #[test]
     fn a_trade_event_carries_both_fees() {
-        let (trades_tx, trades) = mpsc::channel();
-        let (sender, _enqueued) = recording_sender(SENDER_CAPACITY, move |event| {
-            if event.topic == TRADES {
-                trades_tx.send(event.payload.clone()).unwrap();
-            }
-            Ok(event.payload.clone())
-        });
-        let handler = handler_with(sender);
         let mut cmd = OrderCommand::place_order(
             common::TimeInForce::Gtc,
             1001,
@@ -3003,11 +3038,14 @@ mod tests {
         trade.maker_fee = 7;
         cmd.attach_event(Box::new(trade));
 
-        handler.handle_processed_command(&mut cmd);
-        drop(handler);
-
-        let trade = trading_proto::TradeEvent::decode(trades.recv().unwrap().as_slice()).unwrap();
-        assert_eq!((trade.taker_fee, trade.maker_fee), (20, 7));
+        let trades: Vec<trading_proto::TradeEvent> = published_on(TRADES, &mut [cmd]);
+        assert_eq!(
+            trades
+                .iter()
+                .map(|t| (t.taker_fee, t.maker_fee))
+                .collect::<Vec<_>>(),
+            [(20, 7)]
+        );
     }
 
     #[test]

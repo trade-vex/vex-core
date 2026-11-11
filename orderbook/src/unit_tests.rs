@@ -1502,6 +1502,27 @@ mod test {
     }
 
     #[test]
+    fn maker_sizes_follow_a_partial_fill_and_a_cancel() {
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+        let mut maker = harness.create_place_order_cmd(1001, Side::Ask, 50, 100, TimeInForce::Gtc);
+        book.place_order(&mut maker, price_cache.clone());
+
+        let mut taker = harness.create_place_order_cmd(1002, Side::Bid, 50, 40, TimeInForce::Gtc);
+        book.place_order(&mut taker, price_cache.clone());
+        let fills = collect_trade_events(taker);
+        assert_eq!(
+            (fills[0].maker_original_size, fills[0].maker_remaining_size),
+            (100, 60)
+        );
+
+        let mut cancel = harness.create_cancel_order_cmd(&maker);
+        book.cancel_order(&mut cancel, price_cache);
+        assert_eq!(cancel.status(), Status::Cancelled);
+        assert_eq!((cancel.original_size, cancel.size()), (100, 60));
+    }
+
+    #[test]
     fn own_resting_order_is_cancelled_not_crossed() {
         let (mut book, price_cache) = create_test_orderbook();
         let harness = TestHarness::new(1);
