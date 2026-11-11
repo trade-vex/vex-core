@@ -2,19 +2,22 @@ use common::OrderCommandType;
 use common::{OrderCommand, decode_order_command};
 use common::{Side, TimeInForce};
 use disruptor::{BusySpin, ProcessorSettings, build_multi_producer};
-use rusteron_archive::{AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port};
+use rusteron_archive::{
+    Aeron, AeronContext, AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port,
+};
 use rusteron_media_driver::{AeronDriver, AeronDriverContext};
 use std::ffi::CString;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{net::SocketAddr, thread};
 use tracing::{error, info};
 use vex_config::{CoreNetworkingConfig, GatewayNetworkingConfig};
 use vex_networking::client::{GatewayError, VexGateway};
 use vex_networking::server::{Publications, VexCoreServer};
+use vex_networking::utils::{new_publication, new_subscription_with_mdc, send_message};
 
 /// Fragment handler for processing OrderCommand messages from core
 struct OrderCommandHandler {
@@ -61,6 +64,8 @@ const GATEWAY_AUTHENTICATION_KEY: &str =
     "5f0c3a9e7d2b4816c4e1a7f39b0d2c6e8a1f4b7d3e9c0a2f6b8d1e4c7a3f9b05";
 /// Well-formed, but not the core's key.
 const WRONG_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+/// The core's handshake stream (`ALL_GATEWAYS_STREAM_ID`, private to the crate).
+const HANDSHAKE_STREAM_ID: i32 = 1001;
 
 #[test_log::test]
 #[ignore = "This test needs media drivers running, Tests will be added in x-tasks"]
@@ -166,6 +171,8 @@ fn test_client_server_communication() {
 /// The core answers each HELLO exactly once over its MDC handshake publication. Once one gateway
 /// is subscribed, that publication counts as connected, so a later gateway that sent HELLO before
 /// its own reply subscription had joined lost its ACCEPT or REJECT and timed out instead.
+///
+/// A flood of wrong keys is answered (and logged) only 16 times a second.
 #[test_log::test]
 #[ignore = "Starts an embedded Aeron media driver and binds UDP ports"]
 fn test_every_gateway_receives_its_handshake_reply() {
@@ -203,6 +210,49 @@ fn test_every_gateway_receives_its_handshake_reply() {
             .start()
         }
     });
+
+    // 17 wrong-key HELLOs at once: REJECT for the first 16, nothing for the 17th.
+    {
+        let context = AeronContext::new().unwrap();
+        context
+            .set_dir(&CString::new(aeron_dir.clone()).unwrap())
+            .unwrap();
+        let aeron = Aeron::new(&context).unwrap();
+        aeron.start().unwrap();
+        let hello = new_publication(&aeron, "127.0.0.1", core_port, HANDSHAKE_STREAM_ID).unwrap();
+        let replies =
+            new_subscription_with_mdc(&aeron, "127.0.0.1", core_port + 1, HANDSHAKE_STREAM_ID)
+                .unwrap();
+        let connected_by = Instant::now() + Duration::from_secs(20);
+        while !hello.is_connected() || !replies.is_connected() {
+            assert!(
+                Instant::now() < connected_by,
+                "handshake channel never connected"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        for gateway_id in 0..17 {
+            let message = format!("HELLO gateway-{gateway_id} {WRONG_KEY} 0");
+            send_message(&hello, message.as_bytes()).unwrap();
+        }
+        let mut rejected = 0;
+        // Past the limiter's one-second window, so the gateways below get their REJECT.
+        let quiet_by = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < quiet_by {
+            replies
+                .poll_once(
+                    |message, _| {
+                        rejected += usize::from(
+                            String::from_utf8_lossy(message).ends_with("REJECT Handshake rejected"),
+                        );
+                    },
+                    10,
+                )
+                .unwrap();
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(rejected, 16);
+    }
 
     let start_gateway = |gateway_id: u8, key: &str| {
         let mut config = GatewayNetworkingConfig::test_defaults();

@@ -370,6 +370,10 @@ jobs:
             | tee "$RUNNER_TEMP/recovery-tests.out"
           # A filter that matches no test (a renamed module) passes; fail instead.
           grep -Eq '^test result: ok\. [1-9][0-9]* passed' "$RUNNER_TEMP/recovery-tests.out"
+          # The handshake end to end (authentication, rejection limit), on an embedded driver.
+          cargo test --package vex-networking --test client_server_tests -- --ignored --exact \
+            test_every_gateway_receives_its_handshake_reply | tee "$RUNNER_TEMP/handshake-test.out"
+          grep -q '^test result: ok\. 1 passed' "$RUNNER_TEMP/handshake-test.out"
 
       - name: Show the media driver's and archive's output
         if: failure()
