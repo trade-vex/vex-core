@@ -521,6 +521,10 @@ mod tests {
         );
     }
 
+    fn cancel(engine: &RiskEngine, cmd: &OrderCommand) {
+        engine.handle_cancellation(cmd.order_id, cmd.user_id, cmd.market_id, cmd.side, cmd.size);
+    }
+
     /// Helper function to add a market specification to the specs map
     pub fn add_spec(market_id: u32, specs: &mut HashMap<u32, CoreMarketSpecification>) {
         specs.insert(
@@ -711,7 +715,7 @@ mod tests {
             engine.get_balance(bid_user_id, quote_asset_id),
             UserBalance::new(0, quote_cost)
         );
-        engine.handle_cancellation(&mut bid);
+        cancel(&engine, &bid);
         assert_eq!(
             engine.get_balance(bid_user_id, quote_asset_id),
             UserBalance::new(quote_cost, 0)
@@ -733,7 +737,7 @@ mod tests {
             engine.get_balance(ask_user_id, base_asset_id),
             UserBalance::new(0, size)
         );
-        engine.handle_cancellation(&mut ask);
+        cancel(&engine, &ask);
         assert_eq!(
             engine.get_balance(ask_user_id, base_asset_id),
             UserBalance::new(size, 0)
@@ -777,24 +781,23 @@ mod tests {
         engine.pre_process_command(&mut bid, Arc::clone(&price_cache));
         engine.pre_process_command(&mut ask, price_cache);
 
-        // MatcherTradeEvent implements Drop (PR #179): the functional-update form
-        // would move out of a Drop type, so assign the fields instead.
-        let mut event = common::MatcherTradeEvent::default();
-        event.price = price;
-        event.size = size;
-        event.maker_user_id = seller_id;
-        event.matched_order_id = ask.order_id;
-        event.matched_order_completed = true;
-        event.active_order_completed = true;
-        event.maker_original_size = size;
+        let event = common::TradeFill {
+            price,
+            size,
+            maker_user_id: seller_id,
+            matched_order_id: ask.order_id,
+            matched_order_completed: true,
+            active_order_completed: true,
+            ..Default::default()
+        };
         engine.handle_trade_event(
             buyer_id,
             market_id,
             Side::Bid,
-            &mut event,
+            event,
             Some((bid.order_id, price)),
         );
-        engine.handle_trade_event(seller_id, market_id, Side::Ask, &mut event, None);
+        engine.handle_trade_event(seller_id, market_id, Side::Ask, event, None);
 
         // PR #163 rounds fees UP per fill (div_ceil), so the remainder below costs one more
         // atomic unit than the pre-#163 floor of 666_666.
@@ -846,18 +849,17 @@ mod tests {
         );
         engine.pre_process_command(&mut ask, price_cache);
 
-        // MatcherTradeEvent implements Drop (PR #179): the functional-update form
-        // would move out of a Drop type, so assign the fields instead.
-        let mut event = common::MatcherTradeEvent::default();
-        event.price = price;
-        event.size = fill_size;
-        event.maker_user_id = user_id;
-        event.matched_order_id = ask.order_id;
-        event.maker_original_size = initial_base;
-        event.maker_remaining_size = remaining_size;
-        engine.handle_trade_event(user_id, market_id, Side::Ask, &mut event, None);
+        let event = common::TradeFill {
+            price,
+            size: fill_size,
+            maker_user_id: user_id,
+            matched_order_id: ask.order_id,
+            maker_remaining_size: remaining_size,
+            ..Default::default()
+        };
+        engine.handle_trade_event(user_id, market_id, Side::Ask, event, None);
         ask.set_size(remaining_size);
-        engine.handle_cancellation(&mut ask);
+        cancel(&engine, &ask);
 
         assert_eq!(
             engine.get_balance(user_id, base_asset_id),
@@ -916,23 +918,22 @@ mod tests {
         );
         engine.pre_process_command(&mut bid, price_cache);
 
-        // MatcherTradeEvent implements Drop (PR #179): the functional-update form
-        // would move out of a Drop type, so assign the fields instead.
-        let mut event = common::MatcherTradeEvent::default();
-        event.price = price;
-        event.size = fill_size;
-        event.maker_user_id = user_id + 1;
-        event.matched_order_id = 2;
-        event.maker_original_size = fill_size;
+        let event = common::TradeFill {
+            price,
+            size: fill_size,
+            maker_user_id: user_id + 1,
+            matched_order_id: 2,
+            ..Default::default()
+        };
         engine.handle_trade_event(
             user_id,
             market_id,
             Side::Bid,
-            &mut event,
+            event,
             Some((bid.order_id, price)),
         );
         bid.set_size(remaining_size);
-        engine.handle_cancellation(&mut bid);
+        cancel(&engine, &bid);
 
         // PR #163 rounds per-fill fees UP; this expectation predated it.
         let fee = (fill_size * 20).div_ceil(10_000);
@@ -971,19 +972,18 @@ mod tests {
         );
         engine.pre_process_command(&mut bid, price_cache);
 
-        // MatcherTradeEvent implements Drop (PR #179): the functional-update form
-        // would move out of a Drop type, so assign the fields instead.
-        let mut event = common::MatcherTradeEvent::default();
-        event.price = price;
-        event.size = one_eth;
-        event.maker_user_id = user_id + 1;
-        event.matched_order_id = 2;
-        event.maker_original_size = one_eth;
+        let event = common::TradeFill {
+            price,
+            size: one_eth,
+            maker_user_id: user_id + 1,
+            matched_order_id: 2,
+            ..Default::default()
+        };
         engine.handle_trade_event(
             user_id,
             market_id,
             Side::Bid,
-            &mut event,
+            event,
             Some((bid.order_id, price)),
         );
 
@@ -1308,6 +1308,85 @@ mod tests {
             9_980 + deposit_amount,
             0,
             "after N and D",
+        );
+    }
+
+    /// The taker's and the maker's R2 shards settle one fill at the same time, as in the
+    /// pipeline. Under Miri this also checks that they never alias the command (audit core 11).
+    #[test]
+    fn cross_shard_fill_is_settled_by_both_shards_at_once() {
+        let mut specs = HashMap::new();
+        let (base_asset_id, quote_asset_id) = (1, 2);
+        let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
+        add_spec(market_id, &mut specs);
+        specs.get_mut(&market_id).unwrap().quote_scale_k = 10;
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let risk_engines: Arc<Vec<RiskEngine>> = Arc::new(
+            (0..4)
+                .map(|shard_id| RiskEngine::new(specs.clone(), shard_id, 4))
+                .collect(),
+        );
+        let mut router = MatchingEngineRouter::new(0, 1);
+        router.add_market(market_id);
+        let checker = BalanceChecker::new(&risk_engines);
+        let (maker_id, taker_id) = (101, 42); // shards 1 and 2
+        let (price, size) = (5000, 10_000);
+        checker.set_balance(maker_id, base_asset_id, size, 0);
+        checker.set_balance(taker_id, quote_asset_id, 5_000_000, 0);
+        let mut admit = |mut cmd: OrderCommand| {
+            for engine in risk_engines.iter() {
+                engine.pre_process_command(&mut cmd, Arc::clone(&price_cache));
+            }
+            router.process_order(&mut cmd, Arc::clone(&price_cache));
+            cmd
+        };
+        let ask = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            maker_id,
+            price,
+            size,
+            Side::Ask,
+            market_id,
+            1,
+        );
+        assert_eq!(admit(ask).status, Status::Placed);
+        let bid = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            taker_id,
+            price,
+            size,
+            Side::Bid,
+            market_id,
+            2,
+        );
+        let bid = admit(bid);
+        assert_eq!(bid.status, Status::Filled);
+
+        // The ring slot, which the four R2 handlers share.
+        struct Slot(UnsafeCell<OrderCommand>);
+        // SAFETY: as in the ring; each handler writes only what its shard settles.
+        unsafe impl Sync for Slot {}
+        let slot = Slot(UnsafeCell::new(bid));
+        let r2_handlers: Vec<_> = (0..4usize)
+            .map(|shard_id| crate::create_risk_r2_handler!(shard_id, &risk_engines))
+            .collect();
+        let shared = &slot;
+        std::thread::scope(|scope| {
+            for handler in &r2_handlers {
+                scope.spawn(move || handler(&shared.0, 0, false));
+            }
+        });
+        let bid = slot.0.into_inner();
+
+        // 20 bp taker fee on 10_000 base, 10 bp maker fee on 5_000_000 quote.
+        assert_eq!(
+            bid.balance,
+            [UserBalance::new(9_980, 0), UserBalance::new(0, 0)]
+        );
+        let fill = bid.events().expect("one fill");
+        assert_eq!(
+            fill.maker_balance,
+            [UserBalance::new(0, 0), UserBalance::new(4_995_000, 0)]
         );
     }
 

@@ -2,12 +2,12 @@ use crate::error::{Result, RiskEngineError};
 use common::BalanceError;
 use common::BalanceStore;
 use common::CoreMarketSpecification;
-use common::MatcherTradeEvent;
 use common::OrderCommand;
 use common::OrderCommandType;
 use common::PriceCache;
 use common::Side;
 use common::Status;
+use common::TradeFill;
 use common::UserBalance;
 use common::{base_asset, order_debug, order_warn, quote_asset};
 use hashbrown::HashMap;
@@ -195,27 +195,27 @@ impl RiskEngine {
         }
     }
 
-    /// Handles a single trade event from the matching engine to settle funds
-    /// This is called by the R2 handler for each individual event in the linked list.
-    /// A settlement that fails aborts the process: R1 admitted both orders, so it cannot happen
-    /// unless the ledger is already wrong.
+    /// Settles `user_id`'s side of one fill. This is called by the R2 handler for each event in
+    /// the linked list, and returns the maker's balances `[base, quote]` when `user_id` is the
+    /// maker. A settlement that fails aborts the process: R1 admitted both orders, so it cannot
+    /// happen unless the ledger is already wrong.
     pub fn handle_trade_event(
         &self,
         user_id: u64,
         market_id: u32,
         user_side: Side,
-        event: &mut MatcherTradeEvent,
+        fill: TradeFill,
         taker_order: Option<(u64, u64)>,
-    ) {
+    ) -> Option<[UserBalance; 2]> {
         debug!(
             target: "risk_engine",
             event = "settlement_start",
             shard_id = self.shard_id,
             user_id,
             market_id,
-            maker_user_id = event.maker_user_id,
-            price = event.price,
-            size = event.size
+            maker_user_id = fill.maker_user_id,
+            price = fill.price,
+            size = fill.size
         );
 
         // Get market specification for fee calculations
@@ -228,38 +228,41 @@ impl RiskEngine {
                     shard_id = self.shard_id,
                     market_id
                 );
-                return;
+                return None;
             }
         };
 
-        if let Err(err) = self.settle_trade(user_id, market_id, user_side, event, spec, taker_order)
-        {
-            error!(
-                target: "risk_engine",
-                event = "settlement_failed",
-                shard_id = self.shard_id,
-                user_id,
-                market_id,
-                user_side = ?user_side,
-                maker_user_id = event.maker_user_id,
-                price = event.price,
-                size = event.size,
-                taker_order = ?taker_order,
-                error = ?err,
-                "R1 admitted both orders, so this is a ledger invariant violation; aborting the exchange rather than settle one side"
-            );
-            // The counterparty may already be settled on another shard. Stopping here keeps the
-            // events stage from publishing a one-sided trade; the journal replays to this command,
-            // so this is a page, not a restart.
-            std::process::abort();
-        } else {
-            debug!(
-                target: "risk_engine",
-                event = "settlement_complete",
-                shard_id = self.shard_id,
-                user_id,
-                market_id
-            );
+        match self.settle_trade(user_id, market_id, user_side, fill, spec, taker_order) {
+            Err(err) => {
+                error!(
+                    target: "risk_engine",
+                    event = "settlement_failed",
+                    shard_id = self.shard_id,
+                    user_id,
+                    market_id,
+                    user_side = ?user_side,
+                    maker_user_id = fill.maker_user_id,
+                    price = fill.price,
+                    size = fill.size,
+                    taker_order = ?taker_order,
+                    error = ?err,
+                    "R1 admitted both orders, so this is a ledger invariant violation; aborting the exchange rather than settle one side"
+                );
+                // The counterparty may already be settled on another shard. Stopping here keeps
+                // the events stage from publishing a one-sided trade; the journal replays to this
+                // command, so this is a page, not a restart.
+                std::process::abort();
+            }
+            Ok(maker_balance) => {
+                debug!(
+                    target: "risk_engine",
+                    event = "settlement_complete",
+                    shard_id = self.shard_id,
+                    user_id,
+                    market_id
+                );
+                maker_balance
+            }
         }
     }
 
@@ -268,17 +271,17 @@ impl RiskEngine {
         user_id: u64,
         market_id: u32,
         user_side: Side,
-        event: &mut MatcherTradeEvent,
+        fill: TradeFill,
         spec: &CoreMarketSpecification,
         taker_order: Option<(u64, u64)>,
-    ) -> Result<()> {
-        let is_maker = user_id == event.maker_user_id;
+    ) -> Result<Option<[UserBalance; 2]>> {
+        let is_maker = user_id == fill.maker_user_id;
         let (order_id, order_completed) = if is_maker {
-            (event.matched_order_id, event.matched_order_completed)
+            (fill.matched_order_id, fill.matched_order_completed)
         } else if let Some((order_id, _)) = taker_order {
-            (order_id, event.active_order_completed)
+            (order_id, fill.active_order_completed)
         } else {
-            (0, event.active_order_completed)
+            (0, fill.active_order_completed)
         };
         let fee = if is_maker {
             spec.maker_fee
@@ -293,10 +296,10 @@ impl RiskEngine {
             && user_side == Side::Bid
         // Price improvement only applies to BID orders where QUOTE currency was locked.
         {
-            let execution_price = event.price;
+            let execution_price = fill.price;
             if execution_price < limit_price {
                 let price_diff = limit_price - execution_price;
-                spec.calculate_quote_cost(price_diff, event.size)
+                spec.calculate_quote_cost(price_diff, fill.size)
                     .ok_or(BalanceError::Overflow)?
             } else {
                 0
@@ -317,7 +320,7 @@ impl RiskEngine {
             // Spends quote, receives base. Fee is on base asset received.
             Side::Bid => {
                 let quote_spent = spec
-                    .calculate_quote_cost(event.price, event.size)
+                    .calculate_quote_cost(fill.price, fill.size)
                     .ok_or(BalanceError::Overflow)?;
                 // Fee is on the base asset received, in basis points (20 bp = 0.2%). It is rounded
                 // UP per fill: each fill pays its exact share plus less than one atomic unit, so
@@ -325,9 +328,9 @@ impl RiskEngine {
                 // (floor rounding made sub-10_000/fee-unit fills free). The cost of that is a
                 // bounded overcharge: at most one unit per fill, i.e. N fills of one order pay at
                 // most N - 1 units more than one fill of the same total.
-                let fee_in_base = u64::try_from((event.size as u128 * fee as u128).div_ceil(10000))
+                let fee_in_base = u64::try_from((fill.size as u128 * fee as u128).div_ceil(10000))
                     .unwrap_or(u64::MAX);
-                let base_received_net = event.size.saturating_sub(fee_in_base);
+                let base_received_net = fill.size.saturating_sub(fee_in_base);
                 (
                     quote_asset(market_id),
                     quote_spent,
@@ -340,9 +343,9 @@ impl RiskEngine {
             // User is SELLING base asset for quote asset.
             // Spends base, receives quote. Fee is on quote asset received.
             Side::Ask => {
-                let base_spent = event.size;
+                let base_spent = fill.size;
                 let quote_received_gross = spec
-                    .calculate_quote_cost(event.price, event.size)
+                    .calculate_quote_cost(fill.price, fill.size)
                     .ok_or(BalanceError::Overflow)?;
                 // Fee is on the quote asset received, rounded up per fill with the same bound as
                 // the bid fee above.
@@ -443,16 +446,10 @@ impl RiskEngine {
             }
         }
 
-        if is_maker {
-            event.maker_balance = if asset_to_subtract == base_asset(market_id) {
-                // Maker was on ASK side, selling base for quote.
-                [balance_sub, balance_add]
-            } else {
-                // Maker was on BID side, buying base with quote.
-                [balance_add, balance_sub]
-            };
-        }
-        Ok(())
+        Ok(is_maker.then_some(match user_side {
+            Side::Ask => [balance_sub, balance_add],
+            Side::Bid => [balance_add, balance_sub],
+        }))
     }
 
     /// handle cancellations -> release funds
@@ -462,25 +459,31 @@ impl RiskEngine {
     /// status must stand even when the release fails: `Rejected` would publish nothing and hide a
     /// real cancel and real trades (user decision 3). Such a failure is a ledger inconsistency and
     /// is logged for an operator.
-    pub fn handle_cancellation(&self, cmd: &mut OrderCommand) {
-        if let Err(err) = self.release_funds_for_order(
-            cmd.order_id,
-            cmd.user_id,
-            cmd.market_id,
-            cmd.side,
-            cmd.size,
-        ) {
-            common::order_error!(
-                "risk_cancel_release_failed",
-                cmd,
+    pub fn handle_cancellation(
+        &self,
+        order_id: u64,
+        user_id: u64,
+        market_id: u32,
+        side: Side,
+        size: u64,
+    ) {
+        if let Err(err) = self.release_funds_for_order(order_id, user_id, market_id, side, size) {
+            error!(
+                target: "order_pipeline",
+                event = "risk_cancel_release_failed",
                 stage = "risk_r2",
                 shard_id = self.shard_id,
+                order_id,
+                user_id,
+                market_id,
+                side = ?side,
+                size,
                 error = ?err
             );
         } else {
             info!(
                 "[RiskEngine_{}] Successfully released funds for cancelled order {}",
-                self.shard_id, cmd.order_id
+                self.shard_id, order_id
             );
         }
     }
@@ -751,6 +754,10 @@ mod tests {
     use super::*;
     use common::{MarketType, TimeInForce};
 
+    fn cancel(engine: &RiskEngine, cmd: &OrderCommand) {
+        engine.handle_cancellation(cmd.order_id, cmd.user_id, cmd.market_id, cmd.side, cmd.size);
+    }
+
     fn get_spec(market_id: u32) -> CoreMarketSpecification {
         CoreMarketSpecification::builder()
             .market_id(market_id)
@@ -791,24 +798,21 @@ mod tests {
         let fees = fill_sizes
             .iter()
             .map(|&size| {
-                let mut trade_event = MatcherTradeEvent {
+                let trade_event = TradeFill {
                     price: 1,
                     size,
                     maker_user_id: if is_maker { user_id } else { user_id - 1 },
                     active_order_completed: false,
                     matched_order_id: 1,
                     matched_order_completed: true,
-                    next_event: None,
-                    maker_balance: [UserBalance::default(); 2],
                     maker_remaining_size: 0,
-                    maker_original_size: size,
                 };
 
                 engine.handle_trade_event(
                     user_id,
                     market_id,
                     Side::Bid,
-                    &mut trade_event,
+                    trade_event,
                     (!is_maker).then_some((1, 1)),
                 );
 
@@ -886,27 +890,24 @@ mod tests {
             .reserve_funds_for_order(&mut maker_cmd, price_cache)
             .unwrap();
 
-        let mut trade_event = MatcherTradeEvent {
+        let trade_event = TradeFill {
             price,
             size,
             maker_user_id: maker_id,
             active_order_completed: false,
             matched_order_id: 2,
             matched_order_completed: true,
-            next_event: None,
-            maker_balance: [UserBalance::default(); 2],
             maker_remaining_size: 0,
-            maker_original_size: size,
         };
 
         engine.handle_trade_event(
             taker_id,
             market_id,
             Side::Bid,
-            &mut trade_event,
+            trade_event,
             Some((1, price)),
         );
-        engine.handle_trade_event(maker_id, market_id, Side::Ask, &mut trade_event, None);
+        engine.handle_trade_event(maker_id, market_id, Side::Ask, trade_event, None);
 
         assert_eq!(
             system_asset_total(&engine, &users, base_asset_id),
@@ -976,11 +977,13 @@ mod tests {
             .lock()
             .insert(base_asset_id, u128::from(u64::MAX));
 
-        let mut trade_event = MatcherTradeEvent::default();
-        trade_event.price = 1;
-        trade_event.size = 10_000;
-        trade_event.maker_user_id = 101;
-        engine.handle_trade_event(taker_id, market_id, Side::Bid, &mut trade_event, None);
+        let trade_event = TradeFill {
+            price: 1,
+            size: 10_000,
+            maker_user_id: 101,
+            ..Default::default()
+        };
+        engine.handle_trade_event(taker_id, market_id, Side::Bid, trade_event, None);
 
         // 20 bp of 10_000 base units: a fee of 20.
         assert_eq!(
@@ -1201,7 +1204,7 @@ mod tests {
         assert_eq!(balance.available(), 0);
         assert_eq!(balance.locked(), required_quote);
         // Cancel the order and check if funds are released
-        engine.handle_cancellation(&mut cmd);
+        cancel(&engine, &cmd);
 
         let balance = engine.get_balance(user_id, quote_asset);
         assert_eq!(balance.available(), required_quote);
@@ -1428,7 +1431,7 @@ mod tests {
         assert_eq!(balance.available(), 0);
         assert_eq!(balance.locked(), size);
         // Cancel the order and check if funds are released
-        engine.handle_cancellation(&mut cmd);
+        cancel(&engine, &cmd);
 
         let balance = engine.get_balance(user_id, base_asset);
         assert_eq!(balance.available(), size);
@@ -1436,7 +1439,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_cancellation_release_keeps_matching_status() {
+    fn failed_cancellation_release_changes_nothing() {
         let user_id = 1;
         let market_id = (2_u32 << 16) | 1_u32;
         let mut specs = HashMap::new();
@@ -1449,21 +1452,9 @@ mod tests {
         let balance = UserBalance::new(5, 3);
         engine.set_balance(user_id, base_asset(market_id), balance);
 
-        // By the time R2 releases, the book has already removed the order (Cancelled) or traded
-        // part of it (IOC PartiallyFilled); neither may be reported as Rejected.
-        for (time_in_force, status) in [
-            (TimeInForce::Gtc, Status::Cancelled),
-            (TimeInForce::Ioc, Status::PartiallyFilled),
-        ] {
-            let mut cmd =
-                OrderCommand::place_order(time_in_force, user_id, 100, 10, Side::Ask, market_id, 1);
-            cmd.set_status(status);
+        engine.handle_cancellation(1, user_id, market_id, Side::Ask, 10);
 
-            engine.handle_cancellation(&mut cmd);
-
-            assert_eq!(cmd.status, status);
-            assert_eq!(engine.get_balance(user_id, base_asset(market_id)), balance);
-        }
+        assert_eq!(engine.get_balance(user_id, base_asset(market_id)), balance);
     }
 
     #[test]
@@ -1573,17 +1564,14 @@ mod tests {
             .unwrap();
 
         // --- A trade occurs ---
-        let mut trade_event = MatcherTradeEvent {
+        let trade_event = TradeFill {
             price,
             size,
             maker_user_id: maker_id,
             active_order_completed: false,
             matched_order_id: 2,
             matched_order_completed: true,
-            next_event: None,
-            maker_balance: [UserBalance::default(); 2],
             maker_remaining_size: 0,
-            maker_original_size: size,
         };
 
         // Settle for Taker (Buyer, Bid side) - buys base (BTC) with quote (USD)
@@ -1591,12 +1579,12 @@ mod tests {
             taker_id,
             market_id,
             Side::Bid,
-            &mut trade_event,
+            trade_event,
             Some((taker_cmd.order_id, price)),
         );
 
         // Settle for Maker (Seller, Ask side) - sells base (BTC) for quote (USD)
-        engine.handle_trade_event(maker_id, market_id, Side::Ask, &mut trade_event, None);
+        engine.handle_trade_event(maker_id, market_id, Side::Ask, trade_event, None);
 
         // --- Final Balances ---
         // Taker (buyer): Spends `price * size` of USD (quote). Receives `size` of BTC (base), minus taker fee (20bp on base).
@@ -1646,18 +1634,18 @@ mod tests {
             engine.get_balance(maker_id, base_asset_id),
             engine.get_balance(maker_id, quote_asset_id),
         ];
-        // MatcherTradeEvent implements Drop (iterative chain teardown, PR #179), so the
-        // functional-update form would move out of a Drop type. Assign the fields instead.
-        let mut trade_event = MatcherTradeEvent::default();
-        trade_event.price = execution_price;
-        trade_event.size = size;
-        trade_event.maker_user_id = maker_id;
+        let trade_event = TradeFill {
+            price: execution_price,
+            size,
+            maker_user_id: maker_id,
+            ..Default::default()
+        };
 
         let result = engine.settle_trade(
             taker_id,
             market_id,
             Side::Bid,
-            &mut trade_event,
+            trade_event,
             &spec,
             Some((1, limit_price)),
         );
@@ -1698,17 +1686,19 @@ mod tests {
         // also releases the 50 residue, which the store cannot cover.
         engine.bid_collateral.lock().insert(order_id, 100);
         engine.set_balance(user_id, quote_asset_id, UserBalance::new(0, 60));
-        let mut trade_event = MatcherTradeEvent::default();
-        trade_event.price = 1;
-        trade_event.size = 50;
-        trade_event.maker_user_id = 101;
-        trade_event.active_order_completed = true;
+        let trade_event = TradeFill {
+            price: 1,
+            size: 50,
+            maker_user_id: 101,
+            active_order_completed: true,
+            ..Default::default()
+        };
 
         let result = engine.settle_trade(
             user_id,
             market_id,
             Side::Bid,
-            &mut trade_event,
+            trade_event,
             &spec,
             Some((order_id, 1)),
         );
@@ -1748,26 +1738,17 @@ mod tests {
         let engine = RiskEngine::new(specs, 0, 1);
         engine.set_balance(user_id, quote_asset_id, UserBalance::new(0, size));
 
-        let mut trade_event = MatcherTradeEvent {
+        let trade_event = TradeFill {
             price,
             size,
             maker_user_id: 101,
             active_order_completed: false,
             matched_order_id: 1,
             matched_order_completed: true,
-            next_event: None,
-            maker_balance: [UserBalance::default(); 2],
             maker_remaining_size: 0,
-            maker_original_size: size,
         };
 
-        engine.handle_trade_event(
-            user_id,
-            market_id,
-            Side::Bid,
-            &mut trade_event,
-            Some((1, price)),
-        );
+        engine.handle_trade_event(user_id, market_id, Side::Bid, trade_event, Some((1, price)));
 
         let expected_fee = 2_000_000_000_000_000;
         assert_eq!(
@@ -2071,23 +2052,20 @@ mod tests {
         assert_eq!(engine.get_balance(user_id, eth_asset_id).locked(), 2_000);
 
         // --- Action 3: The BTC buy order is filled (as taker) ---
-        let mut btc_trade_event = MatcherTradeEvent {
+        let btc_trade_event = TradeFill {
             price: btc_price,
             size: btc_size,
             maker_user_id: 200,
             active_order_completed: true,
             matched_order_id: 99,
             matched_order_completed: true,
-            next_event: None,
-            maker_balance: [UserBalance::default(); 2],
             maker_remaining_size: 0,
-            maker_original_size: btc_size,
         };
         engine.handle_trade_event(
             user_id,
             market_id_btc_usd,
             Side::Bid,
-            &mut btc_trade_event,
+            btc_trade_event,
             Some((btc_buy_cmd.order_id, btc_price)),
         );
 
@@ -2109,7 +2087,7 @@ mod tests {
         assert_eq!(engine.get_balance(user_id, eth_asset_id).locked(), 2_000); // ETH lock is untouched
 
         // --- Action 4: The ETH sell order is cancelled ---
-        engine.handle_cancellation(&mut eth_sell_cmd);
+        cancel(&engine, &eth_sell_cmd);
 
         // --- Final Balances ---
         assert_eq!(
@@ -2175,19 +2153,16 @@ mod tests {
         let mut spent = 0;
         for (index, &fill_size) in fill_sizes.iter().enumerate() {
             let completed = fully_filled && index + 1 == fill_sizes.len();
-            let mut event = MatcherTradeEvent {
+            let event = TradeFill {
                 active_order_completed: false,
                 matched_order_id: order_id,
                 maker_user_id: user_id,
                 matched_order_completed: completed,
                 price,
                 size: fill_size,
-                next_event: None,
-                maker_balance: [UserBalance::default(); 2],
                 maker_remaining_size: 0,
-                maker_original_size: fill_size,
             };
-            engine.handle_trade_event(user_id, market_id, Side::Bid, &mut event, None);
+            engine.handle_trade_event(user_id, market_id, Side::Bid, event, None);
             cmd.size -= fill_size;
             spent += spec
                 .calculate_quote_cost(price, fill_size)
@@ -2195,7 +2170,7 @@ mod tests {
         }
 
         if !fully_filled {
-            engine.handle_cancellation(&mut cmd);
+            cancel(&engine, &cmd);
         }
 
         let balance = engine.get_balance(user_id, quote_asset(market_id));
@@ -2240,9 +2215,9 @@ mod tests {
         specs.insert(market_id, get_shipped_eth_spec(market_id));
         let engine = RiskEngine::new(specs, 2, 4);
         engine.set_balance(user_id, quote_asset(market_id), UserBalance::new(10, 0));
-        let mut cmd = OrderCommand::cancel_order(404, user_id, Side::Bid, market_id);
+        let cmd = OrderCommand::cancel_order(404, user_id, Side::Bid, market_id);
 
-        engine.handle_cancellation(&mut cmd);
+        cancel(&engine, &cmd);
 
         assert_eq!(
             engine.get_balance(user_id, quote_asset(market_id)),
@@ -2279,22 +2254,19 @@ mod tests {
         engine
             .reserve_funds_for_order(&mut cmd, price_cache)
             .unwrap();
-        let mut event = MatcherTradeEvent {
+        let event = TradeFill {
             active_order_completed: false,
             matched_order_id: cmd.order_id,
             maker_user_id: user_id,
             matched_order_completed: false,
             price,
             size: fill_size,
-            next_event: None,
-            maker_balance: [UserBalance::default(); 2],
             maker_remaining_size: 0,
-            maker_original_size: fill_size,
         };
-        engine.handle_trade_event(user_id, market_id, Side::Ask, &mut event, None);
+        engine.handle_trade_event(user_id, market_id, Side::Ask, event, None);
         cmd.size -= fill_size;
 
-        engine.handle_cancellation(&mut cmd);
+        cancel(&engine, &cmd);
 
         let balance = engine.get_balance(user_id, base_asset(market_id));
         assert_eq!(balance.available(), order_size - fill_size);

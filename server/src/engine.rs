@@ -1045,7 +1045,7 @@ pub mod test {
 
     #[test]
     fn accrued_fees_sum_every_risk_shard() {
-        use common::{MarketType, MatcherTradeEvent, Side, UserBalance};
+        use common::{MarketType, Side, TradeFill, UserBalance};
 
         let market_id = (1_u32 << 16) | 3_u32;
         let mut specs = HashMap::new();
@@ -1067,11 +1067,13 @@ pub mod test {
         for user_id in [4_u64, 5] {
             let shard = &engine.risk_engines[(user_id % NUM_RISK_ENGINES as u64) as usize];
             shard.set_balance(user_id, quote_asset(market_id), UserBalance::new(0, 10_000));
-            let mut fill = MatcherTradeEvent::default();
-            fill.price = 1;
-            fill.size = 10_000;
-            fill.maker_user_id = 99;
-            shard.handle_trade_event(user_id, market_id, Side::Bid, &mut fill, None);
+            let fill = TradeFill {
+                price: 1,
+                size: 10_000,
+                maker_user_id: 99,
+                ..Default::default()
+            };
+            shard.handle_trade_event(user_id, market_id, Side::Bid, fill, None);
         }
 
         let base = base_asset(market_id);

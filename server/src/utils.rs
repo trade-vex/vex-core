@@ -104,23 +104,22 @@ macro_rules! create_risk_r2_handler {
         let risk_engines = $risk_engines.clone();
         let shard_mask = $risk_engines.len() as u64 - 1;
         move |cell: &::std::cell::UnsafeCell<OrderCommand>, sequence: i64, _end_of_batch: bool| {
-            // SAFETY: R2 is the one handler group where taker and maker may be settled by
-            // different shards concurrently, so two handlers can hold `&mut` to the same
-            // command. This access is not sound. Making it sound requires
-            // `handle_trade_event` to take projected fields rather than `&mut OrderCommand`,
-            // which is a change in `processors/` and is tracked in issue #128.
-            let cmd = unsafe { &mut *cell.get() };
+            // SAFETY (every `unsafe` below): R2 is the one handler group where two shards work on
+            // the same command at once, the taker's and a maker's. So no shard forms a reference
+            // to the command or to an event: each reads the fields no R2 writes, and writes only
+            // its own (the taker shard `balance`, the maker shard `maker_balance`), through raw
+            // pointers.
+            let cmd: *mut OrderCommand = cell.get();
             let risk_engine = &risk_engines[$shard_id];
             'settle: {
-                if cmd.status == Status::Rejected {
+                let status = unsafe { (*cmd).status };
+                if status == Status::Rejected {
                     break 'settle;
                 }
 
-                let taker_id = cmd.user_id();
-                let market_id = cmd.market_id();
-                let taker_side = cmd.side();
-                let taker_price = cmd.price();
-                let taker_order_id = cmd.order_id();
+                let taker_id = unsafe { (*cmd).user_id };
+                let market_id = unsafe { (*cmd).market_id };
+                let taker_side = unsafe { (*cmd).side };
 
                 // Determine shard ownership for taker
                 let is_taker_shard = ((taker_id & shard_mask) as usize) == $shard_id;
@@ -128,27 +127,33 @@ macro_rules! create_risk_r2_handler {
                 // A deposit or withdrawal (`Processed`) was applied in R1. Snapshot it here, in
                 // sequence order with this shard's settlements, so the published balance includes
                 // every earlier trade of the user.
-                if cmd.status == Status::Processed {
+                if status == Status::Processed {
                     if is_taker_shard {
                         // For deposits and withdrawals `market_id` carries the asset id.
-                        cmd.balance[0] = risk_engine.get_balance(taker_id, market_id as u16);
+                        let balance = risk_engine.get_balance(taker_id, market_id as u16);
+                        unsafe { (&raw mut (*cmd).balance[0]).write(balance) };
                     }
                     break 'settle;
                 }
 
+                let taker_order = unsafe { ((*cmd).order_id, (*cmd).price) };
+
                 // Process all trade events in the chain
-                let mut current_event = cmd.events_mut();
-                while let Some(event) = current_event {
-                    let maker_id = event.maker_user_id;
-                    let is_maker_shard = ((maker_id & shard_mask) as usize) == $shard_id;
+                let mut event = unsafe { OrderCommand::events_ptr(cmd) };
+                while !event.is_null() {
+                    let fill = unsafe { ::common::MatcherTradeEvent::fill(event) };
 
                     // Settle maker if this shard owns the maker's user ID
-                    if is_maker_shard {
-                        let maker_side = taker_side.op_side();
-                        risk_engine.handle_trade_event(
-                            maker_id, market_id, maker_side, event,
+                    if ((fill.maker_user_id & shard_mask) as usize) == $shard_id {
+                        if let Some(balance) = risk_engine.handle_trade_event(
+                            fill.maker_user_id,
+                            market_id,
+                            taker_side.op_side(),
+                            fill,
                             None, // Maker order ID is carried by the trade event
-                        );
+                        ) {
+                            unsafe { (&raw mut (*event).maker_balance).write(balance) };
+                        }
                     }
 
                     // Settle taker if this shard owns the taker's user ID
@@ -157,29 +162,38 @@ macro_rules! create_risk_r2_handler {
                             taker_id,
                             market_id,
                             taker_side,
-                            event,
-                            Some((taker_order_id, taker_price)),
+                            fill,
+                            Some(taker_order),
                         );
                     }
 
-                    current_event = event.next_event.as_deref_mut();
+                    event = unsafe { ::common::MatcherTradeEvent::next_ptr(event) };
                 }
 
                 // Handle cancellations for taker (IOC/FOK partial fills or explicit cancels)
                 if is_taker_shard {
                     let should_handle_cancellation = matches!(
-                        (cmd.status, cmd.time_in_force),
+                        (status, unsafe { (*cmd).time_in_force }),
                         (Status::PartiallyFilled, TimeInForce::Ioc | TimeInForce::Fok)
                             | (Status::Cancelled, _)
                     );
 
                     if should_handle_cancellation {
-                        risk_engine.handle_cancellation(cmd);
+                        risk_engine.handle_cancellation(
+                            taker_order.0,
+                            taker_id,
+                            market_id,
+                            taker_side,
+                            unsafe { (*cmd).size },
+                        );
                     }
 
                     // Update balance snapshot in command for response
-                    cmd.balance[0] = risk_engine.get_balance(taker_id, base_asset(market_id));
-                    cmd.balance[1] = risk_engine.get_balance(taker_id, quote_asset(market_id));
+                    let balance = [
+                        risk_engine.get_balance(taker_id, base_asset(market_id)),
+                        risk_engine.get_balance(taker_id, quote_asset(market_id)),
+                    ];
+                    unsafe { (&raw mut (*cmd).balance).write(balance) };
                 }
             }
             // Every sequence, settled or skipped, moves the cursor R1 waits on.
