@@ -462,17 +462,19 @@ VEX_ENV=development RUST_LOG=debug ./target/release/vex-core 2>&1 | grep -E "dis
 **Symptom**: the start fails with `the journal was purged below position <p> and no snapshot is at
 or below the delivered watermark; see RUNBOOK: No usable snapshot`.
 
-The journal below the older snapshot was deleted once the watermark had passed it, so the
-watermark read back is older than the one written then: watermark records were lost, or
-`vex-core.delivered` was emptied or re-created.
+The journal below the older snapshot was deleted once the brokers had acknowledged a watermark
+past it, so the watermark read back is older than one they acknowledged: `vex-core.delivered` was
+emptied or re-created, or lost acknowledged records.
 
-**Fix**: take the newest snapshot's last command timestamp, bytes 24..32 of the file
-(little-endian). Confirm in Kafka, or the read model, that the events of the commands up to that
-timestamp are present. Then, with the core stopped, write it as the watermark, an 8-byte
-big-endian u64 under the key `w`, and start again:
+**Fix**: take a snapshot's last command timestamp, bytes 24..32 of the file (little-endian). Use
+the newest snapshot whose last command's events are all present in Kafka or the read model; if the
+newest one's are not, take the older file. Writing a newer snapshot's timestamp drops the events
+of the commands it holds for good. Then, with the core stopped, write it as the watermark, an
+8-byte big-endian u64 under the key `w`, and start again:
 
 ```bash
-file=$(ls <snapshot_dir>/snapshot-*.bin | tail -1)
+ls <snapshot_dir>/snapshot-*.bin                             # oldest first
+file=<snapshot_dir>/snapshot-<chosen>.bin
 timestamp=$(od -A n -t u8 -j 24 -N 8 "$file" | tr -d ' ')   # on a little-endian host
 printf '%016x' "$timestamp" | xxd -r -p > w.bin
 kcat -b <brokers> -t vex-core.delivered -P -k w w.bin          # the file is one message
