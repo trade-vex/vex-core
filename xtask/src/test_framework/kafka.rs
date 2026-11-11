@@ -226,14 +226,28 @@ impl KafkaVerifier {
 
     /// The end offset of every partition of every event topic, as the broker reports it now
     pub fn end_offsets(&self) -> TestResult<BTreeMap<(String, i32), i64>> {
-        self.events
-            .positions
-            .keys()
-            .map(|(topic, partition)| {
-                let (_, end) = self
-                    .consumer
-                    .fetch_watermarks(topic, *partition, BROKER_TIMEOUT)?;
-                Ok(((topic.clone(), *partition), end))
+        Ok(self.ends()?.into_iter().collect())
+    }
+
+    /// The end offset of every assigned partition, in one ListOffsets request per broker: a
+    /// `fetch_watermarks` per partition is a round trip each, queued behind the fetch in flight.
+    fn ends(&self) -> TestResult<Vec<((String, i32), i64)>> {
+        // Kafka reads the timestamp -1 as "the end offset".
+        let ends = self.consumer.offsets_for_timestamp(-1, BROKER_TIMEOUT)?;
+        ends.elements()
+            .iter()
+            .map(|partition| match partition.offset() {
+                Offset::Offset(end) => {
+                    Ok(((partition.topic().to_string(), partition.partition()), end))
+                }
+                offset => Err(TestError::Parse {
+                    message: format!(
+                        "no end offset for {} partition {}: {offset:?} ({:?})",
+                        partition.topic(),
+                        partition.partition(),
+                        partition.error()
+                    ),
+                }),
             })
             .collect()
     }
@@ -295,14 +309,7 @@ impl KafkaVerifier {
 
     /// Take in every event the broker holds at this moment
     fn catch_up(&mut self) -> TestResult<()> {
-        let mut ends = Vec::with_capacity(self.events.positions.len());
-        for (topic, partition) in self.events.positions.keys() {
-            let (_, end) = self
-                .consumer
-                .fetch_watermarks(topic, *partition, BROKER_TIMEOUT)?;
-            ends.push(((topic.clone(), *partition), end));
-        }
-
+        let ends = self.ends()?;
         let deadline = Instant::now() + BROKER_TIMEOUT;
         for (partition, end) in ends {
             while self.events.positions[&partition] < end {
