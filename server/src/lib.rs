@@ -21,27 +21,17 @@ pub use engine::EngineError;
 pub struct RunningEngine {
     thread: JoinHandle<Result<(), EngineError>>,
     shutdown_flag: Arc<AtomicBool>,
-    engine: CoreEngine,
 }
 
 impl RunningEngine {
     /// Returns on panic or error during server execution
-    ///
-    /// After a graceful stop the pipeline has drained, so this logs the final trading fees
-    /// accrued per asset across all risk shards; nothing else reports them yet.
     pub fn join(self) -> Result<(), EngineError> {
-        let result = self.thread.join().unwrap_or_else(|e| {
+        self.thread.join().unwrap_or_else(|e| {
             Err(EngineError::ServerRuntime(format!(
                 "Server thread panicked: {:?}",
                 e
             )))
-        });
-        if result.is_ok() {
-            for (asset_id, amount) in self.engine.accrued_fees() {
-                tracing::info!(target: "risk_engine", event = "accrued_fees", asset_id, amount);
-            }
-        }
-        result
+        })
     }
 
     /// Returns a clone of the shutdown flag for external signalling
@@ -138,7 +128,6 @@ pub fn start(mut config: VexConfig) -> Result<RunningEngine, EngineError> {
     Ok(RunningEngine {
         thread: thread_handle,
         shutdown_flag,
-        engine,
     })
 }
 
@@ -487,6 +476,10 @@ mod tests {
         );
     }
 
+    fn cancel(engine: &RiskEngine, cmd: &OrderCommand) {
+        engine.handle_cancellation(cmd.order_id, cmd.user_id, cmd.market_id, cmd.side, cmd.size);
+    }
+
     /// Helper function to add a market specification to the specs map
     pub fn add_spec(market_id: u32, specs: &mut HashMap<u32, CoreMarketSpecification>) {
         specs.insert(
@@ -653,7 +646,7 @@ mod tests {
     fn test_shipped_eth_collateral_lock_and_release_for_both_sides() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let base_asset_id = base_asset(market_id);
         let quote_asset_id = quote_asset(market_id);
@@ -672,12 +665,12 @@ mod tests {
             market_id,
             1,
         );
-        engine.pre_process_command(&mut bid, Arc::clone(&price_cache));
+        engine.pre_process_command(&mut bid, &price_cache);
         assert_eq!(
             engine.get_balance(bid_user_id, quote_asset_id),
             UserBalance::new(0, quote_cost)
         );
-        engine.handle_cancellation(&mut bid);
+        cancel(&engine, &bid);
         assert_eq!(
             engine.get_balance(bid_user_id, quote_asset_id),
             UserBalance::new(quote_cost, 0)
@@ -694,12 +687,12 @@ mod tests {
             market_id,
             2,
         );
-        engine.pre_process_command(&mut ask, price_cache);
+        engine.pre_process_command(&mut ask, &price_cache);
         assert_eq!(
             engine.get_balance(ask_user_id, base_asset_id),
             UserBalance::new(0, size)
         );
-        engine.handle_cancellation(&mut ask);
+        cancel(&engine, &ask);
         assert_eq!(
             engine.get_balance(ask_user_id, base_asset_id),
             UserBalance::new(size, 0)
@@ -710,7 +703,7 @@ mod tests {
     fn test_shipped_eth_settlement_releases_both_sides_and_rounds_fees() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let base_asset_id = base_asset(market_id);
         let quote_asset_id = quote_asset(market_id);
@@ -740,27 +733,26 @@ mod tests {
             market_id,
             2,
         );
-        engine.pre_process_command(&mut bid, Arc::clone(&price_cache));
-        engine.pre_process_command(&mut ask, price_cache);
+        engine.pre_process_command(&mut bid, &price_cache);
+        engine.pre_process_command(&mut ask, &price_cache);
 
-        // MatcherTradeEvent implements Drop (PR #179): the functional-update form
-        // would move out of a Drop type, so assign the fields instead.
-        let mut event = common::MatcherTradeEvent::default();
-        event.price = price;
-        event.size = size;
-        event.maker_user_id = seller_id;
-        event.matched_order_id = ask.order_id;
-        event.matched_order_completed = true;
-        event.active_order_completed = true;
-        event.maker_original_size = size;
+        let event = common::TradeFill {
+            price,
+            size,
+            maker_user_id: seller_id,
+            matched_order_id: ask.order_id,
+            matched_order_completed: true,
+            active_order_completed: true,
+            ..Default::default()
+        };
         engine.handle_trade_event(
             buyer_id,
             market_id,
             Side::Bid,
-            &mut event,
+            event,
             Some((bid.order_id, price)),
         );
-        engine.handle_trade_event(seller_id, market_id, Side::Ask, &mut event, None);
+        engine.handle_trade_event(seller_id, market_id, Side::Ask, event, None);
 
         // PR #163 rounds fees UP per fill (div_ceil), so the remainder below costs one more
         // atomic unit than the pre-#163 floor of 666_666.
@@ -790,7 +782,7 @@ mod tests {
     fn test_shipped_eth_ask_partial_fill_cancel_round_trip() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let base_asset_id = base_asset(market_id);
         let quote_asset_id = quote_asset(market_id);
@@ -810,20 +802,19 @@ mod tests {
             market_id,
             1,
         );
-        engine.pre_process_command(&mut ask, price_cache);
+        engine.pre_process_command(&mut ask, &price_cache);
 
-        // MatcherTradeEvent implements Drop (PR #179): the functional-update form
-        // would move out of a Drop type, so assign the fields instead.
-        let mut event = common::MatcherTradeEvent::default();
-        event.price = price;
-        event.size = fill_size;
-        event.maker_user_id = user_id;
-        event.matched_order_id = ask.order_id;
-        event.maker_original_size = initial_base;
-        event.maker_remaining_size = remaining_size;
-        engine.handle_trade_event(user_id, market_id, Side::Ask, &mut event, None);
+        let event = common::TradeFill {
+            price,
+            size: fill_size,
+            maker_user_id: user_id,
+            matched_order_id: ask.order_id,
+            maker_remaining_size: remaining_size,
+            ..Default::default()
+        };
+        engine.handle_trade_event(user_id, market_id, Side::Ask, event, None);
         ask.set_size(remaining_size);
-        engine.handle_cancellation(&mut ask);
+        cancel(&engine, &ask);
 
         assert_eq!(
             engine.get_balance(user_id, base_asset_id),
@@ -842,14 +833,14 @@ mod tests {
     fn test_shipped_eth_bid_with_zero_quote_cost_is_rejected() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         // 9_999 gwei at price 1 costs 0.9999 micro-USDT, which floors to zero.
         let mut bid =
             OrderCommand::place_order(TimeInForce::Gtc, 40, 1, 9_999, Side::Bid, market_id, 1);
 
         // Before #111, locking zero succeeded and admitted an uncollateralized BID.
-        engine.pre_process_command(&mut bid, price_cache);
+        engine.pre_process_command(&mut bid, &price_cache);
 
         assert_eq!(bid.status, Status::Rejected);
     }
@@ -859,7 +850,7 @@ mod tests {
     fn test_shipped_eth_bid_partial_fill_cancel_has_no_collateral_residue() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let base_asset_id = base_asset(market_id);
         let quote_asset_id = quote_asset(market_id);
@@ -880,25 +871,24 @@ mod tests {
             market_id,
             1,
         );
-        engine.pre_process_command(&mut bid, price_cache);
+        engine.pre_process_command(&mut bid, &price_cache);
 
-        // MatcherTradeEvent implements Drop (PR #179): the functional-update form
-        // would move out of a Drop type, so assign the fields instead.
-        let mut event = common::MatcherTradeEvent::default();
-        event.price = price;
-        event.size = fill_size;
-        event.maker_user_id = user_id + 1;
-        event.matched_order_id = 2;
-        event.maker_original_size = fill_size;
+        let event = common::TradeFill {
+            price,
+            size: fill_size,
+            maker_user_id: user_id + 1,
+            matched_order_id: 2,
+            ..Default::default()
+        };
         engine.handle_trade_event(
             user_id,
             market_id,
             Side::Bid,
-            &mut event,
+            event,
             Some((bid.order_id, price)),
         );
         bid.set_size(remaining_size);
-        engine.handle_cancellation(&mut bid);
+        cancel(&engine, &bid);
 
         // PR #163 rounds per-fill fees UP; this expectation predated it.
         let fee = (fill_size * 20).div_ceil(10_000);
@@ -918,7 +908,7 @@ mod tests {
     fn test_shipped_eth_one_token_fee_arithmetic_does_not_overflow() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let quote_asset_id = quote_asset(market_id);
         let user_id = 60;
@@ -935,21 +925,20 @@ mod tests {
             market_id,
             1,
         );
-        engine.pre_process_command(&mut bid, price_cache);
+        engine.pre_process_command(&mut bid, &price_cache);
 
-        // MatcherTradeEvent implements Drop (PR #179): the functional-update form
-        // would move out of a Drop type, so assign the fields instead.
-        let mut event = common::MatcherTradeEvent::default();
-        event.price = price;
-        event.size = one_eth;
-        event.maker_user_id = user_id + 1;
-        event.matched_order_id = 2;
-        event.maker_original_size = one_eth;
+        let event = common::TradeFill {
+            price,
+            size: one_eth,
+            maker_user_id: user_id + 1,
+            matched_order_id: 2,
+            ..Default::default()
+        };
         engine.handle_trade_event(
             user_id,
             market_id,
             Side::Bid,
-            &mut event,
+            event,
             Some((bid.order_id, price)),
         );
 
@@ -1193,7 +1182,7 @@ mod tests {
         let spec = specs.get_mut(&market_id).unwrap();
         spec.quote_scale_k = 10;
 
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let risk_engines: Arc<Vec<RiskEngine>> = Arc::new(
             (0..4)
                 .map(|shard_id| RiskEngine::new(specs.clone(), shard_id, 4))
@@ -1206,7 +1195,7 @@ mod tests {
             .collect();
         let r1 = |cmd: &mut OrderCommand| {
             for engine in risk_engines.iter() {
-                engine.pre_process_command(cmd, Arc::clone(&price_cache));
+                engine.pre_process_command(cmd, &price_cache);
             }
         };
         let r2 = |cmd: OrderCommand| {
@@ -1235,7 +1224,7 @@ mod tests {
             1,
         );
         r1(&mut ask);
-        router.process_order(&mut ask, Arc::clone(&price_cache));
+        router.process_order(&mut ask, &price_cache);
         assert_eq!(r2(ask).status, Status::Placed);
 
         // Trade N: R1 and matching have run, R2 has not.
@@ -1249,7 +1238,7 @@ mod tests {
             2,
         );
         r1(&mut bid);
-        router.process_order(&mut bid, Arc::clone(&price_cache));
+        router.process_order(&mut bid, &price_cache);
         assert_eq!(bid.status, Status::Filled);
 
         // Deposit D > N: its R1 runs before N's R2.
@@ -1275,6 +1264,86 @@ mod tests {
             0,
             "after N and D",
         );
+    }
+
+    /// The taker's and the maker's R2 shards settle one fill at the same time, as in the
+    /// pipeline. Under Miri this also checks that they never alias the command (audit core 11).
+    #[test]
+    fn cross_shard_fill_is_settled_by_both_shards_at_once() {
+        let mut specs = HashMap::new();
+        let (base_asset_id, quote_asset_id) = (1, 2);
+        let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
+        add_spec(market_id, &mut specs);
+        specs.get_mut(&market_id).unwrap().quote_scale_k = 10;
+        let price_cache = PriceCache::new(specs.keys());
+        let risk_engines: Arc<Vec<RiskEngine>> = Arc::new(
+            (0..4)
+                .map(|shard_id| RiskEngine::new(specs.clone(), shard_id, 4))
+                .collect(),
+        );
+        let mut router = MatchingEngineRouter::new(0, 1);
+        router.add_market(market_id);
+        let checker = BalanceChecker::new(&risk_engines);
+        let (maker_id, taker_id) = (101, 42); // shards 1 and 2
+        let (price, size) = (5000, 10_000);
+        checker.set_balance(maker_id, base_asset_id, size, 0);
+        checker.set_balance(taker_id, quote_asset_id, 5_000_000, 0);
+        let mut admit = |mut cmd: OrderCommand| {
+            for engine in risk_engines.iter() {
+                engine.pre_process_command(&mut cmd, &price_cache);
+            }
+            router.process_order(&mut cmd, &price_cache);
+            cmd
+        };
+        let ask = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            maker_id,
+            price,
+            size,
+            Side::Ask,
+            market_id,
+            1,
+        );
+        assert_eq!(admit(ask).status, Status::Placed);
+        let bid = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            taker_id,
+            price,
+            size,
+            Side::Bid,
+            market_id,
+            2,
+        );
+        let bid = admit(bid);
+        assert_eq!(bid.status, Status::Filled);
+
+        // The ring slot, which the four R2 handlers share.
+        struct Slot(UnsafeCell<OrderCommand>);
+        // SAFETY: as in the ring; each handler writes only what its shard settles.
+        unsafe impl Sync for Slot {}
+        let slot = Slot(UnsafeCell::new(bid));
+        let r2_handlers: Vec<_> = (0..4usize)
+            .map(|shard_id| crate::create_risk_r2_handler!(shard_id, &risk_engines))
+            .collect();
+        let shared = &slot;
+        std::thread::scope(|scope| {
+            for handler in &r2_handlers {
+                scope.spawn(move || handler(&shared.0, 0, false));
+            }
+        });
+        let bid = slot.0.into_inner();
+
+        // 20 bp taker fee on 10_000 base, 10 bp maker fee on 5_000_000 quote.
+        assert_eq!(
+            bid.balance,
+            [UserBalance::new(9_980, 0), UserBalance::new(0, 0)]
+        );
+        let fill = bid.events().expect("one fill");
+        assert_eq!(
+            fill.maker_balance,
+            [UserBalance::new(0, 0), UserBalance::new(4_995_000, 0)]
+        );
+        assert_eq!((fill.taker_fee, fill.maker_fee), (20, 5_000));
     }
 
     /// The events stage publishes one balance per maker, from that maker's LAST fill in the
@@ -1688,8 +1757,8 @@ mod tests {
         let response = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(response.status, Status::Placed);
         let l2 = response.l2_data.as_ref().unwrap();
-        assert_eq!(l2.bid_prices, [90]);
-        assert_eq!(l2.ask_prices, [100, 120]);
+        assert_eq!(l2.bids().0, [90]);
+        assert_eq!(l2.asks().0, [100, 120]);
     }
 
     #[test]
@@ -1704,9 +1773,7 @@ mod tests {
             mut producer,
             risk_engines,
             receiver: rx,
-        } = setup(specs.clone());
-
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        } = setup(specs);
 
         let maker_id = 101; // Shard 1
         let taker_id = 42; // Shard 2
@@ -1743,7 +1810,6 @@ mod tests {
         });
         let maker_placed = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(maker_placed.status, Status::Placed);
-        price_cache.update_prices(market_id, 0, maker_ask_price); // Manually update price cache
 
         // 4. Place Taker's IOC Market Buy order, larger than available liquidity
         let taker_order_size = 10_000;
@@ -1874,8 +1940,7 @@ mod tests {
         );
 
         let l2 = response.l2_data.as_ref().unwrap();
-        assert_eq!(l2.ask_prices, [110, 120]);
-        assert_eq!(l2.ask_volumes, [10, 10]);
+        assert_eq!(l2.asks(), (&[110, 120][..], &[10, 10][..]));
     }
 
     #[test]
@@ -2785,6 +2850,53 @@ mod tests {
             placed = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
             assert_eq!(placed.status, Status::Placed, "round {round}: re-place");
         }
+    }
+
+    /// STP_CANCEL_MAKER: a bid that would cross its user's own ask cancels the ask, and R2
+    /// releases the ask's locked base.
+    #[test]
+    fn stp_cancel_releases_the_makers_lock() {
+        let (base, quote) = (1u16, 2u16);
+        let market_id = (u32::from(quote) << 16) | u32::from(base);
+        let mut specs = HashMap::new();
+        add_spec(market_id, &mut specs);
+        let cost = specs[&market_id].calculate_quote_cost(49_000, 3).unwrap();
+        let TestEngine {
+            mut producer,
+            risk_engines,
+            receiver: rx,
+        } = setup(specs);
+        let user_id = 101;
+        let checker = BalanceChecker::new(&risk_engines);
+        checker.set_balance(user_id, base, 1_000, 0);
+        checker.set_balance(user_id, quote, 1_000_000, 0);
+        let order = |price, size, side| {
+            OrderCommand::place_order(TimeInForce::Gtc, user_id, price, size, side, market_id, 1)
+        };
+
+        producer.publish(|cmd| *cmd = order(48_000, 5, Side::Ask));
+        assert_eq!(
+            rx.recv_timeout(PIPELINE_DEADLINE).unwrap().status,
+            Status::Placed
+        );
+        checker.check(user_id, base, 995, 5, "the ask locks its base");
+
+        producer.publish(|cmd| *cmd = order(49_000, 3, Side::Bid));
+        let bid = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
+        assert_eq!((bid.status, bid.size), (Status::Placed, 3));
+        let after = [
+            UserBalance::new(1_000, 0),
+            UserBalance::new(1_000_000 - cost, cost),
+        ];
+        assert_eq!(bid.balance, after, "the response includes the release");
+        checker.check(
+            user_id,
+            base,
+            1_000,
+            0,
+            "the cancelled ask's base is released",
+        );
+        checker.check(user_id, quote, 1_000_000 - cost, cost, "the bid rests");
     }
 
     /// Replay publishes the journal back to back, so R1 runs ahead of R2; a live client that

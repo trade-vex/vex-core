@@ -360,6 +360,8 @@ The sides are generic, allowing flexibility in the underlying data structure imp
    a. Get best opposite price level
    b. Check price compatibility
    c. Match against orders in FIFO order (VecDeque front)
+      - An order of the taker's own user is cancelled, not traded against
+        (STP_CANCEL_MAKER, spec §8.2): it leaves the book with a size-0 MatcherTradeEvent
    d. Generate MatcherTradeEvent for each fill
    e. If maker order fully filled, remove from orderbook
    f. If price level empty, remove from tree
@@ -382,13 +384,15 @@ When an order matches multiple resting orders, events are stored as a linked lis
 ```rust
 pub struct MatcherTradeEvent {
     pub price: u64,
-    pub size: u64,
+    pub size: u64,  // 0: an STP cancel of the taker's own resting order, no trade
     pub maker_user_id: u64,
     pub matched_order_id: u64,
     pub active_order_completed: bool,
     pub matched_order_completed: bool,
     pub next_event: Option<Box<MatcherTradeEvent>>,
     pub maker_balance: [UserBalance; 2],
+    pub maker_fee: u64,  // set by R2
+    pub taker_fee: u64,  // set by R2
 }
 ```
 
@@ -414,7 +418,11 @@ Maker (ASK - selling base for quote):
 
 `quote_cost` is `CoreMarketSpecification::calculate_quote_cost`, as in R1 (`RiskEngine::settle_trade`).
 
+A size-0 event (an STP cancel) settles nothing: the taker's shard, which also owns the cancelled order, releases that order's lock as for any cancel (`handle_cancellation`).
+
 **Fee Structure**: Maker and taker fees configured per market in basis points. Each fee is rounded up per fill, so a fill pays its exact share plus less than one atomic unit: slicing an order into many fills can never pay less than one fill would, and over-pays by at most one unit per fill.
+
+The core keeps no fee account: R2 writes each side's fee on its `MatcherTradeEvent` (`maker_fee`, `taker_fee`), and the `trades` topic publishes both on `TradeEvent`, each in the asset that side received (base for a bid, quote for an ask).
 
 **Price Improvement Refund**:
 
@@ -427,11 +435,11 @@ The refund is moved from locked back to available quote currency.
 
 **Failure**: each user's side (refund, fill, a completed bid's collateral residue, credit, fee) is checked on copies and committed at once. R1 has already proved every amount fits, so a failure means the ledger is wrong: the core logs `settlement_failed` and aborts rather than publish a trade settled on one side only.
 
-**Locking**: R2 engines use `Mutex` locks on the balance store within each shard, acquired during settlement operations.
+**Locking**: each shard keeps its balances and its bids' collateral in one ledger behind one `Mutex`, held for a settlement's check and commit.
 
 **Critical Invariant** (maintained across settlement):
 ```
-SUM(all user balances in asset X) = constant  (conservation of assets)
+SUM(all user balances in asset X) + SUM(fees in X on trades) = deposits of X - withdrawals of X
 ```
 
 **Shard Coordination**:
@@ -450,9 +458,9 @@ R2 engines process trade events for both maker and taker:
 | Topic | Message | Key | Emitted for |
 |---|---|---|---|
 | `balances` | `BalanceEvent` | `user_id:asset_id` | the taker after a placement, cancel or fills; each maker once per command; a deposit or withdrawal |
-| `orders` | `OrderEvent` | `order_id` | the taker; each maker per fill |
+| `orders` | `OrderEvent` | `order_id` | the taker; each maker per fill or STP cancel (status Cancelled) |
 | `orderbook` | `OrderbookEvent` (L2 snapshot) | `market_id` | a placement, cancel or fill |
-| `cancels` | `CancelOrderEvent` | `order_id` | a cancellation |
+| `cancels` | `CancelOrderEvent` | `order_id` | a cancellation, including a maker cancelled by STP |
 | `trades` | `TradeEvent` | `taker_order_id:maker_order_id` | each fill |
 | `deposits` | `DepositEvent` | `user_id` | a processed deposit |
 | `withdrawals` | `WithdrawEvent` | `user_id` | a processed withdrawal |

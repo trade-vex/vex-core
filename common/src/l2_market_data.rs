@@ -1,41 +1,33 @@
 use crate::L2SIZE;
 
-/// Represents Level 2 market data with a fixed number of price levels.
+/// The top `L2SIZE` price levels of each side, best first.
 ///
-/// `LEVEL` is a const generic parameter that defines the depth of the order book
-/// for both asks and bids.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Stored inline, so taking a snapshot on every place and cancel allocates nothing. Only the
+/// first `bid_depth` bid and `ask_depth` ask entries are set.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct L2MarketData {
-    pub ask_prices: Vec<u64>,
-    pub ask_volumes: Vec<u64>,
-    pub bid_prices: Vec<u64>,
-    pub bid_volumes: Vec<u64>,
-}
-
-impl Default for L2MarketData {
-    fn default() -> Self {
-        Self::new()
-    }
+    pub ask_prices: [u64; L2SIZE],
+    pub ask_volumes: [u64; L2SIZE],
+    pub bid_prices: [u64; L2SIZE],
+    pub bid_volumes: [u64; L2SIZE],
+    pub ask_depth: usize,
+    pub bid_depth: usize,
 }
 
 impl L2MarketData {
-    /// Creates a new, empty `L2MarketData` instance with all values initialized to zero.
-    pub fn new() -> Self {
-        Self {
-            ask_prices: Vec::with_capacity(L2SIZE),
-            ask_volumes: Vec::with_capacity(L2SIZE),
-            bid_prices: Vec::with_capacity(L2SIZE),
-            bid_volumes: Vec::with_capacity(L2SIZE),
-        }
+    /// The set bid levels as (prices, volumes).
+    pub fn bids(&self) -> (&[u64], &[u64]) {
+        (
+            &self.bid_prices[..self.bid_depth],
+            &self.bid_volumes[..self.bid_depth],
+        )
     }
 
-    /// Returns the depth of the order book.
-    pub fn bid_depth(&self) -> usize {
-        self.bid_prices.len()
-    }
-
-    /// Returns the depth of the order book.
-    pub fn ask_depth(&self) -> usize {
-        self.ask_prices.len()
+    /// The set ask levels as (prices, volumes).
+    pub fn asks(&self) -> (&[u64], &[u64]) {
+        (
+            &self.ask_prices[..self.ask_depth],
+            &self.ask_volumes[..self.ask_depth],
+        )
     }
 }

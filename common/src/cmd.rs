@@ -10,8 +10,8 @@ use serde::de::Error;
 use serde::de::value::Error as SerdeError;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::ops::Deref;
+use std::ptr;
 
 // Size of the serialized OrderCommand in bytes
 // Header: 8 bytes
@@ -237,8 +237,8 @@ impl OrderCommand {
     /// True when `price` is the market-order sentinel: `u64::MAX` for a buy, `0` for a sell.
     ///
     /// In the pipeline, Risk R1 replaces a market buy's sentinel with its slippage cap, so the
-    /// order book only sees the sell sentinel, which matching then replaces with the execution
-    /// price once the sell trades.
+    /// order book only sees the sell sentinel, which matching then replaces with its last
+    /// (worst) fill's price once the sell trades.
     pub fn is_market_order(&self) -> bool {
         match self.side {
             Side::Bid => self.price == u64::MAX,
@@ -262,8 +262,21 @@ impl OrderCommand {
         self.events.as_deref()
     }
 
-    pub fn events_mut(&mut self) -> Option<&mut MatcherTradeEvent> {
-        self.events.as_deref_mut()
+    /// The first trade event, or null. Forms no reference to the command, only to `events`.
+    ///
+    /// # Safety
+    /// `cmd` points to a live command whose `events` no thread writes meanwhile.
+    pub unsafe fn events_ptr(cmd: *const Self) -> *mut MatcherTradeEvent {
+        // SAFETY: the caller's contract; a sized Box is represented as one pointer, so reading
+        // it as `*mut` copies the address without retagging the Box.
+        unsafe {
+            match &(*cmd).events {
+                Some(chain) => (&raw const chain.head)
+                    .cast::<*mut MatcherTradeEvent>()
+                    .read(),
+                None => ptr::null_mut(),
+            }
+        }
     }
 
     pub fn set_size(&mut self, size: u64) {
@@ -360,11 +373,30 @@ pub struct MatcherTradeEvent {
     pub maker_user_id: u64,
     pub matched_order_completed: bool,
     pub price: u64,
+    /// The traded size. 0 marks an STP cancel of the maker, the taker's own resting order
+    /// (spec §8.2 STP_CANCEL_MAKER): no trade, and `maker_remaining_size` is what it unlocks.
     pub size: u64,
     pub next_event: Option<Box<MatcherTradeEvent>>,
     pub maker_balance: [UserBalance; 2],
     pub maker_remaining_size: u64,
     pub maker_original_size: u64,
+    /// Set by R2: the maker's fee, in the asset the maker received (base for a maker bid, quote
+    /// for a maker ask).
+    pub maker_fee: u64,
+    /// Set by R2: the taker's fee, in the asset the taker received.
+    pub taker_fee: u64,
+}
+
+/// What R2 settles one fill from: a copy of the inputs in its [`MatcherTradeEvent`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TradeFill {
+    pub maker_user_id: u64,
+    pub matched_order_id: u64,
+    pub matched_order_completed: bool,
+    pub active_order_completed: bool,
+    pub price: u64,
+    pub size: u64,
+    pub maker_remaining_size: u64,
 }
 
 impl Drop for MatcherTradeEvent {
@@ -378,23 +410,9 @@ impl Drop for MatcherTradeEvent {
 
 impl PartialEq for MatcherTradeEventChain {
     fn eq(&self, other: &Self) -> bool {
-        // Compare the linked events, not the cached tail pointer (PR #177's `tail` is a
-        // derived cache and is deliberately not part of the value's identity).
-        let mut left = Some(self.head.as_ref());
-        let mut right = Some(other.head.as_ref());
-        loop {
-            match (left, right) {
-                (None, None) => return true,
-                (Some(l), Some(r)) => {
-                    if l != r {
-                        return false;
-                    }
-                    left = l.next_event.as_deref();
-                    right = r.next_event.as_deref();
-                }
-                _ => return false,
-            }
-        }
+        // `tail` is a cache, not part of the value; the derived event eq follows `next_event`.
+        // shortcut: recursive, a stack frame per fill; iterate if production code compares them.
+        self.head == other.head
     }
 }
 
@@ -402,43 +420,26 @@ impl Eq for MatcherTradeEventChain {}
 
 pub struct MatcherTradeEventChain {
     head: Box<MatcherTradeEvent>,
-    /// Cached pointer to the last node, as an address. `0` means "rebuild on next append".
-    ///
-    /// This is an `AtomicUsize` rather than a plain `usize` because `DerefMut` invalidates it,
-    /// and the four sharded R2 handlers all call `events_mut()` on the same command before
-    /// checking maker ownership. Those calls would otherwise be concurrent non-atomic writes of
-    /// the same value to the same location - still a data race, and still UB, even though every
-    /// writer stores `0` (finding C9-1). Relaxed ordering is sufficient: the value is a hint that
-    /// is always re-derived under exclusive access before use.
-    tail: AtomicUsize,
+    /// Cached pointer to the last node, as an address.
+    tail: usize,
 }
 
 impl MatcherTradeEventChain {
     fn new(mut event: Box<MatcherTradeEvent>) -> Self {
-        let tail = Self::find_tail(&mut event);
-        let tail = (tail as *mut MatcherTradeEvent) as usize;
-        Self {
-            head: event,
-            tail: AtomicUsize::new(tail),
-        }
+        let tail = (Self::find_tail(&mut event) as *mut MatcherTradeEvent) as usize;
+        Self { head: event, tail }
     }
 
     fn push(&mut self, mut event: Box<MatcherTradeEvent>) {
-        if self.tail.load(Ordering::Relaxed) == 0 {
-            let tail = Self::find_tail(&mut self.head);
-            self.tail
-                .store((tail as *mut MatcherTradeEvent) as usize, Ordering::Relaxed);
-        }
         let next_tail = Self::find_tail(&mut event);
         let next_tail = (next_tail as *mut MatcherTradeEvent) as usize;
 
         // SAFETY: `tail` points into the linked list owned by `head`. Nodes are heap allocated,
         // so moving the chain does not move them, and mutation requires exclusive access here.
         unsafe {
-            (*(self.tail.load(Ordering::Relaxed) as *mut MatcherTradeEvent)).next_event =
-                Some(event);
+            (*(self.tail as *mut MatcherTradeEvent)).next_event = Some(event);
         }
-        self.tail.store(next_tail, Ordering::Relaxed);
+        self.tail = next_tail;
     }
 
     fn find_tail(mut event: &mut MatcherTradeEvent) -> &mut MatcherTradeEvent {
@@ -454,12 +455,8 @@ impl MatcherTradeEventChain {
 impl Clone for MatcherTradeEventChain {
     fn clone(&self) -> Self {
         let mut head = self.head.clone();
-        let tail = Self::find_tail(&mut head);
-        let tail = (tail as *mut MatcherTradeEvent) as usize;
-        Self {
-            head,
-            tail: AtomicUsize::new(tail),
-        }
+        let tail = (Self::find_tail(&mut head) as *mut MatcherTradeEvent) as usize;
+        Self { head, tail }
     }
 }
 
@@ -477,15 +474,36 @@ impl Deref for MatcherTradeEventChain {
     }
 }
 
-impl DerefMut for MatcherTradeEventChain {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        // The caller can change `next_event`, so force the next append to rebuild the tail.
-        self.tail.store(0, Ordering::Relaxed);
-        &mut self.head
-    }
-}
-
 impl MatcherTradeEvent {
+    /// Copies the fill's inputs out of `ev` without forming a reference to it: the R2 shards
+    /// of the taker and of the maker read them while each writes its own fields of the event.
+    ///
+    /// # Safety
+    /// `ev` points to a live event whose fill inputs no thread writes meanwhile.
+    pub unsafe fn fill(ev: *const Self) -> TradeFill {
+        // SAFETY: the caller's contract; each read is of one Copy field.
+        unsafe {
+            TradeFill {
+                maker_user_id: (*ev).maker_user_id,
+                matched_order_id: (*ev).matched_order_id,
+                matched_order_completed: (*ev).matched_order_completed,
+                active_order_completed: (*ev).active_order_completed,
+                price: (*ev).price,
+                size: (*ev).size,
+                maker_remaining_size: (*ev).maker_remaining_size,
+            }
+        }
+    }
+
+    /// The next event in the chain, or null. Forms no reference to `ev`.
+    ///
+    /// # Safety
+    /// `ev` points to a live event whose `next_event` no thread writes meanwhile.
+    pub unsafe fn next_ptr(ev: *const Self) -> *mut Self {
+        // SAFETY: the caller's contract; `Option<Box<T>>` is guaranteed to be a nullable pointer.
+        unsafe { (&raw const (*ev).next_event).cast::<*mut Self>().read() }
+    }
+
     pub fn calc_filled_size(&self) -> u64 {
         let mut size = 0;
         let mut current = Some(self);
@@ -719,32 +737,6 @@ mod tests {
     }
 
     #[test]
-    fn attach_event_rebuilds_tail_after_mutating_the_chain() {
-        let mut command = OrderCommand::default();
-        for matched_order_id in 1..=3 {
-            command.attach_event(Box::new({
-                // MatcherTradeEvent implements Drop (PR #179): no functional update.
-                let mut e = MatcherTradeEvent::default();
-                e.matched_order_id = matched_order_id;
-                e
-            }));
-        }
-
-        command.events_mut().unwrap().next_event = None;
-        command.attach_event(Box::new({
-            // MatcherTradeEvent implements Drop (PR #179): no functional update.
-            let mut e = MatcherTradeEvent::default();
-            e.matched_order_id = 4;
-            e
-        }));
-
-        let head = command.events().unwrap();
-        assert_eq!(head.matched_order_id, 1);
-        assert_eq!(head.next_event.as_deref().unwrap().matched_order_id, 4);
-        assert!(head.next_event.as_deref().unwrap().next_event.is_none());
-    }
-
-    #[test]
     fn attach_event_preserves_prelinked_nodes_and_length() {
         let mut command = OrderCommand::default();
         command.attach_event(event_chain(&[1]));
@@ -766,18 +758,6 @@ mod tests {
         let matched_order_ids = matched_order_ids(&command);
         assert_eq!(matched_order_ids, [1, 2, 3, 4, 5, 6, 7]);
         assert_eq!(matched_order_ids.len(), 7);
-    }
-
-    #[test]
-    fn attach_event_recomputes_actual_tail_after_mutable_access() {
-        let mut command = OrderCommand::default();
-        command.attach_event(event_chain(&[1, 2]));
-
-        let _ = command.events_mut();
-        command.attach_event(event_chain(&[3, 4]));
-        command.attach_event(event_chain(&[5]));
-
-        assert_eq!(matched_order_ids(&command), [1, 2, 3, 4, 5]);
     }
 
     fn assert_round_trip(expected: OrderCommand) {
