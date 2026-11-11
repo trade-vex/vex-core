@@ -50,29 +50,6 @@ use std::{
     sync::Arc,
 };
 
-macro_rules! error {
-    (
-        event = $event:literal,
-        price_level = $price_level:expr,
-        existing_total = $existing_total:expr,
-        $operand:ident = $amount:expr,
-        $message:literal
-    ) => {
-        eprintln!(
-            concat!(
-                "level=error event=",
-                $event,
-                " price_level={} existing_total={} ",
-                stringify!($operand),
-                "={} message=\"",
-                $message,
-                "\""
-            ),
-            $price_level, $existing_total, $amount
-        );
-    };
-}
-
 pub mod tree;
 mod unit_tests;
 
@@ -121,17 +98,7 @@ impl PriceLevel {
             }
 
             if let Some(removed_order) = self.orders.remove(pos) {
-                let existing_total = self.total_volume;
-                self.total_volume = existing_total.saturating_sub(removed_order.size as u128);
-                if existing_total < removed_order.size as u128 {
-                    error!(
-                        event = "price_level_volume_underflow",
-                        price_level = removed_order.price,
-                        existing_total = existing_total,
-                        subtrahend = removed_order.size,
-                        "price level total volume underflowed; saturated at zero"
-                    );
-                }
+                self.total_volume -= u128::from(removed_order.size); // add_order added it
                 cmd.set_price(removed_order.price);
                 cmd.set_size(removed_order.size);
                 cmd.set_user_id(removed_order.user_id);
@@ -246,17 +213,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 // Update sizes
                 remaining_size -= trade_size;
                 maker_order.size -= trade_size;
-                let existing_total = level.total_volume;
-                level.total_volume = existing_total.saturating_sub(trade_size as u128);
-                if existing_total < trade_size as u128 {
-                    error!(
-                        event = "price_level_volume_underflow",
-                        price_level = price,
-                        existing_total = existing_total,
-                        subtrahend = trade_size,
-                        "price level total volume underflowed; saturated at zero"
-                    );
-                }
+                level.total_volume -= u128::from(trade_size); // maker_order.size fell by as much
 
                 let maker_order_completed = maker_order.size == 0;
 

@@ -365,33 +365,6 @@ mod test {
     }
 
     #[test]
-    fn price_level_volume_underflow_saturates_without_panicking() {
-        let mut level = PriceLevel::new();
-        level.orders.push_back(Order {
-            order_id: 1,
-            user_id: 1,
-            price: 100,
-            size: 1,
-            original_size: 1,
-            side: Side::Bid,
-            time_in_force: TimeInForce::Gtc,
-            status: Status::Placed,
-            timestamp: 0,
-        });
-
-        // PR #148 makes remove_order owner-checked; these volume tests must claim the owner.
-        let mut command = OrderCommand {
-            user_id: 1,
-            ..Default::default()
-        };
-        level.remove_order(1, &mut command);
-
-        assert_eq!(level.get_total_volume(), 0);
-        assert_eq!(level.get_order_count(), 0);
-        assert_eq!(command.status, Status::Cancelled);
-    }
-
-    #[test]
     fn record_snapshot_preserves_contents_without_unused_allocations() {
         let (mut book, price_cache) = create_test_orderbook();
         let mut bid = create_order_command(
