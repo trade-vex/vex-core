@@ -266,9 +266,9 @@ pub fn init_internal(
 pub mod test {
     use super::*;
     use common::{OrderCommand, Status};
-    use engine::{RiskEngines, test::TestEngineBuilder};
+    use engine::RiskEngines;
     use processors::events::EventsHandler;
-    use std::{cell::UnsafeCell, sync::mpsc, time::Duration};
+    use std::{sync::mpsc, time::Duration};
 
     /// How long a test waits for the pipeline before it fails.
     ///
@@ -277,16 +277,23 @@ pub mod test {
     /// a result that takes microseconds on an idle host can take seconds.
     pub const PIPELINE_DEADLINE: Duration = Duration::from_secs(10);
 
-    /// The events stage for tests: answers each command's gateway and publishes nothing.
+    /// The events stage for tests: answers each command's gateway, sends each finished command to
+    /// [`TestEngine::receiver`], and publishes nothing.
     ///
     /// Tests run without Kafka or a Schema Registry. [`KafkaEventsHandler`] never drops an event,
     /// so without them it would hold its first event, block the pipeline once its queues fill, and
     /// make every teardown wait out its shutdown grace.
-    pub struct GatewayResponsesOnly(pub Arc<Publications>);
+    struct Capture {
+        publications: Arc<Publications>,
+        sender: mpsc::Sender<OrderCommand>,
+    }
 
-    impl EventsHandler for GatewayResponsesOnly {
+    impl EventsHandler for Capture {
         fn handle_processed_command(&self, cmd: &mut OrderCommand) {
-            self.0.publish_response(cmd);
+            self.publications.publish_response(cmd);
+            if cmd.status != Status::Processing {
+                let _ = self.sender.send(cmd.clone());
+            }
         }
     }
 
@@ -331,42 +338,35 @@ pub mod test {
         specs: HashMap<u32, CoreMarketSpecification>,
         replay: ReplayControl,
     ) -> TestEngine {
-        let (tx, rx) = mpsc::channel::<OrderCommand>();
-        let test_handler = move |cell: &UnsafeCell<OrderCommand>, _: i64, _: bool| {
-            // SAFETY: This test capture handler is alone after the events and_then()
-            // barrier, so creating this exclusive reference cannot alias another handler's
-            // reference.
-            let cmd = unsafe { &mut *cell.get() };
-            if cmd.status != Status::Processing {
-                let _ = tx.send(cmd.clone());
-            }
-        };
-
-        let publications = Arc::new(Publications::new());
-
-        // Create risk engines manually for test access
-        use processors::risk_engine::RiskEngine;
-        let risk_engines = Arc::new(
-            (0..4)
-                .map(|shard_id| RiskEngine::new(specs.clone(), shard_id as u32, 4))
-                .collect::<Vec<_>>(),
-        );
-
-        let (_engine, producer) = TestEngineBuilder::new()
-            .with_symbol_specs(specs)
-            .with_journaling_processor(JournalingProcessor::new(Arc::clone(&publications), replay))
-            .with_events_handler(GatewayResponsesOnly(Arc::clone(&publications)))
-            .with_publications(publications)
-            .with_risk_engines(Arc::clone(&risk_engines))
-            .with_test_handler(test_handler)
-            .build()
-            .expect("Failed to build test engine");
-
+        let (engine, producer, receiver) = build(specs, replay);
         TestEngine {
             producer,
-            risk_engines,
-            receiver: rx,
+            risk_engines: engine.risk_engines,
+            receiver,
         }
+    }
+
+    /// Builds the pipeline with [`CoreEngine::new`], as `init_internal` does, with `Capture` as
+    /// the events stage. The receiver gets each finished command.
+    pub fn build(
+        specs: HashMap<u32, CoreMarketSpecification>,
+        replay: ReplayControl,
+    ) -> (CoreEngine, OrderProducer, mpsc::Receiver<OrderCommand>) {
+        let (sender, receiver) = mpsc::channel();
+        let publications = Arc::new(Publications::new());
+        let (engine, producer) = CoreEngine::new(
+            specs,
+            JournalingProcessor::new(Arc::clone(&publications), replay),
+            Capture {
+                publications: Arc::clone(&publications),
+                sender,
+            },
+            publications,
+            engine::CorePinning::default(),
+            false,
+        )
+        .expect("Failed to build test engine");
+        (engine, producer, receiver)
     }
 }
 
@@ -455,32 +455,14 @@ mod tests {
     #[cfg(feature = "balance-preload")]
     #[test]
     fn balance_preload_returns_only_after_every_deposit_is_applied() {
-        use engine::test::TestEngineBuilder;
-
         const DEPOSITS: u64 = 1_000;
         let user_id = 7;
         let asset_id = 1;
 
         let mut specs = HashMap::new();
         add_spec((1 << 16) | 2, &mut specs);
-        let publications = Arc::new(Publications::new());
-        let risk_engines = Arc::new(
-            (0..4)
-                .map(|shard_id| RiskEngine::new(specs.clone(), shard_id, 4))
-                .collect::<Vec<_>>(),
-        );
-        let (_engine, mut producer) = TestEngineBuilder::new()
-            .with_symbol_specs(specs)
-            // Preload runs while the replay flag is set, as `init_internal` sets it at every start.
-            .with_journaling_processor(JournalingProcessor::new(
-                Arc::clone(&publications),
-                ReplayControl::enabled(),
-            ))
-            .with_events_handler(test::GatewayResponsesOnly(Arc::clone(&publications)))
-            .with_publications(Arc::clone(&publications))
-            .with_risk_engines(Arc::clone(&risk_engines))
-            .build()
-            .unwrap();
+        // Preload runs while the replay flag is set, as `init_internal` sets it at every start.
+        let (engine, mut producer, _receiver) = test::build(specs, ReplayControl::enabled());
 
         let mut preload = vex_config::BalancePreloadConfig::new();
         preload.enabled = true;
@@ -494,13 +476,13 @@ mod tests {
                 .collect(),
         );
 
-        preload_balances(&preload, &mut producer, &publications).unwrap();
+        preload_balances(&preload, &mut producer, engine.publications()).unwrap();
 
         // No waiting here: `start` hands over to `run`, which installs the archive publication,
         // as soon as the preload returns, so every deposit must already have been applied.
         let shard = (user_id & 3) as usize;
         assert_eq!(
-            risk_engines[shard].get_balance(user_id, asset_id),
+            engine.risk_engines[shard].get_balance(user_id, asset_id),
             UserBalance::new(DEPOSITS, 0)
         );
     }
