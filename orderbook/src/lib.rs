@@ -251,6 +251,8 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                     maker_balance: [UserBalance::default(); 2],
                     maker_remaining_size: maker_order.size,
                     maker_original_size: maker_order.original_size,
+                    maker_fee: 0,
+                    taker_fee: 0,
                 };
                 cmd.attach_event(Box::new(event));
 

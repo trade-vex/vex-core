@@ -59,6 +59,8 @@ message TradeEvent {
   uint64 taker_order_id = 7;
   Side taker_side = 8;
   uint64 timestamp = 9;
+  uint64 maker_fee = 10; // in the asset the maker received: base for a maker bid, quote for a maker ask
+  uint64 taker_fee = 11; // in the asset the taker received: base for a taker bid, quote for a taker ask
 }
 
 message BalanceEvent {

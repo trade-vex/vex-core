@@ -389,6 +389,8 @@ pub struct MatcherTradeEvent {
     pub matched_order_completed: bool,
     pub next_event: Option<Box<MatcherTradeEvent>>,
     pub maker_balance: [UserBalance; 2],
+    pub maker_fee: u64,  // set by R2
+    pub taker_fee: u64,  // set by R2
 }
 ```
 
@@ -416,6 +418,8 @@ Maker (ASK - selling base for quote):
 
 **Fee Structure**: Maker and taker fees configured per market in basis points. Each fee is rounded up per fill, so a fill pays its exact share plus less than one atomic unit: slicing an order into many fills can never pay less than one fill would, and over-pays by at most one unit per fill.
 
+The core keeps no fee account: R2 writes each side's fee on its `MatcherTradeEvent` (`maker_fee`, `taker_fee`), and the `trades` topic publishes both on `TradeEvent`, each in the asset that side received (base for a bid, quote for an ask).
+
 **Price Improvement Refund**:
 
 If a taker BID order executes at a better price than the limit:
@@ -427,11 +431,11 @@ The refund is moved from locked back to available quote currency.
 
 **Failure**: each user's side (refund, fill, a completed bid's collateral residue, credit, fee) is checked on copies and committed at once. R1 has already proved every amount fits, so a failure means the ledger is wrong: the core logs `settlement_failed` and aborts rather than publish a trade settled on one side only.
 
-**Locking**: R2 engines use `Mutex` locks on the balance store within each shard, acquired during settlement operations.
+**Locking**: each shard keeps its balances and its bids' collateral in one ledger behind one `Mutex`, held for a settlement's check and commit.
 
 **Critical Invariant** (maintained across settlement):
 ```
-SUM(all user balances in asset X) = constant  (conservation of assets)
+SUM(all user balances in asset X) + SUM(fees in X on trades) = deposits of X - withdrawals of X
 ```
 
 **Shard Coordination**:

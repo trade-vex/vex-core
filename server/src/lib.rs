@@ -21,27 +21,17 @@ pub use engine::EngineError;
 pub struct RunningEngine {
     thread: JoinHandle<Result<(), EngineError>>,
     shutdown_flag: Arc<AtomicBool>,
-    engine: CoreEngine,
 }
 
 impl RunningEngine {
     /// Returns on panic or error during server execution
-    ///
-    /// After a graceful stop the pipeline has drained, so this logs the final trading fees
-    /// accrued per asset across all risk shards; nothing else reports them yet.
     pub fn join(self) -> Result<(), EngineError> {
-        let result = self.thread.join().unwrap_or_else(|e| {
+        self.thread.join().unwrap_or_else(|e| {
             Err(EngineError::ServerRuntime(format!(
                 "Server thread panicked: {:?}",
                 e
             )))
-        });
-        if result.is_ok() {
-            for (asset_id, amount) in self.engine.accrued_fees() {
-                tracing::info!(target: "risk_engine", event = "accrued_fees", asset_id, amount);
-            }
-        }
-        result
+        })
     }
 
     /// Returns a clone of the shutdown flag for external signalling
@@ -142,7 +132,6 @@ pub fn start(mut config: VexConfig) -> Result<RunningEngine, EngineError> {
     Ok(RunningEngine {
         thread: thread_handle,
         shutdown_flag,
-        engine,
     })
 }
 
@@ -1388,6 +1377,7 @@ mod tests {
             fill.maker_balance,
             [UserBalance::new(0, 0), UserBalance::new(4_995_000, 0)]
         );
+        assert_eq!((fill.taker_fee, fill.maker_fee), (20, 5_000));
     }
 
     /// The events stage publishes one balance per maker, from that maker's LAST fill in the

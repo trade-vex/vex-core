@@ -107,8 +107,8 @@ macro_rules! create_risk_r2_handler {
             // SAFETY (every `unsafe` below): R2 is the one handler group where two shards work on
             // the same command at once, the taker's and a maker's. So no shard forms a reference
             // to the command or to an event: each reads the fields no R2 writes, and writes only
-            // its own (the taker shard `balance`, the maker shard `maker_balance`), through raw
-            // pointers.
+            // its own (the taker shard `balance` and `taker_fee`, the maker shard `maker_balance`
+            // and `maker_fee`), through raw pointers.
             let cmd: *mut OrderCommand = cell.get();
             let risk_engine = &risk_engines[$shard_id];
             'settle: {
@@ -145,26 +145,29 @@ macro_rules! create_risk_r2_handler {
 
                     // Settle maker if this shard owns the maker's user ID
                     if ((fill.maker_user_id & shard_mask) as usize) == $shard_id {
-                        if let Some(balance) = risk_engine.handle_trade_event(
+                        let settled = risk_engine.handle_trade_event(
                             fill.maker_user_id,
                             market_id,
                             taker_side.op_side(),
                             fill,
                             None, // Maker order ID is carried by the trade event
-                        ) {
+                        );
+                        if let Some(balance) = settled.maker_balance {
                             unsafe { (&raw mut (*event).maker_balance).write(balance) };
                         }
+                        unsafe { (&raw mut (*event).maker_fee).write(settled.fee) };
                     }
 
                     // Settle taker if this shard owns the taker's user ID
                     if is_taker_shard {
-                        risk_engine.handle_trade_event(
+                        let settled = risk_engine.handle_trade_event(
                             taker_id,
                             market_id,
                             taker_side,
                             fill,
                             Some(taker_order),
                         );
+                        unsafe { (&raw mut (*event).taker_fee).write(settled.fee) };
                     }
 
                     event = unsafe { ::common::MatcherTradeEvent::next_ptr(event) };

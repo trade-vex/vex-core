@@ -1636,6 +1636,8 @@ impl KafkaEventsHandler {
             taker_order_id,
             taker_side: taker_side as i32,
             timestamp: cmd.timestamp(),
+            maker_fee: event.maker_fee,
+            taker_fee: event.taker_fee,
         };
 
         let topic_name = TRADES;
@@ -2012,6 +2014,8 @@ mod tests {
             maker_balance: [UserBalance::new(available, 0), UserBalance::new(0, 0)],
             maker_remaining_size: 0,
             maker_original_size: 1,
+            maker_fee: 0,
+            taker_fee: 0,
         }
     }
 
@@ -2865,6 +2869,8 @@ mod tests {
             maker_balance: [UserBalance::default(); 2],
             maker_remaining_size: 0,
             maker_original_size: 50,
+            maker_fee: 0,
+            taker_fee: 0,
         };
         let trade1 = MatcherTradeEvent {
             active_order_completed: false,
@@ -2877,6 +2883,8 @@ mod tests {
             maker_balance: [UserBalance::default(); 2],
             maker_remaining_size: 50,
             maker_original_size: 200,
+            maker_fee: 0,
+            taker_fee: 0,
         };
         filled_cmd.attach_event(Box::new(trade1));
 
@@ -2896,6 +2904,38 @@ mod tests {
                 ("orders", "12348".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn a_trade_event_carries_both_fees() {
+        let (trades_tx, trades) = mpsc::channel();
+        let (sender, _enqueued) = recording_sender(SENDER_CAPACITY, move |event| {
+            if event.topic == TRADES {
+                trades_tx.send(event.payload.clone()).unwrap();
+            }
+            Ok(event.payload.clone())
+        });
+        let handler = handler_with(sender);
+        let mut cmd = OrderCommand::place_order(
+            common::TimeInForce::Gtc,
+            1001,
+            1000,
+            1,
+            Side::Bid,
+            MARKET_ID,
+            1,
+        );
+        cmd.set_status(Status::Filled);
+        let mut trade = fill(1003, 0);
+        trade.taker_fee = 20;
+        trade.maker_fee = 7;
+        cmd.attach_event(Box::new(trade));
+
+        handler.handle_processed_command(&mut cmd);
+        drop(handler);
+
+        let trade = trading_proto::TradeEvent::decode(trades.recv().unwrap().as_slice()).unwrap();
+        assert_eq!((trade.taker_fee, trade.maker_fee), (20, 7));
     }
 
     #[test]

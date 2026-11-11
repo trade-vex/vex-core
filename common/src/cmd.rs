@@ -382,6 +382,11 @@ pub struct MatcherTradeEvent {
     pub maker_balance: [UserBalance; 2],
     pub maker_remaining_size: u64,
     pub maker_original_size: u64,
+    /// Set by R2: the maker's fee, in the asset the maker received (base for a maker bid, quote
+    /// for a maker ask).
+    pub maker_fee: u64,
+    /// Set by R2: the taker's fee, in the asset the taker received.
+    pub taker_fee: u64,
 }
 
 /// What R2 settles one fill from: a copy of the inputs in its [`MatcherTradeEvent`].
