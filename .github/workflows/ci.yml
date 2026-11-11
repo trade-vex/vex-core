@@ -288,6 +288,7 @@ jobs:
         with:
           name: docker-suite-logs
           path: xtask/tests/test-results/logs
+          overwrite: true
 
       - name: Show failed test infrastructure
         if: failure()
