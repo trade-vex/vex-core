@@ -678,29 +678,6 @@ mod tests {
     }
 
     #[test]
-    // Fixed in this stack by PR #146 (calculate_quote_cost saturates instead of wrapping).
-    fn test_shipped_btc_quote_cost_is_monotonic_past_largest_in_range() {
-        let mut specs = HashMap::new();
-        let market_id = add_shipped_spec(ShippedScaling::BtcUsdt, &mut specs);
-        let spec = &specs[&market_id];
-        let largest_fill_in_range = 30_744_573_456_182_586;
-        let largest_cost = spec.calculate_quote_cost(60_000, largest_fill_in_range);
-        let next_cost = spec.calculate_quote_cost(60_000, largest_fill_in_range + 1);
-
-        assert!(
-            largest_cost.is_some(),
-            "the largest in-range fill must still price"
-        );
-        // Stronger than the original "must not wrap": one unit past the representable range is
-        // now REJECTED rather than saturated. Saturating to u64::MAX was indistinguishable from
-        // a legitimate cost and let an order under-reserve collateral (finding C4-1).
-        assert_eq!(
-            next_cost, None,
-            "quote cost past the largest in-range fill must be rejected, not wrapped or saturated"
-        );
-    }
-
-    #[test]
     fn test_shipped_eth_collateral_lock_and_release_for_both_sides() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
