@@ -10,14 +10,6 @@ mod test {
     /// Helper functions to inspect the internal state of the `OrderBook`.
     /// These are compiled only when `#[cfg(test)]` is active.
     impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
-        pub fn get_level_volume(&self, side: Side, price: u64) -> u64 {
-            let find_result = match side {
-                Side::Bid => self.bids.iter().find(|(p, _)| *p == price),
-                Side::Ask => self.asks.iter().find(|(p, _)| *p == price),
-            };
-            find_result.map_or(0, |(_, level)| level.get_total_volume())
-        }
-
         pub fn get_level_order_count(&self, side: Side, price: u64) -> usize {
             let find_result = match side {
                 Side::Bid => self.bids.iter().find(|(p, _)| *p == price),
