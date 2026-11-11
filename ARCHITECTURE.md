@@ -655,7 +655,6 @@ The following examples trace order processing through all pipeline stages with c
   ```
 
 **Stage 5: Events Handler**
-- Extract gateway_id: `Snowflake::gateway_from_id(0x0001A2B3C4D50003) = 3`
 - Publish BalanceEvents to Kafka: topic `balances`, keys `100:<base asset>` and `100:<quote asset>`
 - Publish OrderEvent to Kafka: topic `orders`, key `0x0001A2B3C4D50003` (in decimal)
 - Publish L2 snapshot to Kafka: topic `orderbook`, key `1`
@@ -862,7 +861,6 @@ maker_balance[1] = UserBalance { available: prev_usd + 50,174.9, locked: 0 }
 ```
 
 **Stage 5: Events Handler**
-- Extract gateway: `Snowflake::gateway_from_id(0x0001A2B3C4D60005) = 5`
 - Publish TradeEvents to Kafka (2 events, one per maker-taker pair)
 - Publish BalanceEvents (3 users: taker + 2 makers)
 - Publish L2 snapshot
