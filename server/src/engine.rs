@@ -199,7 +199,8 @@ impl CorePinning {
 pub struct CoreEngine {
     /// Gateway Publications for sending responses back to gateways
     publications: Arc<Publications>,
-    /// The risk shards the pipeline settles on, kept so their fee totals can be read
+    /// The risk shards the pipeline settles on; tests read balances from them
+    #[cfg(test)]
     pub(crate) risk_engines: RiskEngines,
 }
 
@@ -306,7 +307,11 @@ impl CoreEngine {
             enable_pinning,
         );
 
-        let engine = Self { publications };
+        let engine = Self {
+            publications,
+            #[cfg(test)]
+            risk_engines: risk_engines_arc,
+        };
         Ok((engine, producer))
     }
 
