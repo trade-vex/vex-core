@@ -793,9 +793,7 @@ async fn run_correctness_task(
     // --- Verify Results ---
     println!("Verifying results...");
 
-    let received_ids: HashSet<u64> = read_received_ids(&test_results_dir, clients)?
-        .into_iter()
-        .collect();
+    let received_ids = read_received_ids(&test_results_dir, clients)?;
 
     // Assertion 1: Check for completeness
     if received_ids.len() != total_msg_count {
@@ -806,7 +804,7 @@ async fn run_correctness_task(
         ))));
     }
 
-    // Assertion 2: Check for duplicates/gaps
+    // Assertion 2: Check for gaps (read_received_ids rejects duplicates)
     for c in 0..clients as u64 {
         let id_offset = c * 1_000_000;
         for i in 0..msg_count_per_client as u64 {
@@ -883,7 +881,7 @@ async fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> 
 
     println!("All clients finished execution.");
 
-    // Read and analyze results. Each client writes every id at most once.
+    // Read and analyze results.
     let messages_received = read_received_ids(&test_results_dir, clients)?.len();
 
     let success_rate = (messages_received as f64 / total_expected_messages as f64) * 100.0;
@@ -936,9 +934,10 @@ fn remove_received_ids(results_dir: &Path) -> std::io::Result<()> {
 }
 
 /// Read the ids each e2e or benchmark client wrote to `received_ids-<client id>.txt`
-/// (`write_received_ids` in `test_client`)
-fn read_received_ids(results_dir: &Path, clients: u32) -> Result<Vec<u64>, XTaskError> {
-    let mut ids = Vec::new();
+/// (`write_received_ids` in `test_client`). An id written twice fails the run: the core answers
+/// each command once.
+fn read_received_ids(results_dir: &Path, clients: u32) -> Result<HashSet<u64>, XTaskError> {
+    let mut ids = HashSet::new();
     for client_id in 0..clients {
         let path = results_dir.join(format!("received_ids-{client_id}.txt"));
         let content = fs::read_to_string(&path).map_err(|e| {
@@ -948,9 +947,15 @@ fn read_received_ids(results_dir: &Path, clients: u32) -> Result<Vec<u64>, XTask
             ))
         })?;
         for line in content.lines() {
-            ids.push(line.parse().map_err(|e| {
+            let id = line.parse().map_err(|e| {
                 XTaskError::Unexpected(format!("Invalid id {line:?} in {}: {e}", path.display()))
-            })?);
+            })?;
+            if !ids.insert(id) {
+                return Err(XTaskError::Testing(TestingError::TestFailed(format!(
+                    "duplicate response for id {id} in {}",
+                    path.display()
+                ))));
+            }
         }
     }
     Ok(ids)
@@ -971,6 +976,22 @@ mod tests {
 
         assert!(!dir.join("received_ids-0.txt").exists());
         assert!(dir.join("logs/vex-server-1.log").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_id_answered_twice_fails_the_run() {
+        let dir = env::temp_dir().join(format!("xtask-received-ids-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("received_ids-0.txt"), "1\n2\n").unwrap();
+        fs::write(dir.join("received_ids-1.txt"), "1000000\n1000000\n").unwrap();
+
+        assert_eq!(read_received_ids(&dir, 1).unwrap(), HashSet::from([1, 2]));
+        let error = read_received_ids(&dir, 2).unwrap_err().to_string();
+        assert!(
+            error.contains("duplicate response for id 1000000"),
+            "{error}"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 }

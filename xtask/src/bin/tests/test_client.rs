@@ -2,7 +2,6 @@ use clap::{Parser, Subcommand};
 use common::{OrderCommand, UserBalance};
 use common::{OrderCommandType, Side, TimeInForce};
 use hdrhistogram::Histogram;
-use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
 use std::sync::mpsc::{self, Receiver};
@@ -86,7 +85,8 @@ fn run_correctness_test(
     // Market ID: base asset in lower 16 bits, quote in upper 16
     let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
 
-    let mut received_ids = HashSet::new();
+    // Every response, duplicates included: xtask fails the run on an id answered twice.
+    let mut received_ids = Vec::new();
 
     for i in 0..count {
         let order_command = OrderCommand {
@@ -118,7 +118,7 @@ fn run_correctness_test(
     while received_ids.len() < count as usize && start.elapsed() < timeout {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(response) => {
-                received_ids.insert(response.client_order_id);
+                received_ids.push(response.client_order_id);
                 if received_ids.len() % 100 == 0 {
                     println!(
                         "Client-{client_id} received {}/{count} responses",
@@ -128,6 +128,11 @@ fn run_correctness_test(
             }
             Err(_) => continue,
         }
+    }
+
+    // A duplicate that arrives after the last expected response must still be seen.
+    while let Ok(response) = rx.recv_timeout(Duration::from_millis(500)) {
+        received_ids.push(response.client_order_id);
     }
 
     println!(
