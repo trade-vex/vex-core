@@ -394,6 +394,9 @@ impl Outbox {
                 message: format!("the restart began after the journal's release:\n{logs}"),
             });
         }
+        // Kafka can hold every event already (a paused broker's kernel still takes them into its
+        // socket buffers), so only the core's log shows that the restart re-published them.
+        expect_logged(&logs, "events_republish_replay")?;
         self.verify().await
     }
 
@@ -412,7 +415,9 @@ impl Outbox {
                 message: format!("the shutdown reported no undelivered events:\n{logs}"),
             });
         }
+        let since = stack::now();
         self.start_core()?;
+        expect_logged(&stack::logs_since(CORE, &since)?, "events_republish_replay")?;
         self.verify().await
     }
 
