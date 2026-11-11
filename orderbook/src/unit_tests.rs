@@ -75,11 +75,10 @@ mod test {
                     "Order count mismatch at price {price} for side {side:?}"
                 );
 
-                // Verify internal consistency: total_volume should match sum of order sizes.
-                let actual_summed_volume: u64 = level.orders.iter().map(|o| o.size).sum();
+                // Verify internal consistency: the exact total_volume matches the sum of sizes.
+                let summed: u128 = level.orders.iter().map(|o| u128::from(o.size)).sum();
                 assert_eq!(
-                    level.get_total_volume(),
-                    actual_summed_volume,
+                    level.total_volume, summed,
                     "Internal volume sum inconsistency at price {price}"
                 );
 
@@ -118,25 +117,21 @@ mod test {
 
             // Keep your existing volume checks unchanged
             for (price, level) in self.bids.iter() {
-                let calculated_volume: u64 = level.orders.iter().map(|o| o.size).sum();
-                if calculated_volume != level.get_total_volume() {
+                let calculated_volume: u128 = level.orders.iter().map(|o| u128::from(o.size)).sum();
+                if calculated_volume != level.total_volume {
                     return Err(format!(
                         "Bid level at {} has inconsistent volume: {} vs {}",
-                        price,
-                        level.get_total_volume(),
-                        calculated_volume
+                        price, level.total_volume, calculated_volume
                     ));
                 }
             }
 
             for (price, level) in self.asks.iter() {
-                let calculated_volume: u64 = level.orders.iter().map(|o| o.size).sum();
-                if calculated_volume != level.get_total_volume() {
+                let calculated_volume: u128 = level.orders.iter().map(|o| u128::from(o.size)).sum();
+                if calculated_volume != level.total_volume {
                     return Err(format!(
                         "Ask level at {} has inconsistent volume: {} vs {}",
-                        price,
-                        level.get_total_volume(),
-                        calculated_volume
+                        price, level.total_volume, calculated_volume
                     ));
                 }
             }
@@ -959,6 +954,29 @@ mod test {
     }
 
     #[test]
+    fn verify_state_accepts_a_level_above_u64_max() {
+        let (mut book, price_cache) = create_test_orderbook();
+        for id in [1, 2] {
+            let mut ask = create_order_command(
+                OrderCommandType::PlaceOrder,
+                id,
+                id,
+                id,
+                10,
+                100,
+                u64::MAX,
+                Side::Ask,
+                TimeInForce::Gtc,
+            );
+            book.place_order(&mut ask, price_cache.clone());
+        }
+
+        // The exported volume clamps; the helpers compare the exact u128 total.
+        book.assert_level_state(Side::Ask, 100, u64::MAX, 2);
+        assert!(book.verify_state().is_ok());
+    }
+
+    #[test]
     fn test_fok_capacity_check_sums_large_levels_without_overflow() {
         // At 18 decimals one size unit is one wei: two 10-token orders at one price exceed
         // u64::MAX (~18.4 tokens) together.
@@ -1149,8 +1167,9 @@ mod test {
         assert!(book.verify_state().is_ok());
     }
 
+    /// Each cancel below names the wrong side: the book's index decides which side it removes.
     #[test]
-    fn test_cancel_orders_on_both_sides_at_same_price() {
+    fn test_cancel_takes_the_side_from_the_book() {
         let (mut book, price_cache) = create_test_orderbook();
 
         let mut bid = create_order_command(
@@ -1159,7 +1178,7 @@ mod test {
             100,
             1001,
             1,
-            1000,
+            999,
             10,
             Side::Bid,
             TimeInForce::Gtc,
@@ -1179,7 +1198,7 @@ mod test {
         );
         book.place_order(&mut ask, price_cache.clone());
 
-        assert_eq!(book.get_level_order_count(Side::Bid, 1000), 1);
+        assert_eq!(book.get_level_order_count(Side::Bid, 999), 1);
         assert_eq!(book.get_level_order_count(Side::Ask, 1000), 1);
 
         let mut cancel_ask = create_order_command(
@@ -1198,7 +1217,7 @@ mod test {
         assert_eq!(cancel_ask.status(), Status::Cancelled);
         assert_eq!(cancel_ask.side, Side::Ask);
         assert_eq!(book.get_level_order_count(Side::Ask, 1000), 0);
-        assert_eq!(book.get_level_order_count(Side::Bid, 1000), 1);
+        assert_eq!(book.get_level_order_count(Side::Bid, 999), 1);
 
         let mut cancel_bid = create_order_command(
             OrderCommandType::CancelOrder,
@@ -1455,7 +1474,7 @@ mod test {
         );
         book.place_order(&mut bid_cmd, price_cache.clone());
 
-        // Try to place ask from same user (this should NOT match in our implementation)
+        // An ask from the same user that crosses the bid cancels it (STP_CANCEL_MAKER).
         let mut ask_cmd = create_order_command(
             OrderCommandType::PlaceOrder,
             2,
@@ -1469,12 +1488,62 @@ mod test {
         );
         book.place_order(&mut ask_cmd, price_cache.clone());
 
-        // In this implementation, self-trades are not allowed
         assert_eq!(ask_cmd.status(), Status::Placed);
-        if let Err(err) = book.verify_state() {
-            println!("{err}");
-        }
-        assert!(book.verify_state().is_ok());
+        assert_eq!((book.best_bid(), book.best_ask()), (None, Some((50, 100))));
+        assert_eq!(book.verify_state(), Ok(()));
+        let events = collect_trade_events(ask_cmd);
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| (e.matched_order_id, e.size))
+                .collect::<Vec<_>>(),
+            [(1, 0)]
+        );
+    }
+
+    #[test]
+    fn maker_sizes_follow_a_partial_fill_and_a_cancel() {
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+        let mut maker = harness.create_place_order_cmd(1001, Side::Ask, 50, 100, TimeInForce::Gtc);
+        book.place_order(&mut maker, price_cache.clone());
+
+        let mut taker = harness.create_place_order_cmd(1002, Side::Bid, 50, 40, TimeInForce::Gtc);
+        book.place_order(&mut taker, price_cache.clone());
+        let fills = collect_trade_events(taker);
+        assert_eq!(
+            (fills[0].maker_original_size, fills[0].maker_remaining_size),
+            (100, 60)
+        );
+
+        let mut cancel = harness.create_cancel_order_cmd(&maker);
+        book.cancel_order(&mut cancel, price_cache);
+        assert_eq!(cancel.status(), Status::Cancelled);
+        assert_eq!((cancel.original_size, cancel.size()), (100, 60));
+    }
+
+    #[test]
+    fn own_resting_order_is_cancelled_not_crossed() {
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+        let mut ask = harness.create_place_order_cmd(1001, Side::Ask, 48_000, 5, TimeInForce::Gtc);
+        book.place_order(&mut ask, price_cache.clone());
+
+        let mut bid = harness.create_place_order_cmd(1001, Side::Bid, 49_000, 3, TimeInForce::Gtc);
+        book.place_order(&mut bid, price_cache.clone());
+
+        assert_eq!(bid.status(), Status::Placed);
+        assert_eq!(book.best_ask(), None);
+        assert_eq!(book.best_bid(), Some((49_000, 3)));
+        assert_eq!(book.total_order_count(), 1);
+        assert_eq!(book.verify_state(), Ok(()));
+        let events = collect_trade_events(bid);
+        assert_eq!(events.len(), 1);
+        let stp = &events[0];
+        assert_eq!(
+            (stp.size, stp.matched_order_id, stp.maker_remaining_size),
+            (0, ask.order_id, 5)
+        );
     }
 
     #[test]
@@ -2833,38 +2902,6 @@ mod test {
     }
 
     #[test]
-    fn test_fok_order_insufficient_liquidity() {
-        let (mut book, price_cache) = create_test_orderbook();
-        let mut counter = TestCounter::new();
-
-        // Place insufficient liquidity
-        let mut bid_order = TestOrderBuilder::new()
-            .order_id(counter.next_order_id())
-            .timestamp(counter.next_timestamp())
-            .side(Side::Bid)
-            .price(1000)
-            .size(50)
-            .build_place_order();
-
-        book.place_order(&mut bid_order, price_cache.clone());
-
-        // Place FOK ask order that cannot be completely filled
-        let mut fok_ask = TestOrderBuilder::new()
-            .order_id(counter.next_order_id())
-            .timestamp(counter.next_timestamp())
-            .side(Side::Ask)
-            .price(1000)
-            .size(100)
-            .time_in_force(TimeInForce::Fok)
-            .build_place_order();
-
-        book.place_order(&mut fok_ask, price_cache.clone());
-        assert_eq!(fok_ask.status(), Status::Cancelled);
-        // Original bid should remain untouched
-        assert_order_book_state(&book, &[(1000, 50)], &[]);
-    }
-
-    #[test]
     fn test_market_order_buy_check() {
         let (mut book, price_cache) = create_test_orderbook();
         let mut counter = TestCounter::new();
@@ -3473,6 +3510,24 @@ mod test {
     }
 
     #[test]
+    fn market_sell_response_price_is_the_last_fill() {
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+        // The seller's own bid at 98 is met last and cancelled by STP: it is not a fill.
+        for (user, price) in [(202, 100), (203, 99), (101, 98)] {
+            let mut bid =
+                harness.create_place_order_cmd(user, Side::Bid, price, 5, TimeInForce::Gtc);
+            book.place_order(&mut bid, price_cache.clone());
+        }
+
+        let mut market_sell = harness.create_market_order_cmd(101, Side::Ask, 15);
+        book.place_order(&mut market_sell, price_cache.clone());
+
+        assert_eq!(market_sell.status(), Status::PartiallyFilled);
+        assert_eq!(market_sell.price(), 99, "the worst fill, not the first");
+    }
+
+    #[test]
     fn test_market_order_on_empty_book_is_cancelled() {
         let (mut book, price_cache) = create_test_orderbook();
         let harness = TestHarness::new(1);
@@ -3484,25 +3539,63 @@ mod test {
         assert!(market_buy.events().is_none());
     }
 
+    /// Users 1, 2 and 3 rest 10 each at one ask level; user 2 bids 25 through it. STP cancels
+    /// user 2's own ask (a size-0 event) and the bid fills on; the FOK pre-scan leaves own
+    /// volume out without touching the book (spec §8.7).
     #[test]
-    fn test_self_trade_does_not_executes() {
-        // Note: A production matching engine would typically prevent self-trades.
-        // This test confirms the current behavior, which allows them.
-        let (mut book, price_cache) = create_test_orderbook();
-        let harness = TestHarness::new(1);
-        const SAME_USER_ID: u64 = 555;
+    fn taker_meets_its_own_order_in_the_middle_of_a_level() {
+        // (taker's time in force, status, size left, fills as (maker, size), best bid, best ask)
+        let cases = [
+            (
+                TimeInForce::Ioc,
+                Status::PartiallyFilled,
+                5,
+                vec![(1, 10), (2, 0), (3, 10)],
+                None,
+                None,
+            ),
+            (
+                TimeInForce::Gtc,
+                Status::PartiallyFilled,
+                5,
+                vec![(1, 10), (2, 0), (3, 10)],
+                Some((100, 5)),
+                None,
+            ),
+            (
+                TimeInForce::Fok,
+                Status::Cancelled,
+                25,
+                vec![],
+                None,
+                Some((100, 30)),
+            ),
+        ];
+        for (tif, status, size_left, fills, best_bid, best_ask) in cases {
+            let (mut book, price_cache) = create_test_orderbook();
+            let harness = TestHarness::new(1);
+            for user in [1, 2, 3] {
+                let mut ask =
+                    harness.create_place_order_cmd(user, Side::Ask, 100, 10, TimeInForce::Gtc);
+                book.place_order(&mut ask, price_cache.clone());
+            }
 
-        let mut sell_cmd =
-            harness.create_place_order_cmd(SAME_USER_ID, Side::Ask, 100_000, 10, TimeInForce::Gtc);
-        book.place_order(&mut sell_cmd, price_cache.clone());
+            let mut bid = harness.create_place_order_cmd(2, Side::Bid, 100, 25, tif);
+            book.place_order(&mut bid, price_cache.clone());
 
-        let mut buy_cmd =
-            harness.create_place_order_cmd(SAME_USER_ID, Side::Bid, 100_000, 10, TimeInForce::Gtc);
-        book.place_order(&mut buy_cmd, price_cache.clone());
-
-        assert_eq!(buy_cmd.status(), Status::Placed);
-        let events = collect_trade_events(buy_cmd);
-        assert_eq!(events.len(), 0);
+            assert_eq!((bid.status(), bid.size()), (status, size_left), "{tif:?}");
+            let events: Vec<_> = collect_trade_events(bid)
+                .iter()
+                .map(|e| (e.maker_user_id, e.size))
+                .collect();
+            assert_eq!(events, fills, "{tif:?}");
+            assert_eq!(
+                (book.best_bid(), book.best_ask()),
+                (best_bid, best_ask),
+                "{tif:?}"
+            );
+            assert_eq!(book.verify_state(), Ok(()), "{tif:?}");
+        }
     }
 
     #[test]

@@ -61,44 +61,29 @@ impl MatchingEngineRouter {
         (self.shard_mask == 0) || ((market_id & self.shard_mask) == self.shard_id as u64)
     }
 
-    /// Main entry point for processing orders
+    /// Main entry point for processing orders. Callers route by `market_for_this_handler` first.
     pub fn process_order(&mut self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) {
-        if self.market_for_this_handler(cmd.market_id as u64) {
-            if let Some(order_book) = self.order_books.get_mut(&cmd.market_id) {
-                order_debug!(
-                    "matching_dispatch",
-                    cmd,
-                    stage = "matching",
-                    shard_id = self.shard_id
-                );
+        if let Some(order_book) = self.order_books.get_mut(&cmd.market_id) {
+            order_debug!(
+                "matching_dispatch",
+                cmd,
+                stage = "matching",
+                shard_id = self.shard_id
+            );
 
-                match cmd.command {
-                    OrderCommandType::PlaceOrder => order_book.place_order(cmd, price_cache),
-                    OrderCommandType::CancelOrder => order_book.cancel_order(cmd, price_cache),
-                    _ => {} // this should be unreachable as non-op commands are filtered out in routing macro.
-                }
-            } else {
-                order_warn!(
-                    "matching_missing_orderbook",
-                    cmd,
-                    stage = "matching",
-                    shard_id = self.shard_id
-                );
-                cmd.set_status(Status::Rejected);
+            match cmd.command {
+                OrderCommandType::PlaceOrder => order_book.place_order(cmd, price_cache),
+                OrderCommandType::CancelOrder => order_book.cancel_order(cmd, price_cache),
+                _ => {} // this should be unreachable as non-op commands are filtered out in routing macro.
             }
+        } else {
+            order_warn!(
+                "matching_missing_orderbook",
+                cmd,
+                stage = "matching",
+                shard_id = self.shard_id
+            );
+            cmd.set_status(Status::Rejected);
         }
-    }
-
-    /// Get a reference to the orderbook for a specific market_id
-    pub fn get_orderbook(&self, market_id: u32) -> Option<&OrderBook<BTreeAskSide, BTreeBidSide>> {
-        self.order_books
-            .get(&market_id)
-            .map(|boxed_book| boxed_book.as_ref())
-    }
-}
-
-impl Default for MatchingEngineRouter {
-    fn default() -> Self {
-        Self::new(0, 1)
     }
 }

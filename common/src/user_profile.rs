@@ -66,18 +66,6 @@ impl BalanceStore {
         *self.balances.get(&key).unwrap_or(&UserBalance::default())
     }
 
-    pub fn try_get_balance(
-        &self,
-        user_id: u64,
-        asset_id: u16,
-    ) -> Result<UserBalance, BalanceError> {
-        let key = BalanceKey { user_id, asset_id };
-        self.balances
-            .get(&key)
-            .copied()
-            .ok_or(BalanceError::UserAssetNotFound(user_id, asset_id))
-    }
-
     pub fn get_balance_mut(
         &mut self,
         user_id: u64,

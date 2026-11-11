@@ -762,8 +762,8 @@ async fn edge_cases_section(ctx: &mut TestContext) -> TestResult<()> {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Alice tries to place bid @ 49k (would cross her own ask)
-    // Due to self-match prevention, should not match
+    // Alice places a bid @ 49k that would cross her own ask: self-trade prevention cancels the
+    // ask (STP_CANCEL_MAKER) and the bid rests
     let alice_bid = OrderBuilder::place_limit()
         .user(users::ALICE)
         .price(49_000)
@@ -794,6 +794,21 @@ async fn edge_cases_section(ctx: &mut TestContext) -> TestResult<()> {
             });
         }
         info!("  → Verified: No self-match occurred");
+    }
+
+    {
+        let event_timeout = ctx.config().event_timeout;
+        let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
+        orderbook_verifier
+            .wait_and_assert_level(market_id, Side::Bid, 49_000, 3, event_timeout)
+            .await?;
+        let orderbook = orderbook_verifier.get_orderbook(market_id).await?;
+        if orderbook.asks.iter().any(|level| level.price == 48_000) {
+            return Err(TestError::Verification {
+                message: "Alice's own ask @ 48k still rests under her bid @ 49k".to_string(),
+            });
+        }
+        info!("  → Verified: Alice's own ask was cancelled and her bid rests @ 49k");
     }
 
     Ok(())

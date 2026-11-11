@@ -248,6 +248,8 @@ quote_cost(price, size) = price * size * quote_native_scale / (base_native_scale
 
 computed in `u128` and rounded down. An overflow, a result above `u64::MAX` or a zero denominator rejects the order. On the development market 65538 (`base_native_scale` 10^8, `quote_native_scale` 10^6, `quote_scale_k` 1) a bid of size 10 at 40,000 locks `quote_cost = 4,000`, not 400,000.
 
+A market's native scales must equal its assets' `native_scale` in the `symbols.assets` config, and every asset's `max_supply * native_scale` is at most `u64::MAX / 2`, so no sum of two balances of one asset can overflow (`vex-config/src/symbols.rs`). ETH is held in gwei (10^9).
+
 For a BID order (buying base asset with quote asset):
 ```
 locked_amount = quote_cost(price, size)   // rejected when it is 0
@@ -271,7 +273,7 @@ Market orders require special handling since the execution price is unknown at f
 let best_ask = price_cache.get_prices(market_id).map_or(0, |(_, best_ask)| best_ask);
 let slippage_adjustment = best_ask * spec.slippage / 10_000;  // in u128, rounded down
 let conservative_price = best_ask + slippage_adjustment;
-cmd.price = conservative_price;  // Mutate price field; the response returns it
+cmd.price = conservative_price;  // only once the lock holds; the response returns it
 locked_amount = spec.calculate_quote_cost(conservative_price, size);
 ```
 
@@ -358,6 +360,8 @@ The sides are generic, allowing flexibility in the underlying data structure imp
    a. Get best opposite price level
    b. Check price compatibility
    c. Match against orders in FIFO order (VecDeque front)
+      - An order of the taker's own user is cancelled, not traded against
+        (STP_CANCEL_MAKER, spec §8.2): it leaves the book with a size-0 MatcherTradeEvent
    d. Generate MatcherTradeEvent for each fill
    e. If maker order fully filled, remove from orderbook
    f. If price level empty, remove from tree
@@ -380,13 +384,15 @@ When an order matches multiple resting orders, events are stored as a linked lis
 ```rust
 pub struct MatcherTradeEvent {
     pub price: u64,
-    pub size: u64,
+    pub size: u64,  // 0: an STP cancel of the taker's own resting order, no trade
     pub maker_user_id: u64,
     pub matched_order_id: u64,
     pub active_order_completed: bool,
     pub matched_order_completed: bool,
     pub next_event: Option<Box<MatcherTradeEvent>>,
     pub maker_balance: [UserBalance; 2],
+    pub maker_fee: u64,  // set by R2
+    pub taker_fee: u64,  // set by R2
 }
 ```
 
@@ -412,7 +418,11 @@ Maker (ASK - selling base for quote):
 
 `quote_cost` is `CoreMarketSpecification::calculate_quote_cost`, as in R1 (`RiskEngine::settle_trade`).
 
+A size-0 event (an STP cancel) settles nothing: the taker's shard, which also owns the cancelled order, releases that order's lock as for any cancel (`handle_cancellation`).
+
 **Fee Structure**: Maker and taker fees configured per market in basis points. Each fee is rounded up per fill, so a fill pays its exact share plus less than one atomic unit: slicing an order into many fills can never pay less than one fill would, and over-pays by at most one unit per fill.
+
+The core keeps no fee account: R2 writes each side's fee on its `MatcherTradeEvent` (`maker_fee`, `taker_fee`), and the `trades` topic publishes both on `TradeEvent`, each in the asset that side received (base for a bid, quote for an ask).
 
 **Price Improvement Refund**:
 
@@ -423,11 +433,13 @@ execution_price < limit_price  =>  refund = quote_cost(limit_price - execution_p
 
 The refund is moved from locked back to available quote currency.
 
-**Locking**: R2 engines use `Mutex` locks on the balance store within each shard, acquired during settlement operations.
+**Failure**: each user's side (refund, fill, a completed bid's collateral residue, credit, fee) is checked on copies and committed at once. R1 has already proved every amount fits, so a failure means the ledger is wrong: the core logs `settlement_failed` and aborts rather than publish a trade settled on one side only.
+
+**Locking**: each shard keeps its balances and its bids' collateral in one ledger behind one `Mutex`, held for a settlement's check and commit.
 
 **Critical Invariant** (maintained across settlement):
 ```
-SUM(all user balances in asset X) = constant  (conservation of assets)
+SUM(all user balances in asset X) + SUM(fees in X on trades) = deposits of X - withdrawals of X
 ```
 
 **Shard Coordination**:
@@ -446,9 +458,9 @@ R2 engines process trade events for both maker and taker:
 | Topic | Message | Key | Emitted for |
 |---|---|---|---|
 | `balances` | `BalanceEvent` | `user_id:asset_id` | the taker after a placement, cancel or fills; each maker once per command; a deposit or withdrawal |
-| `orders` | `OrderEvent` | `order_id` | the taker; each maker per fill |
+| `orders` | `OrderEvent` | `order_id` | the taker; each maker per fill or STP cancel (status Cancelled) |
 | `orderbook` | `OrderbookEvent` (L2 snapshot) | `market_id` | a placement, cancel or fill |
-| `cancels` | `CancelOrderEvent` | `order_id` | a cancellation |
+| `cancels` | `CancelOrderEvent` | `order_id` | a cancellation, including a maker cancelled by STP |
 | `trades` | `TradeEvent` | `taker_order_id:maker_order_id` | each fill |
 | `deposits` | `DepositEvent` | `user_id` | a processed deposit |
 | `withdrawals` | `WithdrawEvent` | `user_id` | a processed withdrawal |
@@ -520,6 +532,8 @@ Seq: 0     1     2     3     4     5     6     7     8     9     ...
 **Barrier 4** (After Risk R2 → Before Events):
 - All settlement must complete before publishing
 - Guarantees external consumers see consistent state
+
+**R1 decides on the settled ledger.** Barrier 1 lets R1 handle sequence s before R2 has settled s-1, which may still owe the user proceeds or released collateral, and a replay publishes the journal back to back. So each `RiskEngine` records the highest sequence its R2 has settled (R1 and R2 of a shard share it), and R1 waits on it (`create_risk_handler!`): a market buy, deposit or withdrawal waits until R2 has settled s-1 before deciding; any other order decides at once and, only if rejected, waits and decides once more (R2 only raises `available` and lowers `locked`, so an early pass stands). Every decision is then a function of the ledger and book after s-1, which a replay reproduces. The wait needs each consumer cursor published per event, not per batch (trade-vex/disruptor-rs `per-event-cursor`): R2(s-1) needs Matching(s-1), which needs R1's cursor past s-1 while R1 is still inside its batch.
 
 ### Wait Strategy: BusySpin
 
@@ -1328,7 +1342,7 @@ The PriceCache is essential to the market order execution protocol:
 
 2. **Fund Safety**: Conservative pricing (best price + slippage) locks MORE funds than minimally required. The price ceiling enforcement in matching (only matches at or below conservative price) guarantees no overspend. IOC/FOK semantics cancel unfilled portions.
 
-3. **Acceptable Staleness**: Stale reads don't violate safety (user locked enough funds). In worst case, order gets fewer fills than expected, never overspends.
+3. **No Staleness**: R1 prices a market buy only once R2 has settled every earlier sequence, so every Matching shard has handled them and the cache holds the book after s-1 (see Dependency Barriers). A replay therefore locks the same price.
 
 4. **Update Protocol**:
 ```rust

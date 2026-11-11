@@ -4,9 +4,10 @@
 //!
 //! The scenarios share one continuous ledger, in order, on the stack of
 //! `xtask/tests/docker-compose.yml`: Redpanda with its Schema Registry, an Aeron
-//! ArchivingMediaDriver that journals the core's commands, and the core. Every order is a limit
-//! order that never crosses: replay regenerates its events exactly, which it does not for a
-//! market buy (#140).
+//! ArchivingMediaDriver that journals the core's commands, and the core. Each round rests a bid
+//! and an ask that never cross, cancels the bid and re-places it at once, and lifts the ask with
+//! a market buy: every start replays the journal back to back, and must re-decide each command
+//! as the live run did.
 //!
 //! The oracle is the client's own ledger, built from the core's responses: every event each
 //! answered command must have published, by `(topic, key, timestamp)`, and each balance's state
@@ -30,6 +31,7 @@ use tracing::{error, info};
 
 const BIDDER: u64 = 101;
 const ASKER: u64 = 102;
+const BUYER: u64 = 103;
 
 /// Order pairs placed while the broker is paused: enough to leave events queued in the core, far
 /// fewer than the 108,000 it takes to fill its queues and answer `Busy`.
@@ -63,14 +65,20 @@ impl Ledger {
         });
     }
 
-    /// Credits `credit` to `user`'s available `asset`, then locks `lock` of it, as of the command
-    /// stamped `timestamp`, which publishes that balance.
-    fn change(&mut self, user: u64, asset: u16, credit: u64, lock: u64, timestamp: u64) {
+    /// Applies `update` to `user`'s `asset` as of the command stamped `timestamp`, which
+    /// publishes that balance.
+    fn change(
+        &mut self,
+        user: u64,
+        asset: u16,
+        timestamp: u64,
+        update: impl FnOnce(Balance) -> Balance,
+    ) {
         let (balance, at) = self
             .balances
             .entry((user, asset))
             .or_insert((Balance::new(0, 0), 0));
-        *balance = Balance::new(balance.available + credit - lock, balance.locked + lock);
+        *balance = update(*balance);
         *at = timestamp;
         self.expect("balances", format!("{user}:{asset}"), timestamp);
     }
@@ -92,7 +100,9 @@ impl Ledger {
             response.timestamp,
         );
         self.expect("deposits", user.to_string(), timestamp);
-        self.change(user, asset, response.size, 0, timestamp);
+        self.change(user, asset, timestamp, |b| {
+            Balance::new(b.available + response.size, b.locked)
+        });
         Ok(())
     }
 
@@ -103,24 +113,84 @@ impl Ledger {
     ) -> TestResult<()> {
         expect_status(response, Status::Placed)?;
         let (user, timestamp) = (response.user_id, response.timestamp);
-        let (base, quote) = (
-            base_asset(response.market_id),
-            quote_asset(response.market_id),
-        );
-        let (locked_asset, other_asset, lock) = match response.side {
-            Side::Bid => {
-                let cost = market
-                    .calculate_quote_cost(response.price, response.size)
-                    .expect("scenario notional fits in u64");
-                (quote, base, cost)
-            }
-            Side::Ask => (base, quote, response.size),
-        };
-        self.change(user, locked_asset, 0, lock, timestamp);
-        self.change(user, other_asset, 0, 0, timestamp);
+        let (locked_asset, other_asset, lock) = resting_lock(response, market);
+        self.change(user, locked_asset, timestamp, |b| {
+            Balance::new(b.available - lock, b.locked + lock)
+        });
+        self.change(user, other_asset, timestamp, |b| b);
         self.expect("orders", response.order_id.to_string(), timestamp);
         self.expect("orderbook", response.market_id.to_string(), timestamp);
         Ok(())
+    }
+
+    /// `order`, resting, cancelled by `response`.
+    fn cancelled(
+        &mut self,
+        response: &OrderCommand,
+        order: &OrderCommand,
+        market: &CoreMarketSpecification,
+    ) -> TestResult<()> {
+        expect_status(response, Status::Cancelled)?;
+        let (user, timestamp) = (response.user_id, response.timestamp);
+        let (locked_asset, other_asset, lock) = resting_lock(order, market);
+        self.change(user, locked_asset, timestamp, |b| {
+            Balance::new(b.available + lock, b.locked - lock)
+        });
+        self.change(user, other_asset, timestamp, |b| b);
+        self.expect("orders", order.order_id.to_string(), timestamp);
+        self.expect("cancels", order.order_id.to_string(), timestamp);
+        self.expect("orderbook", response.market_id.to_string(), timestamp);
+        Ok(())
+    }
+
+    /// `response`, a market buy of `ask`'s size, filled entirely against `ask` at its price.
+    fn filled(
+        &mut self,
+        response: &OrderCommand,
+        ask: &OrderCommand,
+        market: &CoreMarketSpecification,
+    ) -> TestResult<()> {
+        expect_status(response, Status::Filled)?;
+        let (base, quote) = (base_asset(ask.market_id), quote_asset(ask.market_id));
+        let (taker, maker, timestamp) = (response.user_id, ask.user_id, response.timestamp);
+        let fee = |amount: u64, bp: u64| (amount * bp).div_ceil(10_000);
+        let notional = market
+            .calculate_quote_cost(ask.price, ask.size)
+            .expect("scenario notional fits in u64");
+        let bought = ask.size - fee(ask.size, market.taker_fee);
+        let proceeds = notional - fee(notional, market.maker_fee);
+        self.change(taker, base, timestamp, |b| {
+            Balance::new(b.available + bought, b.locked)
+        });
+        self.change(taker, quote, timestamp, |b| {
+            Balance::new(b.available - notional, b.locked)
+        });
+        self.change(maker, base, timestamp, |b| {
+            Balance::new(b.available, b.locked - ask.size)
+        });
+        self.change(maker, quote, timestamp, |b| {
+            Balance::new(b.available + proceeds, b.locked)
+        });
+        let trade = format!("{}:{}", response.order_id, ask.order_id);
+        self.expect("trades", trade, timestamp);
+        self.expect("orders", response.order_id.to_string(), timestamp);
+        self.expect("orders", ask.order_id.to_string(), timestamp);
+        self.expect("orderbook", ask.market_id.to_string(), timestamp);
+        Ok(())
+    }
+}
+
+/// What `order` locks while it rests: (that asset, the market's other asset, the amount).
+fn resting_lock(order: &OrderCommand, market: &CoreMarketSpecification) -> (u16, u16, u64) {
+    let (base, quote) = (base_asset(order.market_id), quote_asset(order.market_id));
+    match order.side {
+        Side::Bid => {
+            let cost = market
+                .calculate_quote_cost(order.price, order.size)
+                .expect("scenario notional fits in u64");
+            (quote, base, cost)
+        }
+        Side::Ask => (base, quote, order.size),
     }
 }
 
@@ -181,24 +251,54 @@ impl Outbox {
             .send_and_recv(command)
     }
 
-    /// Places `pairs` resting bids and asks that never cross: bids below 50,000, asks above.
+    /// Places `pairs` resting bids and asks that never cross: bids below 50,000, asks above. Each
+    /// bid is then cancelled and re-placed without waiting for the cancel's response, and each ask
+    /// is lifted by a market buy.
     fn place_orders(&mut self, pairs: u64) -> TestResult<()> {
         for _ in 0..pairs {
             self.order_pairs += 1;
-            for (user, side, price) in [
-                (BIDDER, Side::Bid, 40_000 - self.order_pairs),
-                (ASKER, Side::Ask, 60_000 + self.order_pairs),
-            ] {
-                let order = OrderBuilder::place_limit()
+            let limit = |user, side, price| {
+                OrderBuilder::place_limit()
                     .user(user)
                     .price(price)
                     .size(1)
                     .side(side)
                     .market_id(self.config.market_id)
-                    .build();
-                let response = self.execute(order)?;
-                self.ledger.placed(&response, &self.market)?;
-            }
+                    .build()
+            };
+            let bid = limit(BIDDER, Side::Bid, 40_000 - self.order_pairs);
+            let ask = limit(ASKER, Side::Ask, 60_000 + self.order_pairs);
+
+            let placed_bid = self.execute(bid.clone())?;
+            self.ledger.placed(&placed_bid, &self.market)?;
+            let placed_ask = self.execute(ask)?;
+            self.ledger.placed(&placed_ask, &self.market)?;
+
+            let cancel = OrderCommand::cancel_order(
+                placed_bid.order_id,
+                BIDDER,
+                Side::Bid,
+                self.config.market_id,
+            );
+            let client = self
+                .client
+                .as_mut()
+                .expect("the core is running and connected");
+            client.send(&cancel)?;
+            client.send(&bid)?;
+            let (cancelled, replaced) = (client.recv()?, client.recv()?);
+            self.ledger
+                .cancelled(&cancelled, &placed_bid, &self.market)?;
+            self.ledger.placed(&replaced, &self.market)?;
+
+            let buy = OrderBuilder::place_market()
+                .user(BUYER)
+                .size(1)
+                .side(Side::Bid)
+                .market_id(self.config.market_id)
+                .build();
+            let bought = self.execute(buy)?;
+            self.ledger.filled(&bought, &placed_ask, &self.market)?;
         }
         Ok(())
     }
@@ -281,7 +381,7 @@ impl Outbox {
         .map_err(|message| TestError::Configuration { message })
     }
 
-    /// Funds the two traders and rests a few orders, all delivered.
+    /// Funds the three traders and trades a few rounds, all delivered.
     async fn baseline(&mut self) -> TestResult<()> {
         let (base, quote) = (
             base_asset(self.config.market_id),
@@ -289,6 +389,7 @@ impl Outbox {
         );
         self.deposit(BIDDER, quote, 100_000_000)?;
         self.deposit(ASKER, base, 1_000_000)?;
+        self.deposit(BUYER, quote, 100_000_000)?;
         self.place_orders(5)?;
         self.verify().await
     }

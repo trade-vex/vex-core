@@ -163,7 +163,7 @@ impl VexConfig {
                     "Balance preload cannot be enabled in production".to_string(),
                 ));
             }
-            self.balance_preload.validate()?;
+            self.balance_preload.validate(&self.symbols)?;
         }
         Ok(())
     }
@@ -245,5 +245,24 @@ mod tests {
     #[test]
     fn test_valid_configuration_accepted() {
         assert!(VexConfig::new(Environment::Development).validate().is_ok());
+    }
+
+    #[cfg(feature = "balance-preload")]
+    #[test]
+    fn preload_above_asset_supply_is_rejected() {
+        let mut config = VexConfig::new(Environment::Development);
+        config.balance_preload.enabled = true;
+        let eth_supply = config.symbols.assets[&3].atomic_supply() as u64;
+        for (asset_id, amount, accepted) in
+            [(3, eth_supply, true), (3, u64::MAX, false), (9, 1, false)]
+        {
+            config.balance_preload.users =
+                [(1, vec![balance_preload::UserBalance { asset_id, amount }])].into();
+            assert_eq!(
+                config.validate().is_ok(),
+                accepted,
+                "asset {asset_id} amount {amount}"
+            );
+        }
     }
 }
