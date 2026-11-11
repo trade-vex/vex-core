@@ -1,8 +1,4 @@
-//! VEX Configuration Management
-//!
-//! This crate provides comprehensive configuration management for VEX Core,
-//! supporting multiple environments (dev, test, prod) with advanced configuration operations.
-//! Features auto-detection of environment from environment variables and multiple loading strategies.
+//! Configuration for VEX Core: environment defaults, one optional file, VEX__* overrides and validation.
 
 pub mod environment;
 pub mod error;

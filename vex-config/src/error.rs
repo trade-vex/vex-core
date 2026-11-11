@@ -53,11 +53,6 @@ impl ConfigError {
         ConfigError::ValidationError(msg.into())
     }
 
-    /// Create a new IO error
-    pub fn io<S: Into<String>>(msg: S) -> Self {
-        ConfigError::IoError(msg.into())
-    }
-
     /// Create a new parse error
     pub fn parse<S: Into<String>>(msg: S) -> Self {
         ConfigError::ParseError(msg.into())
