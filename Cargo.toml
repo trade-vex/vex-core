@@ -72,7 +72,3 @@ strip = true
 # Disable debug information generation
 # Works in conjunction with strip=true to ensure no debug overhead
 debug = false
-
-# Apply maximum optimization to all dependencies
-[profile.release.package."*"]
-opt-level = 3

@@ -134,7 +134,7 @@ jobs:
           cmake --version
 
       - name: Linting
-        run: cargo clippy --workspace --all-features --all-targets -- -D warnings -A clippy::missing_errors_doc -A clippy::missing_panics_doc -A clippy::must_use_candidate -A clippy::default_trait_access -A clippy::ignored_unit_patterns -A clippy::module_name_repetitions -A clippy::cast_possible_truncation
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
         env:
           RUSTFLAGS: "-D warnings -C link-arg=-fuse-ld=mold"
 
@@ -194,7 +194,7 @@ jobs:
           fallback: none
       - name: Generate code coverage
         run: |
-          cargo llvm-cov --workspace --all-features --all-targets --exclude rusteron_client --text
+          cargo llvm-cov --workspace --all-features --all-targets --text
         env:
           VEX_ENV: development
 
