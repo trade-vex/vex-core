@@ -49,10 +49,6 @@ pub enum ConfigError {
     /// Network configuration error
     #[error("Network configuration error: {0}")]
     NetworkError(String),
-
-    /// Logging configuration error
-    #[error("Logging configuration error: {0}")]
-    LoggingError(String),
 }
 
 impl ConfigError {
@@ -87,11 +83,6 @@ impl ConfigError {
     /// Create a new network error
     pub fn network<S: Into<String>>(msg: S) -> Self {
         ConfigError::NetworkError(msg.into())
-    }
-
-    /// Create a new logging error
-    pub fn logging<S: Into<String>>(msg: S) -> Self {
-        ConfigError::LoggingError(msg.into())
     }
 }
 

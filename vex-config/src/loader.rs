@@ -152,7 +152,7 @@ impl ConfigLoader {
                 // The defaults take the place of the file, so environment overrides and
                 // validation below apply to them exactly as they would to a file. They go in as
                 // a JSON document rather than `Config::try_from`, whose serializer drops empty
-                // maps (e.g. `logging.custom_fields`), which then fail to deserialize.
+                // maps, which then fail to deserialize.
                 let defaults =
                     serde_json::to_string(&VexConfig::new(env.clone())).map_err(|error| {
                         ConfigError::load(

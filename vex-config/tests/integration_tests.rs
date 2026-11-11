@@ -34,20 +34,6 @@ fn test_environment_specific_defaults() {
     assert_eq!(dev_config.core_networking.initial_port, 40001);
     assert_eq!(test_config.core_networking.initial_port, 40001);
     assert_eq!(prod_config.core_networking.initial_port, 3521);
-
-    // Different logging configurations
-    assert_eq!(
-        dev_config.logging.level,
-        vex_config::logging::LogLevel::Debug
-    );
-    assert_eq!(
-        test_config.logging.level,
-        vex_config::logging::LogLevel::Info
-    );
-    assert_eq!(
-        prod_config.logging.level,
-        vex_config::logging::LogLevel::Info
-    );
 }
 
 #[test]
@@ -137,7 +123,6 @@ fn test_file_loading_and_saving() -> Result<(), Box<dyn std::error::Error>> {
         loaded_config.core_networking.core_id,
         original_config.core_networking.core_id
     );
-    assert_eq!(loaded_config.logging.level, original_config.logging.level);
 
     Ok(())
 }
@@ -218,7 +203,6 @@ fn test_environment_variable_overrides() -> Result<(), Box<dyn std::error::Error
     // config-rs puts the `__` separator after the prefix too: `TEST__...`, not `TEST_...`.
     unsafe {
         env::set_var("TEST__CORE_NETWORKING__INITIAL_PORT", "9999");
-        env::set_var("TEST__LOGGING__LEVEL", "error");
     }
 
     // No file: the environment defaults stand in for it, and the overrides still apply.
@@ -230,13 +214,11 @@ fn test_environment_variable_overrides() -> Result<(), Box<dyn std::error::Error
 
     unsafe {
         env::remove_var("TEST__CORE_NETWORKING__INITIAL_PORT");
-        env::remove_var("TEST__LOGGING__LEVEL");
     }
 
     let config = result?;
     assert_eq!(config.environment, Environment::Development);
     assert_eq!(config.core_networking.initial_port, 9999);
-    assert_eq!(config.logging.level, vex_config::logging::LogLevel::Error);
 
     Ok(())
 }
@@ -412,12 +394,10 @@ fn test_configuration_merging() -> Result<(), Box<dyn std::error::Error>> {
     // Modify the override config
     override_config.core_networking.initial_port = 12345;
     override_config.core_networking.enable_authentication = true;
-    override_config.logging.level = vex_config::logging::LogLevel::Error;
 
     // Original values
     let original_port = base_config.core_networking.initial_port;
     let original_auth = base_config.core_networking.enable_authentication;
-    let original_level = base_config.logging.level.clone();
 
     // Merge configurations
     base_config.merge_with(&override_config)?;
@@ -428,14 +408,9 @@ fn test_configuration_merging() -> Result<(), Box<dyn std::error::Error>> {
         base_config.core_networking.enable_authentication,
         original_auth
     );
-    assert_ne!(base_config.logging.level, original_level);
 
     assert_eq!(base_config.core_networking.initial_port, 12345);
     assert!(base_config.core_networking.enable_authentication);
-    assert_eq!(
-        base_config.logging.level,
-        vex_config::logging::LogLevel::Error
-    );
 
     Ok(())
 }
@@ -486,67 +461,6 @@ fn test_custom_loader_without_allow_missing_fails() {
     } else {
         panic!("Expected NotFound error");
     }
-}
-
-#[test]
-fn test_logging_configuration() {
-    let mut config = VexConfig::new(Environment::Development);
-
-    // Test module-specific log levels
-    config.logging.set_module_level(
-        "test_module".to_string(),
-        vex_config::logging::LogLevel::Trace,
-    );
-    config.logging.set_module_level(
-        "another_module".to_string(),
-        vex_config::logging::LogLevel::Error,
-    );
-
-    assert_eq!(
-        config.logging.get_module_level("test_module"),
-        &vex_config::logging::LogLevel::Trace
-    );
-    assert_eq!(
-        config.logging.get_module_level("another_module"),
-        &vex_config::logging::LogLevel::Error
-    );
-    assert_eq!(
-        config.logging.get_module_level("unknown_module"),
-        &config.logging.level
-    );
-
-    // Test custom fields
-    config
-        .logging
-        .add_custom_field("service".to_string(), "test".to_string());
-    config
-        .logging
-        .add_custom_field("version".to_string(), "1.0.0".to_string());
-
-    assert_eq!(
-        config.logging.custom_fields.get("service"),
-        Some(&"test".to_string())
-    );
-    assert_eq!(
-        config.logging.custom_fields.get("version"),
-        Some(&"1.0.0".to_string())
-    );
-
-    // Test log level checking
-    assert!(
-        config
-            .logging
-            .is_enabled(&vex_config::logging::LogLevel::Info, None)
-    );
-    assert!(
-        config
-            .logging
-            .is_enabled(&vex_config::logging::LogLevel::Trace, Some("test_module"))
-    );
-    assert!(!config.logging.is_enabled(
-        &vex_config::logging::LogLevel::Debug,
-        Some("another_module")
-    ));
 }
 
 #[test]

@@ -9,12 +9,12 @@ use std::str::FromStr;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Environment {
-    /// Development environment - relaxed security, verbose logging, local defaults
+    /// Development environment - relaxed security, local defaults
     #[default]
     Development,
-    /// Test environment - moderate security, structured logging, test-friendly defaults
+    /// Test environment - moderate security, test-friendly defaults
     Test,
-    /// Production environment - strict security, optimized logging, production defaults
+    /// Production environment - strict security, production defaults
     Production,
 }
 

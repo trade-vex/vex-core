@@ -7,7 +7,6 @@
 pub mod environment;
 pub mod error;
 pub mod loader;
-pub mod logging;
 pub mod networking;
 pub mod symbols;
 
@@ -17,7 +16,6 @@ pub mod balance_preload;
 pub use environment::Environment;
 pub use error::{ConfigError, Result};
 pub use loader::ConfigLoader;
-pub use logging::LoggingConfig;
 pub use networking::{CoreNetworkingConfig, GatewayAuthenticationKey, GatewayNetworkingConfig};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
@@ -33,8 +31,6 @@ pub struct VexConfig {
     pub environment: Environment,
     /// Core networking configuration
     pub core_networking: CoreNetworkingConfig,
-    /// Logging configuration
-    pub logging: LoggingConfig,
     /// Symbol specifications configuration
     pub symbols: SymbolSpecificationConfig,
     /// Kafka broker address for event streaming
@@ -62,7 +58,6 @@ impl VexConfig {
     pub fn new(environment: Environment) -> Self {
         Self {
             core_networking: CoreNetworkingConfig::for_environment(&environment),
-            logging: LoggingConfig::for_environment(&environment),
             symbols: SymbolSpecificationConfig::for_environment(&environment),
             kafka_broker: default_kafka_broker(),
             schema_registry_url: default_schema_registry_url(),
@@ -131,7 +126,6 @@ impl VexConfig {
                 "Production requires gateway authentication and a nonempty gateway authentication key",
             ));
         }
-        self.logging.validate()?;
         self.symbols.validate()?;
         // The registry client does not check the URL either; a malformed one would fail every
         // event's registration, and that is retried forever rather than failing startup.
@@ -170,7 +164,6 @@ impl VexConfig {
         }
 
         self.core_networking.merge_with(&other.core_networking)?;
-        self.logging.merge_with(&other.logging)?;
         self.symbols.merge_with(&other.symbols)?;
 
         Ok(())

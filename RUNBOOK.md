@@ -130,11 +130,6 @@ environment: Test
 kafka_broker: "localhost:9092"
 schema_registry_url: "http://localhost:8081"
 
-logging:
-  level: "info"
-  format: "pretty"
-  output: "stdout"
-
 symbols:
   # Every asset a market or preload names. native_scale = 10^decimals, and
   # max_supply * native_scale must not exceed u64::MAX / 2 (ETH is held in gwei, not wei).
@@ -404,7 +399,6 @@ VEX_ENV=development RUST_LOG=debug ./target/release/vex-core 2>&1 | grep -E "dis
 
 **Solutions**:
 - Enable CPU core pinning in production: `ENABLE_CORE_PINNING=true`
-- Increase `buffer_size` in networking config if needed
 - Ensure adequate CPU cores (journaling, 4 risk engines, 4 matching engines, events handler)
 - Profile with `perf` or `flamegraph` if persistent
 

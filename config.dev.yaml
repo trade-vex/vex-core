@@ -9,30 +9,10 @@ core_networking:
   reserved_session_id_high: 2147483647
   enable_authentication: false
   core_id: vex-core-dev
-  buffer_size: 1048576
-  retry_attempts: 3
-  retry_delay_ms: 1000
   request_control_channel: aeron:udp?endpoint=localhost:8010
   response_control_channel: aeron:udp?endpoint=localhost:0
   recording_events_channel: aeron:udp?endpoint=localhost:0
   enable_core_pinning: false
-logging:
-  level: debug
-  format: pretty
-  outputs:
-    - type: stdout
-  module_levels:
-    vex_core: debug
-    networking: debug
-    orderbook: info
-  include_location: true
-  include_timestamp: true
-  include_thread_id: true
-  include_spans: true
-  custom_fields: {}
-  async_logging: false
-  async_buffer_size: 1024
-  sampling_rate: 1.0
 symbols:
   # native_scale = 10^decimals; max_supply * native_scale must not exceed u64::MAX / 2.
   assets:

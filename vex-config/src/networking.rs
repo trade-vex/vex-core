@@ -79,12 +79,6 @@ pub struct CoreNetworkingConfig {
     pub gateway_authentication_key: GatewayAuthenticationKey,
     /// Core identifier
     pub core_id: String,
-    /// Buffer size for network operations (bytes)
-    pub buffer_size: usize,
-    /// Connection retry attempts
-    pub retry_attempts: u32,
-    /// Connection retry delay in milliseconds
-    pub retry_delay_ms: u64,
     /// Control Response Channel for Aeron Archive
     pub request_control_channel: String,
     pub response_control_channel: String,
@@ -122,9 +116,6 @@ impl CoreNetworkingConfig {
             enable_authentication: false,
             gateway_authentication_key: GatewayAuthenticationKey::default(),
             core_id: "vex-core-dev".to_string(),
-            buffer_size: 1024 * 1024,
-            retry_attempts: 3,
-            retry_delay_ms: 1000,
             request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
             response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
             recording_events_channel: "aeron:udp?endpoint=localhost:0".to_string(),
@@ -145,9 +136,6 @@ impl CoreNetworkingConfig {
             enable_authentication: true,
             gateway_authentication_key: GatewayAuthenticationKey::default(),
             core_id: "vex-core-test".to_string(),
-            buffer_size: 1024 * 1024,
-            retry_attempts: 3,
-            retry_delay_ms: 1000,
             request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
             response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
             recording_events_channel: "aeron:udp?endpoint=localhost:0".to_string(),
@@ -168,9 +156,6 @@ impl CoreNetworkingConfig {
             enable_authentication: true,
             gateway_authentication_key: GatewayAuthenticationKey::default(),
             core_id: "vex-core-prod".to_string(),
-            buffer_size: 4 * 1024 * 1024, // 4MB
-            retry_attempts: 5,
-            retry_delay_ms: 2000,
             request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
             response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
             recording_events_channel: "aeron:udp?endpoint=localhost:8012".to_string(),
@@ -211,10 +196,6 @@ impl CoreNetworkingConfig {
                 .map_err(ConfigError::network)?;
         }
 
-        if self.buffer_size == 0 {
-            return Err(ConfigError::network("Buffer size must be greater than 0"));
-        }
-
         if self.context_dir.is_empty() {
             return Err(ConfigError::network("Context directory cannot be empty"));
         }
@@ -242,8 +223,6 @@ impl CoreNetworkingConfig {
 pub struct GatewayNetworkingConfig {
     /// The directory used for the underlying Aeron media driver
     pub context_dir: String,
-    /// The local IP address for this gateway
-    pub local_address: String,
     /// VEX Core address to connect to
     pub core_address: String,
     /// VEX Core port for initial handshake
@@ -262,18 +241,6 @@ pub struct GatewayNetworkingConfig {
     pub gateway_authentication_key: GatewayAuthenticationKey,
     /// Maximum message size in bytes, 64 for OrderCommand
     pub max_message_size: usize,
-    /// Enable heartbeat mechanism
-    pub enable_heartbeat: bool,
-    /// Heartbeat interval in seconds
-    pub heartbeat_interval_seconds: u64,
-    /// Connection timeout in seconds
-    pub connection_timeout_seconds: u64,
-    /// Reconnection attempts
-    pub reconnection_attempts: u32,
-    /// Reconnection delay in milliseconds
-    pub reconnection_delay_ms: u64,
-    /// Buffer size for gateway operations
-    pub buffer_size: usize,
 }
 
 impl GatewayNetworkingConfig {
@@ -281,19 +248,12 @@ impl GatewayNetworkingConfig {
     pub fn development_defaults() -> Self {
         Self {
             context_dir: "/tmp/aeron-test-client".to_string(),
-            local_address: "127.0.0.1".to_string(),
             core_address: "127.0.0.1".to_string(),
             core_port: 3521,
             core_control_port: 3522,
             gateway_id: 1,
             gateway_authentication_key: GatewayAuthenticationKey::default(),
             max_message_size: ORDERCOMMANDSIZE,
-            enable_heartbeat: true,
-            heartbeat_interval_seconds: 10,
-            connection_timeout_seconds: 60,
-            reconnection_attempts: 5,
-            reconnection_delay_ms: 2000,
-            buffer_size: 512 * 1024, // 512KB
         }
     }
 
@@ -301,19 +261,12 @@ impl GatewayNetworkingConfig {
     pub fn test_defaults() -> Self {
         Self {
             context_dir: "/dev/shm/aeron-test-client".to_string(),
-            local_address: "127.0.0.1".to_string(),
             core_address: "127.0.0.1".to_string(),
             core_port: 3521,
             core_control_port: 3522,
             gateway_id: 1,
             gateway_authentication_key: GatewayAuthenticationKey::default(),
             max_message_size: ORDERCOMMANDSIZE,
-            enable_heartbeat: true,
-            heartbeat_interval_seconds: 5,
-            connection_timeout_seconds: 30,
-            reconnection_attempts: 3,
-            reconnection_delay_ms: 1000,
-            buffer_size: 256 * 1024, // 256KB
         }
     }
 
@@ -357,24 +310,8 @@ impl GatewayNetworkingConfig {
             return Err(ConfigError::network("Max message size cannot exceed 10MB"));
         }
 
-        if self.connection_timeout_seconds == 0 {
-            return Err(ConfigError::network(
-                "Connection timeout must be greater than 0",
-            ));
-        }
-
-        if self.heartbeat_interval_seconds == 0 && self.enable_heartbeat {
-            return Err(ConfigError::network(
-                "Heartbeat interval must be greater than 0 when heartbeat is enabled",
-            ));
-        }
-
         if self.context_dir.is_empty() {
             return Err(ConfigError::network("Context directory cannot be empty"));
-        }
-
-        if self.buffer_size == 0 {
-            return Err(ConfigError::network("Buffer size must be greater than 0"));
         }
 
         Ok(())
