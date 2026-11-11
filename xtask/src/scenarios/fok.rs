@@ -775,7 +775,9 @@ async fn test_market_buy_fok_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("  - Bob: 5 BTC @ 54,000");
     info!("");
     info!("Test 1: Alice market buy FOK for 4 BTC → Should fill (within conservative price)");
-    info!("Test 2: Bob market buy FOK for 10 BTC → Should REJECT (exceeds available at ceiling)");
+    info!(
+        "Test 2: Alice market buy FOK for 3 BTC → Should REJECT (only 1 BTC at or below the cap)"
+    );
 
     let market_id = ctx.market_id;
     let event_timeout = ctx.config().event_timeout;
@@ -881,14 +883,18 @@ async fn test_market_buy_fok_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("");
 
     // ========== TEST 2: Market buy FOK that REJECTS (insufficient liquidity at conservative price) ==========
-    info!("Test 2: Bob market buy FOK for 10 BTC (should REJECT - exceeds available)");
-    info!("  → Available: 1 BTC @ 53k, 5 BTC @ 54k = 6 BTC total < 10 BTC needed");
+    info!("Test 2: Alice market buy FOK for 3 BTC (should REJECT - the cap stops it at 1 BTC)");
+    info!(
+        "  → The book holds 6 BTC (1 BTC @ 53k, 5 BTC @ 54k); only 1 BTC is at or below {}",
+        conservative_price
+    );
 
-    let buy_size_2 = 10;
+    // Bob's 5 BTC @ 54k fill it if R1 does not cap the price, and Alice owns no ask there
+    let buy_size_2 = 3;
 
     // Market buy FOK: use FOK builder with price = u64::MAX
     let market_buy2 = OrderBuilder::place_fok()
-        .user(users::BOB)
+        .user(users::ALICE)
         .price(u64::MAX) // Market buy sentinel
         .size(buy_size_2)
         .side(Side::Bid)
@@ -897,7 +903,7 @@ async fn test_market_buy_fok_section(ctx: &mut TestContext) -> TestResult<()> {
 
     let response2 = ctx.execute_command(market_buy2)?;
     ResponseVerifier::assert_cancelled(&response2)?;
-    info!("  → Bob's market buy FOK rejected (insufficient liquidity)");
+    info!("  → Alice's market buy FOK rejected (insufficient liquidity under the cap)");
 
     // Orderbook unchanged: 1 BTC @ 53k, 5 BTC @ 54k
     ctx.kafka
