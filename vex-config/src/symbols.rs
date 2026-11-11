@@ -92,86 +92,13 @@ impl SymbolSpecificationConfig {
     /// Create default configuration for the specified environment
     pub fn for_environment(environment: &Environment) -> Self {
         match environment {
-            Environment::Development => Self::development_defaults(),
-            Environment::Test => Self::test_defaults(),
+            Environment::Development | Environment::Test => Self::development_defaults(),
             Environment::Production => Self::production_defaults(),
         }
     }
 
-    /// Default symbols for development environment
+    /// Default symbols for the development and test environments
     fn development_defaults() -> Self {
-        let mut symbols = HashMap::new();
-
-        let usdt_asset_id = 1;
-        let btc_asset_id = 2;
-        let eth_asset_id = 3;
-        let assets = HashMap::from([
-            (
-                usdt_asset_id,
-                AssetSpec {
-                    native_scale: 1_000_000, // USDT has 6 decimals
-                    max_supply: 1_000_000_000_000,
-                },
-            ),
-            (
-                btc_asset_id,
-                AssetSpec {
-                    native_scale: 100_000_000, // BTC has 8 decimals
-                    max_supply: 21_000_000,
-                },
-            ),
-            (
-                eth_asset_id,
-                AssetSpec {
-                    native_scale: 1_000_000_000, // ETH in gwei: 18 decimals cannot fit u64
-                    max_supply: 1_000_000_000,
-                },
-            ),
-        ]);
-
-        // BTC/USDT currency exchange pair
-        let btc_usdt_market_id = ((usdt_asset_id as u32) << 16) | (btc_asset_id as u32);
-        let eth_usdt_market_id = ((usdt_asset_id as u32) << 16) | (eth_asset_id as u32);
-
-        // ETH/USDT currency exchange pair
-        symbols.insert(
-            eth_usdt_market_id,
-            CoreMarketSpecification {
-                market_id: eth_usdt_market_id,
-                market_type: MarketType::Spot,
-                base_asset: eth_asset_id,
-                quote_asset: usdt_asset_id,
-                quote_scale_k: 10,
-                base_native_scale: 1_000_000_000, // ETH in gwei
-                quote_native_scale: 1_000_000,    // USDT has 6 decimals
-                taker_fee: 0,
-                maker_fee: 0,
-                slippage: 150, // 1.5%
-            },
-        );
-
-        // BTC/USDT futures contract
-        symbols.insert(
-            btc_usdt_market_id,
-            CoreMarketSpecification {
-                market_id: btc_usdt_market_id,
-                market_type: MarketType::FuturesContract,
-                base_asset: btc_asset_id,
-                quote_asset: usdt_asset_id,
-                quote_scale_k: 1,
-                base_native_scale: 100_000_000, // BTC has 8 decimals
-                quote_native_scale: 1_000_000,  // USDT has 6 decimals
-                taker_fee: 0,
-                maker_fee: 0,
-                slippage: 150, // 1.5%
-            },
-        );
-
-        Self { assets, symbols }
-    }
-
-    /// Default symbols for test environment
-    fn test_defaults() -> Self {
         let mut symbols = HashMap::new();
 
         let usdt_asset_id = 1;
@@ -371,13 +298,6 @@ mod tests {
     #[test]
     fn test_development_defaults() {
         let config = SymbolSpecificationConfig::development_defaults();
-        assert!(!config.symbols.is_empty());
-        assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn test_test_defaults() {
-        let config = SymbolSpecificationConfig::test_defaults();
         assert!(!config.symbols.is_empty());
         assert!(config.validate().is_ok());
     }
