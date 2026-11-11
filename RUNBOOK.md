@@ -174,16 +174,10 @@ journaled command (#198 replaces it with journaled genesis deposits).
 
 1. Environment-specific config file (based on `VEX_ENV`)
 2. Environment variables with `VEX__` prefix (nested keys use `__`, e.g., `VEX__CORE_NETWORKING__INITIAL_PORT`)
-3. Hardcoded overrides in `main.rs` (e.g., `context_dir`, `local_address`)
 
-### Note on main.rs Overrides
-
-The `main` function overrides these values at runtime:
-
-- `core_networking.local_address` → `0.0.0.0`
-- `core_networking.context_dir` → `/dev/shm/aeron`
-
-Ensure the **Aeron Media Driver uses the same `context_dir`** as vex-core (or the directory vex-core is configured to use).
+The Docker image sets `VEX__CORE_NETWORKING__LOCAL_ADDRESS=0.0.0.0` and
+`VEX__CORE_NETWORKING__CONTEXT_DIR=/dev/shm/aeron`; outside Docker the configured values apply.
+Ensure the **Aeron Media Driver uses the same `context_dir`** as vex-core.
 
 ---
 
@@ -338,7 +332,7 @@ netstat -tuln | grep -E "40001|40002|3521|3522|8010"
 **Solutions**:
 - Start the media driver: `make media-driver`
 - Ensure vex-core and media driver use the **same** Aeron context directory
-- **Note**: `main.rs` hardcodes `context_dir` to `/dev/shm/aeron`; the Makefile media driver uses `/dev/shm/aeron-test-server` by default. Align these (e.g., set `AERON_DIR=/dev/shm/aeron` when starting the media driver, or update the Makefile `AERON_DIR`) so both use the same path
+- The development and test configs use `/dev/shm/aeron-test-server`, as the Makefile media driver does; the Docker image uses `/dev/shm/aeron`
 - Check that `request_control_channel` (default `localhost:8010`) matches the Archiving Media Driver
 - Verify no firewall blocking UDP ports 40001, 40002, 8010 (or production ports)
 

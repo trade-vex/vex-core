@@ -64,11 +64,14 @@ RUN ldconfig
 # Create shared volume for Aeron IPC
 VOLUME ["/dev/shm/aeron"]
 
-# Set environment variables
-ENV RUST_LOG=info
+# Set environment variables. The core binds every interface of the container and uses the
+# shared Aeron directory; outside this image the configured values apply.
+ENV RUST_LOG=info \
+    VEX__CORE_NETWORKING__LOCAL_ADDRESS=0.0.0.0 \
+    VEX__CORE_NETWORKING__CONTEXT_DIR=/dev/shm/aeron
 
-# Health check. vex-core always uses /dev/shm/aeron (src/main.rs) and ignores AERON_DIR, so
-# probe that path rather than an environment variable the binary never reads.
+# Health check. The image sets the Aeron directory to /dev/shm/aeron via
+# VEX__CORE_NETWORKING__CONTEXT_DIR; vex-core does not read AERON_DIR.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD test -s /dev/shm/aeron/cnc.dat || exit 1
 
