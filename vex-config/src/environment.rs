@@ -85,15 +85,6 @@ impl Environment {
             format!("/etc/vex/{}.json", base_name),
         ]
     }
-
-    /// Get environment-specific configuration prefix for environment variables
-    pub fn env_prefix(&self) -> String {
-        match self {
-            Environment::Development => "VEX_DEV".to_string(),
-            Environment::Test => "VEX_TEST".to_string(),
-            Environment::Production => "VEX_PROD".to_string(),
-        }
-    }
 }
 
 impl fmt::Display for Environment {

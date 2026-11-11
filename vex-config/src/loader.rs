@@ -169,16 +169,7 @@ impl ConfigLoader {
             }
         };
 
-        // Add environment-specific variables
         if let Some(prefix) = &self.env_prefix {
-            let env_prefix = format!("{}_{}", prefix, env.env_prefix());
-            builder = builder.add_source(
-                config::Environment::with_prefix(&env_prefix)
-                    .try_parsing(true)
-                    .separator("__"),
-            );
-
-            // Also add general VEX prefix
             builder = builder.add_source(
                 config::Environment::with_prefix(prefix)
                     .try_parsing(true)
