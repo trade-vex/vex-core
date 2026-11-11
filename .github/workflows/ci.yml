@@ -296,7 +296,7 @@ jobs:
       github.base_ref == 'develop' ||
       github.base_ref == 'main'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Build the production image
         run: docker build --file Dockerfile --tag vex-core:ci .
       - name: Check the binary resolves every shared library
