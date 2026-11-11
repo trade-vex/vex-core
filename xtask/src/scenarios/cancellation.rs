@@ -809,6 +809,15 @@ async fn cancel_filled_order_section(ctx: &mut TestContext) -> TestResult<()> {
             .await?;
         info!("  → Trade executed: {} BTC @ {}", size, price);
     }
+    // Section 8 reads Bob's BTC, which this fill changed last
+    ctx.kafka
+        .wait_for_balance_after(
+            users::BOB,
+            assets::BTC,
+            charlie_response.timestamp,
+            event_timeout,
+        )
+        .await?;
 
     // Try to cancel Bob's already filled order
     let cancel_cmd = OrderBuilder::cancel(users::BOB)

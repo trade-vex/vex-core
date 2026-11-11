@@ -788,6 +788,23 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
                 event_timeout,
             )
             .await?;
+        // Section 7 reads Charlie's balance, which this fill changed last: wait for both assets
+        ctx.kafka
+            .wait_for_balance_after(
+                users::CHARLIE,
+                assets::BTC,
+                market_response.timestamp,
+                event_timeout,
+            )
+            .await?;
+        ctx.kafka
+            .wait_for_balance_after(
+                users::CHARLIE,
+                assets::USD,
+                market_response.timestamp,
+                event_timeout,
+            )
+            .await?;
 
         // Verify BTC received (size - fee)
         let expected_btc_received = buy_size - taker_fee_btc;
