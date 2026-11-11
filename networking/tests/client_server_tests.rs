@@ -172,7 +172,7 @@ fn test_client_server_communication() {
 /// is subscribed, that publication counts as connected, so a later gateway that sent HELLO before
 /// its own reply subscription had joined lost its ACCEPT or REJECT and timed out instead.
 ///
-/// A flood of wrong keys is answered (and logged) only 16 times a second.
+/// A flood of bad HELLOs (wrong key or malformed) is answered (and logged) only 16 times a second.
 #[test_log::test]
 #[ignore = "Starts an embedded Aeron media driver and binds UDP ports"]
 fn test_every_gateway_receives_its_handshake_reply() {
@@ -211,7 +211,7 @@ fn test_every_gateway_receives_its_handshake_reply() {
         }
     });
 
-    // 17 wrong-key HELLOs at once: REJECT for the first 16, nothing for the 17th.
+    // 17 bad HELLOs at once, wrong key or bare: REJECT for the first 16, nothing for the 17th.
     {
         let context = AeronContext::new().unwrap();
         context
@@ -232,7 +232,10 @@ fn test_every_gateway_receives_its_handshake_reply() {
             thread::sleep(Duration::from_millis(10));
         }
         for gateway_id in 0..17 {
-            let message = format!("HELLO gateway-{gateway_id} {WRONG_KEY} 0");
+            let message = match gateway_id % 2 {
+                0 => format!("HELLO gateway-{gateway_id} {WRONG_KEY} 0"),
+                _ => "HELLO".to_string(),
+            };
             send_message(&hello, message.as_bytes()).unwrap();
         }
         let mut rejected = 0;

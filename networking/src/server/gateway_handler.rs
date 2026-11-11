@@ -2,7 +2,6 @@ use rusteron_archive::{AeronFragmentHandlerCallback, AeronHeader, AeronImage, Ae
 use std::rc::Rc;
 use tracing::error;
 
-use super::ServerError;
 use super::gateway_manager::GatewayManager;
 
 /// Handles initial handshake messages from gateways
@@ -48,11 +47,9 @@ impl AeronFragmentHandlerCallback for HandshakeMessageHandler {
         }
         .unwrap_or_else(|| format!("aeron-session-{session_id}"));
 
-        // A rejected credential was already logged, or dropped by the rejection limit.
         if let Err(e) =
             self.gateways
                 .process_handshake_message(&self.publication, session_id, &source, buffer)
-            && !matches!(e, ServerError::AuthenticationError(_))
         {
             error!(
                 target: "gateway_handler",

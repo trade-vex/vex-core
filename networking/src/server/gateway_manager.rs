@@ -387,7 +387,8 @@ impl GatewayManager {
     /// Processes gateway handshake message
     ///
     /// Handles the complete handshake flow including message parsing,
-    /// authentication, resource allocation, and session creation.
+    /// authentication, resource allocation, and session creation. A rejected HELLO is answered
+    /// (within the rejection limit) and returns `Ok`.
     pub fn process_handshake_message(
         &self,
         publication: &AeronPublication,
@@ -395,8 +396,13 @@ impl GatewayManager {
         source: &str,
         buffer: &[u8],
     ) -> Result<(), ServerError> {
-        let message = std::str::from_utf8(buffer)
-            .map_err(|e| ServerError::GatewayMessageError(format!("Invalid UTF-8: {e}")))?;
+        let message = match std::str::from_utf8(buffer) {
+            Ok(message) => message,
+            Err(e) => {
+                let error = ServerError::GatewayMessageError(format!("Invalid UTF-8: {e}"));
+                return self.reject_handshake(publication, session_id, "unknown", source, error);
+            }
+        };
 
         debug!(
             target: "gateway_manager",
@@ -409,34 +415,24 @@ impl GatewayManager {
         // Parse "HELLO gateway_id credential encryption_key": the credential authenticates the
         // gateway; the per-handshake encryption key only masks the session id sent in ACCEPT.
         let mut parts = message.split_whitespace();
-
-        let hello = parts
-            .next()
-            .ok_or_else(|| ServerError::GatewayMessageError("Empty message".to_string()))?;
-        if hello != "HELLO" {
-            let error_msg = format!("{session_id} unknown REJECT Malformed HELLO message");
-            send_message(publication, error_msg.as_bytes())?;
-            return Err(ServerError::GatewayMessageError(
-                "Malformed HELLO message".to_string(),
-            ));
+        if parts.next() != Some("HELLO") {
+            let error = ServerError::GatewayMessageError("Not a HELLO message".to_string());
+            return self.reject_handshake(publication, session_id, "unknown", source, error);
         }
-
-        let gateway_id_str = parts
-            .next()
-            .ok_or_else(|| ServerError::GatewayMessageError("Missing gateway ID".to_string()))?;
-
-        let credential = parts
-            .next()
-            .ok_or_else(|| ServerError::GatewayMessageError("Missing credential".to_string()))?;
-
+        let Some(gateway_id_str) = parts.next() else {
+            let error = ServerError::GatewayMessageError("Missing gateway ID".to_string());
+            return self.reject_handshake(publication, session_id, "unknown", source, error);
+        };
+        let Some(credential) = parts.next() else {
+            let error = ServerError::GatewayMessageError("Missing credential".to_string());
+            return self.reject_handshake(publication, session_id, gateway_id_str, source, error);
+        };
         // A HELLO without its own encryption key comes from a client that masked the session
         // with the credential; reject it rather than fall back to that.
         let Some(Ok(encryption_key)) = parts.next().map(str::parse::<i32>) else {
-            let error_msg = format!("{session_id} {gateway_id_str} REJECT Malformed HELLO message");
-            send_message(publication, error_msg.as_bytes())?;
-            return Err(ServerError::GatewayMessageError(
-                "Malformed HELLO message".to_string(),
-            ));
+            let error =
+                ServerError::GatewayMessageError("Missing or invalid encryption key".to_string());
+            return self.reject_handshake(publication, session_id, gateway_id_str, source, error);
         };
 
         // Authenticate before parsing the id, checking for duplicates, or allocating any
@@ -595,7 +591,7 @@ impl GatewayManager {
             let error_msg = format!("{session_id} {gateway_label} REJECT Handshake rejected");
             send_message(publication, error_msg.as_bytes())?;
         }
-        Err(error)
+        Ok(())
     }
 
     fn check_duplicate_connection(
