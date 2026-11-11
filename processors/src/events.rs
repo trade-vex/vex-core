@@ -845,6 +845,28 @@ async fn frame_with_schema(
     framed
 }
 
+/// Runs `frame` once per topic and message type, then frames later events of the pair itself.
+///
+/// The registry's frame is a prefix (magic byte, schema id, message index) that depends on nothing
+/// else, followed by the payload. Caching the prefix spares the one sender thread a registry
+/// lookup, a copy of the whole schema and several allocations per event. A failed framing is not
+/// cached, so it is asked again.
+fn framing_once_per_message_type(
+    mut frame: impl FnMut(&OutboundEvent) -> Result<Vec<u8>, SRCError>,
+) -> impl FnMut(&OutboundEvent) -> Result<Vec<u8>, SRCError> {
+    let mut prefixes: HashMap<(&'static str, &'static str), Vec<u8>> = HashMap::new();
+    move |event| {
+        let key = (event.topic, event.message_name);
+        if let Some(prefix) = prefixes.get(&key) {
+            return Ok([prefix.as_slice(), &event.payload].concat());
+        }
+        let framed = frame(event)?;
+        debug_assert!(framed.ends_with(&event.payload));
+        prefixes.insert(key, framed[..framed.len() - event.payload.len()].to_vec());
+        Ok(framed)
+    }
+}
+
 /// Enqueues one framed event on the producer, waiting out a refusal that can clear (a full queue,
 /// an unknown topic; see [`send_failure`]) for as long as it lasts.
 ///
@@ -1390,7 +1412,9 @@ impl KafkaEventsHandler {
                 events,
                 &shutdown,
                 &mut watermark,
-                |event| rt.block_on(frame_with_schema(&encoder, &schema, event)),
+                framing_once_per_message_type(|event| {
+                    rt.block_on(frame_with_schema(&encoder, &schema, event))
+                }),
                 |event, framed, tracking| enqueue(&producer, event, framed, tracking, &shutdown),
                 &mut persist,
             );
@@ -2669,6 +2693,35 @@ mod tests {
         Runtime::new()
             .unwrap()
             .block_on(frame_with_schema(&encoder, &trading_schema(), event))
+    }
+
+    #[test]
+    fn the_registry_frames_each_topic_and_message_type_once() {
+        // The registry's frame: magic byte, schema id, message index, then the payload.
+        const PREFIX: [u8; 7] = [0, 0, 0, 0, 9, 2, 6];
+        let calls = std::cell::Cell::new(0);
+        let mut frame = framing_once_per_message_type(|event| {
+            calls.set(calls.get() + 1);
+            Ok([&PREFIX[..], &event.payload].concat())
+        });
+        let balance = |payload: &[u8]| OutboundEvent {
+            payload: payload.to_vec(),
+            ..outbound("k")
+        };
+
+        for payload in [&[1][..], &[2, 3], &[]] {
+            let framed = frame(&balance(payload)).unwrap();
+            assert_eq!(framed, [&PREFIX[..], payload].concat());
+        }
+        assert_eq!(calls.get(), 1);
+
+        let order = OutboundEvent {
+            topic: ORDERS,
+            message_name: "trading.OrderEvent",
+            ..balance(&[4])
+        };
+        frame(&order).unwrap();
+        assert_eq!(calls.get(), 2);
     }
 
     #[test]
