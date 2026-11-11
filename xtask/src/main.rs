@@ -108,13 +108,6 @@ enum TestCommands {
         #[arg(short, long, default_value_t = 1)]
         clients: u32,
     },
-
-    /// Run cargo test for xtask unit tests
-    Unit {
-        /// Filter pattern for tests
-        #[arg(short, long)]
-        filter: Option<String>,
-    },
 }
 
 #[derive(ValueEnum, Clone, Debug, Default)]
@@ -133,17 +126,11 @@ enum XTaskError {
     #[error("Failed to execute command: {0}")]
     CommandExecution(#[from] std::io::Error),
 
-    #[error("Environment error: {0}")]
-    Environment(#[from] std::env::VarError),
-
     #[error("An unexpected error occurred: {0}")]
     Unexpected(String),
 
     #[error("Test Failed: {0}")]
     Testing(#[from] TestingError),
-
-    #[error("JSON parsing error: {0}")]
-    JsonParse(#[from] serde_json::Error),
 
     #[error("Integration test error: {0}")]
     IntegrationTest(String),
@@ -182,7 +169,6 @@ async fn main() -> Result<(), XTaskError> {
             TestCommands::Benchmark { clients } => {
                 run_benchmark(project_root.into_boxed_path(), clients).await
             }
-            TestCommands::Unit { filter } => run_unit_tests(&project_root, filter),
         },
 
         Commands::Kafka {
@@ -546,23 +532,6 @@ async fn run_suite_tests(
                 .map_err(|e| format!("Cancellation tests failed: {}", e))
         }
     }
-}
-
-/// Run xtask unit tests
-fn run_unit_tests(root: &Path, filter: Option<String>) -> Result<(), XTaskError> {
-    println!("Running xtask unit tests...");
-
-    let mut args = vec!["test", "--package", "xtask"];
-
-    if let Some(ref f) = filter {
-        args.push("--");
-        args.push(f);
-    }
-
-    cmd("cargo", &args).dir(root).run()?;
-
-    println!("Unit tests completed successfully.");
-    Ok(())
 }
 
 /// A docker-compose stack in `root`, torn down (`docker compose down -v`) when dropped

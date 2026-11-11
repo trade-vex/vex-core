@@ -59,8 +59,7 @@ cargo xtask test
   ├── e2e [OPTIONS]           # Docker-based network E2E tests
   ├── integration [SUITE]     # Integration tests
   ├── outbox                  # Re-publication, startup wait and topic check (Docker)
-  ├── benchmark               # Performance benchmarks
-  └── unit                    # Run cargo test for xtask
+  └── benchmark               # Performance benchmarks
 ```
 
 #### E2E Tests
@@ -157,27 +156,6 @@ cargo xtask test benchmark [OPTIONS]
 ```sh
 # Run a benchmark with 5 clients
 cargo xtask test benchmark --clients 5
-```
-
-#### Unit Tests
-
-Runs the xtask crate unit tests.
-
-**Usage:**
-```sh
-cargo xtask test unit [OPTIONS]
-```
-
-**Options:**
-* `--filter <PATTERN>`: Filter tests by pattern
-
-**Example:**
-```sh
-# Run all xtask unit tests
-cargo xtask test unit
-
-# Run only tests matching "parse"
-cargo xtask test unit --filter parse
 ```
 
 ## Test Artifacts and Logs
