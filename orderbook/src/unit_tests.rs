@@ -75,11 +75,10 @@ mod test {
                     "Order count mismatch at price {price} for side {side:?}"
                 );
 
-                // Verify internal consistency: total_volume should match sum of order sizes.
-                let actual_summed_volume: u64 = level.orders.iter().map(|o| o.size).sum();
+                // Verify internal consistency: the exact total_volume matches the sum of sizes.
+                let summed: u128 = level.orders.iter().map(|o| u128::from(o.size)).sum();
                 assert_eq!(
-                    level.get_total_volume(),
-                    actual_summed_volume,
+                    level.total_volume, summed,
                     "Internal volume sum inconsistency at price {price}"
                 );
 
@@ -118,25 +117,21 @@ mod test {
 
             // Keep your existing volume checks unchanged
             for (price, level) in self.bids.iter() {
-                let calculated_volume: u64 = level.orders.iter().map(|o| o.size).sum();
-                if calculated_volume != level.get_total_volume() {
+                let calculated_volume: u128 = level.orders.iter().map(|o| u128::from(o.size)).sum();
+                if calculated_volume != level.total_volume {
                     return Err(format!(
                         "Bid level at {} has inconsistent volume: {} vs {}",
-                        price,
-                        level.get_total_volume(),
-                        calculated_volume
+                        price, level.total_volume, calculated_volume
                     ));
                 }
             }
 
             for (price, level) in self.asks.iter() {
-                let calculated_volume: u64 = level.orders.iter().map(|o| o.size).sum();
-                if calculated_volume != level.get_total_volume() {
+                let calculated_volume: u128 = level.orders.iter().map(|o| u128::from(o.size)).sum();
+                if calculated_volume != level.total_volume {
                     return Err(format!(
                         "Ask level at {} has inconsistent volume: {} vs {}",
-                        price,
-                        level.get_total_volume(),
-                        calculated_volume
+                        price, level.total_volume, calculated_volume
                     ));
                 }
             }
@@ -955,6 +950,29 @@ mod test {
 
         assert_eq!(fok_cmd.status(), Status::Cancelled);
         assert_eq!(book.total_order_count(), 1); // Original ask should remain
+        assert!(book.verify_state().is_ok());
+    }
+
+    #[test]
+    fn verify_state_accepts_a_level_above_u64_max() {
+        let (mut book, price_cache) = create_test_orderbook();
+        for id in [1, 2] {
+            let mut ask = create_order_command(
+                OrderCommandType::PlaceOrder,
+                id,
+                id,
+                id,
+                10,
+                100,
+                u64::MAX,
+                Side::Ask,
+                TimeInForce::Gtc,
+            );
+            book.place_order(&mut ask, price_cache.clone());
+        }
+
+        // The exported volume clamps; the helpers compare the exact u128 total.
+        book.assert_level_state(Side::Ask, 100, u64::MAX, 2);
         assert!(book.verify_state().is_ok());
     }
 
