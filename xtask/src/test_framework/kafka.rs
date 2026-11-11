@@ -232,8 +232,14 @@ impl KafkaVerifier {
     /// The end offset of every assigned partition, in one ListOffsets request per broker: a
     /// `fetch_watermarks` per partition is a round trip each, queued behind the fetch in flight.
     fn ends(&self) -> TestResult<Vec<((String, i32), i64)>> {
-        // Kafka reads the timestamp -1 as "the end offset".
-        let ends = self.consumer.offsets_for_timestamp(-1, BROKER_TIMEOUT)?;
+        // Looked up as a timestamp, `Offset::End` (-1) is Kafka's "latest": the end offset.
+        let mut partitions = TopicPartitionList::new();
+        for (topic, partition) in self.events.positions.keys() {
+            partitions.add_partition_offset(topic, *partition, Offset::End)?;
+        }
+        let ends = self
+            .consumer
+            .offsets_for_times(partitions, BROKER_TIMEOUT)?;
         ends.elements()
             .iter()
             .map(|partition| match partition.offset() {
