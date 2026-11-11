@@ -123,6 +123,10 @@ pub fn new_subscription_with_handlers<
     )
 }
 
+/// The core's first message on a gateway's reply channel, sent once that channel is connected.
+/// The gateway's connect (`VexGateway::start`) completes only when it has read it.
+pub(crate) const SESSION_READY: &[u8] = b"READY";
+
 pub fn send_message(publication: &AeronPublication, buffer: &[u8]) -> Result<(), AeronCError> {
     let result = publication.offer::<AeronReservedValueSupplierLogger>(buffer, None);
     if result < 0 {

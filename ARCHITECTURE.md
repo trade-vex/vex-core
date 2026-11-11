@@ -1124,7 +1124,11 @@ aeron:udp?endpoint={address}:{port}|session-id={session}
    - Publication for orders: `aeron:udp?endpoint={core}:{data_port}|session-id={session}`
    - Subscription for responses: `aeron:udp?endpoint=0.0.0.0:{reply_port}|session-id={session}`
 
-7. Connection established
+7. Core sends `READY` on the reply publication once an offer on it succeeds, which it does only
+   when the gateway's reply subscription is connected to it. The gateway's `start()` returns only
+   after it has read `READY`, so it sends no order before the core can answer it: until the core's
+   publication has heard from the gateway's image, a reply is dropped even though the gateway sees
+   its reply channel up (Aeron Cluster opens a client session the same way)
 
 **Duologue**: Paired publication/subscription for bidirectional gateway-core communication.
 
@@ -1225,6 +1229,7 @@ During the replay, journaling skips every command (they are journaled already), 
 3. Creates duologue with dedicated subscription/publication pair
 4. Stores publication in `Publications` array for response routing
 5. Adds to `Session` tracking
+6. Sends ACCEPT, then `READY` once the reply publication is connected
 
 **Disconnect**:
 1. `ImageUnavailableHandler` fires on connection loss
@@ -1277,7 +1282,7 @@ fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) 
 **Back-Pressure**: `publication.offer()` returns negative codes when buffer full. VEX-CORE does not queue: every reply (a pipeline response or the ingress thread's ring-full `Busy`) is offered once and never sleeps (`Publications::publish_response`); a gateway whose replies fail for `SLOW_GATEWAY_TIMEOUT` (1 s) loses its session and reconnects. The invariants:
 1. The events thread never sleeps for a gateway. It offers each reply once (`offer_once`: one immediate re-offer only on `ADMIN_ACTION`).
 2. A command's Kafka events are published before its reply, so a dropped reply is resolved from the read model.
-3. A reply is dropped only when its gateway's channel is full or gone; a gateway undeliverable for 1 s loses its session (the events thread drops its reply publication, the server thread's next poll closes the session); once the gateway sees the close (Aeron's `publication.connection.timeout`, 5 s), its waiting requests fail (408), its new orders are refused (503), and it reconnects.
+3. A reply is dropped only when its gateway's channel is full or gone, never because it has not connected yet (a gateway sends nothing before `READY`); a gateway undeliverable for 1 s loses its session (the events thread drops its reply publication, the server thread's next poll closes the session); once the gateway sees the close (Aeron's `publication.connection.timeout`, 5 s), its waiting requests fail (408), its new orders are refused (503), and it reconnects.
 4. At shutdown, sessions outlive the drain: every accepted command is answered before any session closes.
 
 **Gateway Send Outcomes**: `Publisher::try_send_order_command` never sleeps. `BACK_PRESSURED` returns `GatewayError::Busy`, as does an `ADMIN_ACTION` (log-buffer term rotation) that persists across one immediate re-offer; `NOT_CONNECTED` (no core subscribed) returns `GatewayError::NotConnected`; any other failure (`CLOSED`, `MAX_POSITION_EXCEEDED`, `ERROR`) is `GatewayError::SendError`. `GatewayError::Busy` and a `Status::Busy` reply are the same retryable outcome.

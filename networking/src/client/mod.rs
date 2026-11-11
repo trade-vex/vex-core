@@ -1,6 +1,6 @@
 use crate::utils::{
-    new_publication, new_publication_with_session, new_subscription_with_handlers_and_session,
-    new_subscription_with_mdc, offer_once,
+    SESSION_READY, new_publication, new_publication_with_session,
+    new_subscription_with_handlers_and_session, new_subscription_with_mdc, offer_once,
 };
 use common::ORDERCOMMANDSIZE;
 use common::{OrderCommand, encode_order_command, order_debug};
@@ -550,6 +550,7 @@ impl VexGateway {
 
         // Wait for connections
         self.wait_for_channel_connections(&publication, &subscription, "dedicated")?;
+        self.wait_for_session_ready(&subscription)?;
 
         debug!(
             target: "gateway_client",
@@ -649,6 +650,28 @@ impl VexGateway {
             std::thread::sleep(Duration::from_millis(100));
         }
         Ok(())
+    }
+
+    /// Reads the core's `SESSION_READY`, the first message on the reply channel. This side's image
+    /// can be up before the core's reply publication has heard from it, and a reply offered then is
+    /// dropped; the core sends READY only once its offers succeed, so every reply to an order sent
+    /// after this returns can be delivered. Aeron Cluster connects a client the same way.
+    fn wait_for_session_ready(&self, subscription: &AeronSubscription) -> Result<(), GatewayError> {
+        let start = Instant::now();
+        let mut ready = false;
+        loop {
+            // One fragment at a time: what follows READY belongs to the reply handler.
+            subscription.poll_once(|message, _| ready = message == SESSION_READY, 1)?;
+            if ready {
+                return Ok(());
+            }
+            if start.elapsed() > CONNECT_TIMEOUT {
+                return Err(GatewayError::Timeout(
+                    "Waiting for the core's READY on the reply channel".to_string(),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// Sends a message with automatic retries

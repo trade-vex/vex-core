@@ -376,6 +376,9 @@ netstat -tuln | grep -E "40001|3521"
 - At most 16 gateways (`gateway_id` 0-15) can be connected; the core opens UDP
   `base_gateway_port..base_gateway_port+63` for them. `Core unavailable, retry after 10 seconds` on
   the gateway means no pair of ports was free (each freed port waits 10 s before reuse)
+- `Waiting for the core's READY on the reply channel` on the gateway: ACCEPT arrived, but the
+  core's replies to the gateway's reply port, or the gateway's status messages back to the core,
+  do not get through (see **Network** under Port Reference)
 - Gateway authentication (required in production, which refuses to start without both):
   `VEX__CORE_NETWORKING__ENABLE_AUTHENTICATION=true` and
   `VEX__CORE_NETWORKING__GATEWAY_AUTHENTICATION_KEY=<at least 32 characters; openssl rand -hex 32>`

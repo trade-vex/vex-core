@@ -3,7 +3,9 @@ use crate::server::duologue::{
     DuologueImageUnavailable,
 };
 use crate::server::gateway_publications::Publications;
-use crate::utils::{PORT_COOLDOWN_SECONDS, PortAllocator, SessionAllocator, send_message};
+use crate::utils::{
+    PORT_COOLDOWN_SECONDS, PortAllocator, SESSION_READY, SessionAllocator, send_message,
+};
 use common::{MAX_GATEWAYS, OrderCommand};
 use disruptor::{MultiProducer, SingleConsumerBarrier};
 use rusteron_archive::{
@@ -239,6 +241,8 @@ struct PendingHandshake {
     on_image_available_handler: Option<Handler<DuologueImageAvailable>>,
     on_image_unavailable_handler: Option<Handler<DuologueImageUnavailable>>,
     session_attached: bool,
+    /// ACCEPT is out; READY follows once the reply channel is connected.
+    accepted: bool,
     accept_attempts: usize,
     next_accept_attempt: Instant,
 }
@@ -732,6 +736,7 @@ impl GatewayManager {
             on_image_available_handler: Some(on_image_available_handler),
             on_image_unavailable_handler: Some(on_image_unavailable_handler),
             session_attached: false,
+            accepted: false,
             accept_attempts: 0,
             next_accept_attempt: now,
         });
@@ -887,6 +892,26 @@ impl GatewayManager {
             );
         }
 
+        // The gateway's connect completes on READY, the first message on its reply channel. An
+        // offer succeeds only once that channel is connected, so no reply to an order the gateway
+        // sends after READY is lost to a reply channel still connecting. Aeron Cluster opens a
+        // client session the same way.
+        if pending.accepted {
+            let ready = self
+                .publications
+                .get(pending.gateway_id)?
+                .is_some_and(|reply| send_message(&reply, SESSION_READY).is_ok());
+            if !ready {
+                return Ok(PendingHandshakeStatus::Pending);
+            }
+            info!(
+                target: "gateway_manager",
+                action = "gateway_ready",
+                gateway_id = pending.gateway_id
+            );
+            return Ok(PendingHandshakeStatus::Complete);
+        }
+
         if !pending.response_publication.is_connected() || now < pending.next_accept_attempt {
             return Ok(PendingHandshakeStatus::Pending);
         }
@@ -910,7 +935,8 @@ impl GatewayManager {
                     data_port = pending.ports[0],
                     reply_port = pending.ports[1]
                 );
-                Ok(PendingHandshakeStatus::Complete)
+                pending.accepted = true;
+                Ok(PendingHandshakeStatus::Pending)
             }
             Err(e) => {
                 pending.accept_attempts += 1;
@@ -1453,6 +1479,134 @@ mod tests {
         assert!(manager.is_gateway_connected(2));
         assert!(publications.get(2).unwrap().is_some());
         answer_gateway_2();
+    }
+
+    /// A gateway's image of its reply channel can be up before the core's reply publication has
+    /// heard from it, and a reply offered then is dropped: under packet loss, every reply to the
+    /// orders a gateway sent right after connecting. So the handshake ends with READY, which the
+    /// core sends only once its reply channel is connected and the gateway reads before it sends
+    /// anything: every reply offered after READY arrives.
+    ///
+    /// Runs an embedded media driver; every channel uses IPC, so it binds no port.
+    #[test]
+    fn a_handshake_ends_with_ready_once_the_reply_channel_is_connected() {
+        let driver = EmbeddedDriver::launch(format!(
+            "/dev/shm/vex-session-ready-test-{}",
+            std::process::id()
+        ));
+        let mut config = CoreNetworkingConfig::test_defaults();
+        config.context_dir = driver.dir.clone();
+        let aeron = VexCoreServer::initialize_aeron(&config).unwrap();
+        let producer = build_multi_producer(64, OrderCommand::default, BusySpin)
+            .handle_events_with(|_, _, _| {})
+            .build();
+        let publications = Arc::new(Publications::new());
+        let manager =
+            GatewayManager::new(config, aeron.clone(), producer, Arc::clone(&publications))
+                .unwrap();
+        let (handshake_stream, reply_stream) = (DUOLOGUE_STREAM_ID + 1, DUOLOGUE_STREAM_ID + 2);
+        let subscribe = |uri: &str, stream_id| {
+            aeron
+                .add_subscription(
+                    &uri.into_c_string(),
+                    stream_id,
+                    None::<&Handler<AeronAvailableImageLogger>>,
+                    None::<&Handler<AeronUnavailableImageLogger>>,
+                    DRAIN_TIMEOUT,
+                )
+                .unwrap()
+        };
+
+        // Gateway 1's handshake once its dedicated channels have registered, on IPC.
+        let handshake = aeron
+            .add_publication(
+                &"aeron:ipc".into_c_string(),
+                handshake_stream,
+                DRAIN_TIMEOUT,
+            )
+            .unwrap();
+        let handshake_replies = subscribe("aeron:ipc", handshake_stream);
+        wait_until(DRAIN_TIMEOUT, || Ok(handshake.is_connected())).unwrap();
+        let (available, unavailable) = image_handlers(&manager.session_event_tx);
+        let orders = aeron
+            .add_subscription(
+                &"aeron:ipc?session-id=101".into_c_string(),
+                DUOLOGUE_STREAM_ID,
+                Some(&available),
+                Some(&unavailable),
+                DRAIN_TIMEOUT,
+            )
+            .unwrap();
+        let replies = aeron
+            .add_publication(
+                &"aeron:ipc?term-length=65536|session-id=101".into_c_string(),
+                reply_stream,
+                DRAIN_TIMEOUT,
+            )
+            .unwrap();
+        assert!(manager.reserve_slot(1, 101));
+        manager.pending_handshakes.borrow_mut()[1] = Some(PendingHandshake {
+            gateway_id: 1,
+            handshake_session_id: 7,
+            dedicated_session_id: 101,
+            ports: [10_000, 10_001],
+            encryption_key: 3,
+            response_publication: handshake.clone(),
+            publication_registration: None,
+            subscription_registration: None,
+            publication: Some(replies),
+            subscription: Some(orders),
+            on_image_available_handler: Some(available),
+            on_image_unavailable_handler: Some(unavailable),
+            session_attached: false,
+            accepted: false,
+            accept_attempts: 0,
+            next_accept_attempt: Instant::now(),
+        });
+
+        // ACCEPT goes out; the gateway has not subscribed to its replies yet, so the handshake
+        // is not over.
+        let mut accept = String::new();
+        wait_until(DRAIN_TIMEOUT, || {
+            manager.poll()?;
+            handshake_replies.poll_once(
+                |message, _| accept = String::from_utf8_lossy(message).into_owned(),
+                1,
+            )?;
+            Ok(!accept.is_empty())
+        })
+        .unwrap();
+        assert!(accept.starts_with("7 gateway-1 ACCEPT "), "{accept}");
+        for _ in 0..100 {
+            manager.poll().unwrap();
+        }
+        assert!(manager.pending_handshakes.borrow()[1].is_some());
+
+        // The gateway subscribes: READY is the first thing it reads, and every reply after it,
+        // as to orders sent at once on connecting, arrives.
+        let gateway = subscribe("aeron:ipc?session-id=101", reply_stream);
+        let mut first = Vec::new();
+        wait_until(DRAIN_TIMEOUT, || {
+            manager.poll()?;
+            gateway.poll_once(|message, _| first = message.to_vec(), 1)?;
+            Ok(!first.is_empty())
+        })
+        .unwrap();
+        assert_eq!(first, SESSION_READY);
+        assert!(manager.pending_handshakes.borrow()[1].is_none());
+        for order_id in 0..100 {
+            publications.publish_response(&OrderCommand {
+                route_gateway_id: 1,
+                order_id,
+                ..OrderCommand::default()
+            });
+        }
+        let mut delivered = 0;
+        wait_until(DRAIN_TIMEOUT, || {
+            delivered += gateway.poll_once(|_, _| {}, 100)?;
+            Ok(delivered == 100)
+        })
+        .unwrap();
     }
 
     /// Runs an embedded media driver; the handshake reply uses IPC, so it binds no port.
