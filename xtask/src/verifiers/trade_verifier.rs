@@ -72,34 +72,6 @@ impl<'a> TradeVerifier<'a> {
         Ok(())
     }
 
-    /// Assert at least N trades exist
-    pub async fn assert_min_trade_count(
-        &mut self,
-        market_id: u32,
-        min_count: usize,
-    ) -> TestResult<()> {
-        let trades = self.kafka.get_trades(market_id, min_count + 10).await?;
-
-        if trades.len() < min_count {
-            return Err(TestError::Verification {
-                message: format!(
-                    "Insufficient trades for market {}: expected at least {}, got {}",
-                    market_id,
-                    min_count,
-                    trades.len()
-                ),
-            });
-        }
-
-        debug!(
-            "Minimum trade count verified for market {}: {} >= {}",
-            market_id,
-            trades.len(),
-            min_count
-        );
-        Ok(())
-    }
-
     /// Assert trade details match expected values
     pub async fn assert_trade_details(
         &mut self,
