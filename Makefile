@@ -1,4 +1,4 @@
-.PHONY: all build clean aeron media-driver stop-media-driver media-driver-gateway stop-media-driver-gateway aeron-stat aeron-errors server test test-gtc test-ioc test-fok test-cancel test-balance help
+.PHONY: all build clean aeron media-driver stop-media-driver media-driver-gateway stop-media-driver-gateway aeron-stat aeron-errors server test help
 
 AERON_JAR := aeron-all-1.49.0.jar
 AERON_DIR := /dev/shm/aeron-test-server
@@ -38,13 +38,8 @@ help:
 	@echo "  aeron-errors               - Show Aeron error stats"
 	@echo "  server                     - Start VEX server (logs to terminal)"
 	@echo ""
-	@echo "Test suite (state-aware, single continuous test per suite):"
-	@echo "  test          - Run comprehensive integration test (all order types)"
-	@echo "  test-gtc      - Run GTC order tests (3 sections)"
-	@echo "  test-ioc      - Run IOC order tests (5 sections)"
-	@echo "  test-fok      - Run FOK order tests (6 sections)"
-	@echo "  test-cancel   - Run cancellation tests (8 sections)"
-	@echo "  test-balance  - Run balance management tests"
+	@echo "  test          - Run the integration suite on the Docker stack (cargo xtask test integration;"
+	@echo "                  other suites: cargo xtask test integration [balance|gtc|ioc|fok|cancellation])"
 	@echo ""
 	@echo "  clean         - Clean build artifacts"
 
@@ -111,23 +106,8 @@ server: build media-driver
 	@sleep 1
 	RUST_LOG=info cargo run --bin vex-core
 
-test: build media-driver-gateway
-	cargo run -p xtask --bin run_test_suite all
-
-test-gtc: build media-driver-gateway
-	cargo run -p xtask --bin run_test_suite gtc
-
-test-ioc: build media-driver-gateway
-	cargo run -p xtask --bin run_test_suite ioc
-
-test-fok: build media-driver-gateway
-	cargo run -p xtask --bin run_test_suite fok
-
-test-cancel: build media-driver-gateway
-	cargo run -p xtask --bin run_test_suite ioc cancellation
-
-test-balance: build media-driver-gateway
-	cargo run -p xtask --bin run_test_suite ioc balance
+test:
+	cargo xtask test integration
 
 media-driver-gateway: aeron
 	@if [ -f "$(PID_FILE_GATEWAY)" ]; then \

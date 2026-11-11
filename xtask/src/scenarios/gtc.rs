@@ -3,15 +3,13 @@
 //! This module contains test scenarios for GTC limit orders.
 //! All tests run in a single session without restarting the server.
 
-use std::time::Duration;
-
 use crate::builders::OrderBuilder;
 use crate::fixtures::{assets, prices, users};
-use crate::test_framework::TestContext;
 use crate::test_framework::types::*;
+use crate::test_framework::{TestContext, scenario};
 use crate::verifiers::{BalanceVerifier, OrderbookVerifier, ResponseVerifier, TradeVerifier};
 use common::Side;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Comprehensive GTC test suite - runs all scenarios in a single session
 ///
@@ -23,25 +21,6 @@ use tracing::{info, warn};
 /// State is maintained across sections - no cleanup between tests since
 /// the VexCore server holds orderbook and balances in memory.
 pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
-    info!("╔════════════════════════════════════════╗");
-    info!("║   GTC COMPREHENSIVE TEST SUITE         ║");
-    info!("╚════════════════════════════════════════╝");
-    info!(
-        "Market ID: {} (Base: {}, Quote: {})",
-        ctx.market_id, ctx.base_asset_id, ctx.quote_asset_id
-    );
-    info!("");
-
-    let suite_start = std::time::Instant::now();
-    let mut results = Vec::new();
-
-    // ========================================================================
-    // SECTION 1: Setup - Fund all test users
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 1: Initial Setup                │");
-    info!("└─────────────────────────────────────────┘");
-
     info!("Funding test users...");
     ctx.fund_user(users::ALICE, 10_000_000, assets::USD).await?; // 10M USD for Alice
     ctx.fund_user(users::ALICE, 1_000, assets::BTC).await?; // 1000 BTC for Alice
@@ -52,120 +31,15 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     ctx.fund_user(users::CHARLIE, 1_000, assets::BTC).await?; // 1000 BTC for Charlie
 
     info!("✓ All users funded successfully");
-    info!("");
 
-    // ========================================================================
-    // SECTION 2: GTC No Match - Orders rest on book
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 2: GTC No Match                 │");
-    info!("│ (Orders rest on book)                   │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_gtc_no_match_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 2 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "gtc_no_match".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 2 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "gtc_no_match".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 3: GTC Full Match - Complete fills
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 3: GTC Full Match               │");
-    info!("│ (Orders fully matched)                  │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_gtc_full_match_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 3 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "gtc_full_match".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 3 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "gtc_full_match".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 4: GTC Partial Match - Partial fills
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 4: GTC Partial Match           │");
-    info!("│ (Partial fill + rest on book)          │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match test_gtc_partial_match_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 4 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "gtc_partial_match".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 4 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "gtc_partial_match".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // Final Summary
-    // ========================================================================
-    let total_duration = suite_start.elapsed();
-    let passed = results.iter().filter(|r| r.success).count();
-    let failed = results.len() - passed;
-
-    info!("╔════════════════════════════════════════╗");
-    info!("║   TEST SUITE SUMMARY                   ║");
-    info!("╚════════════════════════════════════════╝");
-    info!("Total Sections: {}", results.len());
-    info!("Passed:         {} ✓", passed);
-    info!("Failed:         {} ✗", failed);
-    info!("Total Time:     {:?}", total_duration);
-    info!("╚════════════════════════════════════════╝");
-
+    let mut results = Vec::new();
+    scenario!(results, "gtc_no_match", test_gtc_no_match_section(ctx));
+    scenario!(results, "gtc_full_match", test_gtc_full_match_section(ctx));
+    scenario!(
+        results,
+        "gtc_partial_match",
+        test_gtc_partial_match_section(ctx)
+    );
     Ok(results)
 }
 
@@ -207,7 +81,10 @@ async fn test_gtc_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
         .market_spec()
         .calculate_quote_cost(price, size)
         .expect("scenario notional fits in u64");
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let event_timeout = ctx.config().event_timeout;
+    ctx.kafka
+        .wait_for_balance_after(users::ALICE, assets::USD, response.timestamp, event_timeout)
+        .await?;
 
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
@@ -217,11 +94,10 @@ async fn test_gtc_no_match_section(ctx: &mut TestContext) -> TestResult<()> {
         info!("  → Funds locked: {} USD", locked_amount);
     }
 
-    let event_timeout = ctx.config().event_timeout;
     {
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_depth(market_id, 1, 0, event_timeout)
+            .wait_and_assert_depth(market_id, 1, 0, response.timestamp, event_timeout)
             .await?;
         orderbook_verifier
             .assert_level(market_id, Side::Bid, price, size)
@@ -257,8 +133,6 @@ async fn test_gtc_full_match_section(ctx: &mut TestContext) -> TestResult<()> {
     ResponseVerifier::assert_placed(&maker_response)?;
     info!("  → Bob's ask placed: order_id={}", maker_response.order_id);
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
     // Charlie (taker) places matching bid
     let taker_order = OrderBuilder::place_limit()
         .user(users::CHARLIE)
@@ -276,8 +150,6 @@ async fn test_gtc_full_match_section(ctx: &mut TestContext) -> TestResult<()> {
     );
 
     // Verify trade on Kafka
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
     let criteria = TradeCriteria::new()
         .market_id(market_id)
         .maker_user_id(users::BOB)
@@ -287,9 +159,10 @@ async fn test_gtc_full_match_section(ctx: &mut TestContext) -> TestResult<()> {
         .maker_order_id(maker_response.order_id)
         .taker_order_id(taker_response.order_id);
 
+    let event_timeout = ctx.config().event_timeout;
     let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
     trade_verifier
-        .wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2))
+        .wait_and_assert_trade(market_id, &criteria, event_timeout)
         .await?;
     info!("  → Trade executed: {} BTC @ {}", size, price);
 
@@ -321,7 +194,6 @@ async fn test_gtc_partial_match_section(ctx: &mut TestContext) -> TestResult<()>
 
     ctx.execute_command(maker_order)?;
     info!("  → Alice's ask placed for {} BTC", maker_size);
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Bob (taker) places larger bid
     let taker_order = OrderBuilder::place_limit()
@@ -341,20 +213,21 @@ async fn test_gtc_partial_match_section(ctx: &mut TestContext) -> TestResult<()>
     );
 
     // Verify trade and remaining order
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
+    let event_timeout = ctx.config().event_timeout;
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
-        let criteria = TradeCriteria::new().market_id(market_id).size(maker_size);
+        let criteria = TradeCriteria::new()
+            .market_id(market_id)
+            .size(maker_size)
+            .taker_order_id(taker_response.order_id);
         trade_verifier
-            .assert_trade_exists(market_id, &criteria)
+            .wait_and_assert_trade(market_id, &criteria, event_timeout)
             .await?;
         info!("  → Trade executed for matched portion: {} BTC", maker_size);
     }
 
     {
         // Wait for orderbook to update with remaining order
-        let event_timeout = ctx.config().event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
             .wait_and_assert_level(

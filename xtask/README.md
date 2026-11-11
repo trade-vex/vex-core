@@ -60,8 +60,7 @@ cargo xtask test
   ├── e2e [OPTIONS]           # Docker-based network E2E tests
   ├── integration [SUITE]     # Integration tests
   ├── outbox                  # Re-publication, startup wait and topic check (Docker)
-  ├── benchmark               # Performance benchmarks
-  └── unit                    # Run cargo test for xtask
+  └── benchmark               # Performance benchmarks
 ```
 
 #### E2E Tests
@@ -112,7 +111,8 @@ cargo xtask test integration [SUITE] [OPTIONS]
 
 **Options:**
 * `--verbose` / `-v`: Enable debug logging
-* `--fail-fast` / `-f`: Stop on first failure
+
+The command exits non-zero when a scenario fails or the suite stops before its end.
 
 **Examples:**
 ```sh
@@ -121,9 +121,6 @@ cargo xtask test integration
 
 # Run only GTC tests with verbose output
 cargo xtask test integration gtc --verbose
-
-# Run balance tests and stop on first failure
-cargo xtask test integration balance --fail-fast
 ```
 
 #### Outbox Tests
@@ -166,32 +163,11 @@ cargo xtask test benchmark [OPTIONS]
 cargo xtask test benchmark --clients 5
 ```
 
-#### Unit Tests
-
-Runs the xtask crate unit tests.
-
-**Usage:**
-```sh
-cargo xtask test unit [OPTIONS]
-```
-
-**Options:**
-* `--filter <PATTERN>`: Filter tests by pattern
-
-**Example:**
-```sh
-# Run all xtask unit tests
-cargo xtask test unit
-
-# Run only tests matching "parse"
-cargo xtask test unit --filter parse
-```
-
 ## Test Artifacts and Logs
 
 After running tests or benchmarks, the following artifacts are generated:
 
 * **Test Results:** Raw data from tests is stored in `xtask/tests/test-results/`. Each e2e or benchmark client writes the ids it got a response for to `received_ids-<client id>.txt`, which the run reads back to check completeness.
-* **Docker Logs:** Logs for each container (`vex-server`, `vex-client`) are saved in `xtask/tests/test-results/logs/`.
+* **Docker Logs:** Every stack saves each container's log to `xtask/tests/test-results/logs/<container>-<start time>.log` before its teardown. Runs never delete them; remove the directory to reclaim the space. CI uploads the directory as the `docker-suite-logs` artifact when the end-to-end job fails.
 
 The environment is automatically torn down after each run, but the artifacts are preserved for inspection.

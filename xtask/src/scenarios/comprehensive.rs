@@ -8,15 +8,14 @@
 //! This replaces the Commands::All approach which didn't preserve state
 //! between different scenario suites.
 
-use std::time::Duration;
-
 use crate::builders::OrderBuilder;
 use crate::fixtures::{assets, users};
-use crate::test_framework::TestContext;
 use crate::test_framework::types::*;
-use crate::verifiers::{BalanceVerifier, OrderbookVerifier, ResponseVerifier, TradeVerifier};
+use crate::test_framework::{TestContext, scenario};
+use crate::verifiers::{OrderbookVerifier, ResponseVerifier, TradeVerifier};
 use common::Side;
-use tracing::{info, warn};
+use processors::events::trading_proto;
+use tracing::info;
 
 /// Comprehensive integration test - single massive test combining all order types
 ///
@@ -32,26 +31,6 @@ use tracing::{info, warn};
 /// The test validates that the exchange behaves correctly under complex
 /// realistic conditions where different order types interact.
 pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
-    info!("╔════════════════════════════════════════════════╗");
-    info!("║   COMPREHENSIVE INTEGRATION TEST SUITE         ║");
-    info!("║   All Order Types + Edge Cases + Load          ║");
-    info!("╚════════════════════════════════════════════════╝");
-    info!(
-        "Market ID: {} (Base: {}, Quote: {})",
-        ctx.market_id, ctx.base_asset_id, ctx.quote_asset_id
-    );
-    info!("");
-
-    let suite_start = std::time::Instant::now();
-    let mut results = Vec::new();
-
-    // ========================================================================
-    // SECTION 1: Setup - Fund all test users
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 1: Initial Setup                       │");
-    info!("└────────────────────────────────────────────────┘");
-
     info!("Funding test users with substantial amounts for comprehensive testing...");
     ctx.fund_user(users::ALICE, 50_000_000, assets::USD).await?; // 50M USD
     ctx.fund_user(users::ALICE, 5_000, assets::BTC).await?; // 5000 BTC
@@ -62,303 +41,36 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     ctx.fund_user(users::CHARLIE, 5_000, assets::BTC).await?; // 5000 BTC
 
     info!("✓ All users funded successfully");
-    info!("");
 
-    // ========================================================================
-    // SECTION 2: Build Initial Order Book with GTC Orders
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 2: Build Initial Order Book (GTC)      │");
-    info!("│ Create multi-level orderbook depth             │");
-    info!("└────────────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match build_initial_orderbook_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 2 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "build_orderbook".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 2 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "build_orderbook".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 3: IOC Orders Against Existing Liquidity
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 3: IOC Orders vs Existing Liquidity    │");
-    info!("│ Test IOC partial fills and cancellations       │");
-    info!("└────────────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match ioc_against_orderbook_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 3 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "ioc_vs_liquidity".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 3 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "ioc_vs_liquidity".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 4: FOK Orders - All or Nothing Tests
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 4: FOK Orders (All-or-Nothing)         │");
-    info!("│ Test FOK success and rejection scenarios       │");
-    info!("└────────────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match fok_orders_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 4 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("fok_orders".to_string(), duration));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 4 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "fok_orders".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 5: Cancellations During Active Trading
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 5: Cancellations During Trading        │");
-    info!("│ Cancel orders with active orderbook            │");
-    info!("└────────────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match cancellations_during_trading_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 5 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "active_cancellations".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 5 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "active_cancellations".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 6: Mixed Order Types - Stress Test
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 6: Mixed Order Types (Stress Test)     │");
-    info!("│ Rapid sequence of GTC/IOC/FOK/Cancel           │");
-    info!("└────────────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match mixed_order_types_stress_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 6 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "mixed_stress_test".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 6 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "mixed_stress_test".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 7: Edge Cases - Self-Match Prevention & Boundary Tests
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 7: Edge Cases & Boundary Tests         │");
-    info!("│ Self-match prevention, partial fills, etc      │");
-    info!("└────────────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match edge_cases_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 7 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("edge_cases".to_string(), duration));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 7 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "edge_cases".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 8: Multi-Level Orderbook Interactions
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 8: Multi-Level Orderbook Interactions  │");
-    info!("│ Orders crossing multiple price levels          │");
-    info!("└────────────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match multi_level_interactions_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 8 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success("multi_level".to_string(), duration));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 8 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "multi_level".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 9: Partial Fills with Cancellations
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 9: Partial Fills + Cancellations       │");
-    info!("│ Cancel partially filled orders                 │");
-    info!("└────────────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match partial_fills_with_cancel_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 9 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "partial_cancel".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 9 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "partial_cancel".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 10: Final Orderbook Cleanup and Balance Verification
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 10: Final Cleanup & Balance Check      │");
-    info!("│ Cancel all remaining orders, verify balances   │");
-    info!("└────────────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match final_cleanup_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 10 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "final_cleanup".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 10 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "final_cleanup".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // Final Summary
-    // ========================================================================
-    let total_duration = suite_start.elapsed();
-    let passed = results.iter().filter(|r| r.success).count();
-    let failed = results.len() - passed;
-
-    info!("╔════════════════════════════════════════════════╗");
-    info!("║   COMPREHENSIVE TEST SUITE SUMMARY             ║");
-    info!("╚════════════════════════════════════════════════╝");
-    info!("Total Sections: {}", results.len());
-    info!("Passed:         {} ✓", passed);
-    info!("Failed:         {} ✗", failed);
-    info!("Total Time:     {:?}", total_duration);
-    info!("╚════════════════════════════════════════════════╝");
-
+    let mut results = Vec::new();
+    scenario!(
+        results,
+        "build_orderbook",
+        build_initial_orderbook_section(ctx)
+    );
+    scenario!(
+        results,
+        "ioc_vs_liquidity",
+        ioc_against_orderbook_section(ctx)
+    );
+    scenario!(results, "fok_orders", fok_orders_section(ctx));
+    scenario!(
+        results,
+        "active_cancellations",
+        cancellations_during_trading_section(ctx)
+    );
+    scenario!(results, "edge_cases", edge_cases_section(ctx));
+    scenario!(
+        results,
+        "multi_level",
+        multi_level_interactions_section(ctx)
+    );
+    scenario!(
+        results,
+        "partial_cancel",
+        partial_fills_with_cancel_section(ctx)
+    );
+    scenario!(results, "conservation", conservation_section(ctx));
     Ok(results)
 }
 
@@ -383,8 +95,6 @@ async fn build_initial_orderbook_section(ctx: &mut TestContext) -> TestResult<()
     ResponseVerifier::assert_placed(&resp1)?;
     info!("  → Bid level 1: order_id={} (Alice)", resp1.order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Wait for first bid to appear on orderbook
     {
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
@@ -404,8 +114,6 @@ async fn build_initial_orderbook_section(ctx: &mut TestContext) -> TestResult<()
     let resp2 = ctx.execute_command(bid2)?;
     ResponseVerifier::assert_placed(&resp2)?;
     info!("  → Bid level 2: order_id={} (Bob)", resp2.order_id);
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Wait for second bid to appear
     {
@@ -427,8 +135,6 @@ async fn build_initial_orderbook_section(ctx: &mut TestContext) -> TestResult<()
     ResponseVerifier::assert_placed(&resp3)?;
     info!("  → Ask level 1: order_id={} (Charlie)", resp3.order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Wait for first ask to appear
     {
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
@@ -449,8 +155,6 @@ async fn build_initial_orderbook_section(ctx: &mut TestContext) -> TestResult<()
     ResponseVerifier::assert_placed(&resp4)?;
     info!("  → Ask level 2: order_id={} (Bob)", resp4.order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Wait for second ask to appear and verify final orderbook structure
     {
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
@@ -458,7 +162,7 @@ async fn build_initial_orderbook_section(ctx: &mut TestContext) -> TestResult<()
             .wait_and_assert_level(market_id, Side::Ask, 60_000, 8, event_timeout)
             .await?;
         orderbook_verifier
-            .wait_and_assert_depth(market_id, 2, 2, event_timeout)
+            .wait_and_assert_depth(market_id, 2, 2, resp4.timestamp, event_timeout)
             .await?;
         info!("  → Orderbook verified: 2 bid levels, 2 ask levels");
     }
@@ -473,6 +177,7 @@ async fn ioc_against_orderbook_section(ctx: &mut TestContext) -> TestResult<()> 
     info!("  2. Charlie IOC sell @ 44k for 7 BTC → Partial fill (crosses 45k bid)");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
 
     // Bob places IOC buy @ 56,000 for 5 BTC
     // This crosses Charlie's ask @ 55,000 (12 BTC available)
@@ -489,8 +194,6 @@ async fn ioc_against_orderbook_section(ctx: &mut TestContext) -> TestResult<()> 
     ResponseVerifier::assert_filled(&ioc_resp1)?;
     info!("  → IOC buy filled: 5 BTC @ 55,000");
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
     // Verify trade
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
@@ -501,11 +204,14 @@ async fn ioc_against_orderbook_section(ctx: &mut TestContext) -> TestResult<()> 
             .price(55_000)
             .size(5);
         trade_verifier
-            .wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2))
+            .wait_and_assert_trade(market_id, &criteria, event_timeout)
             .await?;
     }
 
     // Verify remaining ask @ 55k is 7 BTC
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, ioc_resp1.timestamp, event_timeout)
+        .await?;
     {
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
@@ -529,8 +235,6 @@ async fn ioc_against_orderbook_section(ctx: &mut TestContext) -> TestResult<()> 
     ResponseVerifier::assert_filled(&ioc_resp2)?;
     info!("  → IOC sell filled: 7 BTC @ 45,000");
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
     // Verify trade
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
@@ -541,11 +245,14 @@ async fn ioc_against_orderbook_section(ctx: &mut TestContext) -> TestResult<()> 
             .price(45_000)
             .size(7);
         trade_verifier
-            .wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2))
+            .wait_and_assert_trade(market_id, &criteria, event_timeout)
             .await?;
     }
 
     // Verify remaining bid @ 45k is 3 BTC
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, ioc_resp2.timestamp, event_timeout)
+        .await?;
     {
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
@@ -565,6 +272,7 @@ async fn fok_orders_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("  2. Bob FOK buy @ 61k for 20 BTC → Should reject (insufficient liquidity)");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
 
     // FOK buy for exact available liquidity @ 55k (7 BTC)
     let fok_buy1 = OrderBuilder::place_fok()
@@ -579,8 +287,6 @@ async fn fok_orders_section(ctx: &mut TestContext) -> TestResult<()> {
     ResponseVerifier::assert_filled(&fok_resp1)?;
     info!("  → FOK buy filled: 7 BTC @ 55,000");
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
     // Verify trade
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
@@ -589,7 +295,7 @@ async fn fok_orders_section(ctx: &mut TestContext) -> TestResult<()> {
             .price(55_000)
             .size(7);
         trade_verifier
-            .wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2))
+            .wait_and_assert_trade(market_id, &criteria, event_timeout)
             .await?;
     }
 
@@ -619,6 +325,7 @@ async fn cancellations_during_trading_section(ctx: &mut TestContext) -> TestResu
     info!("  3. Bob cancels his bid @ 40k");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
 
     // Charlie places new ask
     let new_ask = OrderBuilder::place_limit()
@@ -634,8 +341,6 @@ async fn cancellations_during_trading_section(ctx: &mut TestContext) -> TestResu
     let charlie_order_id = ask_resp.order_id;
     info!("  → Charlie placed ask: order_id={}", charlie_order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Charlie cancels it
     let cancel1 = OrderBuilder::cancel(users::CHARLIE)
         .order_id(charlie_order_id)
@@ -647,7 +352,9 @@ async fn cancellations_during_trading_section(ctx: &mut TestContext) -> TestResu
     ResponseVerifier::assert_cancelled(&cancel_resp1)?;
     info!("  → Charlie cancelled order_id={}", charlie_order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, cancel_resp1.timestamp, event_timeout)
+        .await?;
 
     // Verify Charlie's order removed
     {
@@ -675,10 +382,9 @@ async fn cancellations_during_trading_section(ctx: &mut TestContext) -> TestResu
         .build();
 
     let bob_resp = ctx.execute_command(bob_bid)?;
+    ResponseVerifier::assert_placed(&bob_resp)?;
     let bob_order_id = bob_resp.order_id;
     info!("  → Bob placed new bid: order_id={}", bob_order_id);
-
-    tokio::time::sleep(Duration::from_millis(150)).await;
 
     let cancel2 = OrderBuilder::cancel(users::BOB)
         .order_id(bob_order_id)
@@ -686,67 +392,20 @@ async fn cancellations_during_trading_section(ctx: &mut TestContext) -> TestResu
         .market_id(market_id)
         .build();
 
-    ctx.execute_command(cancel2)?;
+    ResponseVerifier::assert_cancelled(&ctx.execute_command(cancel2)?)?;
     info!("  → Bob cancelled order_id={}", bob_order_id);
 
     Ok(())
 }
 
-/// SECTION 6: Mixed order types stress test
-async fn mixed_order_types_stress_section(ctx: &mut TestContext) -> TestResult<()> {
-    info!("Stress test with rapid mixed order types:");
-    info!("  Rapid sequence of GTC, IOC, FOK, and cancellations");
-
-    let market_id = ctx.market_id;
-
-    // Rapid sequence of orders
-    for i in 0..5 {
-        let price = 50_000 + (i * 1000);
-
-        // GTC order
-        let gtc = OrderBuilder::place_limit()
-            .user(users::ALICE)
-            .price(price)
-            .size(2)
-            .side(Side::Ask)
-            .market_id(market_id)
-            .build();
-
-        let gtc_resp = ctx.execute_command(gtc)?;
-        info!(
-            "  → GTC ask placed @ {}: order_id={}",
-            price, gtc_resp.order_id
-        );
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // IOC order that might match
-        let ioc = OrderBuilder::place_ioc()
-            .user(users::BOB)
-            .price(price - 1000)
-            .size(1)
-            .side(Side::Bid)
-            .market_id(market_id)
-            .build();
-
-        ctx.execute_command(ioc)?;
-        info!("  → IOC bid placed @ {}", price - 1000);
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-
-    info!("  → Completed rapid sequence of 10 orders");
-
-    Ok(())
-}
-
-/// SECTION 7: Edge cases - self-match prevention and boundary tests
+/// SECTION 6: Edge cases - self-match prevention and boundary tests
 async fn edge_cases_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Testing edge cases:");
     info!("  1. Self-match prevention (same user bid/ask crossing)");
     info!("  2. Zero-size edge (if applicable)");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
 
     // Alice places ask @ 48k
     let alice_ask = OrderBuilder::place_limit()
@@ -759,8 +418,6 @@ async fn edge_cases_section(ctx: &mut TestContext) -> TestResult<()> {
 
     let ask_resp = ctx.execute_command(alice_ask)?;
     info!("  → Alice placed ask @ 48k: order_id={}", ask_resp.order_id);
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Alice places a bid @ 49k that would cross her own ask: self-trade prevention cancels the
     // ask (STP_CANCEL_MAKER) and the bid rests
@@ -779,7 +436,9 @@ async fn edge_cases_section(ctx: &mut TestContext) -> TestResult<()> {
     );
 
     // Verify no trade occurred (self-match prevented)
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, bid_resp.timestamp, event_timeout)
+        .await?;
 
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
@@ -797,10 +456,9 @@ async fn edge_cases_section(ctx: &mut TestContext) -> TestResult<()> {
     }
 
     {
-        let event_timeout = ctx.config().event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
-            .wait_and_assert_level(market_id, Side::Bid, 49_000, 3, event_timeout)
+            .assert_level(market_id, Side::Bid, 49_000, 3)
             .await?;
         let orderbook = orderbook_verifier.get_orderbook(market_id).await?;
         if orderbook.asks.iter().any(|level| level.price == 48_000) {
@@ -814,13 +472,14 @@ async fn edge_cases_section(ctx: &mut TestContext) -> TestResult<()> {
     Ok(())
 }
 
-/// SECTION 8: Multi-level orderbook interactions
+/// SECTION 7: Multi-level orderbook interactions
 async fn multi_level_interactions_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Testing multi-level price interactions:");
     info!("  Place asks at 3 levels, then single bid crosses all");
     info!("  Note: First clean up leftover orders, then test multi-level matching");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
 
     // First, clean up any leftover asks from previous sections (e.g., 60k ask from Section 2)
     // Use Alice's IOC to consume any asks below 64k
@@ -833,8 +492,6 @@ async fn multi_level_interactions_section(ctx: &mut TestContext) -> TestResult<(
         .market_id(market_id)
         .build();
     ctx.execute_command(cleanup)?;
-
-    tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Use higher prices to avoid overlap with existing orders from previous sections
     // Place 3 asks at different levels
@@ -851,8 +508,6 @@ async fn multi_level_interactions_section(ctx: &mut TestContext) -> TestResult<(
         .build();
     ctx.execute_command(level1)?;
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
     let level2 = OrderBuilder::place_limit()
         .user(users::CHARLIE)
         .price(level2_price)
@@ -861,8 +516,6 @@ async fn multi_level_interactions_section(ctx: &mut TestContext) -> TestResult<(
         .market_id(market_id)
         .build();
     ctx.execute_command(level2)?;
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let level3 = OrderBuilder::place_limit()
         .user(users::BOB)
@@ -874,8 +527,6 @@ async fn multi_level_interactions_section(ctx: &mut TestContext) -> TestResult<(
     ctx.execute_command(level3)?;
 
     info!("  → Placed 3 ask levels: 3@65k, 4@66k, 5@67k");
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Place IOC bid that crosses all 3 levels
     let big_bid = OrderBuilder::place_ioc()
@@ -890,8 +541,6 @@ async fn multi_level_interactions_section(ctx: &mut TestContext) -> TestResult<(
     info!("  → Placed IOC bid for 12 BTC @ 68k (crosses all 3 levels)");
     info!("  → Response: {:?}", big_resp.status);
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
     // Verify trades at all 3 levels
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
@@ -899,28 +548,31 @@ async fn multi_level_interactions_section(ctx: &mut TestContext) -> TestResult<(
         // Check for trade @ 65k (3 BTC)
         let criteria1 = TradeCriteria::new()
             .market_id(market_id)
+            .taker_order_id(big_resp.order_id)
             .price(level1_price)
             .size(3);
         trade_verifier
-            .assert_trade_exists(market_id, &criteria1)
+            .wait_and_assert_trade(market_id, &criteria1, event_timeout)
             .await?;
 
         // Check for trade @ 66k (4 BTC)
         let criteria2 = TradeCriteria::new()
             .market_id(market_id)
+            .taker_order_id(big_resp.order_id)
             .price(level2_price)
             .size(4);
         trade_verifier
-            .assert_trade_exists(market_id, &criteria2)
+            .wait_and_assert_trade(market_id, &criteria2, event_timeout)
             .await?;
 
         // Check for trade @ 67k (5 BTC)
         let criteria3 = TradeCriteria::new()
             .market_id(market_id)
+            .taker_order_id(big_resp.order_id)
             .price(level3_price)
             .size(5);
         trade_verifier
-            .assert_trade_exists(market_id, &criteria3)
+            .wait_and_assert_trade(market_id, &criteria3, event_timeout)
             .await?;
 
         info!("  → Verified: 3 trades across 3 price levels (3+4+5=12 BTC)");
@@ -929,7 +581,7 @@ async fn multi_level_interactions_section(ctx: &mut TestContext) -> TestResult<(
     Ok(())
 }
 
-/// SECTION 9: Partial fills with cancellations
+/// SECTION 8: Partial fills with cancellations
 async fn partial_fills_with_cancel_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Testing partial fills followed by cancellations:");
     info!("  1. Clean up leftover bids above 38k");
@@ -938,6 +590,7 @@ async fn partial_fills_with_cancel_section(ctx: &mut TestContext) -> TestResult<
     info!("  4. Alice cancels remaining");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
 
     // First, clean up any leftover bids from previous sections
     info!("  → Cleaning up leftover bids above 38k");
@@ -949,8 +602,6 @@ async fn partial_fills_with_cancel_section(ctx: &mut TestContext) -> TestResult<
         .market_id(market_id)
         .build();
     ctx.execute_command(cleanup)?;
-
-    tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Alice places large bid @ 38k for 20 BTC (using lower price to avoid conflicts)
     let large_bid = OrderBuilder::place_limit()
@@ -968,8 +619,6 @@ async fn partial_fills_with_cancel_section(ctx: &mut TestContext) -> TestResult<
         alice_order_id
     );
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Bob partially fills with IOC sell for 6 BTC
     let partial_fill = OrderBuilder::place_ioc()
         .user(users::BOB)
@@ -979,10 +628,8 @@ async fn partial_fills_with_cancel_section(ctx: &mut TestContext) -> TestResult<
         .market_id(market_id)
         .build();
 
-    ctx.execute_command(partial_fill)?;
+    let fill_resp = ctx.execute_command(partial_fill)?;
     info!("  → Bob IOC sell for 6 BTC @ 37k (partially fills Alice)");
-
-    tokio::time::sleep(Duration::from_millis(300)).await;
 
     // Verify partial fill trade
     {
@@ -994,12 +641,15 @@ async fn partial_fills_with_cancel_section(ctx: &mut TestContext) -> TestResult<
             .price(38_000)
             .size(6);
         trade_verifier
-            .wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2))
+            .wait_and_assert_trade(market_id, &criteria, event_timeout)
             .await?;
         info!("  → Verified trade: 6 BTC @ 38k");
     }
 
     // Verify remaining 14 BTC on orderbook
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, fill_resp.timestamp, event_timeout)
+        .await?;
     {
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
@@ -1019,7 +669,9 @@ async fn partial_fills_with_cancel_section(ctx: &mut TestContext) -> TestResult<
     ResponseVerifier::assert_cancelled(&cancel_resp)?;
     info!("  → Alice cancelled remaining 14 BTC");
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, cancel_resp.timestamp, event_timeout)
+        .await?;
 
     // Verify removal
     {
@@ -1039,42 +691,66 @@ async fn partial_fills_with_cancel_section(ctx: &mut TestContext) -> TestResult<
     Ok(())
 }
 
-/// SECTION 10: Final cleanup and balance verification
-async fn final_cleanup_section(ctx: &mut TestContext) -> TestResult<()> {
-    info!("Final cleanup and balance verification:");
-    info!("  Checking that all balances sum correctly (available + locked = total)");
+/// SECTION 9: Each asset adds up: the users' totals plus the fees the trades report equal what
+/// section 1 deposited (the suite withdraws nothing)
+async fn conservation_section(ctx: &mut TestContext) -> TestResult<()> {
+    info!("Checking that each asset's balances plus trade fees equal its deposits");
 
-    // Verify balance invariants for all users
-    {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
+    let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
+    // [base, quote], as section 1 funded each of the three users
+    let deposited = [
+        (assets::BTC, 3 * 5_000u128),
+        (assets::USD, 3 * 50_000_000u128),
+    ];
 
-        balance_verifier
-            .assert_balance_invariant(users::ALICE, assets::USD)
-            .await?;
-        balance_verifier
-            .assert_balance_invariant(users::ALICE, assets::BTC)
-            .await?;
-        info!("  → Alice balances: USD and BTC invariants satisfied");
-
-        balance_verifier
-            .assert_balance_invariant(users::BOB, assets::USD)
-            .await?;
-        balance_verifier
-            .assert_balance_invariant(users::BOB, assets::BTC)
-            .await?;
-        info!("  → Bob balances: USD and BTC invariants satisfied");
-
-        balance_verifier
-            .assert_balance_invariant(users::CHARLIE, assets::USD)
-            .await?;
-        balance_verifier
-            .assert_balance_invariant(users::CHARLIE, assets::BTC)
-            .await?;
-        info!("  → Charlie balances: USD and BTC invariants satisfied");
+    let mut held = [0u128; 2];
+    for user in [users::ALICE, users::BOB, users::CHARLIE] {
+        // An ask far above the book rests and moves no money, and it publishes both of the user's
+        // balances after every earlier change to them.
+        let ask = OrderBuilder::place_limit()
+            .user(user)
+            .price(1_000_000)
+            .size(1)
+            .side(Side::Ask)
+            .market_id(market_id)
+            .build();
+        let response = ctx.execute_command(ask)?;
+        ResponseVerifier::assert_placed(&response)?;
+        for (held, (asset, _)) in held.iter_mut().zip(deposited) {
+            let balance = ctx
+                .kafka
+                .wait_for_balance_after(user, asset, response.timestamp, event_timeout)
+                .await?;
+            *held += u128::from(balance.total);
+        }
     }
 
-    info!("  → All balance invariants verified successfully");
-    info!("  → Comprehensive integration test completed");
+    // Each side's fee is in the asset it received: base for the bid, quote for the ask.
+    let mut fees = [0u128; 2];
+    for trade in ctx.kafka.get_trades(market_id, usize::MAX).await? {
+        let (taker, maker) = if trade.taker_side() == trading_proto::Side::Bid {
+            (0, 1)
+        } else {
+            (1, 0)
+        };
+        fees[taker] += u128::from(trade.taker_fee);
+        fees[maker] += u128::from(trade.maker_fee);
+    }
 
+    for (k, (asset, deposited)) in deposited.into_iter().enumerate() {
+        let (held, fees) = (held[k], fees[k]);
+        if held + fees != deposited {
+            return Err(TestError::Verification {
+                message: format!(
+                    "asset {asset}: the users hold {held} and the trades charged {fees} in fees, \
+                     but {deposited} was deposited"
+                ),
+            });
+        }
+        info!("  → Asset {asset}: {held} held + {fees} fees = {deposited} deposited");
+    }
+
+    info!("  → Comprehensive integration test completed");
     Ok(())
 }

@@ -3,7 +3,7 @@
 //! This module provides builder patterns for creating OrderCommands
 //! with compile-time guarantees that all required fields are set.
 
-use common::{OrderCommand, OrderCommandType, Side, TimeInForce};
+use common::{OrderCommand, Side, TimeInForce};
 
 /// Main entry point for building OrderCommands
 pub struct OrderBuilder;
@@ -14,14 +14,9 @@ impl OrderBuilder {
         DepositBuilder::new()
     }
 
-    /// Create a withdrawal funds command builder
-    pub fn withdraw() -> WithdrawBuilder {
-        WithdrawBuilder::new()
-    }
-
-    /// Create a limit order builder
+    /// Create a GTC limit order builder
     pub fn place_limit() -> LimitOrderBuilder<NeedsUser> {
-        LimitOrderBuilder::new()
+        LimitOrderBuilder::new(TimeInForce::Gtc)
     }
 
     /// Create a market order builder
@@ -29,14 +24,14 @@ impl OrderBuilder {
         MarketOrderBuilder::new()
     }
 
-    /// Create an IOC order builder
-    pub fn place_ioc() -> IocOrderBuilder<NeedsUser> {
-        IocOrderBuilder::new()
+    /// Create an IOC limit order builder
+    pub fn place_ioc() -> LimitOrderBuilder<NeedsUser> {
+        LimitOrderBuilder::new(TimeInForce::Ioc)
     }
 
-    /// Create a FOK order builder
-    pub fn place_fok() -> FokOrderBuilder<NeedsUser> {
-        FokOrderBuilder::new()
+    /// Create a FOK limit order builder
+    pub fn place_fok() -> LimitOrderBuilder<NeedsUser> {
+        LimitOrderBuilder::new(TimeInForce::Fok)
     }
 
     /// Create a cancel order builder
@@ -89,66 +84,6 @@ impl DepositBuilder {
 }
 
 // ============================================================================
-// Withdraw Builder
-// ============================================================================
-
-pub struct WithdrawBuilder {
-    user_id: Option<u64>,
-    amount: Option<u64>,
-    asset_id: Option<u16>,
-}
-
-impl WithdrawBuilder {
-    fn new() -> Self {
-        Self {
-            user_id: None,
-            amount: None,
-            asset_id: None,
-        }
-    }
-
-    pub fn user(mut self, user_id: u64) -> Self {
-        self.user_id = Some(user_id);
-        self
-    }
-
-    pub fn amount(mut self, amount: u64) -> Self {
-        self.amount = Some(amount);
-        self
-    }
-
-    pub fn asset(mut self, asset_id: u16) -> Self {
-        self.asset_id = Some(asset_id);
-        self
-    }
-
-    pub fn build(self) -> OrderCommand {
-        let user_id = self.user_id.expect("user_id is required");
-        let amount = self.amount.expect("amount is required");
-        let asset_id = self.asset_id.expect("asset_id is required");
-
-        OrderCommand {
-            command: OrderCommandType::WithdrawFunds,
-            order_id: 0,
-            market_id: asset_id as u32,
-            user_id,
-            price: 0,
-            size: amount,
-            side: Side::Ask,
-            time_in_force: TimeInForce::Gtc,
-            timestamp: 0,
-            status: common::Status::Processing,
-            client_order_id: 0,
-            events: None,
-            balance: [common::UserBalance::default(); 2],
-            l2_data: None,
-            route_gateway_id: 0,
-            original_size: 0,
-        }
-    }
-}
-
-// ============================================================================
 // Limit Order Builder (Type-State Pattern)
 // ============================================================================
 
@@ -160,36 +95,36 @@ pub struct NeedsMarket;
 pub struct Complete;
 
 pub struct LimitOrderBuilder<State = NeedsUser> {
+    tif: TimeInForce,
     user_id: u64,
     price: u64,
     size: u64,
     side: Side,
     market_id: u32,
-    client_order_id: u64,
     _state: std::marker::PhantomData<State>,
 }
 
 impl LimitOrderBuilder<NeedsUser> {
-    fn new() -> Self {
+    fn new(tif: TimeInForce) -> Self {
         Self {
+            tif,
             user_id: 0,
             price: 0,
             size: 0,
             side: Side::Bid,
             market_id: 0,
-            client_order_id: 0,
             _state: std::marker::PhantomData,
         }
     }
 
     pub fn user(self, user_id: u64) -> LimitOrderBuilder<NeedsPrice> {
         LimitOrderBuilder {
+            tif: self.tif,
             user_id,
             price: self.price,
             size: self.size,
             side: self.side,
             market_id: self.market_id,
-            client_order_id: self.client_order_id,
             _state: std::marker::PhantomData,
         }
     }
@@ -198,12 +133,12 @@ impl LimitOrderBuilder<NeedsUser> {
 impl LimitOrderBuilder<NeedsPrice> {
     pub fn price(self, price: u64) -> LimitOrderBuilder<NeedsSize> {
         LimitOrderBuilder {
+            tif: self.tif,
             user_id: self.user_id,
             price,
             size: self.size,
             side: self.side,
             market_id: self.market_id,
-            client_order_id: self.client_order_id,
             _state: std::marker::PhantomData,
         }
     }
@@ -212,12 +147,12 @@ impl LimitOrderBuilder<NeedsPrice> {
 impl LimitOrderBuilder<NeedsSize> {
     pub fn size(self, size: u64) -> LimitOrderBuilder<NeedsSide> {
         LimitOrderBuilder {
+            tif: self.tif,
             user_id: self.user_id,
             price: self.price,
             size,
             side: self.side,
             market_id: self.market_id,
-            client_order_id: self.client_order_id,
             _state: std::marker::PhantomData,
         }
     }
@@ -226,12 +161,12 @@ impl LimitOrderBuilder<NeedsSize> {
 impl LimitOrderBuilder<NeedsSide> {
     pub fn side(self, side: Side) -> LimitOrderBuilder<NeedsMarket> {
         LimitOrderBuilder {
+            tif: self.tif,
             user_id: self.user_id,
             price: self.price,
             size: self.size,
             side,
             market_id: self.market_id,
-            client_order_id: self.client_order_id,
             _state: std::marker::PhantomData,
         }
     }
@@ -240,32 +175,27 @@ impl LimitOrderBuilder<NeedsSide> {
 impl LimitOrderBuilder<NeedsMarket> {
     pub fn market_id(self, market_id: u32) -> LimitOrderBuilder<Complete> {
         LimitOrderBuilder {
+            tif: self.tif,
             user_id: self.user_id,
             price: self.price,
             size: self.size,
             side: self.side,
             market_id,
-            client_order_id: self.client_order_id,
             _state: std::marker::PhantomData,
         }
     }
 }
 
 impl LimitOrderBuilder<Complete> {
-    pub fn client_order_id(mut self, client_order_id: u64) -> Self {
-        self.client_order_id = client_order_id;
-        self
-    }
-
     pub fn build(self) -> OrderCommand {
         OrderCommand::place_order(
-            TimeInForce::Gtc,
+            self.tif,
             self.user_id,
             self.price,
             self.size,
             self.side,
             self.market_id,
-            self.client_order_id,
+            0,
         )
     }
 }
@@ -279,7 +209,6 @@ pub struct MarketOrderBuilder<State = NeedsUser> {
     size: u64,
     side: Side,
     market_id: u32,
-    client_order_id: u64,
     _state: std::marker::PhantomData<State>,
 }
 
@@ -290,7 +219,6 @@ impl MarketOrderBuilder<NeedsUser> {
             size: 0,
             side: Side::Bid,
             market_id: 0,
-            client_order_id: 0,
             _state: std::marker::PhantomData,
         }
     }
@@ -301,7 +229,6 @@ impl MarketOrderBuilder<NeedsUser> {
             size: self.size,
             side: self.side,
             market_id: self.market_id,
-            client_order_id: self.client_order_id,
             _state: std::marker::PhantomData,
         }
     }
@@ -314,7 +241,6 @@ impl MarketOrderBuilder<NeedsSize> {
             size,
             side: self.side,
             market_id: self.market_id,
-            client_order_id: self.client_order_id,
             _state: std::marker::PhantomData,
         }
     }
@@ -327,7 +253,6 @@ impl MarketOrderBuilder<NeedsSide> {
             size: self.size,
             side,
             market_id: self.market_id,
-            client_order_id: self.client_order_id,
             _state: std::marker::PhantomData,
         }
     }
@@ -340,18 +265,12 @@ impl MarketOrderBuilder<NeedsMarket> {
             size: self.size,
             side: self.side,
             market_id,
-            client_order_id: self.client_order_id,
             _state: std::marker::PhantomData,
         }
     }
 }
 
 impl MarketOrderBuilder<Complete> {
-    pub fn client_order_id(mut self, client_order_id: u64) -> Self {
-        self.client_order_id = client_order_id;
-        self
-    }
-
     pub fn build(self) -> OrderCommand {
         // Market buy: price = u64::MAX
         // Market sell: price = 0
@@ -359,273 +278,15 @@ impl MarketOrderBuilder<Complete> {
             Side::Bid => u64::MAX,
             Side::Ask => 0,
         };
-
-        OrderCommand {
-            command: OrderCommandType::PlaceOrder,
-            order_id: 0,
-            client_order_id: self.client_order_id,
-            market_id: self.market_id,
-            user_id: self.user_id,
+        OrderCommand::place_order(
+            TimeInForce::Ioc,
+            self.user_id,
             price,
-            size: self.size,
-            side: self.side,
-            time_in_force: TimeInForce::Ioc,
-            timestamp: 0,
-            status: common::Status::Processing,
-            events: None,
-            balance: [common::UserBalance::default(); 2],
-            l2_data: None,
-            route_gateway_id: 0,
-            original_size: 0,
-        }
-    }
-}
-
-// ============================================================================
-// IOC Order Builder
-// ============================================================================
-
-pub struct IocOrderBuilder<State = NeedsUser> {
-    user_id: u64,
-    price: u64,
-    size: u64,
-    side: Side,
-    market_id: u32,
-    client_order_id: u64,
-    _state: std::marker::PhantomData<State>,
-}
-
-impl IocOrderBuilder<NeedsUser> {
-    fn new() -> Self {
-        Self {
-            user_id: 0,
-            price: 0,
-            size: 0,
-            side: Side::Bid,
-            market_id: 0,
-            client_order_id: 0,
-            _state: std::marker::PhantomData,
-        }
-    }
-
-    pub fn user(self, user_id: u64) -> IocOrderBuilder<NeedsPrice> {
-        IocOrderBuilder {
-            user_id,
-            price: self.price,
-            size: self.size,
-            side: self.side,
-            market_id: self.market_id,
-            client_order_id: self.client_order_id,
-            _state: std::marker::PhantomData,
-        }
-    }
-}
-
-impl IocOrderBuilder<NeedsPrice> {
-    pub fn price(self, price: u64) -> IocOrderBuilder<NeedsSize> {
-        IocOrderBuilder {
-            user_id: self.user_id,
-            price,
-            size: self.size,
-            side: self.side,
-            market_id: self.market_id,
-            client_order_id: self.client_order_id,
-            _state: std::marker::PhantomData,
-        }
-    }
-}
-
-impl IocOrderBuilder<NeedsSize> {
-    pub fn size(self, size: u64) -> IocOrderBuilder<NeedsSide> {
-        IocOrderBuilder {
-            user_id: self.user_id,
-            price: self.price,
-            size,
-            side: self.side,
-            market_id: self.market_id,
-            client_order_id: self.client_order_id,
-            _state: std::marker::PhantomData,
-        }
-    }
-}
-
-impl IocOrderBuilder<NeedsSide> {
-    pub fn side(self, side: Side) -> IocOrderBuilder<NeedsMarket> {
-        IocOrderBuilder {
-            user_id: self.user_id,
-            price: self.price,
-            size: self.size,
-            side,
-            market_id: self.market_id,
-            client_order_id: self.client_order_id,
-            _state: std::marker::PhantomData,
-        }
-    }
-}
-
-impl IocOrderBuilder<NeedsMarket> {
-    pub fn market_id(self, market_id: u32) -> IocOrderBuilder<Complete> {
-        IocOrderBuilder {
-            user_id: self.user_id,
-            price: self.price,
-            size: self.size,
-            side: self.side,
-            market_id,
-            client_order_id: self.client_order_id,
-            _state: std::marker::PhantomData,
-        }
-    }
-}
-
-impl IocOrderBuilder<Complete> {
-    pub fn client_order_id(mut self, client_order_id: u64) -> Self {
-        self.client_order_id = client_order_id;
-        self
-    }
-
-    pub fn build(self) -> OrderCommand {
-        OrderCommand {
-            command: OrderCommandType::PlaceOrder,
-            order_id: 0,
-            client_order_id: self.client_order_id,
-            market_id: self.market_id,
-            user_id: self.user_id,
-            price: self.price,
-            size: self.size,
-            side: self.side,
-            time_in_force: TimeInForce::Ioc,
-            timestamp: 0,
-            status: common::Status::Processing,
-            events: None,
-            balance: [common::UserBalance::default(); 2],
-            l2_data: None,
-            route_gateway_id: 0,
-            original_size: 0,
-        }
-    }
-}
-
-// ============================================================================
-// FOK Order Builder
-// ============================================================================
-
-pub struct FokOrderBuilder<State = NeedsUser> {
-    user_id: u64,
-    price: u64,
-    size: u64,
-    side: Side,
-    market_id: u32,
-    client_order_id: u64,
-    _state: std::marker::PhantomData<State>,
-}
-
-impl FokOrderBuilder<NeedsUser> {
-    fn new() -> Self {
-        Self {
-            user_id: 0,
-            price: 0,
-            size: 0,
-            side: Side::Bid,
-            market_id: 0,
-            client_order_id: 0,
-            _state: std::marker::PhantomData,
-        }
-    }
-
-    pub fn user(self, user_id: u64) -> FokOrderBuilder<NeedsPrice> {
-        FokOrderBuilder {
-            user_id,
-            price: self.price,
-            size: self.size,
-            side: self.side,
-            market_id: self.market_id,
-            client_order_id: self.client_order_id,
-            _state: std::marker::PhantomData,
-        }
-    }
-}
-
-impl FokOrderBuilder<NeedsPrice> {
-    pub fn price(self, price: u64) -> FokOrderBuilder<NeedsSize> {
-        FokOrderBuilder {
-            user_id: self.user_id,
-            price,
-            size: self.size,
-            side: self.side,
-            market_id: self.market_id,
-            client_order_id: self.client_order_id,
-            _state: std::marker::PhantomData,
-        }
-    }
-}
-
-impl FokOrderBuilder<NeedsSize> {
-    pub fn size(self, size: u64) -> FokOrderBuilder<NeedsSide> {
-        FokOrderBuilder {
-            user_id: self.user_id,
-            price: self.price,
-            size,
-            side: self.side,
-            market_id: self.market_id,
-            client_order_id: self.client_order_id,
-            _state: std::marker::PhantomData,
-        }
-    }
-}
-
-impl FokOrderBuilder<NeedsSide> {
-    pub fn side(self, side: Side) -> FokOrderBuilder<NeedsMarket> {
-        FokOrderBuilder {
-            user_id: self.user_id,
-            price: self.price,
-            size: self.size,
-            side,
-            market_id: self.market_id,
-            client_order_id: self.client_order_id,
-            _state: std::marker::PhantomData,
-        }
-    }
-}
-
-impl FokOrderBuilder<NeedsMarket> {
-    pub fn market_id(self, market_id: u32) -> FokOrderBuilder<Complete> {
-        FokOrderBuilder {
-            user_id: self.user_id,
-            price: self.price,
-            size: self.size,
-            side: self.side,
-            market_id,
-            client_order_id: self.client_order_id,
-            _state: std::marker::PhantomData,
-        }
-    }
-}
-
-impl FokOrderBuilder<Complete> {
-    pub fn client_order_id(mut self, client_order_id: u64) -> Self {
-        self.client_order_id = client_order_id;
-        self
-    }
-
-    pub fn build(self) -> OrderCommand {
-        OrderCommand {
-            command: OrderCommandType::PlaceOrder,
-            order_id: 0,
-            client_order_id: self.client_order_id,
-            market_id: self.market_id,
-            user_id: self.user_id,
-            price: self.price,
-            size: self.size,
-            side: self.side,
-            time_in_force: TimeInForce::Fok,
-            timestamp: 0,
-            status: common::Status::Processing,
-            events: None,
-            balance: [common::UserBalance::default(); 2],
-            l2_data: None,
-            route_gateway_id: 0,
-            original_size: 0,
-        }
+            self.size,
+            self.side,
+            self.market_id,
+            0,
+        )
     }
 }
 

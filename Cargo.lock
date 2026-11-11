@@ -3333,10 +3333,8 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "clap",
  "common",
- "disruptor",
  "duct",
  "hashbrown 0.15.5",
  "hdrhistogram",
@@ -3344,7 +3342,6 @@ dependencies = [
  "prost",
  "rdkafka",
  "reqwest",
- "rusteron-client",
  "schema_registry_converter",
  "serde",
  "serde_json",

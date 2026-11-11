@@ -4,15 +4,13 @@
 //! All tests run in a single session without restarting the server.
 //! State is maintained across sections - orderbook and balances persist.
 
-use std::time::Duration;
-
 use crate::builders::OrderBuilder;
 use crate::fixtures::{assets, prices, users};
-use crate::test_framework::TestContext;
 use crate::test_framework::types::*;
+use crate::test_framework::{TestContext, scenario};
 use crate::verifiers::{BalanceVerifier, OrderbookVerifier, ResponseVerifier, TradeVerifier};
 use common::{Side, Status};
-use tracing::{info, warn};
+use tracing::info;
 
 /// Comprehensive cancellation test suite - runs all scenarios in a single session
 ///
@@ -28,25 +26,6 @@ use tracing::{info, warn};
 /// State is maintained across sections - no cleanup between tests since
 /// the VexCore server holds orderbook and balances in memory.
 pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
-    info!("╔════════════════════════════════════════╗");
-    info!("║   CANCELLATION COMPREHENSIVE SUITE     ║");
-    info!("╚════════════════════════════════════════╝");
-    info!(
-        "Market ID: {} (Base: {}, Quote: {})",
-        ctx.market_id, ctx.base_asset_id, ctx.quote_asset_id
-    );
-    info!("");
-
-    let suite_start = std::time::Instant::now();
-    let mut results = Vec::new();
-
-    // ========================================================================
-    // SECTION 1: Setup - Fund all test users
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 1: Initial Setup                │");
-    info!("└─────────────────────────────────────────┘");
-
     info!("Funding test users...");
     ctx.fund_user(users::ALICE, 10_000_000, assets::USD).await?; // 10M USD for Alice
     ctx.fund_user(users::ALICE, 1_000, assets::BTC).await?; // 1000 BTC for Alice
@@ -57,248 +36,43 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     ctx.fund_user(users::CHARLIE, 1_000, assets::BTC).await?; // 1000 BTC for Charlie
 
     info!("✓ All users funded successfully");
-    info!("");
 
-    // ========================================================================
-    // SECTION 2: Cancel Resting Bid Order
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 2: Cancel Resting Bid Order     │");
-    info!("│ (Funds should unlock)                   │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match cancel_resting_bid_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 2 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "cancel_resting_bid".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 2 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "cancel_resting_bid".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 3: Cancel Resting Ask Order
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 3: Cancel Resting Ask Order     │");
-    info!("│ (Funds should unlock)                   │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match cancel_resting_ask_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 3 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "cancel_resting_ask".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 3 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "cancel_resting_ask".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 4: Cancel Partially Filled Order
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 4: Cancel Partially Filled Order│");
-    info!("│ (Only remaining size unlocks)           │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match cancel_partially_filled_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 4 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "cancel_partially_filled".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 4 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "cancel_partially_filled".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 5: Cancel Non-existent Order
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 5: Cancel Non-existent Order    │");
-    info!("│ (Should handle gracefully)              │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match cancel_nonexistent_order_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 5 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "cancel_nonexistent_order".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 5 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "cancel_nonexistent_order".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 6: Cancel Already Filled Order
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 6: Cancel Already Filled Order  │");
-    info!("│ (Should handle gracefully)              │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match cancel_filled_order_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 6 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "cancel_filled_order".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 6 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "cancel_filled_order".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 7: Cancel and Replace at Same Price
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 7: Cancel and Replace Order     │");
-    info!("│ (Cancel then place new at same price)  │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match cancel_and_replace_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 7 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "cancel_and_replace".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 7 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "cancel_and_replace".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 8: Multiple Sequential Cancellations
-    // ========================================================================
-    info!("┌─────────────────────────────────────────┐");
-    info!("│ SECTION 8: Multiple Cancellations       │");
-    info!("│ (Cancel several orders in sequence)    │");
-    info!("└─────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match multiple_cancellations_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 8 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "multiple_cancellations".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 8 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "multiple_cancellations".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results); // Stop on first failure
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // Final Summary
-    // ========================================================================
-    let total_duration = suite_start.elapsed();
-    let passed = results.iter().filter(|r| r.success).count();
-    let failed = results.len() - passed;
-
-    info!("╔════════════════════════════════════════╗");
-    info!("║   TEST SUITE SUMMARY                   ║");
-    info!("╚════════════════════════════════════════╝");
-    info!("Total Sections: {}", results.len());
-    info!("Passed:         {} ✓", passed);
-    info!("Failed:         {} ✗", failed);
-    info!("Total Time:     {:?}", total_duration);
-    info!("╚════════════════════════════════════════╝");
-
+    let mut results = Vec::new();
+    scenario!(
+        results,
+        "cancel_resting_bid",
+        cancel_resting_bid_section(ctx)
+    );
+    scenario!(
+        results,
+        "cancel_resting_ask",
+        cancel_resting_ask_section(ctx)
+    );
+    scenario!(
+        results,
+        "cancel_partially_filled",
+        cancel_partially_filled_section(ctx)
+    );
+    scenario!(
+        results,
+        "cancel_nonexistent_order",
+        cancel_nonexistent_order_section(ctx)
+    );
+    scenario!(
+        results,
+        "cancel_filled_order",
+        cancel_filled_order_section(ctx)
+    );
+    scenario!(
+        results,
+        "cancel_and_replace",
+        cancel_and_replace_section(ctx)
+    );
+    scenario!(
+        results,
+        "multiple_cancellations",
+        multiple_cancellations_section(ctx)
+    );
     Ok(results)
 }
 
@@ -308,6 +82,7 @@ async fn cancel_resting_bid_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Alice cancels the order → Funds unlock");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
     let price = prices::LOW; // 40,000
     let size = 5;
 
@@ -335,7 +110,9 @@ async fn cancel_resting_bid_section(ctx: &mut TestContext) -> TestResult<()> {
     let order_id = response.order_id;
     info!("  → Order placed: order_id={}", order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    ctx.kafka
+        .wait_for_balance_after(users::ALICE, assets::USD, response.timestamp, event_timeout)
+        .await?;
 
     // Verify funds are locked: a bid locks its quote cost at the market's native scales
     let locked_amount = ctx
@@ -356,7 +133,6 @@ async fn cancel_resting_bid_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify order is on orderbook
     {
-        let event_timeout = ctx.config().event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
             .wait_and_assert_level(market_id, Side::Bid, price, size, event_timeout)
@@ -375,7 +151,17 @@ async fn cancel_resting_bid_section(ctx: &mut TestContext) -> TestResult<()> {
     ResponseVerifier::assert_cancelled(&cancel_response)?;
     info!("  → Order cancelled: order_id={}", order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    ctx.kafka
+        .wait_for_balance_after(
+            users::ALICE,
+            assets::USD,
+            cancel_response.timestamp,
+            event_timeout,
+        )
+        .await?;
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, cancel_response.timestamp, event_timeout)
+        .await?;
 
     // Verify funds are unlocked
     {
@@ -415,6 +201,7 @@ async fn cancel_resting_ask_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Bob cancels the order → Funds unlock");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
     let price = prices::HIGH; // 60,000
     let size = 8;
 
@@ -442,7 +229,9 @@ async fn cancel_resting_ask_section(ctx: &mut TestContext) -> TestResult<()> {
     let order_id = response.order_id;
     info!("  → Order placed: order_id={}", order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    ctx.kafka
+        .wait_for_balance_after(users::BOB, assets::BTC, response.timestamp, event_timeout)
+        .await?;
 
     // Verify funds are locked (BTC for ask)
     {
@@ -455,7 +244,6 @@ async fn cancel_resting_ask_section(ctx: &mut TestContext) -> TestResult<()> {
 
     // Verify order is on orderbook
     {
-        let event_timeout = ctx.config().event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
             .wait_and_assert_level(market_id, Side::Ask, price, size, event_timeout)
@@ -474,7 +262,17 @@ async fn cancel_resting_ask_section(ctx: &mut TestContext) -> TestResult<()> {
     ResponseVerifier::assert_cancelled(&cancel_response)?;
     info!("  → Order cancelled: order_id={}", order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    ctx.kafka
+        .wait_for_balance_after(
+            users::BOB,
+            assets::BTC,
+            cancel_response.timestamp,
+            event_timeout,
+        )
+        .await?;
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, cancel_response.timestamp, event_timeout)
+        .await?;
 
     // Verify funds are unlocked
     {
@@ -517,6 +315,7 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
     info!("Charlie cancels remaining 7 BTC → Partial funds unlock");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
     let price = prices::MID; // 50,000
     let charlie_size = 10;
     let alice_size = 3;
@@ -546,7 +345,14 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
     let charlie_order_id = charlie_response.order_id;
     info!("  → Charlie's bid placed: order_id={}", charlie_order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    ctx.kafka
+        .wait_for_balance_after(
+            users::CHARLIE,
+            assets::USD,
+            charlie_response.timestamp,
+            event_timeout,
+        )
+        .await?;
 
     // Verify Charlie's funds locked for full order
     let market_spec = ctx.market_spec().clone();
@@ -578,8 +384,6 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
     ResponseVerifier::assert_filled(&alice_response)?;
     info!("  → Alice's ask filled: {} BTC matched", alice_size);
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
     // Verify trade occurred
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
@@ -590,7 +394,7 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
             .price(price)
             .size(alice_size);
         trade_verifier
-            .wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2))
+            .wait_and_assert_trade(market_id, &criteria, event_timeout)
             .await?;
         info!("  → Trade executed: {} BTC @ {}", alice_size, price);
     }
@@ -600,6 +404,14 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
         - market_spec
             .calculate_quote_cost(price, alice_size)
             .expect("scenario notional fits in u64");
+    ctx.kafka
+        .wait_for_balance_after(
+            users::CHARLIE,
+            assets::USD,
+            alice_response.timestamp,
+            event_timeout,
+        )
+        .await?;
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
@@ -617,7 +429,6 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
 
     // Verify remaining size on orderbook
     {
-        let event_timeout = ctx.config().event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
             .wait_and_assert_level(market_id, Side::Bid, price, remaining_size, event_timeout)
@@ -642,7 +453,17 @@ async fn cancel_partially_filled_section(ctx: &mut TestContext) -> TestResult<()
         charlie_order_id
     );
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    ctx.kafka
+        .wait_for_balance_after(
+            users::CHARLIE,
+            assets::USD,
+            cancel_response.timestamp,
+            event_timeout,
+        )
+        .await?;
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, cancel_response.timestamp, event_timeout)
+        .await?;
 
     // Verify only remaining funds unlocked
     {
@@ -719,6 +540,7 @@ async fn cancel_filled_order_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Bob tries to cancel filled order → Should handle gracefully");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
     let price = prices::MID;
     let size = 2;
 
@@ -736,8 +558,6 @@ async fn cancel_filled_order_section(ctx: &mut TestContext) -> TestResult<()> {
     let bob_order_id = bob_response.order_id;
     info!("  → Bob's ask placed: order_id={}", bob_order_id);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Charlie places matching bid
     let charlie_order = OrderBuilder::place_limit()
         .user(users::CHARLIE)
@@ -751,8 +571,6 @@ async fn cancel_filled_order_section(ctx: &mut TestContext) -> TestResult<()> {
     ResponseVerifier::assert_filled(&charlie_response)?;
     info!("  → Charlie's bid filled - Bob's ask fully matched");
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Verify trade occurred
     {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
@@ -763,10 +581,19 @@ async fn cancel_filled_order_section(ctx: &mut TestContext) -> TestResult<()> {
             .price(price)
             .size(size);
         trade_verifier
-            .wait_and_assert_trade(market_id, &criteria, Duration::from_secs(2))
+            .wait_and_assert_trade(market_id, &criteria, event_timeout)
             .await?;
         info!("  → Trade executed: {} BTC @ {}", size, price);
     }
+    // Section 8 reads Bob's BTC, which this fill changed last
+    ctx.kafka
+        .wait_for_balance_after(
+            users::BOB,
+            assets::BTC,
+            charlie_response.timestamp,
+            event_timeout,
+        )
+        .await?;
 
     // Try to cancel Bob's already filled order
     let cancel_cmd = OrderBuilder::cancel(users::BOB)
@@ -802,6 +629,7 @@ async fn cancel_and_replace_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Alice places new bid @ {} for 4 BTC", prices::LOW);
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
     let price = prices::LOW; // 40,000
     let size1 = 6;
     let size2 = 4;
@@ -829,11 +657,8 @@ async fn cancel_and_replace_section(ctx: &mut TestContext) -> TestResult<()> {
         order_id1, size1
     );
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Verify first order on book
     {
-        let event_timeout = ctx.config().event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
             .wait_and_assert_level(market_id, Side::Bid, price, size1, event_timeout)
@@ -850,8 +675,6 @@ async fn cancel_and_replace_section(ctx: &mut TestContext) -> TestResult<()> {
     let cancel_response = ctx.execute_command(cancel_cmd)?;
     ResponseVerifier::assert_cancelled(&cancel_response)?;
     info!("  → First order cancelled: order_id={}", order_id1);
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Place second order at same price
     let order2 = OrderBuilder::place_limit()
@@ -870,11 +693,8 @@ async fn cancel_and_replace_section(ctx: &mut TestContext) -> TestResult<()> {
         order_id2, size2
     );
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Verify second order on book with new size
     {
-        let event_timeout = ctx.config().event_timeout;
         let mut orderbook_verifier = OrderbookVerifier::new(&mut ctx.kafka);
         orderbook_verifier
             .wait_and_assert_level(market_id, Side::Bid, price, size2, event_timeout)
@@ -883,6 +703,14 @@ async fn cancel_and_replace_section(ctx: &mut TestContext) -> TestResult<()> {
     }
 
     // Verify correct locked amount (only size2 locked now)
+    ctx.kafka
+        .wait_for_balance_after(
+            users::ALICE,
+            assets::USD,
+            response2.timestamp,
+            event_timeout,
+        )
+        .await?;
     {
         let locked_amount = ctx
             .market_spec()
@@ -911,6 +739,7 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
     info!("Bob cancels all 3 orders sequentially");
 
     let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
     let price1 = prices::MID; // 50,000
     let price2 = prices::MID + 5000; // 55,000
     let price3 = prices::HIGH; // 60,000
@@ -935,8 +764,6 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
     let order_id1 = response1.order_id;
     info!("  → Order 1 placed: order_id={} @ {}", order_id1, price1);
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
     let order2 = OrderBuilder::place_limit()
         .user(users::BOB)
         .price(price2)
@@ -948,8 +775,6 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
     let response2 = ctx.execute_command(order2)?;
     let order_id2 = response2.order_id;
     info!("  → Order 2 placed: order_id={} @ {}", order_id2, price2);
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let order3 = OrderBuilder::place_limit()
         .user(users::BOB)
@@ -963,7 +788,12 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
     let order_id3 = response3.order_id;
     info!("  → Order 3 placed: order_id={} @ {}", order_id3, price3);
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    ctx.kafka
+        .wait_for_balance_after(users::BOB, assets::BTC, response3.timestamp, event_timeout)
+        .await?;
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, response3.timestamp, event_timeout)
+        .await?;
 
     // Verify all 3 orders locked funds
     let total_locked = size * 3; // 3 BTC per order * 3 orders = 9 BTC
@@ -1003,7 +833,6 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
 
     ctx.execute_command(cancel1)?;
     info!("  → Cancelled order 1: order_id={}", order_id1);
-    tokio::time::sleep(Duration::from_millis(150)).await;
 
     // Cancel order 2
     let cancel2 = OrderBuilder::cancel(users::BOB)
@@ -1014,7 +843,6 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
 
     ctx.execute_command(cancel2)?;
     info!("  → Cancelled order 2: order_id={}", order_id2);
-    tokio::time::sleep(Duration::from_millis(150)).await;
 
     // Cancel order 3
     let cancel3 = OrderBuilder::cancel(users::BOB)
@@ -1023,9 +851,20 @@ async fn multiple_cancellations_section(ctx: &mut TestContext) -> TestResult<()>
         .market_id(market_id)
         .build();
 
-    ctx.execute_command(cancel3)?;
+    let cancel3_response = ctx.execute_command(cancel3)?;
     info!("  → Cancelled order 3: order_id={}", order_id3);
-    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    ctx.kafka
+        .wait_for_balance_after(
+            users::BOB,
+            assets::BTC,
+            cancel3_response.timestamp,
+            event_timeout,
+        )
+        .await?;
+    ctx.kafka
+        .wait_for_orderbook_after(market_id, cancel3_response.timestamp, event_timeout)
+        .await?;
 
     // Verify all funds unlocked
     {

@@ -18,6 +18,7 @@ use crate::builders::OrderBuilder;
 use crate::kafka_topics::{self, KafkaTopics};
 use crate::test_framework::client::TestClient;
 use crate::test_framework::kafka::KafkaVerifier;
+use crate::test_framework::scenario;
 use crate::test_framework::stack::{self, BROKER, CORE, Paused};
 use crate::test_framework::types::*;
 use common::{CoreMarketSpecification, OrderCommand, Side, Status, base_asset, quote_asset};
@@ -27,7 +28,7 @@ use rdkafka::admin::{AdminClient, AdminOptions};
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
 use std::time::{Duration, Instant};
-use tracing::{error, info};
+use tracing::info;
 
 const BIDDER: u64 = 101;
 const ASKER: u64 = 102;
@@ -41,11 +42,6 @@ const QUEUED_ORDER_PAIRS: u64 = 25;
 /// each, 10,000 in all, more than the 8,192 the events stage's sender channel holds, so the replay
 /// stalls behind it.
 const UNDELIVERED_ROUNDS: u64 = 400;
-
-/// How long the core gets to accept a gateway after a start: the topic check, after a `kill -9`
-/// the wait for the media driver to release the dead core's journal (up to its client liveness
-/// timeout, 10 s, and 5 s), the replay and its re-publication.
-const START_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How long a stopping core gets to exit: a graceful shutdown with the broker paused spends the
 /// 20 s delivery grace, plus up to 5 s, after its pipeline drain.
@@ -224,29 +220,16 @@ struct Outbox {
 }
 
 impl Outbox {
-    /// Connects a client to the core, retrying until the core accepts a gateway, which it does
-    /// once it has replayed its journal.
+    /// Connects a client to the core, once it accepts a gateway.
     fn connect(&mut self) -> TestResult<()> {
-        let start = Instant::now();
-        loop {
-            match TestClient::new(
-                0,
-                self.config.default_timeout,
-                &self.config.core_address,
-                self.config.core_port,
-                self.config.core_control_port,
-            ) {
-                Ok(client) => {
-                    self.client = Some(client);
-                    return Ok(());
-                }
-                Err(e) if start.elapsed() < START_TIMEOUT => {
-                    info!("  core not accepting gateways yet: {e}");
-                    std::thread::sleep(Duration::from_secs(1));
-                }
-                Err(e) => return Err(e),
-            }
-        }
+        self.client = Some(TestClient::connect(
+            0,
+            self.config.default_timeout,
+            &self.config.core_address,
+            self.config.core_port,
+            self.config.core_control_port,
+        )?);
+        Ok(())
     }
 
     fn execute(&mut self, command: OrderCommand) -> TestResult<OrderCommand> {
@@ -417,6 +400,9 @@ impl Outbox {
                 message: format!("the restart began after the journal's release:\n{logs}"),
             });
         }
+        // Kafka can hold every event already (a paused broker's kernel still takes them into its
+        // socket buffers), so only the core's log shows that the restart re-published them.
+        expect_logged(&logs, "events_republish_replay")?;
         self.verify().await
     }
 
@@ -435,7 +421,9 @@ impl Outbox {
                 message: format!("the shutdown reported no undelivered events:\n{logs}"),
             });
         }
+        let since = stack::now();
         self.start_core()?;
+        expect_logged(&stack::logs_since(CORE, &since)?, "events_republish_replay")?;
         self.verify().await
     }
 
@@ -650,28 +638,41 @@ pub async fn run_all(
     outbox.connect()?;
 
     let mut results = Vec::new();
-    macro_rules! scenario {
-        ($name:ident) => {
-            let name = stringify!($name).to_string();
-            info!("Scenario: {name}");
-            let started = Instant::now();
-            match outbox.$name().await {
-                Ok(()) => results.push(ScenarioResult::success(name, started.elapsed())),
-                Err(e) => {
-                    error!("Scenario {name} failed: {e}");
-                    results.push(ScenarioResult::failure(name, started.elapsed(), e));
-                    return Ok(results);
-                }
-            }
-        };
-    }
-    scenario!(baseline);
-    scenario!(kill_with_events_queued);
-    scenario!(shutdown_past_the_grace);
-    scenario!(broker_down_at_start);
-    scenario!(clean_restart_re_publishes_nothing);
-    scenario!(missing_delivered_topic_refuses);
-    scenario!(non_compacted_delivered_topic_refuses);
-    scenario!(restart_with_the_registry_unreachable_fails_within_a_minute);
+    scenario!(results, "baseline", outbox.baseline());
+    scenario!(
+        results,
+        "kill_with_events_queued",
+        outbox.kill_with_events_queued()
+    );
+    scenario!(
+        results,
+        "shutdown_past_the_grace",
+        outbox.shutdown_past_the_grace()
+    );
+    scenario!(
+        results,
+        "broker_down_at_start",
+        outbox.broker_down_at_start()
+    );
+    scenario!(
+        results,
+        "clean_restart_re_publishes_nothing",
+        outbox.clean_restart_re_publishes_nothing()
+    );
+    scenario!(
+        results,
+        "missing_delivered_topic_refuses",
+        outbox.missing_delivered_topic_refuses()
+    );
+    scenario!(
+        results,
+        "non_compacted_delivered_topic_refuses",
+        outbox.non_compacted_delivered_topic_refuses()
+    );
+    scenario!(
+        results,
+        "restart_with_the_registry_unreachable_fails_within_a_minute",
+        outbox.restart_with_the_registry_unreachable_fails_within_a_minute()
+    );
     Ok(results)
 }
