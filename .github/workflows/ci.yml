@@ -221,7 +221,7 @@ jobs:
   xtask-tests:
     name: End-to-end tests
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     if: >-
       github.event_name != 'pull_request' ||
       github.base_ref == 'develop' ||
@@ -270,6 +270,12 @@ jobs:
 
       - name: Run integration tests
         run: cargo xtask test integration
+        env:
+          VEX_ENV: development
+
+      # Each suite starts its own stack; the first that fails ends the step (bash -e).
+      - name: Run the per-order-type integration suites
+        run: for suite in gtc ioc fok balance cancellation; do cargo xtask test integration "$suite"; done
         env:
           VEX_ENV: development
 
