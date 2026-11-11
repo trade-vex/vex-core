@@ -37,12 +37,6 @@ fn finish_replay(publications: &Publications, control: &ReplayControl) -> Engine
 /// Type alias for the order command producer
 pub type OrderProducer = MultiProducer<OrderCommand, SingleConsumerBarrier>;
 
-#[derive(Clone)]
-pub struct ReplayContext {
-    pub producer: OrderProducer,
-    pub control: ReplayControl,
-}
-
 /// Type alias for a shared reference to the risk engines
 pub type RiskEngines = Arc<Vec<RiskEngine>>;
 

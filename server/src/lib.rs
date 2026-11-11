@@ -104,7 +104,6 @@ pub fn start(mut config: VexConfig) -> Result<RunningEngine, EngineError> {
         config.schema_registry_url.clone(),
         journaling,
         config.core_networking.enable_core_pinning,
-        config.environment.clone(),
     )?;
 
     // Balance preload for test/local environments
@@ -238,7 +237,6 @@ pub fn init_internal(
     schema_registry_url: String,
     journaling: Journaling,
     enable_core_pinning: bool,
-    environment: vex_config::Environment,
 ) -> EngineResult<((CoreEngine, OrderProducer), ReplayControl)> {
     let replay_control = ReplayControl::enabled();
     let publications = Arc::new(Publications::new());
@@ -254,19 +252,12 @@ pub fn init_internal(
     )
     .map_err(EngineError::ServerInitialization)?;
 
-    // Use no-pinning for Development environment to avoid CPU affinity issues
-    let core_pinning = if matches!(environment, vex_config::Environment::Development) {
-        None
-    } else {
-        Some(engine::CorePinning::default())
-    };
-
     let engine = CoreEngine::new(
         symbol_specs,
         journaling_processor,
         events_handler,
         publications,
-        core_pinning.unwrap_or_default(),
+        engine::CorePinning::default(),
         enable_core_pinning,
     )?;
 
