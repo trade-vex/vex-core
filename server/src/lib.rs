@@ -62,8 +62,8 @@ impl RunningEngine {
 ///
 /// # Returns
 ///
-/// A `RunningEngine` handle that keeps the server running. When dropped,
-/// the server will shut down gracefully.
+/// A `RunningEngine` handle. To stop the server, set `shutdown_handle()` to true and call
+/// `join()`; dropping the handle detaches the server thread and stops nothing.
 ///
 /// # Errors
 ///
@@ -72,13 +72,15 @@ impl RunningEngine {
 /// # Example
 ///
 /// ```no_run
+/// use std::sync::atomic::Ordering;
 /// use vex_config::{VexConfig, Environment};
 /// use vex_server::start;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let config = VexConfig::new(Environment::Development);
-/// let _engine = start(config)?;
-/// // Server runs until _engine is dropped
+/// let engine = start(config)?;
+/// engine.shutdown_handle().store(true, Ordering::Release);
+/// engine.join()?;
 /// # Ok(())
 /// # }
 /// ```
