@@ -17,8 +17,10 @@ services:
     volumes:
       - /dev/shm:/dev/shm
 
-  # SBE Code Generator - generates Rust code from ordercmd.xml
+  # SBE Code Generator - generates Rust code from ordercmd.xml. Nothing reads its output (the
+  # codec is committed under order/src), so it runs only when named: `docker compose up sbe-generator`.
   sbe-generator:
+    profiles: ["tools"]
     build:
       context: ./sbe
       dockerfile: Dockerfile
@@ -39,8 +41,6 @@ services:
     depends_on:
       media-driver:
         condition: service_healthy
-      sbe-generator:
-        condition: service_completed_successfully
     environment:
       # Passed through from the calling shell, and required: development or test (see below).
       - VEX_ENV

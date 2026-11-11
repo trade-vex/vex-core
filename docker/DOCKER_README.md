@@ -65,7 +65,7 @@ VEX_ENV=development ./docker-scripts.sh start-full
 ## Docker Compose Files
 
 ### 1. `docker-compose.yml` (Main)
-- Includes media driver, SBE generator, and vex-core
+- Includes media driver and vex-core, plus the SBE generator, which runs only when named
 - Proper service dependencies and health checks
 - **Development only, with no durability.** It runs a media driver but no Aeron Archive, so it
   starts vex-core with an empty archive channel (`VEX__CORE_NETWORKING__REQUEST_CONTROL_CHANNEL=`).
