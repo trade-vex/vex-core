@@ -7,11 +7,7 @@ use rusteron_archive::{
     AeronReservedValueSupplierLogger, AeronSubscription, AeronUnavailableImageCallback,
     AeronUnavailableImageLogger, Handler,
 };
-use std::thread;
 use std::{ffi::CString, time::Duration};
-use tracing::error;
-
-const MESSAGE_RETRY_COUNT: usize = 5;
 
 pub fn new_publication(
     aeron: &Aeron,
@@ -144,29 +140,6 @@ pub fn offer_once(mut offer: impl FnMut() -> i64) -> i64 {
     } else {
         result
     }
-}
-
-pub fn send_message_with_retries(
-    publication: &AeronPublication,
-    buffer: &[u8],
-) -> Result<(), AeronCError> {
-    for i in 0..MESSAGE_RETRY_COUNT {
-        let result = publication.offer::<AeronReservedValueSupplierLogger>(buffer, None);
-        if result >= 0 {
-            return Ok(());
-        }
-        error!(
-            "Failed to send message (attempt {} of {}): {}",
-            i + 1,
-            MESSAGE_RETRY_COUNT,
-            AeronCError::from_code(result as i32)
-        );
-        if i == MESSAGE_RETRY_COUNT - 1 {
-            return Err(AeronCError::from_code(result as i32));
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    Ok(())
 }
 
 /// Port allocator that hands out the lowest free ports of a range.
@@ -340,11 +313,6 @@ impl SessionAllocator {
             self.max_count,
             sessions_in_use.len()
         )))
-    }
-
-    /// Get the maximum number of sessions that can be allocated
-    pub fn max_sessions(&self) -> i32 {
-        self.max_count
     }
 }
 
