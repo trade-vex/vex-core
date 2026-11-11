@@ -601,12 +601,11 @@ impl CoreEngine {
                 let mut core_server = match server_result {
                     Ok(server) => server,
                     Err(error) => {
-                        // The pipeline never started doing anything: it is idle and healthy, so
-                        // drop the producer normally. Leaking it here would prevent the
-                        // disruptor's last-producer shutdown and strand the worker threads and
-                        // ring for any caller that survives the error, such as a library caller
-                        // retrying startup.
-                        drop(producer_guard);
+                        // new() ran the replay. If it failed because the terminal consumer is
+                        // stuck (Kafka or the registry down), the last producer's Drop would join
+                        // it with no timeout and the error would never surface. The process exits
+                        // on this error, so leak the handle as below.
+                        std::mem::forget(producer_guard);
                         return Err(error);
                     }
                 };

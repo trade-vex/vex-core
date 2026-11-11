@@ -1,6 +1,6 @@
 //! The core's outbox, end to end: a journaled core re-publishes from its journal whatever a death
-//! or a shutdown left undelivered, waits for Kafka at start, and refuses to start on a topic that
-//! no-loss cannot rest on.
+//! or a shutdown left undelivered, waits for Kafka at start, refuses to start on a topic that
+//! no-loss cannot rest on, and fails a start whose replay cannot re-publish instead of hanging.
 //!
 //! The scenarios share one continuous ledger, in order, on the stack of
 //! `xtask/tests/docker-compose.yml`: Redpanda with its Schema Registry, an Aeron
@@ -36,6 +36,11 @@ const BUYER: u64 = 103;
 /// Order pairs placed while the broker is paused: enough to leave events queued in the core, far
 /// fewer than the 108,000 it takes to fill its queues and answer `Busy`.
 const QUEUED_ORDER_PAIRS: u64 = 25;
+
+/// Rounds placed while the broker is paused before a start that cannot re-publish them: 25 events
+/// each, 10,000 in all, more than the 8,192 the events stage's sender channel holds, so the replay
+/// stalls behind it.
+const UNDELIVERED_ROUNDS: u64 = 400;
 
 /// How long the core gets to accept a gateway after a start: the topic check, after a `kill -9`
 /// the wait for the media driver to release the dead core's journal (up to its client liveness
@@ -531,6 +536,51 @@ impl Outbox {
         }
         self.verify().await
     }
+
+    /// A start whose replay cannot re-publish, the Schema Registry (which Redpanda hosts) not
+    /// answering, fails within a minute instead of hanging; the next start recovers.
+    async fn restart_with_the_registry_unreachable_fails_within_a_minute(
+        &mut self,
+    ) -> TestResult<()> {
+        {
+            let _paused = Paused::new(BROKER)?;
+            self.place_orders(UNDELIVERED_ROUNDS)?;
+            self.client = None;
+            stack::signal(CORE, "KILL")?;
+            stack::wait_exited(CORE, STOP_TIMEOUT)?;
+        }
+        // The start needs the broker to read the watermark. It then waits for the killed core's
+        // journal, which gives the broker time to be paused again before the replay begins.
+        let since = stack::now();
+        stack::start(CORE)?;
+        let deadline = Instant::now() + START_TIMEOUT;
+        while !stack::logs_since(CORE, &since)?.contains("watermark_read") {
+            if Instant::now() > deadline {
+                return Err(TestError::Timeout {
+                    timeout: START_TIMEOUT,
+                });
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        {
+            let _paused = Paused::new(BROKER)?;
+            if stack::logs_since(CORE, &since)?.contains("recording_selected") {
+                return Err(TestError::Assertion {
+                    message: "the replay began before the broker was paused again".to_string(),
+                });
+            }
+            let code = stack::wait_exited(CORE, Duration::from_secs(60))?;
+            let logs = stack::logs_since(CORE, &since)?;
+            if code == 0 {
+                return Err(TestError::Assertion {
+                    message: format!("the failed replay exited cleanly:\n{logs}"),
+                });
+            }
+            expect_logged(&logs, "Failed to create VexCoreServer: Replay error")?;
+        }
+        self.start_core()?;
+        self.verify().await
+    }
 }
 
 fn expect_logged(logs: &str, expected: &str) -> TestResult<()> {
@@ -622,5 +672,6 @@ pub async fn run_all(
     scenario!(clean_restart_re_publishes_nothing);
     scenario!(missing_delivered_topic_refuses);
     scenario!(non_compacted_delivered_topic_refuses);
+    scenario!(restart_with_the_registry_unreachable_fails_within_a_minute);
     Ok(results)
 }
