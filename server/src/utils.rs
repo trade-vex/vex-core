@@ -90,6 +90,8 @@ macro_rules! create_risk_handler {
 /// 3. Processes trade events for both maker and taker based on shard ownership
 /// 4. Handles order cancellations for partially filled IOC/FOK orders
 /// 5. Updates balance snapshots in the command
+/// 6. Marks the sequence settled on its shard's `RiskEngine`, for every sequence, which R1 of the
+///    same shard waits on (`create_risk_handler!`)
 ///
 /// # Example
 ///
