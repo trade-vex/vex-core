@@ -628,7 +628,7 @@ mod tests {
                 eth.quote_native_scale,
                 eth.quote_scale_k,
             ),
-            (1_000_000_000_000_000_000, 1_000_000, 10)
+            (1_000_000_000, 1_000_000, 10)
         );
         assert_eq!(
             (
@@ -640,23 +640,15 @@ mod tests {
         );
 
         let eth_price = 30_000; // $3,000 at the shipped quote_scale_k of 10.
-        let smallest_nonzero_eth_fill = 333_333_334;
+        // At gwei and micro-USDT one gwei costs exactly 3 units: cost(P, S) = P * S / 10_000.
+        assert_eq!(eth.calculate_quote_cost(eth_price, 0), Some(0));
+        assert_eq!(eth.calculate_quote_cost(eth_price, 1), Some(3));
         assert_eq!(
-            eth.calculate_quote_cost(eth_price, smallest_nonzero_eth_fill - 1),
-            Some(0)
-        );
-        assert_eq!(
-            eth.calculate_quote_cost(eth_price, smallest_nonzero_eth_fill),
-            Some(1)
-        );
-        assert_eq!(
-            eth.calculate_quote_cost(eth_price, 1_000_000_000_000_000_000),
+            eth.calculate_quote_cost(eth_price, 1_000_000_000),
             Some(3_000_000_000)
         );
-        assert_eq!(
-            eth.calculate_quote_cost(eth_price, u64::MAX),
-            Some(55_340_232_221)
-        );
+        // 3 * u64::MAX does not fit u64: rejected.
+        assert_eq!(eth.calculate_quote_cost(eth_price, u64::MAX), None);
 
         let btc_price = 60_000;
         assert_eq!(btc.calculate_quote_cost(btc_price, 1), Some(600));
@@ -718,7 +710,7 @@ mod tests {
         let quote_asset_id = quote_asset(market_id);
         let price = 30_000;
         let size = 1_000_000_000;
-        let quote_cost = 3;
+        let quote_cost = 3_000_000_000;
 
         let bid_user_id = 10;
         engine.set_balance(bid_user_id, quote_asset_id, UserBalance::new(quote_cost, 0));
@@ -776,8 +768,8 @@ mod tests {
         let buyer_id = 20;
         let seller_id = 21;
         let price = 30_000;
-        let size = 333_333_334; // Smallest fill with a non-zero quote cost at this price.
-        let quote_cost = 1;
+        let size = 333_333_334; // Both fees below have a remainder, so both round up.
+        let quote_cost = 1_000_000_002;
 
         engine.set_balance(buyer_id, quote_asset_id, UserBalance::new(quote_cost, 0));
         engine.set_balance(seller_id, base_asset_id, UserBalance::new(size, 0));
@@ -837,13 +829,11 @@ mod tests {
             engine.get_balance(seller_id, base_asset_id),
             UserBalance::new(0, 0)
         );
-        // Gross quote here is one atomic unit. Pre-#163 the 10 bp maker fee floored to zero
-        // and the seller kept the unit; with #163's per-fill div_ceil the fee is a whole unit,
-        // so the maker nets nothing. Same ceil-per-fill overcharge as the ask round-trip test.
-        let maker_fee_in_quote = (quote_cost * 10).div_ceil(10_000);
+        // The 10 bp maker fee on 1_000_000_002 is 1_000_000.002, rounded up per fill (#163's
+        // div_ceil) to 1_000_001. Same ceil-per-fill rounding as the ask round-trip test.
         assert_eq!(
             engine.get_balance(seller_id, quote_asset_id),
-            UserBalance::new(quote_cost - maker_fee_in_quote, 0)
+            UserBalance::new(999_000_001, 0)
         );
     }
 
@@ -890,13 +880,11 @@ mod tests {
             engine.get_balance(user_id, base_asset_id),
             UserBalance::new(initial_base - fill_size, 0)
         );
-        // Gross quote is one atomic unit. Pre-#163 the 10 bp fee floored to zero and the
-        // seller kept the unit; with #163's per-fill div_ceil the fee is one unit, i.e. the
-        // whole proceeds. This is the ceil-per-fill overcharge tracked against #163 -- the
-        // stacked behaviour is asserted here so it cannot regress silently either way.
+        // Gross quote is 1_000_000_002. The 10 bp fee of 1_000_000.002 is rounded up per fill
+        // (#163's div_ceil) to 1_000_001, so the seller nets 999_000_001.
         assert_eq!(
             engine.get_balance(user_id, quote_asset_id),
-            UserBalance::new(0, 0)
+            UserBalance::new(999_000_001, 0)
         );
     }
 
@@ -907,15 +895,9 @@ mod tests {
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
         let price_cache = Arc::new(PriceCache::new(specs.keys()));
         let engine = RiskEngine::new(specs, 0, 1);
-        let mut bid = OrderCommand::place_order(
-            TimeInForce::Gtc,
-            40,
-            30_000,
-            333_333_333,
-            Side::Bid,
-            market_id,
-            1,
-        );
+        // 9_999 gwei at price 1 costs 0.9999 micro-USDT, which floors to zero.
+        let mut bid =
+            OrderCommand::place_order(TimeInForce::Gtc, 40, 1, 9_999, Side::Bid, market_id, 1);
 
         // Before #111, locking zero succeeded and admitted an uncollateralized BID.
         engine.pre_process_command(&mut bid, price_cache);
@@ -937,7 +919,7 @@ mod tests {
         let order_size = 1_000_000_000;
         let fill_size = 333_333_334;
         let remaining_size = order_size - fill_size;
-        let initial_quote = 10;
+        let initial_quote = 3_000_000_000;
 
         engine.set_balance(user_id, quote_asset_id, UserBalance::new(initial_quote, 0));
         let mut bid = OrderCommand::place_order(
@@ -977,7 +959,7 @@ mod tests {
         );
         assert_eq!(
             engine.get_balance(user_id, quote_asset_id),
-            UserBalance::new(initial_quote - 1, 0),
+            UserBalance::new(initial_quote - 1_000_000_002, 0),
             "lock(total) must equal spent(fill) + unlock(remainder)"
         );
     }
@@ -992,7 +974,7 @@ mod tests {
         let quote_asset_id = quote_asset(market_id);
         let user_id = 60;
         let price = 30_000;
-        let one_eth = 1_000_000_000_000_000_000;
+        let one_eth = 1_000_000_000;
 
         engine.set_balance(user_id, quote_asset_id, UserBalance::new(3_000_000_000, 0));
         let mut bid = OrderCommand::place_order(
@@ -1026,7 +1008,7 @@ mod tests {
             engine
                 .get_balance(user_id, base_asset(market_id))
                 .available(),
-            998_000_000_000_000_000
+            998_000_000
         );
     }
 

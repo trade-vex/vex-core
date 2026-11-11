@@ -129,12 +129,19 @@ logging:
   output: "stdout"
 
 symbols:
+  # Every asset a market or preload names. native_scale = 10^decimals, and
+  # max_supply * native_scale must not exceed u64::MAX / 2 (ETH is held in gwei, not wei).
+  assets:
+    "1": { native_scale: 1000000, max_supply: 1000000000000 }   # USDT
+    "2": { native_scale: 100000000, max_supply: 21000000 }      # BTC
   symbols:
     65538:
       market_id: 65538
       base_asset: 2
       quote_asset: 1
       quote_scale_k: 1000000
+      base_native_scale: 100000000   # must equal assets.2.native_scale
+      quote_native_scale: 1000000    # must equal assets.1.native_scale
       maker_fee: 10
       taker_fee: 20
       slippage: 5

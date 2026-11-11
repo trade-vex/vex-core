@@ -920,7 +920,7 @@ mod tests {
             .market_id(market_id)
             .market_type(MarketType::Spot)
             .quote_scale_k(10)
-            .base_native_scale(1_000_000_000_000_000_000)
+            .base_native_scale(1_000_000_000)
             .quote_native_scale(1_000_000)
             .maker_fee(10)
             .taker_fee(20)
@@ -928,7 +928,7 @@ mod tests {
             .build()
             .unwrap();
 
-        settle_trade_and_assert_conservation(spec, 20_000, 1_000_000_000_000_000_000);
+        settle_trade_and_assert_conservation(spec, 20_000, 1_000_000_000);
     }
 
     #[test]
@@ -1627,7 +1627,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trade_settlement_fee_at_18_decimal_scale() {
+    fn test_trade_settlement_fee_at_1e18_units() {
         let base_asset_id = 2u16;
         let quote_asset_id = 1u16;
         let market_id = ((quote_asset_id as u32) << 16) | base_asset_id as u32;
@@ -2003,7 +2003,7 @@ mod tests {
             .market_id(market_id)
             .market_type(MarketType::Spot)
             .quote_scale_k(10)
-            .base_native_scale(1_000_000_000_000_000_000)
+            .base_native_scale(1_000_000_000)
             .quote_native_scale(1_000_000)
             .maker_fee(0)
             .taker_fee(0)
@@ -2012,12 +2012,12 @@ mod tests {
             .unwrap()
     }
 
-    fn assert_shipped_eth_bid_accounting(fill_sizes: &[u64], fully_filled: bool) {
+    fn assert_shipped_eth_bid_accounting(price: u64, fill_sizes: &[u64], fully_filled: bool) {
         let user_id = 50;
         let market_id = (2_u32 << 16) | 1_u32;
-        let price = 30_000;
         let order_size = 1_000_000_000;
-        let initial_quote = 10;
+        // Covers the 1 ETH lock at 30_000 (3_000_000_000) and at 30_001 (3_000_100_000).
+        let initial_quote = 3_000_100_000;
         let order_id = 42;
 
         let spec = get_shipped_eth_spec(market_id);
@@ -2080,22 +2080,22 @@ mod tests {
 
     #[test]
     fn test_shipped_eth_bid_full_fill_has_no_collateral_residue() {
-        assert_shipped_eth_bid_accounting(&[333_333_334, 666_666_666], true);
+        assert_shipped_eth_bid_accounting(30_000, &[333_333_334, 666_666_666], true);
     }
 
     #[test]
     fn test_shipped_eth_bid_partial_fill_cancel_has_no_collateral_residue() {
-        assert_shipped_eth_bid_accounting(&[333_333_334], false);
+        assert_shipped_eth_bid_accounting(30_000, &[333_333_334], false);
     }
 
     #[test]
     fn test_shipped_eth_bid_cancel_without_fill_has_no_collateral_residue() {
-        assert_shipped_eth_bid_accounting(&[], false);
+        assert_shipped_eth_bid_accounting(30_000, &[], false);
     }
 
     #[test]
     fn test_shipped_eth_bid_multiple_partial_fills_cancel_has_no_collateral_residue() {
-        assert_shipped_eth_bid_accounting(&[333_333_334, 333_333_334], false);
+        assert_shipped_eth_bid_accounting(30_000, &[333_333_334, 333_333_334], false);
     }
 
     #[test]

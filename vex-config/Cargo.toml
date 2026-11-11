@@ -27,7 +27,3 @@ path = "examples/basic.rs"
 [[example]]
 name = "custom"
 path = "examples/custom.rs"
-
-[[example]]
-name = "symbol_config"
-path = "examples/symbol_config.rs"

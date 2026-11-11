@@ -951,8 +951,9 @@ requirement the review added.
   `trading.u64(bigint) → numeric` function serves ad-hoc SQL. ClickHouse uses `UInt64`.
 - **Reason:** Connect and Postgres have no unsigned 64-bit type, so values ≥ 2^63 arrive as negative
   `INT64`. Examples:
-  - a balance above 9.22 units of an asset with 18 decimals;
-  - order ids from about mid-2029: the snowflake has 48 bits of 1,024 ns ticks from 2025.
+  - order ids from about mid-2029: the snowflake has 48 bits of 1,024 ns ticks from 2025;
+  - a bid's size, which only its quote cost bounds. A balance cannot get there: every asset's
+    `max_supply * native_scale` is at most `u64::MAX / 2` (vex-config `symbols.assets`).
 
   Carrying such values as strings in the proto would change the contract, which the issue puts out
   of scope.
