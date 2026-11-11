@@ -790,28 +790,20 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
 
         // Verify BTC received (size - fee)
         let expected_btc_received = buy_size - taker_fee_btc;
-        let actual_btc_received = final_btc_balance.available - initial_btc_balance.available;
+        assert_settled(
+            "BTC received (size - fee)",
+            &initial_btc_balance,
+            &final_btc_balance,
+            i128::from(expected_btc_received),
+        )?;
 
-        if actual_btc_received != expected_btc_received {
-            return Err(TestError::Verification {
-                message: format!(
-                    "BTC received mismatch: expected={}, actual={}",
-                    expected_btc_received, actual_btc_received
-                ),
-            });
-        }
-
-        // Verify USD spent (should be actual_cost, not conservative_cost)
-        let usd_spent = initial_usd_balance.available - final_usd_balance.available;
-
-        if usd_spent != actual_cost {
-            return Err(TestError::Verification {
-                message: format!(
-                    "USD spent mismatch: expected={} (at best ask), actual={}. Price improvement refund expected={}",
-                    actual_cost, usd_spent, expected_refund
-                ),
-            });
-        }
+        // Verify USD spent: the cost at the best ask, with the rest of the cap's lock refunded
+        assert_settled(
+            "USD spent at the best ask",
+            &initial_usd_balance,
+            &final_usd_balance,
+            -i128::from(actual_cost),
+        )?;
 
         info!(
             "  → Price improvement: locked={}, spent={}, refund={}",
@@ -820,7 +812,7 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
         info!(
             "  → Alice final: {} USD (spent {}), {} BTC (received {}, fee {})",
             final_usd_balance.available,
-            usd_spent,
+            actual_cost,
             final_btc_balance.available,
             expected_btc_received,
             taker_fee_btc
@@ -983,26 +975,20 @@ async fn test_market_sell_section(ctx: &mut TestContext) -> TestResult<()> {
             .await?;
 
         // Ask taker fee is charged on the received quote asset, not the base asset.
-        let btc_sold = initial_btc_balance.available - final_btc_balance.available;
-        if btc_sold != sell_size {
-            return Err(TestError::Verification {
-                message: format!(
-                    "BTC sold mismatch: expected={} (no base-side fee), actual={}",
-                    sell_size, btc_sold
-                ),
-            });
-        }
+        assert_settled(
+            "BTC sold (no base-side fee)",
+            &initial_btc_balance,
+            &final_btc_balance,
+            -i128::from(sell_size),
+        )?;
 
         // Verify USD received (gross quote revenue minus quote-side taker fee)
-        let usd_received = final_usd_balance.available - initial_usd_balance.available;
-        if usd_received != expected_usd {
-            return Err(TestError::Verification {
-                message: format!(
-                    "USD received mismatch: expected={} (gross={} - fee={}), actual={}",
-                    expected_usd, gross_revenue, taker_fee_usd, usd_received
-                ),
-            });
-        }
+        assert_settled(
+            &format!("USD received (gross {gross_revenue} - fee {taker_fee_usd})"),
+            &initial_usd_balance,
+            &final_usd_balance,
+            i128::from(expected_usd),
+        )?;
 
         info!(
             "  → Charlie final: {} USD (received {}, fee {}), {} BTC (sold {})",
@@ -1032,5 +1018,26 @@ async fn test_market_sell_section(ctx: &mut TestContext) -> TestResult<()> {
         );
     }
 
+    Ok(())
+}
+
+/// A settled taker's balance in one asset: its total moved by `change`, and its locked amount did
+/// not (the taker's own resting orders keep theirs).
+fn assert_settled(
+    what: &str,
+    before: &BalanceEvent,
+    after: &BalanceEvent,
+    change: i128,
+) -> TestResult<()> {
+    let moved = i128::from(after.total) - i128::from(before.total);
+    if moved != change || after.locked != before.locked {
+        return Err(TestError::Verification {
+            message: format!(
+                "{what}: total {} -> {} ({moved:+}), locked {} -> {}; expected {change:+}, \
+                 locked unchanged",
+                before.total, after.total, before.locked, after.locked
+            ),
+        });
+    }
     Ok(())
 }
