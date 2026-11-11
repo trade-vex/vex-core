@@ -163,6 +163,6 @@ cargo xtask test benchmark --clients 5
 After running tests or benchmarks, the following artifacts are generated:
 
 * **Test Results:** Raw data from tests is stored in `xtask/tests/test-results/`. Each e2e or benchmark client writes the ids it got a response for to `received_ids-<client id>.txt`, which the run reads back to check completeness.
-* **Docker Logs:** Logs for each container (`vex-server`, `vex-client`) are saved in `xtask/tests/test-results/logs/`.
+* **Docker Logs:** Every stack saves each container's log to `xtask/tests/test-results/logs/<container>-<start time>.log` before its teardown. Runs never delete them; remove the directory to reclaim the space. CI uploads the directory as the `docker-suite-logs` artifact when the end-to-end job fails.
 
 The environment is automatically torn down after each run, but the artifacts are preserved for inspection.

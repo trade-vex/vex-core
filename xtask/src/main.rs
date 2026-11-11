@@ -15,8 +15,8 @@ use vex_config::GatewayNetworkingConfig;
 
 use xtask::kafka_topics::{self, KafkaTopics};
 use xtask::scenarios;
-use xtask::test_framework::TestContext;
 use xtask::test_framework::types::{ScenarioResult, TestConfig, TestSuiteResult};
+use xtask::test_framework::{TestContext, stack};
 
 /// delay in network emulation in teste2e (high-latency scenario)
 const NETWORK_DELAY_MS: u64 = 100;
@@ -537,9 +537,11 @@ async fn run_suite_tests(
 /// A docker-compose stack in `root`, torn down (`docker compose down -v`) when dropped
 ///
 /// Every constructor creates the guard before `docker compose up` runs, so a start that fails part
-/// of the way through is torn down too. The logs of every container are saved before the teardown.
+/// of the way through is torn down too. The logs of every container are saved before the teardown,
+/// named after the time the stack started, so that later stacks do not overwrite them.
 struct DockerComposeEnv {
     root: Box<Path>,
+    started: String,
 }
 impl DockerComposeEnv {
     /// Brings up the broker, applies deploy/kafka/topics.toml to it as to any environment (the
@@ -548,6 +550,7 @@ impl DockerComposeEnv {
     async fn start(project_root: &Path, args: &[&str]) -> Result<Self, XTaskError> {
         let env = Self {
             root: project_root.join("xtask/tests").into_boxed_path(),
+            started: stack::now(),
         };
         // Created here, or the containers' bind mount creates it owned by root, and the logs
         // cannot be saved into it.
@@ -652,7 +655,7 @@ impl Drop for DockerComposeEnv {
             .lines()
             .filter_map(|line| serde_json::from_str::<ComposeContainer>(line).ok())
         {
-            let log_path = logs_dir.join(format!("{}.log", container.name));
+            let log_path = logs_dir.join(format!("{}-{}.log", container.name, self.started));
             match cmd!("docker", "logs", &container.name)
                 .stderr_to_stdout()
                 .read()
@@ -803,12 +806,7 @@ async fn run_correctness_task(
     clients: u32,
 ) -> Result<(), XTaskError> {
     let test_results_dir = project_root.join("xtask/tests/test-results");
-    // Clear up/delete existing contents in the test-results directory
-    if test_results_dir.exists() {
-        println!("Cleaning up existing test results...");
-        fs::remove_dir_all(&test_results_dir)?;
-    }
-    fs::create_dir_all(&test_results_dir)?;
+    remove_received_ids(&test_results_dir)?;
 
     // Wrap docker-compose commands in a struct with a Drop implementation for cleanup
     let _env = DockerComposeEnv::new(&project_root, clients).await?;
@@ -885,12 +883,7 @@ async fn run_correctness_task(
 
 async fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
     let test_results_dir = root.join("xtask/tests/test-results");
-    // Clear up/delete existing contents in the test-results directory
-    if test_results_dir.exists() {
-        println!("Cleaning up existing test results...");
-        fs::remove_dir_all(&test_results_dir)?;
-    }
-    fs::create_dir_all(&test_results_dir)?;
+    remove_received_ids(&test_results_dir)?;
 
     // Wrap docker-compose commands in a struct with a Drop implementation for cleanup
     let _env = DockerComposeEnv::new(&root, clients).await?;
@@ -985,6 +978,22 @@ async fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> 
     Ok(())
 }
 
+/// Removes the ids a previous e2e or benchmark run's clients wrote, and keeps everything else
+/// (the saved container logs).
+fn remove_received_ids(results_dir: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(results_dir)?;
+    for entry in fs::read_dir(results_dir)? {
+        let path = entry?.path();
+        if path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("received_ids-"))
+        {
+            fs::remove_file(path)?;
+        }
+    }
+    Ok(())
+}
+
 /// Read the ids each e2e or benchmark client wrote to `received_ids-<client id>.txt`
 /// (`write_received_ids` in `test_client`)
 fn read_received_ids(results_dir: &Path, clients: u32) -> Result<Vec<u64>, XTaskError> {
@@ -1004,4 +1013,23 @@ fn read_received_ids(results_dir: &Path, clients: u32) -> Result<Vec<u64>, XTask
         }
     }
     Ok(ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_run_removes_only_the_received_ids() {
+        let dir = env::temp_dir().join(format!("xtask-test-results-{}", std::process::id()));
+        fs::create_dir_all(dir.join("logs")).unwrap();
+        fs::write(dir.join("received_ids-0.txt"), "1\n").unwrap();
+        fs::write(dir.join("logs/vex-server-1.log"), "log").unwrap();
+
+        remove_received_ids(&dir).unwrap();
+
+        assert!(!dir.join("received_ids-0.txt").exists());
+        assert!(dir.join("logs/vex-server-1.log").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

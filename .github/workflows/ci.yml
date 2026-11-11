@@ -287,6 +287,13 @@ jobs:
       - name: Run outbox tests
         run: cargo xtask test outbox
 
+      - name: Keep the Docker suites' container logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: docker-suite-logs
+          path: xtask/tests/test-results/logs
+
       - name: Show failed test infrastructure
         if: failure()
         # Best-effort `ps`: the step runs under `bash -e`, so a failing `ps` would otherwise
