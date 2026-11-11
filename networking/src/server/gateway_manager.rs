@@ -13,8 +13,8 @@ use rusteron_archive::{
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::CString;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
-use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 use vex_config::{CoreNetworkingConfig, GatewayAuthenticationKey};
@@ -254,7 +254,7 @@ enum PendingHandshakeStatus {
 /// session allocation, resource management, and cleanup operations.
 pub struct GatewayManager {
     /// Active gateway sessions mapped by gateway id
-    gateway_sessions: RwLock<Session>,
+    gateway_sessions: RefCell<Session>,
     /// Aeron messaging instance
     aeron: Aeron,
     /// Core configuration
@@ -292,7 +292,7 @@ impl GatewayManager {
         let (session_event_tx, session_event_rx) = channel();
 
         Ok(Self {
-            gateway_sessions: RwLock::new(Session::new()),
+            gateway_sessions: RefCell::new(Session::new()),
             aeron,
             port_allocator: PortAllocator::new(config.base_gateway_port, PORT_POOL)
                 .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?,
@@ -315,24 +315,15 @@ impl GatewayManager {
 
     /// Checks if a gateway is currently connected
     pub fn is_gateway_connected(&self, gateway_id: u8) -> bool {
-        match self.gateway_sessions.read() {
-            Ok(guard) => guard.is_gateway_connected(gateway_id),
-            Err(e) => {
-                error!(
-                    target: "gateway_manager",
-                    action = "lock_poisoned",
-                    context = "is_gateway_connected",
-                    error = %e
-                );
-                false // Assume not connected if lock is poisoned
-            }
-        }
+        self.gateway_sessions
+            .borrow()
+            .is_gateway_connected(gateway_id)
     }
 
     /// Gives `gateway_id` a slot without a handshake, so a test can hold a session open.
     #[cfg(test)]
     pub(super) fn reserve_slot(&self, gateway_id: u8, session_id: i32) -> bool {
-        self.gateway_sessions.write().unwrap().reserve(
+        self.gateway_sessions.borrow_mut().reserve(
             gateway_id,
             session_id,
             [10_000, 10_001],
@@ -350,8 +341,7 @@ impl GatewayManager {
                 }) => {
                     let marked_live = self
                         .gateway_sessions
-                        .write()
-                        .unwrap()
+                        .borrow_mut()
                         .mark_live(gateway_id, session_id);
                     if !marked_live {
                         warn!(
@@ -368,8 +358,7 @@ impl GatewayManager {
                 }) => {
                     let session_matches = self
                         .gateway_sessions
-                        .read()
-                        .unwrap()
+                        .borrow()
                         .slots
                         .get(gateway_id as usize)
                         .and_then(Option::as_ref)
@@ -534,7 +523,7 @@ impl GatewayManager {
         self.reap_idle_handshakes();
 
         // polls all active gateway sessions
-        let guard = self.gateway_sessions.read().unwrap();
+        let guard = self.gateway_sessions.borrow();
         for subscription in guard.iter() {
             if let Err(e) = subscription.poll() {
                 error!(
@@ -568,11 +557,7 @@ impl GatewayManager {
 
     /// Shuts down all gateway connections
     pub fn shutdown_all_gateways(&self) -> Result<(), ServerError> {
-        let gateways_ids: Vec<u8> = self
-            .gateway_sessions
-            .read()
-            .expect("Gateway sessions lock poisoned during shutdown")
-            .gateway_ids();
+        let gateways_ids: Vec<u8> = self.gateway_sessions.borrow().gateway_ids();
 
         for gateway_id in gateways_ids {
             self.remove_gateway_session(gateway_id)?;
@@ -656,7 +641,7 @@ impl GatewayManager {
         now: Instant,
     ) -> Result<(), ServerError> {
         let (ports_in_use, sessions_in_use) = {
-            let guard = self.gateway_sessions.read().unwrap();
+            let guard = self.gateway_sessions.borrow();
             (guard.get_ports_in_use(), guard.get_sessions_in_use())
         };
         let allocated_ports = self
@@ -672,12 +657,11 @@ impl GatewayManager {
             CString::new(reply_uri(hello_source, ports[1], dedicated_session_id)?)
                 .expect("Aeron source identity contains no NUL");
 
-        if !self.gateway_sessions.write().unwrap().reserve(
-            gateway_id,
-            dedicated_session_id,
-            ports,
-            now,
-        ) {
+        if !self
+            .gateway_sessions
+            .borrow_mut()
+            .reserve(gateway_id, dedicated_session_id, ports, now)
+        {
             return Err(ServerError::GatewayMessageError(format!(
                 "Gateway gateway-{gateway_id} became occupied during allocation"
             )));
@@ -868,7 +852,7 @@ impl GatewayManager {
                 Arc::clone(&self.publications),
             );
             let attach_result = {
-                self.gateway_sessions.write().unwrap().attach_duologue(
+                self.gateway_sessions.borrow_mut().attach_duologue(
                     pending.gateway_id,
                     pending.dedicated_session_id,
                     gateway_session,
@@ -949,7 +933,7 @@ impl GatewayManager {
 
     fn reap_idle_handshakes(&self) {
         let now = Instant::now();
-        let expired = self.gateway_sessions.read().unwrap().expired_pending(now);
+        let expired = self.gateway_sessions.borrow().expired_pending(now);
         for gateway_id in expired {
             warn!(
                 target: "gateway_manager",
@@ -974,7 +958,7 @@ impl GatewayManager {
             self.pending_handshakes.borrow_mut()[gateway_id as usize] = None;
         }
 
-        let slot = match self.gateway_sessions.write().unwrap().remove(gateway_id) {
+        let slot = match self.gateway_sessions.borrow_mut().remove(gateway_id) {
             Some(slot) => slot,
             None => {
                 return Err(ServerError::GatewayMessageError(format!(
@@ -1304,7 +1288,7 @@ mod tests {
             Arc::clone(&manager.publications),
         );
         {
-            let mut sessions = manager.gateway_sessions.write().unwrap();
+            let mut sessions = manager.gateway_sessions.borrow_mut();
             assert!(sessions.reserve(1, 101, [10_000, 10_001], Instant::now()));
             assert!(sessions.attach_duologue(1, 101, session).is_ok());
         }
