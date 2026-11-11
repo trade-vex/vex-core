@@ -3336,7 +3336,6 @@ dependencies = [
  "anyhow",
  "clap",
  "common",
- "ctrlc",
  "disruptor",
  "duct",
  "hashbrown 0.15.5",
@@ -3350,14 +3349,12 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.17",
- "tikv-jemallocator",
  "tokio",
  "toml",
  "tracing",
  "tracing-subscriber",
  "vex-config",
  "vex-networking",
- "vex-server",
 ]
 
 [[package]]

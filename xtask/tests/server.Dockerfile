@@ -35,7 +35,7 @@ RUN cargo chef cook --release --locked --recipe-path recipe.json
 
 # Build application
 COPY . .
-RUN cargo build --release --locked --bin test_server --package xtask
+RUN cargo build --release --locked --bin vex-core
 
 # ---- Final Stage ----
 FROM --platform=$BUILDPLATFORM debian:trixie-slim
@@ -47,10 +47,10 @@ RUN apt-get update && apt-get install -y \
     iproute2 \
     procps \
     && rm -rf /var/lib/apt/lists/*
-# Copy the built test server binary
-COPY --from=builder /usr/src/app/target/release/test_server /usr/local/bin/test_server
+# The core binary that ships, configured through VEX__ variables in docker-compose.yml
+COPY --from=builder /usr/src/app/target/release/vex-core /usr/local/bin/vex-core
 # Copy the Aeron libraries; the media driver runs in the aeron-archive container
 COPY ./xtask/tests/bin/lib /usr/local/lib/
 RUN ldconfig
 
-ENTRYPOINT ["/usr/local/bin/test_server"]
+ENTRYPOINT ["/usr/local/bin/vex-core"]
