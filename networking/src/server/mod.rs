@@ -30,10 +30,10 @@ use crate::server::cmd_handler::ReplayFragmentHandler;
 use crate::server::gateway_handler::HandshakeMessageHandler;
 use crate::server::gateway_manager::GatewayManager;
 use crate::server::replay::{
-    ExtendedRecordingDescriptor, JournalHolders, RecorderDescriptorReader, RecordingCounter,
-    RecordingInfo, assert_replay_complete, await_journal_release, drain_replay,
-    ensure_replayable_recording, ensure_stopped_recordings, fail_on_replay_error,
-    is_live_recording, journal_publication, replay_lineage, tail_recording, tail_window_start,
+    ExtendedRecordingDescriptor, JournalHolders, RecorderDescriptorReader, RecordingInfo,
+    assert_replay_complete, await_journal_release, drain_replay, ensure_replayable_recording,
+    ensure_stopped_recordings, fail_on_replay_error, is_live_recording, journal_publication,
+    replay_lineage, tail_recording, tail_window_start,
 };
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
 use common::{OrderCommand, decode_order_command};
@@ -596,12 +596,7 @@ impl VexCoreServer {
             &RECORDING_CHANNEL.into_c_string(),
             RECORDING_STREAM_ID,
         )?;
-        let mut recording_counter = Handler::leak(RecordingCounter);
-        let archive_recording_count =
-            archive.list_recordings(0, i32::MAX, Some(&recording_counter));
-        recording_counter.release();
-        let archive_recording_count = archive_recording_count?;
-        let mut reader = Handler::leak(RecorderDescriptorReader::new());
+        let mut reader = Handler::leak(RecorderDescriptorReader::default());
         let matching_recording_count = archive.list_recordings_for_uri(
             0,
             i32::MAX,
@@ -617,7 +612,6 @@ impl VexCoreServer {
         info!(
             target: "replay",
             action = "recordings_listed",
-            archive_recording_count,
             matching_recording_count,
             skipped_invalid
         );
@@ -698,6 +692,7 @@ impl VexCoreServer {
             publications: Arc::clone(&publications),
             shutdown: Arc::clone(&shutdown),
         });
+        let started = Instant::now();
         let replay_result = Self::replay_range(
             aeron,
             archive,
@@ -715,6 +710,7 @@ impl VexCoreServer {
                 )
             },
         );
+        let commands = message_handler.commands_published;
         // Release the producer whatever the outcome: a stranded clone would keep the disruptor
         // from shutting down after a failed start. Callbacks are no longer polled.
         message_handler.release();
@@ -726,7 +722,9 @@ impl VexCoreServer {
             target: "replay",
             action = "completed",
             recording_id,
-            session_id
+            session_id,
+            commands,
+            elapsed_ms = started.elapsed().as_millis()
         );
         ExtendedRecordingDescriptor::new(
             record.initial_term_id,

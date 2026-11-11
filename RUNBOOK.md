@@ -265,7 +265,8 @@ Every start, with journaling configured:
    extends. An empty archive holds nothing to replay, so the start is fresh. The replay
    re-publishes the events of every command above the watermark, the events a previous run may
    not have delivered, and answers no gateway. It takes as long as Kafka needs to accept them,
-   and fails only once 10 s pass without progress (`DrainError`).
+   and fails only once 10 s pass without progress (`DrainError`). It logs `completed` with the
+   `commands` replayed and `elapsed_ms`.
 4. **Stamps every live command above the last journaled command** (`journal_tail_read`), so
    order ids and timestamps never repeat any the archive holds, even if this host's clock is
    behind. A start fails if it cannot read it.
