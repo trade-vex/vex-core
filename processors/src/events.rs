@@ -1691,26 +1691,20 @@ impl KafkaEventsHandler {
     fn publish_orderbook_event(&self, cmd: &OrderCommand) {
         if let Some(snapshot) = &cmd.l2_data {
             let market_id = cmd.market_id();
-            let mut bids_vec = Vec::new();
-            for i in 0..snapshot.bid_depth() {
-                if snapshot.bid_prices[i] > 0 {
-                    bids_vec.push(JsonOrderbookLevel {
-                        price: snapshot.bid_prices[i],
-                        size: snapshot.bid_volumes[i],
-                    });
-                }
-            }
+            let bids_vec: Vec<_> = (0..snapshot.bid_depth())
+                .map(|i| JsonOrderbookLevel {
+                    price: snapshot.bid_prices[i],
+                    size: snapshot.bid_volumes[i],
+                })
+                .collect();
             let bids_json = serde_json::to_string(&bids_vec).unwrap_or_else(|_| "[]".to_string());
 
-            let mut asks_vec = Vec::new();
-            for i in 0..snapshot.ask_depth() {
-                if snapshot.ask_prices[i] > 0 {
-                    asks_vec.push(JsonOrderbookLevel {
-                        price: snapshot.ask_prices[i],
-                        size: snapshot.ask_volumes[i],
-                    });
-                }
-            }
+            let asks_vec: Vec<_> = (0..snapshot.ask_depth())
+                .map(|i| JsonOrderbookLevel {
+                    price: snapshot.ask_prices[i],
+                    size: snapshot.ask_volumes[i],
+                })
+                .collect();
             let asks_json = serde_json::to_string(&asks_vec).unwrap_or_else(|_| "[]".to_string());
 
             let orderbook_event = trading_proto::OrderbookEvent {

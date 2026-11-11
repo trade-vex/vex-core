@@ -72,11 +72,6 @@ message BalanceEvent {
   uint64 timestamp = 6;
 }
 
-message OrderbookLevel {
-  uint64 price = 1;
-  uint64 size = 2;
-}
-
 message OrderbookEvent {
   uint32 market_id = 1;
   string bids = 2; // JSON String: "[{\"price\":100, \"size\":10}, ...]"
