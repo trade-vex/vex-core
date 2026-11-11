@@ -290,14 +290,6 @@ jobs:
           path: xtask/tests/test-results/logs
           overwrite: true
 
-      - name: Show failed test infrastructure
-        if: failure()
-        # Best-effort `ps`: the step runs under `bash -e`, so a failing `ps` would otherwise
-        # end it before `logs`, the output this step exists for.
-        run: |
-          docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml ps -a || true
-          docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml logs --no-color
-
   # The live recovery tests (#[ignore]d in networking/src/server/recovery_tests.rs): journaling,
   # replay and restarts after a crash, against a real Java media driver and a separate archive
   # process, which some tests pause (SIGSTOP). Both run from the end-to-end tests' archive image
