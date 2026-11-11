@@ -541,6 +541,7 @@ impl VexCoreServer {
             recording_id: s.recording.recording_id,
             position: publication.position(),
             last_timestamp: self.publications.journal_tail(),
+            recording_started: s.recording.start_timestamp,
         };
         // Nothing journaled since the previous snapshot, or on this recording at all.
         if written
@@ -585,6 +586,8 @@ impl VexCoreServer {
             Ok(writer) => s.writer = Some(writer),
             Err(error) => {
                 error!(target: "snapshot", action = "write_failed", error = %error);
+                // Whether the previous one is on disk is unknown now: purge nothing below it.
+                s.previous = None;
                 return;
             }
         }

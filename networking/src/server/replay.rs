@@ -51,6 +51,9 @@ pub struct RecordingInfo {
     /// Where the journal may be purged below a snapshot.
     pub segment_file_length: i32,
     pub session_id: i32,
+    /// When the archive started the recording (epoch ms), which with its id tells it from a
+    /// recording of a wiped archive that reused the id.
+    pub start_timestamp: i64,
 }
 
 #[derive(Debug, Default)]
@@ -237,13 +240,17 @@ pub(super) fn replay_start(
     match loaded {
         Some(snapshot)
             if snapshot.recording_id != record.recording_id
+                || snapshot.recording_started != record.start_timestamp
                 || !(record.start_position..=record.stop_position).contains(&snapshot.position) =>
         {
             Err(foreign_snapshot(
                 snapshot,
                 &format!(
-                    "recording {} [{}, {}]",
-                    record.recording_id, record.start_position, record.stop_position
+                    "recording {} [{}, {}] started at {}",
+                    record.recording_id,
+                    record.start_position,
+                    record.stop_position,
+                    record.start_timestamp
                 ),
             ))
         }
@@ -260,9 +267,9 @@ pub(super) fn replay_start(
 /// A loaded snapshot that `journal` does not hold.
 pub(super) fn foreign_snapshot(snapshot: SnapshotHeader, journal: &str) -> ServerError {
     ServerError::ReplayError(format!(
-        "the snapshot at position {} of recording {} does not belong to the journal ({journal}); \
-         a ledger reset must delete the snapshots too (RUNBOOK: Resetting the ledger)",
-        snapshot.position, snapshot.recording_id
+        "the snapshot at position {} of recording {} started at {} does not belong to the journal \
+         ({journal}); a ledger reset must delete the snapshots too (RUNBOOK: Resetting the ledger)",
+        snapshot.position, snapshot.recording_id, snapshot.recording_started
     ))
 }
 
@@ -352,6 +359,7 @@ impl AeronArchiveRecordingDescriptorConsumerFuncCallback for RecorderDescriptorR
                 term_buffer_length: recording_descriptor.term_buffer_length,
                 segment_file_length: recording_descriptor.segment_file_length,
                 session_id: recording_descriptor.session_id,
+                start_timestamp: recording_descriptor.start_timestamp,
             });
         } else {
             self.skipped_invalid += 1;
@@ -382,6 +390,7 @@ mod tests {
             term_buffer_length: TERM_LENGTH as i32,
             segment_file_length: TERM_LENGTH as i32,
             session_id: 17,
+            start_timestamp: 1_000,
         }
     }
 
@@ -669,6 +678,7 @@ mod tests {
                 recording_id,
                 position,
                 last_timestamp: 3,
+                recording_started: 1_000,
             })
         };
         let record = recording(0, 5 * FRAMESIZE);
@@ -682,13 +692,21 @@ mod tests {
             replay_start(&record, snapshot(7, 5 * FRAMESIZE)).unwrap(),
             5 * FRAMESIZE
         );
-        for (id, position) in [(8, 3 * FRAMESIZE), (7, 6 * FRAMESIZE)] {
-            let error = replay_start(&record, snapshot(id, position))
-                .unwrap_err()
-                .to_string();
+        // Another recording, one past this one's stop, or this id in a wiped archive.
+        let wiped = snapshot(7, 3 * FRAMESIZE).map(|s| SnapshotHeader {
+            recording_started: 2_000,
+            ..s
+        });
+        for loaded in [
+            snapshot(8, 3 * FRAMESIZE),
+            snapshot(7, 6 * FRAMESIZE),
+            wiped,
+        ] {
+            let error = replay_start(&record, loaded).unwrap_err().to_string();
             assert!(
-                error.contains(&format!("recording {id}"))
-                    && error.contains("recording 7 [0, 480]"),
+                error.contains(
+                    "does not belong to the journal (recording 7 [0, 480] started at 1000)"
+                ),
                 "{error}"
             );
         }

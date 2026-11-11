@@ -3,7 +3,8 @@
 //! may then be purged. The state itself is opaque here (the server crate's `EngineState`).
 //!
 //! File: `<dir>/snapshot-<position:020>.bin` = `VEXSNAP\x01` | recording id (i64 LE) | position
-//! (i64 LE) | last command timestamp (u64 LE) | state | crc32 (u32 LE) of everything before it.
+//! (i64 LE) | last command timestamp (u64 LE) | recording start timestamp (i64 LE) | state |
+//! crc32 (u32 LE) of everything before it.
 
 use super::replay::RecordingInfo;
 use rusteron_archive::AeronArchive;
@@ -13,7 +14,7 @@ use std::path::{Path, PathBuf};
 use tracing::{error, info, warn};
 
 const MAGIC: &[u8; 8] = b"VEXSNAP\x01";
-const HEADER: usize = MAGIC.len() + 8 + 8 + 8;
+const HEADER: usize = MAGIC.len() + 8 + 8 + 8 + 8;
 /// Snapshots kept: the newest is unusable until the watermark passes it, so a start falls back to
 /// the one before.
 const KEEP: usize = 2;
@@ -30,6 +31,9 @@ pub struct SnapshotHeader {
     pub position: i64,
     /// Timestamp of the last command the state holds.
     pub last_timestamp: u64,
+    /// When the archive started the recording (epoch ms): a wiped archive numbers its recordings
+    /// from 0 again, so the id alone does not name the journal.
+    pub recording_started: i64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -38,8 +42,9 @@ pub struct Snapshot {
     pub state: Vec<u8>,
 }
 
-/// Writes `snapshot` crash-safely (temp file, fsync, rename, fsync of the directory), then deletes
-/// every snapshot but the [`KEEP`] newest, and any temp file. Returns the bytes written.
+/// Writes `snapshot` crash-safely (temp file, fsync, rename, fsync of the directory), then keeps it
+/// and the newest snapshot below it ([`KEEP`] in all) and deletes the others and any temp file. One
+/// above it is another journal's: this journal's positions only grow. Returns the bytes written.
 pub fn write(dir: &Path, snapshot: &Snapshot) -> io::Result<usize> {
     fs::create_dir_all(dir)?;
     let path = dir.join(format!("snapshot-{:020}.bin", snapshot.header.position));
@@ -49,6 +54,7 @@ pub fn write(dir: &Path, snapshot: &Snapshot) -> io::Result<usize> {
     bytes.extend_from_slice(&snapshot.header.recording_id.to_le_bytes());
     bytes.extend_from_slice(&snapshot.header.position.to_le_bytes());
     bytes.extend_from_slice(&snapshot.header.last_timestamp.to_le_bytes());
+    bytes.extend_from_slice(&snapshot.header.recording_started.to_le_bytes());
     bytes.extend_from_slice(&snapshot.state);
     bytes.extend_from_slice(&crc32fast::hash(&bytes).to_le_bytes());
     let mut file = File::create(&tmp)?;
@@ -56,8 +62,13 @@ pub fn write(dir: &Path, snapshot: &Snapshot) -> io::Result<usize> {
     file.sync_all()?;
     fs::rename(&tmp, &path)?;
     File::open(dir)?.sync_all()?;
-    for (_, old) in files(dir)?.into_iter().skip(KEEP) {
-        fs::remove_file(old)?;
+    let mut kept = 0;
+    for (position, path) in files(dir)? {
+        if position <= snapshot.header.position && kept < KEEP {
+            kept += 1;
+        } else {
+            fs::remove_file(path)?;
+        }
     }
     for entry in fs::read_dir(dir)? {
         let path = entry?.path();
@@ -101,6 +112,7 @@ fn parse(bytes: &[u8]) -> Option<Snapshot> {
             recording_id: i64::from_le_bytes(field(8)),
             position: i64::from_le_bytes(field(16)),
             last_timestamp: u64::from_le_bytes(field(24)),
+            recording_started: i64::from_le_bytes(field(32)),
         },
         state: body[HEADER..].to_vec(),
     })
@@ -201,6 +213,7 @@ mod tests {
                 recording_id: 7,
                 position,
                 last_timestamp,
+                recording_started: 1_000,
             },
             state: format!("state at {position}").into_bytes(),
         }
@@ -232,6 +245,10 @@ mod tests {
             read_all(&dir).unwrap(),
             [snapshot(9_600, 9_600), snapshot(960, 960)]
         );
+
+        // Below both: they are another journal's (a ledger reset that kept them).
+        write(&dir, &snapshot(480, 480)).unwrap();
+        assert_eq!(read_all(&dir).unwrap(), [snapshot(480, 480)]);
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -295,11 +312,13 @@ mod tests {
             term_buffer_length: 65_536,
             segment_file_length: SEGMENT as i32,
             session_id: 17,
+            start_timestamp: 1_000,
         };
         let previous = SnapshotHeader {
             recording_id: 7,
             position: 2 * SEGMENT + 960,
             last_timestamp: 30,
+            recording_started: 1_000,
         };
         assert_eq!(purge_target(&recording, previous, 30), Some(2 * SEGMENT));
         assert_eq!(purge_target(&recording, previous, 29), None);

@@ -699,6 +699,9 @@ fn a_start_after_a_snapshot_replays_only_the_commands_after_it() {
         recording_id: id,
         position: publication.position(),
         last_timestamp: 3,
+        recording_started: VexCoreServer::describe_recording(&fixture.archive, id)
+            .unwrap()
+            .start_timestamp,
     };
     snapshot::write(
         &dir,
@@ -723,6 +726,8 @@ fn a_start_after_a_snapshot_replays_only_the_commands_after_it() {
     let (mut server, replayed) = fixture.start_core_from(Some(header)).unwrap();
     assert_eq!(replayed, [4, 5]);
     server.shutdown().unwrap();
+    // Release its journal publication, as its process's exit would.
+    drop(server);
 
     // Above the watermark, the snapshot holds commands whose events Kafka may lack: the start
     // replays the whole journal.
@@ -743,6 +748,7 @@ fn a_snapshot_from_another_journal_fails_the_start() {
         recording_id: id + 1,
         position,
         last_timestamp: 1,
+        recording_started: 0,
     };
     let Err(error) = fixture.start_core_from(Some(foreign)) else {
         panic!("a start from another journal's snapshot must fail");
