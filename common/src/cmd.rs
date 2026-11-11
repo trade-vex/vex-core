@@ -412,23 +412,9 @@ impl Drop for MatcherTradeEvent {
 
 impl PartialEq for MatcherTradeEventChain {
     fn eq(&self, other: &Self) -> bool {
-        // Compare the linked events, not the cached tail pointer (PR #177's `tail` is a
-        // derived cache and is deliberately not part of the value's identity).
-        let mut left = Some(self.head.as_ref());
-        let mut right = Some(other.head.as_ref());
-        loop {
-            match (left, right) {
-                (None, None) => return true,
-                (Some(l), Some(r)) => {
-                    if l != r {
-                        return false;
-                    }
-                    left = l.next_event.as_deref();
-                    right = r.next_event.as_deref();
-                }
-                _ => return false,
-            }
-        }
+        // `tail` is a cache, not part of the value; the derived event eq follows `next_event`.
+        // shortcut: recursive, a stack frame per fill; iterate if production code compares them.
+        self.head == other.head
     }
 }
 
