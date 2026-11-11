@@ -8,7 +8,7 @@
 //! The test suite is organized into several modules:
 //!
 //! - `test_framework`: Core test infrastructure (TestContext, TestClient, KafkaVerifier)
-//! - `builders`: Fluent APIs for creating test data (OrderBuilder, ScenarioBuilder)
+//! - `builders`: Fluent APIs for creating test data (OrderBuilder)
 //! - `verifiers`: Assertion utilities for validating system state
 //! - `scenarios`: Pre-built test scenarios organized by functionality
 //! - `fixtures`: Reusable test data and configurations
@@ -82,8 +82,3 @@ pub mod kafka_topics;
 pub mod scenarios;
 pub mod test_framework;
 pub mod verifiers;
-
-// Re-export commonly used types
-pub use builders::OrderBuilder;
-pub use test_framework::{TestContext, types::*};
-pub use verifiers::{BalanceVerifier, OrderbookVerifier, ResponseVerifier, TradeVerifier};
