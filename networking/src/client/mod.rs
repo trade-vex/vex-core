@@ -18,7 +18,7 @@ use rusteron_media_driver::AeronIdleStrategy;
 use std::ffi::CString;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -55,15 +55,6 @@ pub enum CoreResponse {
     Unavailable { retry_after_seconds: u32 },
     /// Message should be ignored (wrong session, malformed, etc.)
     Ignore,
-}
-
-/// Gateway connection state
-#[derive(Debug, Clone, PartialEq)]
-pub enum GatewayState {
-    Disconnected,
-    Connecting,
-    Connected,
-    Error(String),
 }
 
 /// Builds the handshake request `HELLO gateway-<id> <credential> <encryption key>`.
@@ -265,10 +256,6 @@ pub enum GatewayError {
     /// is down or restarting. Nothing was sent; unlike `Busy`, there is no expected retry time.
     #[error("Gateway not connected to Server")]
     NotConnected,
-    #[error("Invalid gateway state: expected {expected}, got {actual}")]
-    InvalidState { expected: String, actual: String },
-    #[error("Vex Core Not Started")]
-    VexCoreNotStarted,
 }
 
 /// Enhanced VEX Gateway for connecting to VEX Core
@@ -277,12 +264,6 @@ pub struct VexGateway {
     aeron: Aeron,
     /// Gateway configuration
     config: GatewayNetworkingConfig,
-    /// Current gateway state
-    state: Arc<RwLock<GatewayState>>,
-    /// Dedicated session ID for this gateway
-    session_id: Option<i32>,
-    /// One-time encryption key for session establishment
-    encryption_key: Option<i32>,
     /// Publication for sending to core (stored after handshake)
     core_publication: Option<AeronPublication>,
     /// Shutdown flag
@@ -414,9 +395,6 @@ impl VexGateway {
         Ok(Self {
             aeron,
             config,
-            state: Arc::new(RwLock::new(GatewayState::Disconnected)),
-            session_id: None,
-            encryption_key: None,
             core_publication: None,
             shutdown: Arc::new(AtomicBool::new(false)),
             polling_thread: None,
@@ -437,9 +415,6 @@ impl VexGateway {
             gateway_id = self.config.gateway_id
         );
 
-        // Update state to connecting
-        *self.state.write().unwrap() = GatewayState::Connecting;
-
         // Phase 1: Perform handshake with VEX Core
         let (dedicated_port, reply_port, session_id) = self.perform_handshake()?;
 
@@ -457,9 +432,6 @@ impl VexGateway {
             self.establish_dedicated_channel(dedicated_port, reply_port, session_id, handler)?;
 
         let publisher = Publisher::new(publication, self.config.gateway_id);
-
-        // Update state to Connected
-        *self.state.write().unwrap() = GatewayState::Connected;
 
         info!(
             target: "gateway_client",
@@ -491,14 +463,12 @@ impl VexGateway {
         self.wait_for_channel_connections(&publication, &subscription, "handshake")?;
 
         let session_id = publication.session_id();
-        self.session_id = Some(session_id);
 
         // An empty key means the core runs without authentication and ignores the credential, but
         // HELLO still needs one token; `new` has already rejected a malformed key.
         let key = self.config.gateway_authentication_key.as_str();
         let credential = if key.is_empty() { "-" } else { key };
         let encryption_key = rand::random::<i32>();
-        self.encryption_key = Some(encryption_key);
 
         debug!(
             target: "gateway_client",
@@ -715,19 +685,9 @@ impl VexGateway {
         )))
     }
 
-    /// Gets current gateway state
-    pub fn state(&self) -> GatewayState {
-        self.state.read().unwrap().clone()
-    }
-
     /// Gets gateway configuration
     pub fn config(&self) -> &GatewayNetworkingConfig {
         &self.config
-    }
-
-    /// Checks if gateway is connected and authenticated
-    pub fn is_connected(&self) -> bool {
-        matches!(*self.state.read().unwrap(), GatewayState::Connected)
     }
 
     /// Gracefully shuts down the gateway
@@ -737,9 +697,6 @@ impl VexGateway {
             action = "shutdown_requested",
             gateway_id = self.config.gateway_id
         );
-
-        // Update state
-        *self.state.write().unwrap() = GatewayState::Disconnected;
 
         // Set shutdown flag
         self.shutdown.store(true, Ordering::SeqCst);
