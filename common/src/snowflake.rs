@@ -133,11 +133,6 @@ impl Snowflake {
         (timestamp << TIMESTAMP_SHIFT) | (sequence << SEQUENCE_SHIFT) | gateway
     }
 
-    /// Extracts the Gateway ID from an ID based on the new layout.
-    pub fn gateway_from_id(id: u64) -> u8 {
-        (id & NODE_MAX) as u8
-    }
-
     /// Returns the current system time in nanoseconds since Unix epoch
     /// This is used for external timestamping
     pub fn timestamp(&self) -> u64 {
@@ -296,18 +291,5 @@ mod tests {
         assert_eq!(node, gateway as u8);
         assert_eq!(timestamp, TIMESTAMP_MAX);
         assert_eq!(u64::from(sequence), TICK_NANOS_MASK);
-    }
-
-    #[test]
-    fn test_gateway_from_id() {
-        let snowflake = Snowflake::new(None).unwrap();
-        for gateway in 0..=NODE_MAX {
-            let id = snowflake.generate(tick_start(1), gateway).unwrap();
-            let extracted_gateway = Snowflake::gateway_from_id(id);
-            assert_eq!(
-                extracted_gateway, gateway as u8,
-                "Extracted gateway should match original"
-            );
-        }
     }
 }

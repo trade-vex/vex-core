@@ -29,12 +29,6 @@ pub struct BalanceKey {
     asset_id: u16,
 }
 
-impl BalanceKey {
-    pub fn new(user_id: u64, asset_id: u16) -> Self {
-        Self { user_id, asset_id }
-    }
-}
-
 /// The internal, non-thread-safe balance store.
 /// This should not be used directly by concurrent processors.
 pub struct BalanceStore {
@@ -174,25 +168,6 @@ impl BalanceStore {
         } else {
             Err(BalanceError::InsufficientAvailableFunds {
                 available: balance.available,
-                needed: amount,
-            })
-        }
-    }
-
-    // Subtract from locked funds
-    pub fn subtract_locked_funds(
-        &mut self,
-        user_id: u64,
-        asset_id: u16,
-        amount: u64,
-    ) -> Result<UserBalance, BalanceError> {
-        let balance = self.get_balance_mut(user_id, asset_id)?;
-        if balance.locked >= amount {
-            balance.locked -= amount;
-            Ok(*balance)
-        } else {
-            Err(BalanceError::InsufficientLockedFunds {
-                locked: balance.locked,
                 needed: amount,
             })
         }
