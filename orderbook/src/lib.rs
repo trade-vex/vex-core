@@ -262,9 +262,11 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 }
             }
 
-            // Remove filled orders from the queue.
-            for idx in orders_to_remove.iter().rev() {
-                level.orders.remove(*idx).unwrap();
+            // Remove filled orders from the queue, front first: each index is shifted by the
+            // orders already removed, so a filled prefix pops from the front instead of
+            // shifting the rest of the level once per order.
+            for (removed, idx) in orders_to_remove.iter().enumerate() {
+                level.orders.remove(idx - removed).unwrap();
             }
 
             if level.orders.is_empty() {
