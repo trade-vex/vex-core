@@ -107,13 +107,12 @@ fn test_empty_gateway_authentication_key_by_environment() {
 }
 
 #[test]
-fn test_file_loading_and_saving() -> Result<(), Box<dyn std::error::Error>> {
+fn test_file_loading() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
-    let config_path = temp_dir.path().join("test_config.toml");
+    let config_path = temp_dir.path().join("test_config.json");
 
-    // Create and save a configuration
     let original_config = VexConfig::new(Environment::Test);
-    original_config.save_to_file(&config_path)?;
+    std::fs::write(&config_path, serde_json::to_string(&original_config)?)?;
 
     // Load the configuration back
     let loaded_config = VexConfig::load_from_file(&config_path)?;
@@ -122,42 +121,6 @@ fn test_file_loading_and_saving() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(
         loaded_config.core_networking.core_id,
         original_config.core_networking.core_id
-    );
-
-    Ok(())
-}
-
-#[test]
-fn test_different_file_formats() -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = TempDir::new()?;
-    let mut config = VexConfig::new(Environment::Production);
-    config.symbols = VexConfig::new(Environment::Development).symbols;
-    config.core_networking.gateway_authentication_key = GatewayAuthenticationKey::from(
-        "5f0c3a9e7d2b4816c4e1a7f39b0d2c6e8a1f4b7d3e9c0a2f6b8d1e4c7a3f9b05",
-    );
-
-    let toml_path = temp_dir.path().join("config.toml");
-    let json_path = temp_dir.path().join("config.json");
-
-    // Save in different formats
-    config.save_to_file(&toml_path)?;
-    config.save_to_file(&json_path)?;
-
-    // Load from different formats
-    let toml_config = VexConfig::load_from_file(&toml_path)?;
-    let json_config = VexConfig::load_from_file(&json_path)?;
-
-    // All should have the same core values
-    assert_eq!(toml_config.environment, Environment::Production);
-    assert_eq!(json_config.environment, Environment::Production);
-
-    assert_eq!(
-        toml_config.core_networking.core_id,
-        config.core_networking.core_id
-    );
-    assert_eq!(
-        json_config.core_networking.core_id,
-        config.core_networking.core_id
     );
 
     Ok(())
@@ -271,13 +234,13 @@ fn test_missing_file_defaults_load_unchanged() -> Result<(), Box<dyn std::error:
 fn test_production_config_without_schema_registry_url_fails_to_load()
 -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
-    let path = temp_dir.path().join("config.prod.toml");
+    let path = temp_dir.path().join("config.prod.json");
     let mut config = VexConfig::new(Environment::Production);
     config.symbols = VexConfig::new(Environment::Development).symbols;
     config.core_networking.gateway_authentication_key = GatewayAuthenticationKey::from(
         "5f0c3a9e7d2b4816c4e1a7f39b0d2c6e8a1f4b7d3e9c0a2f6b8d1e4c7a3f9b05",
     );
-    config.save_to_file(&path)?;
+    std::fs::write(&path, serde_json::to_string(&config)?)?;
     let load = || {
         ConfigLoader::new()
             .with_search_paths(vec![path.display().to_string()])
@@ -287,12 +250,12 @@ fn test_production_config_without_schema_registry_url_fails_to_load()
     assert_eq!(load()?.schema_registry_url, "http://localhost:8081");
 
     // Without the key, and with no override, the file does not load: production gets no default.
-    let without_registry: String = std::fs::read_to_string(&path)?
-        .lines()
-        .filter(|line| !line.starts_with("schema_registry_url ="))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    std::fs::write(&path, without_registry)?;
+    let mut without_registry = serde_json::to_value(&config)?;
+    without_registry
+        .as_object_mut()
+        .unwrap()
+        .remove("schema_registry_url");
+    std::fs::write(&path, without_registry.to_string())?;
 
     let error = load().unwrap_err();
     assert!(matches!(error, ConfigError::LoadError { .. }), "{error}");
@@ -364,14 +327,14 @@ fn test_schema_registry_url_must_be_an_http_url() {
 #[test]
 fn test_first_existing_config_file_wins() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
-    let first = temp_dir.path().join("first.toml");
-    let second = temp_dir.path().join("second.toml");
+    let first = temp_dir.path().join("first.json");
+    let second = temp_dir.path().join("second.json");
 
     let mut config = VexConfig::new(Environment::Development);
     config.kafka_broker = "first-kafka:9092".to_string();
-    config.save_to_file(&first)?;
+    std::fs::write(&first, serde_json::to_string(&config)?)?;
     config.kafka_broker = "second-kafka:9092".to_string();
-    config.save_to_file(&second)?;
+    std::fs::write(&second, serde_json::to_string(&config)?)?;
 
     let loaded = ConfigLoader::new()
         .with_search_paths(vec![
@@ -384,50 +347,6 @@ fn test_first_existing_config_file_wins() -> Result<(), Box<dyn std::error::Erro
     assert_eq!(loaded.kafka_broker, "first-kafka:9092");
 
     Ok(())
-}
-
-#[test]
-fn test_configuration_merging() -> Result<(), Box<dyn std::error::Error>> {
-    let mut base_config = VexConfig::new(Environment::Development);
-    let mut override_config = VexConfig::new(Environment::Development);
-
-    // Modify the override config
-    override_config.core_networking.initial_port = 12345;
-    override_config.core_networking.enable_authentication = true;
-
-    // Original values
-    let original_port = base_config.core_networking.initial_port;
-    let original_auth = base_config.core_networking.enable_authentication;
-
-    // Merge configurations
-    base_config.merge_with(&override_config)?;
-
-    // Check that override values were applied
-    assert_ne!(base_config.core_networking.initial_port, original_port);
-    assert_ne!(
-        base_config.core_networking.enable_authentication,
-        original_auth
-    );
-
-    assert_eq!(base_config.core_networking.initial_port, 12345);
-    assert!(base_config.core_networking.enable_authentication);
-
-    Ok(())
-}
-
-#[test]
-fn test_merge_different_environments_fails() {
-    let mut dev_config = VexConfig::new(Environment::Development);
-    let prod_config = VexConfig::new(Environment::Production);
-
-    let result = dev_config.merge_with(&prod_config);
-    assert!(result.is_err());
-
-    if let Err(ConfigError::ValidationError(msg)) = result {
-        assert!(msg.contains("different environments"));
-    } else {
-        panic!("Expected ValidationError about different environments");
-    }
 }
 
 #[test]

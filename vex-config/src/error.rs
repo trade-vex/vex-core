@@ -32,10 +32,6 @@ pub enum ConfigError {
     #[error("Configuration not found: {0}")]
     NotFound(String),
 
-    /// Configuration merge error
-    #[error("Merge error: {0}")]
-    MergeError(String),
-
     /// Configuration load error with search-path context
     #[error("Configuration load failed after trying paths {paths:?}: {source}")]
     LoadError {

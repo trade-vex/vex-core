@@ -208,14 +208,6 @@ impl CoreNetworkingConfig {
 
         Ok(())
     }
-
-    /// Merge with another configuration, with the other taking precedence
-    pub fn merge_with(&mut self, other: &Self) -> Result<()> {
-        // For networking config, we do a field-by-field merge
-        // In a real implementation, you might want more sophisticated merging rules
-        *self = other.clone();
-        Ok(())
-    }
 }
 
 /// Gateway networking configuration for connecting to VEX Core
@@ -314,12 +306,6 @@ impl GatewayNetworkingConfig {
             return Err(ConfigError::network("Context directory cannot be empty"));
         }
 
-        Ok(())
-    }
-
-    /// Merge with another configuration, with the other taking precedence
-    pub fn merge_with(&mut self, other: &Self) -> Result<()> {
-        *self = other.clone();
         Ok(())
     }
 }

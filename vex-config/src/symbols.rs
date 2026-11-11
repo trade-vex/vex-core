@@ -349,43 +349,9 @@ impl SymbolSpecificationConfig {
         Ok(())
     }
 
-    /// Merge configuration with another config, with the other config taking precedence
-    pub fn merge_with(&mut self, other: &Self) -> Result<()> {
-        // Extend assets and symbols, with other taking precedence
-        self.assets.extend(other.assets.clone());
-        self.symbols.extend(other.symbols.clone());
-        Ok(())
-    }
-
-    /// Get symbol specification by ID
-    pub fn get_symbol(&self, market_id: u32) -> Option<&CoreMarketSpecification> {
-        self.symbols.get(&market_id)
-    }
-
-    /// Get all symbol IDs
-    pub fn get_market_ids(&self) -> Vec<u32> {
-        self.symbols.keys().copied().collect()
-    }
-
-    /// Remove a symbol specification
-    pub fn remove_symbol(&mut self, market_id: u32) -> Option<CoreMarketSpecification> {
-        self.symbols.remove(&market_id)
-    }
-
     /// Check if configuration is empty
     pub fn is_empty(&self) -> bool {
         self.symbols.is_empty()
-    }
-
-    /// Get the number of configured symbols
-    pub fn len(&self) -> usize {
-        self.symbols.len()
-    }
-}
-
-impl Default for SymbolSpecificationConfig {
-    fn default() -> Self {
-        Self::for_environment(&Environment::Development)
     }
 }
 
