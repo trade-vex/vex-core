@@ -39,14 +39,14 @@ function start_full() {
 
 function stop_all() {
     echo "🛑 Stopping all containers..."
-    docker compose down || true
+    docker compose --profile tools down || true
     docker compose -f docker-compose.media-driver.yml down || true
 }
 
 function clean_all() {
     echo "🧹 Cleaning up all containers and volumes..."
     stop_all
-    docker compose down -v || true
+    docker compose --profile tools down -v || true
     docker compose -f docker-compose.media-driver.yml down -v || true
     docker system prune -f
 }
