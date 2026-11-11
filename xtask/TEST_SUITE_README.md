@@ -68,7 +68,7 @@ Example: Comprehensive test Section 3 uses orderbook from Section 2, Section 4 u
 6. Edge Cases - Self-match prevention
 7. Multi-Level Matching - Orders crossing multiple levels
 8. Partial + Cancel - Cancel partially filled orders
-9. Final Verification - Balance invariants
+9. Conservation - Per asset, the users' totals plus the trades' fees equal the deposits
 
 **Runtime**: ~10 seconds
 

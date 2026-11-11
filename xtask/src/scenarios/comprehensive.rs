@@ -12,8 +12,9 @@ use crate::builders::OrderBuilder;
 use crate::fixtures::{assets, users};
 use crate::test_framework::TestContext;
 use crate::test_framework::types::*;
-use crate::verifiers::{BalanceVerifier, OrderbookVerifier, ResponseVerifier, TradeVerifier};
+use crate::verifiers::{OrderbookVerifier, ResponseVerifier, TradeVerifier};
 use common::Side;
+use processors::events::trading_proto;
 use tracing::{info, warn};
 
 /// Comprehensive integration test - single massive test combining all order types
@@ -278,21 +279,21 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     info!("");
 
     // ========================================================================
-    // SECTION 9: Final Orderbook Cleanup and Balance Verification
+    // SECTION 9: Conservation - every asset adds up to its deposits
     // ========================================================================
     info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 9: Final Cleanup & Balance Check       │");
-    info!("│ Cancel all remaining orders, verify balances   │");
+    info!("│ SECTION 9: Conservation                        │");
+    info!("│ Balances plus trade fees = deposits            │");
     info!("└────────────────────────────────────────────────┘");
 
     let section_start = std::time::Instant::now();
 
-    match final_cleanup_section(ctx).await {
+    match conservation_section(ctx).await {
         Ok(_) => {
             let duration = section_start.elapsed();
             info!("✓ SECTION 9 PASSED ({:?})", duration);
             results.push(ScenarioResult::success(
-                "final_cleanup".to_string(),
+                "conservation".to_string(),
                 duration,
             ));
         }
@@ -300,7 +301,7 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
             let duration = section_start.elapsed();
             warn!("✗ SECTION 9 FAILED ({:?}): {}", duration, e);
             results.push(ScenarioResult::failure(
-                "final_cleanup".to_string(),
+                "conservation".to_string(),
                 duration,
                 e,
             ));
@@ -945,42 +946,66 @@ async fn partial_fills_with_cancel_section(ctx: &mut TestContext) -> TestResult<
     Ok(())
 }
 
-/// SECTION 9: Final cleanup and balance verification
-async fn final_cleanup_section(ctx: &mut TestContext) -> TestResult<()> {
-    info!("Final cleanup and balance verification:");
-    info!("  Checking that all balances sum correctly (available + locked = total)");
+/// SECTION 9: Each asset adds up: the users' totals plus the fees the trades report equal what
+/// section 1 deposited (the suite withdraws nothing)
+async fn conservation_section(ctx: &mut TestContext) -> TestResult<()> {
+    info!("Checking that each asset's balances plus trade fees equal its deposits");
 
-    // Verify balance invariants for all users
-    {
-        let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
+    let market_id = ctx.market_id;
+    let event_timeout = ctx.config().event_timeout;
+    // [base, quote], as section 1 funded each of the three users
+    let deposited = [
+        (assets::BTC, 3 * 5_000u128),
+        (assets::USD, 3 * 50_000_000u128),
+    ];
 
-        balance_verifier
-            .assert_balance_invariant(users::ALICE, assets::USD)
-            .await?;
-        balance_verifier
-            .assert_balance_invariant(users::ALICE, assets::BTC)
-            .await?;
-        info!("  → Alice balances: USD and BTC invariants satisfied");
-
-        balance_verifier
-            .assert_balance_invariant(users::BOB, assets::USD)
-            .await?;
-        balance_verifier
-            .assert_balance_invariant(users::BOB, assets::BTC)
-            .await?;
-        info!("  → Bob balances: USD and BTC invariants satisfied");
-
-        balance_verifier
-            .assert_balance_invariant(users::CHARLIE, assets::USD)
-            .await?;
-        balance_verifier
-            .assert_balance_invariant(users::CHARLIE, assets::BTC)
-            .await?;
-        info!("  → Charlie balances: USD and BTC invariants satisfied");
+    let mut held = [0u128; 2];
+    for user in [users::ALICE, users::BOB, users::CHARLIE] {
+        // An ask far above the book rests and moves no money, and it publishes both of the user's
+        // balances after every earlier change to them.
+        let ask = OrderBuilder::place_limit()
+            .user(user)
+            .price(1_000_000)
+            .size(1)
+            .side(Side::Ask)
+            .market_id(market_id)
+            .build();
+        let response = ctx.execute_command(ask)?;
+        ResponseVerifier::assert_placed(&response)?;
+        for (held, (asset, _)) in held.iter_mut().zip(deposited) {
+            let balance = ctx
+                .kafka
+                .wait_for_balance_after(user, asset, response.timestamp, event_timeout)
+                .await?;
+            *held += u128::from(balance.total);
+        }
     }
 
-    info!("  → All balance invariants verified successfully");
-    info!("  → Comprehensive integration test completed");
+    // Each side's fee is in the asset it received: base for the bid, quote for the ask.
+    let mut fees = [0u128; 2];
+    for trade in ctx.kafka.get_trades(market_id, usize::MAX).await? {
+        let (taker, maker) = if trade.taker_side() == trading_proto::Side::Bid {
+            (0, 1)
+        } else {
+            (1, 0)
+        };
+        fees[taker] += u128::from(trade.taker_fee);
+        fees[maker] += u128::from(trade.maker_fee);
+    }
 
+    for (k, (asset, deposited)) in deposited.into_iter().enumerate() {
+        let (held, fees) = (held[k], fees[k]);
+        if held + fees != deposited {
+            return Err(TestError::Verification {
+                message: format!(
+                    "asset {asset}: the users hold {held} and the trades charged {fees} in fees, \
+                     but {deposited} was deposited"
+                ),
+            });
+        }
+        info!("  → Asset {asset}: {held} held + {fees} fees = {deposited} deposited");
+    }
+
+    info!("  → Comprehensive integration test completed");
     Ok(())
 }
