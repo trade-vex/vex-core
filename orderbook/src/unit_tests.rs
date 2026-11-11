@@ -1167,8 +1167,9 @@ mod test {
         assert!(book.verify_state().is_ok());
     }
 
+    /// Each cancel below names the wrong side: the book's index decides which side it removes.
     #[test]
-    fn test_cancel_orders_on_both_sides_at_same_price() {
+    fn test_cancel_takes_the_side_from_the_book() {
         let (mut book, price_cache) = create_test_orderbook();
 
         let mut bid = create_order_command(
@@ -1177,7 +1178,7 @@ mod test {
             100,
             1001,
             1,
-            1000,
+            999,
             10,
             Side::Bid,
             TimeInForce::Gtc,
@@ -1197,7 +1198,7 @@ mod test {
         );
         book.place_order(&mut ask, price_cache.clone());
 
-        assert_eq!(book.get_level_order_count(Side::Bid, 1000), 1);
+        assert_eq!(book.get_level_order_count(Side::Bid, 999), 1);
         assert_eq!(book.get_level_order_count(Side::Ask, 1000), 1);
 
         let mut cancel_ask = create_order_command(
@@ -1216,7 +1217,7 @@ mod test {
         assert_eq!(cancel_ask.status(), Status::Cancelled);
         assert_eq!(cancel_ask.side, Side::Ask);
         assert_eq!(book.get_level_order_count(Side::Ask, 1000), 0);
-        assert_eq!(book.get_level_order_count(Side::Bid, 1000), 1);
+        assert_eq!(book.get_level_order_count(Side::Bid, 999), 1);
 
         let mut cancel_bid = create_order_command(
             OrderCommandType::CancelOrder,
@@ -1473,7 +1474,7 @@ mod test {
         );
         book.place_order(&mut bid_cmd, price_cache.clone());
 
-        // Try to place ask from same user (this should NOT match in our implementation)
+        // An ask from the same user that crosses the bid cancels it (STP_CANCEL_MAKER).
         let mut ask_cmd = create_order_command(
             OrderCommandType::PlaceOrder,
             2,
@@ -1487,12 +1488,41 @@ mod test {
         );
         book.place_order(&mut ask_cmd, price_cache.clone());
 
-        // In this implementation, self-trades are not allowed
         assert_eq!(ask_cmd.status(), Status::Placed);
-        if let Err(err) = book.verify_state() {
-            println!("{err}");
-        }
-        assert!(book.verify_state().is_ok());
+        assert_eq!((book.best_bid(), book.best_ask()), (None, Some((50, 100))));
+        assert_eq!(book.verify_state(), Ok(()));
+        let events = collect_trade_events(ask_cmd);
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| (e.matched_order_id, e.size))
+                .collect::<Vec<_>>(),
+            [(1, 0)]
+        );
+    }
+
+    #[test]
+    fn own_resting_order_is_cancelled_not_crossed() {
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+        let mut ask = harness.create_place_order_cmd(1001, Side::Ask, 48_000, 5, TimeInForce::Gtc);
+        book.place_order(&mut ask, price_cache.clone());
+
+        let mut bid = harness.create_place_order_cmd(1001, Side::Bid, 49_000, 3, TimeInForce::Gtc);
+        book.place_order(&mut bid, price_cache.clone());
+
+        assert_eq!(bid.status(), Status::Placed);
+        assert_eq!(book.best_ask(), None);
+        assert_eq!(book.best_bid(), Some((49_000, 3)));
+        assert_eq!(book.total_order_count(), 1);
+        assert_eq!(book.verify_state(), Ok(()));
+        let events = collect_trade_events(bid);
+        assert_eq!(events.len(), 1);
+        let stp = &events[0];
+        assert_eq!(
+            (stp.size, stp.matched_order_id, stp.maker_remaining_size),
+            (0, ask.order_id, 5)
+        );
     }
 
     #[test]
@@ -3462,16 +3492,17 @@ mod test {
     fn market_sell_response_price_is_the_last_fill() {
         let (mut book, price_cache) = create_test_orderbook();
         let harness = TestHarness::new(1);
-        for (user, price) in [(202, 100), (203, 99)] {
+        // The seller's own bid at 98 is met last and cancelled by STP: it is not a fill.
+        for (user, price) in [(202, 100), (203, 99), (101, 98)] {
             let mut bid =
                 harness.create_place_order_cmd(user, Side::Bid, price, 5, TimeInForce::Gtc);
             book.place_order(&mut bid, price_cache.clone());
         }
 
-        let mut market_sell = harness.create_market_order_cmd(101, Side::Ask, 10);
+        let mut market_sell = harness.create_market_order_cmd(101, Side::Ask, 15);
         book.place_order(&mut market_sell, price_cache.clone());
 
-        assert_eq!(market_sell.status(), Status::Filled);
+        assert_eq!(market_sell.status(), Status::PartiallyFilled);
         assert_eq!(market_sell.price(), 99, "the worst fill, not the first");
     }
 
@@ -3487,7 +3518,9 @@ mod test {
         assert!(market_buy.events().is_none());
     }
 
-    /// Users 1, 2 and 3 rest 10 each at one ask level; user 2 bids 25 through it.
+    /// Users 1, 2 and 3 rest 10 each at one ask level; user 2 bids 25 through it. STP cancels
+    /// user 2's own ask (a size-0 event) and the bid fills on; the FOK pre-scan leaves own
+    /// volume out without touching the book (spec §8.7).
     #[test]
     fn taker_meets_its_own_order_in_the_middle_of_a_level() {
         // (taker's time in force, status, size left, fills as (maker, size), best bid, best ask)
@@ -3496,17 +3529,17 @@ mod test {
                 TimeInForce::Ioc,
                 Status::PartiallyFilled,
                 5,
-                vec![(1, 10), (3, 10)],
+                vec![(1, 10), (2, 0), (3, 10)],
                 None,
-                Some((100, 10)),
+                None,
             ),
             (
                 TimeInForce::Gtc,
                 Status::PartiallyFilled,
                 5,
-                vec![(1, 10), (3, 10)],
+                vec![(1, 10), (2, 0), (3, 10)],
                 Some((100, 5)),
-                Some((100, 10)),
+                None,
             ),
             (
                 TimeInForce::Fok,
@@ -3542,27 +3575,6 @@ mod test {
             );
             assert_eq!(book.verify_state(), Ok(()), "{tif:?}");
         }
-    }
-
-    #[test]
-    fn test_self_trade_does_not_executes() {
-        // Note: A production matching engine would typically prevent self-trades.
-        // This test confirms the current behavior, which allows them.
-        let (mut book, price_cache) = create_test_orderbook();
-        let harness = TestHarness::new(1);
-        const SAME_USER_ID: u64 = 555;
-
-        let mut sell_cmd =
-            harness.create_place_order_cmd(SAME_USER_ID, Side::Ask, 100_000, 10, TimeInForce::Gtc);
-        book.place_order(&mut sell_cmd, price_cache.clone());
-
-        let mut buy_cmd =
-            harness.create_place_order_cmd(SAME_USER_ID, Side::Bid, 100_000, 10, TimeInForce::Gtc);
-        book.place_order(&mut buy_cmd, price_cache.clone());
-
-        assert_eq!(buy_cmd.status(), Status::Placed);
-        let events = collect_trade_events(buy_cmd);
-        assert_eq!(events.len(), 0);
     }
 
     #[test]

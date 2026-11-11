@@ -373,6 +373,8 @@ pub struct MatcherTradeEvent {
     pub maker_user_id: u64,
     pub matched_order_completed: bool,
     pub price: u64,
+    /// The traded size. 0 marks an STP cancel of the maker, the taker's own resting order
+    /// (spec §8.2 STP_CANCEL_MAKER): no trade, and `maker_remaining_size` is what it unlocks.
     pub size: u64,
     pub next_event: Option<Box<MatcherTradeEvent>>,
     pub maker_balance: [UserBalance; 2],

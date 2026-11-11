@@ -87,7 +87,8 @@ macro_rules! create_risk_handler {
 ///
 /// 1. Skips rejected orders
 /// 2. Snapshots the balance of a deposit or withdrawal (applied in R1) and stops there
-/// 3. Processes trade events for both maker and taker based on shard ownership
+/// 3. Processes trade events for both maker and taker based on shard ownership; a size-0 event
+///    (an STP cancel of the taker's own resting order) only unlocks that order
 /// 4. Handles order cancellations for partially filled IOC/FOK orders
 /// 5. Updates balance snapshots in the command
 /// 6. Marks the sequence settled on its shard's `RiskEngine`, for every sequence, which R1 of the
@@ -143,31 +144,45 @@ macro_rules! create_risk_r2_handler {
                 while !event.is_null() {
                     let fill = unsafe { ::common::MatcherTradeEvent::fill(event) };
 
-                    // Settle maker if this shard owns the maker's user ID
-                    if ((fill.maker_user_id & shard_mask) as usize) == $shard_id {
-                        let settled = risk_engine.handle_trade_event(
-                            fill.maker_user_id,
-                            market_id,
-                            taker_side.op_side(),
-                            fill,
-                            None, // Maker order ID is carried by the trade event
-                        );
-                        if let Some(balance) = settled.maker_balance {
-                            unsafe { (&raw mut (*event).maker_balance).write(balance) };
+                    if fill.size == 0 {
+                        // STP cancel of the taker's own resting order: maker == taker, so one
+                        // shard owns both. Unlock its remainder; nothing trades.
+                        if is_taker_shard {
+                            risk_engine.handle_cancellation(
+                                fill.matched_order_id,
+                                taker_id,
+                                market_id,
+                                taker_side.op_side(),
+                                fill.maker_remaining_size,
+                            );
                         }
-                        unsafe { (&raw mut (*event).maker_fee).write(settled.fee) };
-                    }
+                    } else {
+                        // Settle maker if this shard owns the maker's user ID
+                        if ((fill.maker_user_id & shard_mask) as usize) == $shard_id {
+                            let settled = risk_engine.handle_trade_event(
+                                fill.maker_user_id,
+                                market_id,
+                                taker_side.op_side(),
+                                fill,
+                                None, // Maker order ID is carried by the trade event
+                            );
+                            if let Some(balance) = settled.maker_balance {
+                                unsafe { (&raw mut (*event).maker_balance).write(balance) };
+                            }
+                            unsafe { (&raw mut (*event).maker_fee).write(settled.fee) };
+                        }
 
-                    // Settle taker if this shard owns the taker's user ID
-                    if is_taker_shard {
-                        let settled = risk_engine.handle_trade_event(
-                            taker_id,
-                            market_id,
-                            taker_side,
-                            fill,
-                            Some(taker_order),
-                        );
-                        unsafe { (&raw mut (*event).taker_fee).write(settled.fee) };
+                        // Settle taker if this shard owns the taker's user ID
+                        if is_taker_shard {
+                            let settled = risk_engine.handle_trade_event(
+                                taker_id,
+                                market_id,
+                                taker_side,
+                                fill,
+                                Some(taker_order),
+                            );
+                            unsafe { (&raw mut (*event).taker_fee).write(settled.fee) };
+                        }
                     }
 
                     event = unsafe { ::common::MatcherTradeEvent::next_ptr(event) };

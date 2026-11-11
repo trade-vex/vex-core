@@ -218,6 +218,26 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 }
 
                 if maker_order.user_id == cmd.user_id {
+                    // STP_CANCEL_MAKER (spec §8.2): the taker's own resting order is cancelled,
+                    // not traded against. Size 0 marks the cancel for R2 (unlock) and the events
+                    // stage (Cancelled row).
+                    level.total_volume -= u128::from(maker_order.size); // add_order added it
+                    cmd.attach_event(Box::new(MatcherTradeEvent {
+                        active_order_completed: false,
+                        matched_order_id: maker_order.order_id,
+                        maker_user_id: maker_order.user_id,
+                        matched_order_completed: true,
+                        price,
+                        size: 0,
+                        next_event: None,
+                        maker_balance: [UserBalance::default(); 2],
+                        maker_remaining_size: maker_order.size,
+                        maker_original_size: maker_order.original_size,
+                        maker_fee: 0,
+                        taker_fee: 0,
+                    }));
+                    orders_to_remove.push(idx);
+                    self.orders.remove(&maker_order.order_id);
                     continue;
                 }
 
@@ -354,10 +374,12 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             }
         }
 
-        // A market sell reports its worst execution price: the last fill's.
+        // A market sell reports its worst execution price: the last fill's (an STP cancel, size
+        // 0, is not a fill).
         if cmd.side == Side::Ask
             && cmd.is_market_order()
             && let Some(price) = iter::successors(cmd.events(), |e| e.next_event.as_deref())
+                .filter(|e| e.size > 0)
                 .map(|e| e.price)
                 .last()
         {

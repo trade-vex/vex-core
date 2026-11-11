@@ -2890,6 +2890,53 @@ mod tests {
         }
     }
 
+    /// STP_CANCEL_MAKER: a bid that would cross its user's own ask cancels the ask, and R2
+    /// releases the ask's locked base.
+    #[test]
+    fn stp_cancel_releases_the_makers_lock() {
+        let (base, quote) = (1u16, 2u16);
+        let market_id = (u32::from(quote) << 16) | u32::from(base);
+        let mut specs = HashMap::new();
+        add_spec(market_id, &mut specs);
+        let cost = specs[&market_id].calculate_quote_cost(49_000, 3).unwrap();
+        let TestEngine {
+            mut producer,
+            risk_engines,
+            receiver: rx,
+        } = setup(specs);
+        let user_id = 101;
+        let checker = BalanceChecker::new(&risk_engines);
+        checker.set_balance(user_id, base, 1_000, 0);
+        checker.set_balance(user_id, quote, 1_000_000, 0);
+        let order = |price, size, side| {
+            OrderCommand::place_order(TimeInForce::Gtc, user_id, price, size, side, market_id, 1)
+        };
+
+        producer.publish(|cmd| *cmd = order(48_000, 5, Side::Ask));
+        assert_eq!(
+            rx.recv_timeout(PIPELINE_DEADLINE).unwrap().status,
+            Status::Placed
+        );
+        checker.check(user_id, base, 995, 5, "the ask locks its base");
+
+        producer.publish(|cmd| *cmd = order(49_000, 3, Side::Bid));
+        let bid = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
+        assert_eq!((bid.status, bid.size), (Status::Placed, 3));
+        let after = [
+            UserBalance::new(1_000, 0),
+            UserBalance::new(1_000_000 - cost, cost),
+        ];
+        assert_eq!(bid.balance, after, "the response includes the release");
+        checker.check(
+            user_id,
+            base,
+            1_000,
+            0,
+            "the cancelled ask's base is released",
+        );
+        checker.check(user_id, quote, 1_000_000 - cost, cost, "the bid rests");
+    }
+
     /// Replay publishes the journal back to back, so R1 runs ahead of R2; a live client that
     /// waits for each response never lets it. A burst must decide every command as a paced run
     /// does. Each round pins one race: a re-place right after its cancel, withdrawals of

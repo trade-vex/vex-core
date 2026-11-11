@@ -1571,7 +1571,9 @@ impl KafkaEventsHandler {
             common::Side::Ask => trading_proto::Side::Ask,
         };
 
-        let status = if event.matched_order_completed {
+        let status = if event.size == 0 {
+            trading_proto::Status::Cancelled
+        } else if event.matched_order_completed {
             trading_proto::Status::Filled
         } else {
             trading_proto::Status::PartiallyFilled
@@ -1664,6 +1666,7 @@ impl KafkaEventsHandler {
     }
 
     /// Publishes a trade and a maker-order event per fill, then ONE balance event per maker.
+    /// An STP cancel (size 0) publishes the maker's order as Cancelled and a cancel, no trade.
     ///
     /// A maker can be hit by several fills of one taker. Publishing a balance per fill would give
     /// that key several events with the same timestamp, and the intermediate ones would tie with
@@ -1677,8 +1680,13 @@ impl KafkaEventsHandler {
     ) {
         let mut curr_event = cmd.events();
         while let Some(event) = curr_event {
-            self.publish_trade_event(event, cmd, market_id, taker_id, taker_order_id);
-            self.publish_maker_order_event(event, cmd, market_id);
+            if event.size == 0 {
+                self.publish_maker_order_event(event, cmd, market_id);
+                self.publish_cancel_order_event(cmd, event.matched_order_id, event.maker_user_id);
+            } else {
+                self.publish_trade_event(event, cmd, market_id, taker_id, taker_order_id);
+                self.publish_maker_order_event(event, cmd, market_id);
+            }
             curr_event = event.next_event.as_deref();
         }
         for (maker_id, balance) in final_maker_balances(cmd.events(), taker_id) {
@@ -1686,11 +1694,11 @@ impl KafkaEventsHandler {
         }
     }
 
-    fn publish_cancel_order_event(&self, cmd: &OrderCommand) {
+    fn publish_cancel_order_event(&self, cmd: &OrderCommand, order_id: u64, user_id: u64) {
         let cancel_event = trading_proto::CancelOrderEvent {
-            order_id: cmd.order_id(),
+            order_id,
             market_id: cmd.market_id(),
-            user_id: cmd.user_id(),
+            user_id,
             timestamp: cmd.timestamp(),
         };
 
@@ -1698,7 +1706,7 @@ impl KafkaEventsHandler {
         self.publish_proto(
             cmd,
             topic_name,
-            &cmd.order_id().to_string(),
+            &order_id.to_string(),
             "trading.CancelOrderEvent",
             cancel_event,
         );
@@ -1706,7 +1714,7 @@ impl KafkaEventsHandler {
             target: "events",
             component = "kafka_handler",
             action = "cancel_event_published",
-            order_id = cmd.order_id(),
+            order_id,
             market_id = cmd.market_id(),
             topic = %topic_name
         );
@@ -1875,6 +1883,10 @@ impl KafkaEventsHandler {
                     stage = "events",
                     handler = "kafka"
                 );
+                // A taker that rests unfilled can still have cancelled its own orders (STP).
+                if cmd.events().is_some() {
+                    self.publish_fills(cmd, market_id, taker_id, taker_order_id);
+                }
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
                 self.publish_order_event(cmd, cmd.size(), 0);
                 self.publish_orderbook_event(cmd);
@@ -1900,7 +1912,7 @@ impl KafkaEventsHandler {
                 }
 
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
-                self.publish_cancel_order_event(cmd);
+                self.publish_cancel_order_event(cmd, taker_order_id, taker_id);
                 self.publish_orderbook_event(cmd);
             }
             Status::PartiallyFilled | Status::Filled => {
@@ -2927,6 +2939,41 @@ mod tests {
                 ("balances", format!("1004:{base}")),
                 ("balances", format!("1004:{quote}")),
                 ("orders", "12348".to_string()),
+            ]
+        );
+    }
+
+    /// A GTC bid that cancelled its user's own ask (STP_CANCEL_MAKER) and then rested.
+    #[test]
+    fn stp_cancel_publishes_a_cancelled_maker_row_and_no_trade() {
+        let mut cmd = OrderCommand::place_order(
+            common::TimeInForce::Gtc,
+            1001,
+            49_000,
+            3,
+            Side::Bid,
+            MARKET_ID,
+            2,
+        );
+        cmd.order_id = 2;
+        cmd.set_status(Status::Placed);
+        let mut stp = fill(1001, 0);
+        stp.matched_order_id = 1;
+        stp.price = 48_000;
+        stp.size = 0;
+        stp.maker_original_size = 5;
+        stp.maker_remaining_size = 3;
+        cmd.attach_event(Box::new(stp));
+
+        let (base, quote) = (base_asset(MARKET_ID), quote_asset(MARKET_ID));
+        assert_eq!(
+            published(&mut [cmd]),
+            [
+                ("orders", "1".to_string()),
+                ("cancels", "1".to_string()),
+                ("balances", format!("1001:{base}")),
+                ("balances", format!("1001:{quote}")),
+                ("orders", "2".to_string()),
             ]
         );
     }
