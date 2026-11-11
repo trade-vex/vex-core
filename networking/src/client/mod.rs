@@ -69,7 +69,7 @@ pub enum GatewayState {
 /// The core authenticates `credential`; `encryption_key` is a fresh random value per handshake
 /// that only masks the dedicated session id in the core's ACCEPT reply. Keeping the two apart
 /// means ACCEPT (published on a dynamic MDC channel) and its logs never reveal the credential.
-fn hello_message(gateway_id: u8, credential: i32, encryption_key: i32) -> String {
+fn hello_message(gateway_id: u8, credential: &str, encryption_key: i32) -> String {
     format!("HELLO gateway-{gateway_id} {credential} {encryption_key}")
 }
 
@@ -386,12 +386,11 @@ impl VexGateway {
         }
 
         // Fail at startup rather than as an opaque handshake REJECT (only the core logs why).
-        if !config.gateway_authentication_key.is_empty()
-            && config.gateway_authentication_key.as_i32().is_none()
-        {
-            return Err(GatewayError::ConfigError(
-                "Gateway authentication key must be a signed 32-bit integer".to_string(),
-            ));
+        if !config.gateway_authentication_key.is_empty() {
+            config
+                .gateway_authentication_key
+                .check()
+                .map_err(GatewayError::ConfigError)?;
         }
 
         // Initialize Aeron context
@@ -496,13 +495,10 @@ impl VexGateway {
         let session_id = publication.session_id();
         self.session_id = Some(session_id);
 
-        // An empty key means the core runs without authentication and ignores the credential;
-        // `new` has already rejected a malformed one.
-        let credential = self
-            .config
-            .gateway_authentication_key
-            .as_i32()
-            .unwrap_or_else(rand::random::<i32>);
+        // An empty key means the core runs without authentication and ignores the credential, but
+        // HELLO still needs one token; `new` has already rejected a malformed key.
+        let key = self.config.gateway_authentication_key.as_str();
+        let credential = if key.is_empty() { "-" } else { key };
         let encryption_key = rand::random::<i32>();
         self.encryption_key = Some(encryption_key);
 
@@ -698,15 +694,9 @@ impl VexGateway {
             bytes = text.len()
         );
 
+        // Not held to `max_message_size`, the OrderCommand size: a HELLO carrying a 64-character
+        // key is longer.
         let value = text.as_bytes();
-        if value.len() > self.config.max_message_size {
-            return Err(GatewayError::SendError(format!(
-                "Message too long: {} bytes (max: {})",
-                value.len(),
-                self.config.max_message_size
-            )));
-        }
-
         // Retry sending with exponential backoff
         for attempt in 0..MESSAGE_RETRY_COUNT {
             let result = publication.offer::<AeronReservedValueSupplierLogger>(value, None);
@@ -906,14 +896,17 @@ mod tests {
     #[test]
     fn hello_sends_the_session_mask_separately_from_the_credential() {
         assert_eq!(
-            hello_message(3, 123_456_789, -42),
-            "HELLO gateway-3 123456789 -42"
+            hello_message(3, "5f0c3a9e7d2b4816c4e1a7f39b0d2c6e", -42),
+            "HELLO gateway-3 5f0c3a9e7d2b4816c4e1a7f39b0d2c6e -42"
         );
     }
 
     #[test]
     fn malformed_authentication_key_is_rejected_before_aeron_starts() {
-        for key in ["not-a-number", "0x1234", "2147483648"] {
+        for (key, error) in [
+            ("123456789", "at least 32 characters"),
+            ("0123456789abcdef 0123456789abcdef", "whitespace"),
+        ] {
             let mut config = GatewayNetworkingConfig::test_defaults();
             config.gateway_authentication_key = key.into();
             // The context dir does not exist: reaching Aeron would fail with a different error.
@@ -921,8 +914,7 @@ mod tests {
 
             assert!(matches!(
                 VexGateway::new(config),
-                Err(GatewayError::ConfigError(message))
-                    if message == "Gateway authentication key must be a signed 32-bit integer"
+                Err(GatewayError::ConfigError(message)) if message.contains(error)
             ));
         }
     }

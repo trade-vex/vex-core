@@ -79,8 +79,9 @@ fn production_configuration_rejects_balance_preload() {
     // PRs #176 (auth) and #151 (symbols) added production gates that run BEFORE the preload
     // rule; satisfy them so this test still isolates the preload rule rather than passing
     // because an earlier gate fired.
-    production.gateway_networking.gateway_authentication_key =
-        GatewayAuthenticationKey::from("123456789");
+    production.gateway_networking.gateway_authentication_key = GatewayAuthenticationKey::from(
+        "5f0c3a9e7d2b4816c4e1a7f39b0d2c6e8a1f4b7d3e9c0a2f6b8d1e4c7a3f9b05",
+    );
     production.symbols = VexConfig::new(Environment::Development).symbols;
     assert!(production.validate().is_ok());
     production.balance_preload.enabled = true;
@@ -105,7 +106,9 @@ fn test_empty_gateway_authentication_key_by_environment() {
     let mut authenticated_production = production;
     authenticated_production
         .gateway_networking
-        .gateway_authentication_key = GatewayAuthenticationKey::from("123456789");
+        .gateway_authentication_key = GatewayAuthenticationKey::from(
+        "5f0c3a9e7d2b4816c4e1a7f39b0d2c6e8a1f4b7d3e9c0a2f6b8d1e4c7a3f9b05",
+    );
     // PR #151 additionally rejects a production config with no symbols. Satisfy that rule so
     // this test still isolates PR #176's authentication gate rather than tripping on #151's.
     authenticated_production.symbols = VexConfig::new(Environment::Development).symbols;
@@ -144,8 +147,9 @@ fn test_different_file_formats() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let mut config = VexConfig::new(Environment::Production);
     config.symbols = VexConfig::new(Environment::Development).symbols;
-    config.gateway_networking.gateway_authentication_key =
-        GatewayAuthenticationKey::from("123456789");
+    config.gateway_networking.gateway_authentication_key = GatewayAuthenticationKey::from(
+        "5f0c3a9e7d2b4816c4e1a7f39b0d2c6e8a1f4b7d3e9c0a2f6b8d1e4c7a3f9b05",
+    );
 
     let toml_path = temp_dir.path().join("config.toml");
     let json_path = temp_dir.path().join("config.json");
@@ -291,8 +295,9 @@ fn test_production_config_without_schema_registry_url_fails_to_load()
     let path = temp_dir.path().join("config.prod.toml");
     let mut config = VexConfig::new(Environment::Production);
     config.symbols = VexConfig::new(Environment::Development).symbols;
-    config.gateway_networking.gateway_authentication_key =
-        GatewayAuthenticationKey::from("123456789");
+    config.gateway_networking.gateway_authentication_key = GatewayAuthenticationKey::from(
+        "5f0c3a9e7d2b4816c4e1a7f39b0d2c6e8a1f4b7d3e9c0a2f6b8d1e4c7a3f9b05",
+    );
     config.save_to_file(&path)?;
     let load = || {
         ConfigLoader::new()

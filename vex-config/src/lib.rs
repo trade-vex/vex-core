@@ -228,8 +228,9 @@ mod tests {
         // PR #176 added an earlier production gate (authentication + key). Satisfy it so this
         // test still exercises PR #151's symbols rule rather than tripping on the auth rule.
         production.core_networking.enable_authentication = true;
-        production.gateway_networking.gateway_authentication_key =
-            GatewayAuthenticationKey::from("123456789");
+        production.gateway_networking.gateway_authentication_key = GatewayAuthenticationKey::from(
+            "5f0c3a9e7d2b4816c4e1a7f39b0d2c6e8a1f4b7d3e9c0a2f6b8d1e4c7a3f9b05",
+        );
         assert!(matches!(
             production.validate(),
             Err(ConfigError::ValidationError(message))

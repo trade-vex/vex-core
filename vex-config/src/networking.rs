@@ -5,12 +5,14 @@ use common::{MAX_GATEWAYS, ORDERCOMMANDSIZE};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// Shared numeric key used to authenticate gateway handshakes.
+/// Shared secret that authenticates gateway handshakes.
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct GatewayAuthenticationKey(String);
 
 impl GatewayAuthenticationKey {
+    pub const MIN_LEN: usize = 32;
+
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -19,8 +21,18 @@ impl GatewayAuthenticationKey {
         &self.0
     }
 
-    pub fn as_i32(&self) -> Option<i32> {
-        self.0.parse().ok()
+    /// Usable as a HELLO credential: long enough to be unguessable, one whitespace-free token.
+    pub fn check(&self) -> std::result::Result<(), String> {
+        if self.0.len() < Self::MIN_LEN {
+            return Err(format!(
+                "gateway_authentication_key must be at least {} characters; generate it with `openssl rand -hex 32`",
+                Self::MIN_LEN
+            ));
+        }
+        if self.0.contains(char::is_whitespace) {
+            return Err("gateway_authentication_key must not contain whitespace".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -233,9 +245,9 @@ pub struct GatewayNetworkingConfig {
     pub core_control_port: u16,
     /// Gateway identifier for this instance
     pub gateway_id: u8,
-    /// Shared bearer credential used to authenticate with VEX Core: a signed 32-bit integer equal
-    /// to the core's key, or empty when the core runs without authentication. `VexGateway::new`
-    /// rejects any other value.
+    /// Shared bearer credential used to authenticate with VEX Core: an opaque secret of at least
+    /// 32 characters (`openssl rand -hex 32`) equal to the core's key, or empty when the core runs
+    /// without authentication. `VexGateway::new` rejects any other value.
     ///
     /// This credential is carried in cleartext over `aeron:udp` and is meaningful
     /// only on a trusted or private network segment.
@@ -350,12 +362,10 @@ impl GatewayNetworkingConfig {
             )));
         }
 
-        if !self.gateway_authentication_key.is_empty()
-            && self.gateway_authentication_key.as_i32().is_none()
-        {
-            return Err(ConfigError::network(
-                "Gateway authentication key must be a signed 32-bit integer",
-            ));
+        if !self.gateway_authentication_key.is_empty() {
+            self.gateway_authentication_key
+                .check()
+                .map_err(ConfigError::network)?;
         }
 
         if self.max_message_size == 0 {
@@ -436,6 +446,27 @@ mod tests {
 
         config.gateway_id = 16;
         config.max_message_size = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn key_shorter_than_32_chars_fails_validation() {
+        let hex64 = "0123456789abcdef".repeat(4);
+        assert!(GatewayAuthenticationKey::from("short").check().is_err());
+        assert!(
+            GatewayAuthenticationKey::from(hex64.as_str())
+                .check()
+                .is_ok()
+        );
+        let spaced = format!("{} {}", &hex64[..32], &hex64[32..]);
+        assert!(
+            GatewayAuthenticationKey::from(spaced.as_str())
+                .check()
+                .is_err()
+        );
+
+        let mut config = GatewayNetworkingConfig::development_defaults();
+        config.gateway_authentication_key = "123456789".into();
         assert!(config.validate().is_err());
     }
 

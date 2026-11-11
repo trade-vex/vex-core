@@ -372,12 +372,13 @@ netstat -tuln | grep -E "40001|3521"
 - Check `max_gateways` is not exceeded
 - Gateway authentication (required in production, which refuses to start without both):
   `VEX__CORE_NETWORKING__ENABLE_AUTHENTICATION=true` and
-  `VEX__GATEWAY_NETWORKING__GATEWAY_AUTHENTICATION_KEY=<signed 32-bit integer>` on vex-core; every
-  gateway must be given the same value (vex-gateway `[core]` `auth_key`, or `APP__CORE__AUTH_KEY`). Without a key,
+  `VEX__GATEWAY_NETWORKING__GATEWAY_AUTHENTICATION_KEY=<at least 32 characters; openssl rand -hex 32>`
+  on vex-core; every gateway must be given the same value (vex-gateway `[core]` `auth_key`, or `APP__CORE__AUTH_KEY`). Without a key,
   dev/test run the handshake unauthenticated. `Connection rejected: Handshake rejected` on the
   gateway together with `action="handshake_rejected"` and
   `reason=Authentication failed: Invalid credentials` in the vex-core log means
-  the keys differ. The key travels in cleartext in the HELLO message, so keep gateway ↔ core
+  the keys differ. Past 16 rejected handshakes a second the core neither answers nor logs them, so
+  during a flood of bad HELLOs a gateway with the wrong key times out instead. The key travels in cleartext in the HELLO message, so keep gateway ↔ core
   traffic on a trusted network segment
 
 ### Order Processing Delays or Backpressure

@@ -277,6 +277,8 @@ pub struct GatewayManager {
     pending_handshakes: RefCell<[Option<PendingHandshake>; MAX_GATEWAYS]>,
     /// Bounds unauthenticated session allocation work
     handshake_rate_limiter: RefCell<HandshakeRateLimiter>,
+    /// Bounds the REJECT replies and log lines a flood of bad HELLOs can cause
+    rejected_handshakes: RefCell<HandshakeRateLimiter>,
 }
 
 impl GatewayManager {
@@ -311,6 +313,7 @@ impl GatewayManager {
             session_event_tx,
             pending_handshakes: RefCell::new([(); MAX_GATEWAYS].map(|_| None)),
             handshake_rate_limiter: RefCell::new(HandshakeRateLimiter::new()),
+            rejected_handshakes: RefCell::new(HandshakeRateLimiter::new()),
         })
     }
 
@@ -437,27 +440,9 @@ impl GatewayManager {
             .next()
             .ok_or_else(|| ServerError::GatewayMessageError("Missing gateway ID".to_string()))?;
 
-        let credential_str = parts
+        let credential = parts
             .next()
             .ok_or_else(|| ServerError::GatewayMessageError("Missing credential".to_string()))?;
-
-        let credential = match credential_str.parse::<i32>() {
-            Ok(credential) => credential,
-            Err(_) if self.authentication_is_enabled() => {
-                return self.reject_handshake(
-                    publication,
-                    session_id,
-                    gateway_id_str,
-                    source,
-                    ServerError::AuthenticationError("Invalid credentials".to_string()),
-                );
-            }
-            Err(e) => {
-                return Err(ServerError::GatewayMessageError(format!(
-                    "Invalid credential: {e}"
-                )));
-            }
-        };
 
         // A HELLO without its own encryption key comes from a client that masked the session
         // with the credential; reject it rather than fall back to that.
@@ -472,7 +457,7 @@ impl GatewayManager {
         // Authenticate before parsing the id, checking for duplicates, or allocating any
         // resource, so an unauthenticated peer can never reach the allocator (PR #176).
         if self.authentication_is_enabled()
-            && let Err(e) = self.authenticate_gateway(credential)
+            && let Err(e) = authenticate_gateway(&self.authentication_key, credential)
         {
             return self.reject_handshake(publication, session_id, gateway_id_str, source, e);
         }
@@ -604,15 +589,19 @@ impl GatewayManager {
         source: &str,
         error: ServerError,
     ) -> Result<(), ServerError> {
-        warn!(
-            target: "gateway_manager",
-            action = "handshake_rejected",
-            source,
-            session = format_args!("{:#x}", session_id),
-            reason = %error
-        );
-        let error_msg = format!("{session_id} {gateway_label} REJECT Handshake rejected");
-        send_message(publication, error_msg.as_bytes())?;
+        // Past HANDSHAKE_RATE_LIMIT rejections a second nothing is sent or logged, so a flood of
+        // bad HELLOs costs the ingress thread one compare each and fills no log.
+        if self.rejected_handshakes.borrow_mut().allow(Instant::now()) {
+            warn!(
+                target: "gateway_manager",
+                action = "handshake_rejected",
+                source,
+                session = format_args!("{:#x}", session_id),
+                reason = %error
+            );
+            let error_msg = format!("{session_id} {gateway_label} REJECT Handshake rejected");
+            send_message(publication, error_msg.as_bytes())?;
+        }
         Err(error)
     }
 
@@ -971,10 +960,6 @@ impl GatewayManager {
         }
     }
 
-    fn authenticate_gateway(&self, credentials: i32) -> Result<(), ServerError> {
-        authenticate_gateway(&self.authentication_key, credentials)
-    }
-
     /// Removes a gateway session and frees all associated resources
     pub fn remove_gateway_session(&self, gateway_id: u8) -> Result<(), ServerError> {
         if (gateway_id as usize) < MAX_GATEWAYS {
@@ -1051,25 +1036,21 @@ fn release_unattached_image_handlers(
     }
 }
 
-fn constant_time_i32_eq(left: i32, right: i32) -> bool {
-    let mut difference = 0_u8;
-    for (left_byte, right_byte) in left.to_ne_bytes().iter().zip(right.to_ne_bytes()) {
-        difference |= left_byte ^ right_byte;
-    }
-    difference == 0
-}
-
+/// Compares every byte whatever the first difference, so the time taken does not tell a guess
+/// how much of it was right.
 fn authenticate_gateway(
     authentication_key: &GatewayAuthenticationKey,
-    credentials: i32,
+    credential: &str,
 ) -> Result<(), ServerError> {
-    let expected = authentication_key.as_i32().ok_or_else(|| {
-        ServerError::ConfigurationError(
-            "Gateway authentication key must be a signed 32-bit integer".to_string(),
-        )
-    })?;
-
-    if constant_time_i32_eq(expected, credentials) {
+    let (key, credential) = (
+        authentication_key.as_str().as_bytes(),
+        credential.as_bytes(),
+    );
+    let mut difference = u8::from(key.len() != credential.len());
+    for i in 0..key.len().max(credential.len()) {
+        difference |= key.get(i).copied().unwrap_or(0) ^ credential.get(i).copied().unwrap_or(0);
+    }
+    if difference == 0 {
         Ok(())
     } else {
         Err(ServerError::AuthenticationError(
@@ -1085,11 +1066,10 @@ pub(super) fn validate_authentication_config(
     enable_authentication: bool,
     authentication_key: &GatewayAuthenticationKey,
 ) -> Result<(), ServerError> {
-    if enable_authentication && authentication_key.as_i32().is_none() {
-        return Err(ServerError::ConfigurationError(
-            "Gateway authentication is enabled but the authentication key is not a signed 32-bit integer"
-                .to_string(),
-        ));
+    if enable_authentication {
+        authentication_key
+            .check()
+            .map_err(ServerError::ConfigurationError)?;
     }
     Ok(())
 }
@@ -1493,35 +1473,33 @@ mod tests {
     }
 
     #[test]
-    fn correct_gateway_credential_is_accepted() {
-        let key = GatewayAuthenticationKey::from("123456789");
-        assert!(authenticate_gateway(&key, 123456789).is_ok());
+    fn credential_is_compared_as_bytes() {
+        let hex64 = "0123456789abcdef".repeat(4);
+        let key = GatewayAuthenticationKey::from(hex64.as_str());
+        let one_off = format!("{}0", &hex64[..63]);
+
+        assert!(authenticate_gateway(&key, &hex64).is_ok());
+        assert!(authenticate_gateway(&key, &one_off).is_err());
+        assert!(authenticate_gateway(&key, &hex64[..32]).is_err());
+        assert!(authenticate_gateway(&key, &format!("{hex64}0")).is_err());
     }
 
     #[test]
-    fn enabled_authentication_requires_a_signed_32_bit_key() {
-        for key in ["", "not-a-number", "2147483648"] {
+    fn enabled_authentication_requires_a_long_key() {
+        for key in ["", "123456789", &"a b".repeat(16)] {
             assert!(matches!(
                 validate_authentication_config(true, &GatewayAuthenticationKey::from(key)),
                 Err(ServerError::ConfigurationError(_))
             ));
         }
+        let hex64 = "0123456789abcdef".repeat(4);
         assert!(
-            validate_authentication_config(true, &GatewayAuthenticationKey::from("-123456789"))
+            validate_authentication_config(true, &GatewayAuthenticationKey::from(hex64.as_str()))
                 .is_ok()
         );
         assert!(
             validate_authentication_config(false, &GatewayAuthenticationKey::default()).is_ok()
         );
-    }
-
-    #[test]
-    fn wrong_gateway_credential_is_rejected_without_a_slot() {
-        let key = GatewayAuthenticationKey::from("123456789");
-        let sessions = Session::new();
-
-        assert!(authenticate_gateway(&key, 987654321).is_err());
-        assert!(!sessions.is_gateway_connected(1));
     }
 
     #[test]

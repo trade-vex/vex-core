@@ -57,7 +57,10 @@ fn create_test_addresses() -> (SocketAddr, SocketAddr) {
 }
 
 /// Both sides share it, so the handshake runs with authentication enabled.
-const GATEWAY_AUTHENTICATION_KEY: &str = "123456789";
+const GATEWAY_AUTHENTICATION_KEY: &str =
+    "5f0c3a9e7d2b4816c4e1a7f39b0d2c6e8a1f4b7d3e9c0a2f6b8d1e4c7a3f9b05";
+/// Well-formed, but not the core's key.
+const WRONG_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 #[test_log::test]
 #[ignore = "This test needs media drivers running, Tests will be added in x-tasks"]
@@ -224,7 +227,7 @@ fn test_every_gateway_receives_its_handshake_reply() {
         let publisher = started.unwrap_or_else(|e| panic!("gateway-{gateway_id}: {e}"));
         gateways.push((gateway, publisher));
 
-        let (rejected, started) = start_gateway(gateway_id + 1, "987654321");
+        let (rejected, started) = start_gateway(gateway_id + 1, WRONG_KEY);
         let error = started.err().expect("a wrong key must be rejected");
         assert!(
             error.to_string().contains("Handshake rejected"),
