@@ -85,7 +85,6 @@ pub enum EngineError {
 }
 
 /// Configuration constants for the core engine
-#[cfg(not(feature = "test-config"))]
 mod config {
     /// Number of risk engine shards for parallel processing
     pub const NUM_RISK_ENGINES: usize = 4;
@@ -95,19 +94,10 @@ mod config {
     pub const BUFFER_SIZE: usize = 1024;
 }
 
-/// Test configuration with smaller values for faster testing
-#[cfg(feature = "test-config")]
-mod config {
-    pub const NUM_RISK_ENGINES: usize = 4;
-    pub const NUM_MATCHING_ENGINES: usize = 4;
-    pub const BUFFER_SIZE: usize = 256;
-}
-
 use config::*;
 
 /// Core pinning configuration for processor threads
 #[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "test-config", allow(dead_code))]
 pub struct CorePinning {
     journaling: usize,
     risk_engines: [usize; NUM_RISK_ENGINES],

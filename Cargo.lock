@@ -2963,18 +2963,13 @@ dependencies = [
  "core_affinity",
  "disruptor",
  "hashbrown 0.15.5",
- "parking_lot",
  "processors",
- "rusteron-client",
  "test-log",
  "thiserror 2.0.17",
- "tikv-jemallocator",
- "tokio",
  "tracing",
  "tracing-subscriber",
  "vex-config",
  "vex-networking",
- "vex-orderbook",
 ]
 
 [[package]]

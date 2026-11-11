@@ -431,7 +431,7 @@ top -p $(pgrep vex-core)
 ```
 
 **Solutions**:
-- Check disruptor `BUFFER_SIZE` (default 1024 in release)
+- Check disruptor `BUFFER_SIZE` (1024, `server/src/engine.rs`)
 - Review Kafka consumer buffers
 - Use `tikv-jemallocator` (already default) for allocator
 - Restart periodically if memory grows over time
