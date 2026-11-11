@@ -41,12 +41,14 @@ COPY . .
 RUN cargo build --release --locked --package vex-core --package xtask --bin vex-core --bin test_client
 
 # The Aeron client libraries the rusteron build scripts produced, as the root Dockerfile ships them.
+# One cp per file: rusteron-client and rusteron-archive each build a libaeron.so of the same Aeron
+# here, and a single cp refuses to write one name twice.
 RUN mkdir -p /usr/src/app/runtime-libs \
     && find target/release -type f \
         \( -name 'libaeron.so' \
         -o -name 'libaeron_driver.so' \
         -o -name 'libaeron_archive_c_client.so' \) \
-        -exec cp -v -t /usr/src/app/runtime-libs {} + \
+        -exec cp -v -t /usr/src/app/runtime-libs {} \; \
     && test -f /usr/src/app/runtime-libs/libaeron.so \
     && test -f /usr/src/app/runtime-libs/libaeron_driver.so \
     && test -f /usr/src/app/runtime-libs/libaeron_archive_c_client.so
