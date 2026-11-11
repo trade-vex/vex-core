@@ -149,12 +149,12 @@ impl SymbolSpecificationConfig {
             },
         );
 
-        // BTC/USDT futures contract
+        // BTC/USDT currency exchange pair
         symbols.insert(
             btc_usdt_market_id,
             CoreMarketSpecification {
                 market_id: btc_usdt_market_id,
-                market_type: MarketType::FuturesContract,
+                market_type: MarketType::Spot,
                 base_asset: btc_asset_id,
                 quote_asset: usdt_asset_id,
                 quote_scale_k: 1,
@@ -201,6 +201,14 @@ impl SymbolSpecificationConfig {
         }
 
         for (market_id, spec) in &self.symbols {
+            // Nothing past config reads market_type: every market trades as spot.
+            if spec.market_type != MarketType::Spot {
+                return Err(ConfigError::ValidationError(format!(
+                    "Symbol {market_id}: only Spot markets are supported, got {:?}",
+                    spec.market_type
+                )));
+            }
+
             // market id must be quote_asset << 16 | base_asset
             // this is absolutely necessary for the matching engine to work correctly
             if (spec.quote_asset as u32) << 16 | (spec.base_asset as u32) != *market_id {
@@ -317,6 +325,17 @@ mod tests {
         assert_eq!(
             validation_error(&config),
             format!("Symbol ID mismatch: key {ETH_USDT} != spec.market_id 0")
+        );
+    }
+
+    #[test]
+    fn test_validation_rejects_non_spot_market_type() {
+        let mut config = SymbolSpecificationConfig::development_defaults();
+        config.symbols.get_mut(&ETH_USDT).unwrap().market_type = MarketType::FuturesContract;
+
+        assert_eq!(
+            validation_error(&config),
+            format!("Symbol {ETH_USDT}: only Spot markets are supported, got FuturesContract")
         );
     }
 

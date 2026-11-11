@@ -39,7 +39,7 @@ symbols:
       slippage: 150
     "65538":
       market_id: 65538
-      market_type: FuturesContract
+      market_type: Spot
       base_asset: 2
       quote_asset: 1
       quote_scale_k: 1
