@@ -271,7 +271,7 @@ mod test {
 
     type TestOrderBook = OrderBook<BTreeAskSide, BTreeBidSide>;
 
-    fn create_test_orderbook() -> (TestOrderBook, Arc<PriceCache>) {
+    fn create_test_orderbook() -> (TestOrderBook, PriceCache) {
         let mut symbol_spec = hashbrown::HashMap::new();
         symbol_spec.insert(
             10u32,
@@ -282,7 +282,7 @@ mod test {
                 .build()
                 .unwrap(),
         );
-        let price_cache = Arc::new(PriceCache::new(symbol_spec.keys()));
+        let price_cache = PriceCache::new(symbol_spec.keys());
         (
             OrderBook::new(BTreeBidSide::new(), BTreeAskSide::new(), 10),
             price_cache,
@@ -370,7 +370,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut bid, Arc::clone(&price_cache));
+        book.place_order(&mut bid, &price_cache);
 
         let mut ask = create_order_command(
             OrderCommandType::PlaceOrder,
@@ -383,7 +383,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut ask, price_cache);
+        book.place_order(&mut ask, &price_cache);
 
         let snapshot = ask.l2_data.as_ref().unwrap();
         assert_eq!(snapshot.bids(), (&[99][..], &[25][..]));
@@ -419,7 +419,7 @@ mod test {
             TimeInForce::Gtc,
         );
 
-        book.place_order(&mut cmd, price_cache.clone());
+        book.place_order(&mut cmd, &price_cache);
         assert_eq!(cmd.status(), Status::Placed);
         assert_eq!(book.total_order_count(), 1);
         assert_eq!(book.best_bid(), Some((50, 100)));
@@ -442,7 +442,7 @@ mod test {
             TimeInForce::Gtc,
         );
 
-        book.place_order(&mut cmd, price_cache.clone());
+        book.place_order(&mut cmd, &price_cache);
         assert_eq!(cmd.status(), Status::Placed);
         assert_eq!(book.total_order_count(), 1);
         assert_eq!(book.best_bid(), None);
@@ -465,7 +465,7 @@ mod test {
             TimeInForce::Gtc,
         );
 
-        book.place_order(&mut cmd, price_cache);
+        book.place_order(&mut cmd, &price_cache);
 
         assert_eq!(cmd.status(), Status::Placed);
         assert_eq!(cmd.size(), 100);
@@ -481,7 +481,7 @@ mod test {
         let mut ask =
             harness.create_place_order_cmd(1001, Side::Ask, u64::MAX, 100, TimeInForce::Gtc);
 
-        book.place_order(&mut ask, price_cache);
+        book.place_order(&mut ask, &price_cache);
 
         assert_eq!(ask.status(), Status::Cancelled);
         assert_eq!(book.total_order_count(), 0);
@@ -513,8 +513,8 @@ mod test {
             TimeInForce::Fok,
         );
 
-        book.place_order(&mut ioc_cmd, price_cache.clone());
-        book.place_order(&mut fok_cmd, price_cache);
+        book.place_order(&mut ioc_cmd, &price_cache);
+        book.place_order(&mut fok_cmd, &price_cache);
 
         assert_eq!(ioc_cmd.status(), Status::Cancelled);
         assert_eq!(ioc_cmd.size(), 100);
@@ -539,7 +539,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut cmd1, price_cache.clone());
+        book.place_order(&mut cmd1, &price_cache);
 
         // Add second bid at same price
         let mut cmd2 = create_order_command(
@@ -553,7 +553,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut cmd2, price_cache.clone());
+        book.place_order(&mut cmd2, &price_cache);
 
         assert_eq!(book.total_order_count(), 2);
         assert_eq!(book.best_bid(), Some((50, 300))); // Total volume
@@ -580,7 +580,7 @@ mod test {
                 Side::Bid,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
         }
 
         // Best bid should be highest price
@@ -607,7 +607,7 @@ mod test {
                 Side::Ask,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
         }
 
         // Best ask should be lowest price among asks
@@ -631,7 +631,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut bid_cmd, price_cache.clone());
+        book.place_order(&mut bid_cmd, &price_cache);
 
         // Place matching ask
         let mut ask_cmd = create_order_command(
@@ -645,7 +645,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut ask_cmd, price_cache.clone());
+        book.place_order(&mut ask_cmd, &price_cache);
 
         assert_eq!(ask_cmd.status(), Status::Filled);
         assert_eq!(book.total_order_count(), 0); // Both orders should be filled
@@ -673,7 +673,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut bid_cmd, price_cache.clone());
+        book.place_order(&mut bid_cmd, &price_cache);
 
         // Place larger matching ask
         let mut ask_cmd = create_order_command(
@@ -687,7 +687,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut ask_cmd, price_cache.clone());
+        book.place_order(&mut ask_cmd, &price_cache);
 
         assert_eq!(ask_cmd.status(), Status::PartiallyFilled);
         assert_eq!(book.total_order_count(), 1); // Remaining ask should be in book
@@ -718,7 +718,7 @@ mod test {
                 Side::Ask,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
         }
 
         // Place market buy order
@@ -733,7 +733,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc, // Market order
         );
-        book.place_order(&mut market_cmd, price_cache.clone());
+        book.place_order(&mut market_cmd, &price_cache);
 
         assert_eq!(market_cmd.status(), Status::Filled);
         // Should fill 100 at 50 and 150 at 51
@@ -769,7 +769,7 @@ mod test {
                 Side::Bid,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
         }
 
         // Place market sell order
@@ -784,7 +784,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc, // Market order
         );
-        book.place_order(&mut market_cmd, price_cache.clone());
+        book.place_order(&mut market_cmd, &price_cache);
 
         assert_eq!(market_cmd.status(), Status::Filled);
         // Should fill 100 at 52 and 150 at 51
@@ -820,7 +820,7 @@ mod test {
                 Side::Ask,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
         }
 
         // Place FOK buy order that can be completely filled
@@ -835,7 +835,7 @@ mod test {
             Side::Bid,
             TimeInForce::Fok,
         );
-        book.place_order(&mut fok_cmd, price_cache.clone());
+        book.place_order(&mut fok_cmd, &price_cache);
 
         assert_eq!(fok_cmd.status(), Status::Filled);
         verify_trade_events(
@@ -861,7 +861,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut ask_cmd, price_cache.clone());
+        book.place_order(&mut ask_cmd, &price_cache);
 
         // Place FOK buy order that cannot be completely filled
         let mut fok_cmd = create_order_command(
@@ -875,7 +875,7 @@ mod test {
             Side::Bid,
             TimeInForce::Fok,
         );
-        book.place_order(&mut fok_cmd, price_cache.clone());
+        book.place_order(&mut fok_cmd, &price_cache);
 
         assert_eq!(fok_cmd.status(), Status::Cancelled);
         assert_eq!(book.total_order_count(), 1); // Original ask should remain
@@ -897,7 +897,7 @@ mod test {
                 Side::Ask,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut ask, price_cache.clone());
+            book.place_order(&mut ask, &price_cache);
         }
 
         // The exported volume clamps; the helpers compare the exact u128 total.
@@ -924,7 +924,7 @@ mod test {
                     resting_side,
                     TimeInForce::Gtc,
                 );
-                book.place_order(&mut resting, price_cache.clone());
+                book.place_order(&mut resting, &price_cache);
             }
 
             let mut fok_cmd = create_order_command(
@@ -938,7 +938,7 @@ mod test {
                 taker_side,
                 TimeInForce::Fok,
             );
-            book.place_order(&mut fok_cmd, price_cache.clone());
+            book.place_order(&mut fok_cmd, &price_cache);
 
             assert_eq!(fok_cmd.status(), Status::Filled, "{taker_side:?} FOK");
             assert!(book.verify_state().is_ok());
@@ -961,7 +961,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut ask_cmd, price_cache.clone());
+        book.place_order(&mut ask_cmd, &price_cache);
 
         // Place IOC buy order that matches exactly
         let mut ioc_cmd = create_order_command(
@@ -975,7 +975,7 @@ mod test {
             Side::Bid,
             TimeInForce::Ioc,
         );
-        book.place_order(&mut ioc_cmd, price_cache.clone());
+        book.place_order(&mut ioc_cmd, &price_cache);
 
         assert_eq!(ioc_cmd.status(), Status::Filled);
         assert_eq!(book.total_order_count(), 0);
@@ -999,7 +999,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut ask_cmd, price_cache.clone());
+        book.place_order(&mut ask_cmd, &price_cache);
 
         // Place IOC buy order larger than available
         let mut ioc_cmd = create_order_command(
@@ -1013,7 +1013,7 @@ mod test {
             Side::Bid,
             TimeInForce::Ioc,
         );
-        book.place_order(&mut ioc_cmd, price_cache.clone());
+        book.place_order(&mut ioc_cmd, &price_cache);
 
         assert_eq!(ioc_cmd.status(), Status::PartiallyFilled);
         assert_eq!(book.total_order_count(), 0); // Ask filled, IOC remainder cancelled
@@ -1037,7 +1037,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut ask_cmd, price_cache.clone());
+        book.place_order(&mut ask_cmd, &price_cache);
 
         // Place IOC buy order at lower price
         let mut ioc_cmd = create_order_command(
@@ -1051,7 +1051,7 @@ mod test {
             Side::Bid,
             TimeInForce::Ioc,
         );
-        book.place_order(&mut ioc_cmd, price_cache.clone());
+        book.place_order(&mut ioc_cmd, &price_cache);
 
         assert_eq!(ioc_cmd.status(), Status::Cancelled);
         assert_eq!(book.total_order_count(), 1); // Original ask remains
@@ -1074,7 +1074,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut place_cmd, price_cache.clone());
+        book.place_order(&mut place_cmd, &price_cache);
 
         // Cancel the order
         let mut cancel_cmd = create_order_command(
@@ -1088,7 +1088,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc, // size and tif irrelevant for cancel
         );
-        book.cancel_order(&mut cancel_cmd, price_cache.clone());
+        book.cancel_order(&mut cancel_cmd, &price_cache);
 
         assert_eq!(cancel_cmd.status(), Status::Cancelled);
         assert_eq!(book.total_order_count(), 0);
@@ -1112,7 +1112,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut bid, price_cache.clone());
+        book.place_order(&mut bid, &price_cache);
 
         let mut ask = create_order_command(
             OrderCommandType::PlaceOrder,
@@ -1125,7 +1125,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut ask, price_cache.clone());
+        book.place_order(&mut ask, &price_cache);
 
         assert_eq!(book.get_level_order_count(Side::Bid, 999), 1);
         assert_eq!(book.get_level_order_count(Side::Ask, 1000), 1);
@@ -1141,7 +1141,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.cancel_order(&mut cancel_ask, price_cache.clone());
+        book.cancel_order(&mut cancel_ask, &price_cache);
 
         assert_eq!(cancel_ask.status(), Status::Cancelled);
         assert_eq!(cancel_ask.side, Side::Ask);
@@ -1159,7 +1159,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.cancel_order(&mut cancel_bid, price_cache.clone());
+        book.cancel_order(&mut cancel_bid, &price_cache);
 
         assert_eq!(cancel_bid.status(), Status::Cancelled);
         assert_eq!(cancel_bid.side, Side::Bid);
@@ -1183,7 +1183,7 @@ mod test {
                 side,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut order, price_cache.clone());
+            book.place_order(&mut order, &price_cache);
 
             let mut cancel = create_order_command(
                 OrderCommandType::CancelOrder,
@@ -1196,7 +1196,7 @@ mod test {
                 side,
                 TimeInForce::Gtc,
             );
-            book.cancel_order(&mut cancel, price_cache);
+            book.cancel_order(&mut cancel, &price_cache);
 
             assert_eq!(cancel.status(), Status::Cancelled);
             assert_eq!(book.get_level_order_count(side, 1000), 0);
@@ -1221,7 +1221,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.cancel_order(&mut cancel_cmd, price_cache.clone());
+        book.cancel_order(&mut cancel_cmd, &price_cache);
 
         assert_eq!(cancel_cmd.status(), Status::Rejected); // Should be rejected since order doesn't exist
         assert!(book.verify_state().is_ok());
@@ -1244,7 +1244,7 @@ mod test {
                 Side::Bid,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
         }
 
         // Place ask that partially matches
@@ -1259,7 +1259,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc, // Matches 1.5 bids
         );
-        book.place_order(&mut ask_cmd, price_cache.clone());
+        book.place_order(&mut ask_cmd, &price_cache);
 
         assert_eq!(ask_cmd.status(), Status::Filled);
 
@@ -1301,7 +1301,7 @@ mod test {
                 Side::Bid,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
         }
 
         // Place ask that matches multiple levels
@@ -1316,7 +1316,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut ask_cmd, price_cache.clone());
+        book.place_order(&mut ask_cmd, &price_cache);
 
         // Should match in price priority: 51, then 50, then 49
         verify_trade_events(
@@ -1350,7 +1350,7 @@ mod test {
                 Side::Ask,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
         }
 
         // Large market buy that crosses multiple levels
@@ -1365,7 +1365,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut buy_cmd, price_cache.clone());
+        book.place_order(&mut buy_cmd, &price_cache);
 
         assert_eq!(buy_cmd.status(), Status::Filled);
 
@@ -1401,7 +1401,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut bid_cmd, price_cache.clone());
+        book.place_order(&mut bid_cmd, &price_cache);
 
         // An ask from the same user that crosses the bid cancels it (STP_CANCEL_MAKER).
         let mut ask_cmd = create_order_command(
@@ -1415,7 +1415,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut ask_cmd, price_cache.clone());
+        book.place_order(&mut ask_cmd, &price_cache);
 
         assert_eq!(ask_cmd.status(), Status::Placed);
         assert_eq!((book.best_bid(), book.best_ask()), (None, Some((50, 100))));
@@ -1435,10 +1435,10 @@ mod test {
         let (mut book, price_cache) = create_test_orderbook();
         let harness = TestHarness::new(1);
         let mut maker = harness.create_place_order_cmd(1001, Side::Ask, 50, 100, TimeInForce::Gtc);
-        book.place_order(&mut maker, price_cache.clone());
+        book.place_order(&mut maker, &price_cache);
 
         let mut taker = harness.create_place_order_cmd(1002, Side::Bid, 50, 40, TimeInForce::Gtc);
-        book.place_order(&mut taker, price_cache.clone());
+        book.place_order(&mut taker, &price_cache);
         let fills = collect_trade_events(taker);
         assert_eq!(
             (fills[0].maker_original_size, fills[0].maker_remaining_size),
@@ -1446,7 +1446,7 @@ mod test {
         );
 
         let mut cancel = harness.create_cancel_order_cmd(&maker);
-        book.cancel_order(&mut cancel, price_cache);
+        book.cancel_order(&mut cancel, &price_cache);
         assert_eq!(cancel.status(), Status::Cancelled);
         assert_eq!((cancel.original_size, cancel.size()), (100, 60));
     }
@@ -1456,10 +1456,10 @@ mod test {
         let (mut book, price_cache) = create_test_orderbook();
         let harness = TestHarness::new(1);
         let mut ask = harness.create_place_order_cmd(1001, Side::Ask, 48_000, 5, TimeInForce::Gtc);
-        book.place_order(&mut ask, price_cache.clone());
+        book.place_order(&mut ask, &price_cache);
 
         let mut bid = harness.create_place_order_cmd(1001, Side::Bid, 49_000, 3, TimeInForce::Gtc);
-        book.place_order(&mut bid, price_cache.clone());
+        book.place_order(&mut bid, &price_cache);
 
         assert_eq!(bid.status(), Status::Placed);
         assert_eq!(book.best_ask(), None);
@@ -1491,7 +1491,7 @@ mod test {
             Side::Bid,
             TimeInForce::Ioc, // market orders are either IOC or FOK
         );
-        book.place_order(&mut market_buy, price_cache.clone());
+        book.place_order(&mut market_buy, &price_cache);
 
         assert_eq!(market_buy.status(), Status::Cancelled);
 
@@ -1507,7 +1507,7 @@ mod test {
             Side::Ask,
             TimeInForce::Ioc,
         );
-        book.place_order(&mut market_sell, price_cache.clone());
+        book.place_order(&mut market_sell, &price_cache);
 
         // Should be placed as limit order at 0 price
         assert_eq!(market_sell.status(), Status::Cancelled);
@@ -1530,7 +1530,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut bid_cmd, price_cache.clone());
+        book.place_order(&mut bid_cmd, &price_cache);
 
         let mut ask_cmd = create_order_command(
             OrderCommandType::PlaceOrder,
@@ -1543,7 +1543,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut ask_cmd, price_cache.clone());
+        book.place_order(&mut ask_cmd, &price_cache);
 
         assert_eq!(book.best_bid(), Some((48, 100)));
         assert_eq!(book.best_ask(), Some((52, 100)));
@@ -1579,7 +1579,7 @@ mod test {
                 Side::Ask,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
         }
 
         // Large market buy
@@ -1594,7 +1594,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut large_buy, price_cache.clone());
+        book.place_order(&mut large_buy, &price_cache);
 
         assert_eq!(large_buy.status(), Status::Filled);
 
@@ -1632,7 +1632,7 @@ mod test {
                 Side::Bid,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
         }
 
         assert_eq!(book.get_volume_at_price(50, Side::Bid), 300);
@@ -1650,7 +1650,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.cancel_order(&mut cancel_cmd, price_cache.clone());
+        book.cancel_order(&mut cancel_cmd, &price_cache);
 
         assert_eq!(cancel_cmd.status(), Status::Cancelled);
         assert_eq!(book.get_volume_at_price(50, Side::Bid), 200); // 300 - 100
@@ -1682,7 +1682,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut place_cmd, price_cache.clone());
+        book.place_order(&mut place_cmd, &price_cache);
 
         assert_eq!(book.best_bid(), Some((50, 100)));
 
@@ -1698,7 +1698,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.cancel_order(&mut cancel_cmd, price_cache.clone());
+        book.cancel_order(&mut cancel_cmd, &price_cache);
 
         // Price level should be removed
         assert_eq!(book.best_bid(), None);
@@ -1725,7 +1725,7 @@ mod test {
                 Side::Bid,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
         }
 
         // Asks: 150@51, 250@52, 100@53
@@ -1742,7 +1742,7 @@ mod test {
                 Side::Ask,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
         }
 
         // Now place crossing order - sell at 48 (crosses multiple bid levels)
@@ -1757,7 +1757,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut cross_sell, price_cache.clone());
+        book.place_order(&mut cross_sell, &price_cache);
 
         assert_eq!(cross_sell.status(), Status::Filled);
 
@@ -1793,7 +1793,7 @@ mod test {
                 Side::Bid,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
         }
 
         // Match partially to test FIFO with same timestamp
@@ -1808,7 +1808,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut ask_cmd, price_cache.clone());
+        book.place_order(&mut ask_cmd, &price_cache);
 
         // Should still follow arrival order (FIFO)
         verify_trade_events(
@@ -1837,7 +1837,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut extreme_bid, price_cache.clone());
+        book.place_order(&mut extreme_bid, &price_cache);
 
         let mut extreme_ask = create_order_command(
             OrderCommandType::PlaceOrder,
@@ -1852,7 +1852,7 @@ mod test {
         );
         assert_eq!(book.best_bid(), Some((u64::MAX - 1, 100)));
 
-        book.place_order(&mut extreme_ask, price_cache.clone());
+        book.place_order(&mut extreme_ask, &price_cache);
 
         assert!(book.verify_state().is_ok());
     }
@@ -1873,7 +1873,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut cmd1, price_cache.clone());
+        book.place_order(&mut cmd1, &price_cache);
 
         // This would normally be rejected by a market router, but our book doesn't validate
         let mut cmd2 = create_order_command(
@@ -1887,7 +1887,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut cmd2, price_cache.clone());
+        book.place_order(&mut cmd2, &price_cache);
 
         // Book doesn't validate market_id, so it processes normally
         assert_eq!(cmd2.status(), Status::Filled);
@@ -1911,7 +1911,7 @@ mod test {
                 Side::Ask,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
         }
 
         // Cancel every other order
@@ -1927,7 +1927,7 @@ mod test {
                 Side::Ask,
                 TimeInForce::Gtc,
             );
-            book.cancel_order(&mut cancel_cmd, price_cache.clone());
+            book.cancel_order(&mut cancel_cmd, &price_cache);
         }
 
         assert_eq!(book.get_volume_at_price(50, Side::Ask), 300); // 5*100 - 2*100
@@ -1960,7 +1960,7 @@ mod test {
                 Side::Ask,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
         }
 
         // IOC order that fully matches
@@ -1975,7 +1975,7 @@ mod test {
             Side::Bid,
             TimeInForce::Ioc,
         );
-        book.place_order(&mut ioc_cmd, price_cache.clone());
+        book.place_order(&mut ioc_cmd, &price_cache);
 
         assert_eq!(ioc_cmd.status(), Status::Filled);
         assert_eq!(book.get_volume_at_price(50, Side::Ask), 50); // 300 - 250 = 50
@@ -1992,7 +1992,7 @@ mod test {
             Side::Bid,
             TimeInForce::Fok,
         );
-        book.place_order(&mut fok_cmd, price_cache.clone());
+        book.place_order(&mut fok_cmd, &price_cache);
 
         assert_eq!(fok_cmd.status(), Status::Filled);
         assert_eq!(book.get_volume_at_price(50, Side::Ask), 0);
@@ -2016,7 +2016,7 @@ mod test {
                 Side::Bid,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
         }
 
         // Verify orders can be found
@@ -2039,7 +2039,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.cancel_order(&mut cancel_cmd, price_cache.clone());
+        book.cancel_order(&mut cancel_cmd, &price_cache);
 
         // Verify lookup after cancellation
         assert!(book.get_order(1).is_some());
@@ -2072,7 +2072,7 @@ mod test {
                 side,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
         }
 
         // Execute crossing trade
@@ -2087,7 +2087,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc, // Market buy
         );
-        book.place_order(&mut cross_cmd, price_cache.clone());
+        book.place_order(&mut cross_cmd, &price_cache);
 
         assert_eq!(cross_cmd.status(), Status::Filled);
 
@@ -2122,7 +2122,7 @@ mod test {
                 Side::Bid,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
             assert_eq!(cmd.status(), Status::Placed);
         }
 
@@ -2143,7 +2143,7 @@ mod test {
                 side,
                 TimeInForce::Gtc,
             );
-            book.cancel_order(&mut cancel_cmd, price_cache.clone());
+            book.cancel_order(&mut cancel_cmd, &price_cache);
         }
 
         assert_eq!(book.total_order_count(), (num_orders / 2) as usize);
@@ -2166,7 +2166,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut place_cmd, price_cache.clone());
+        book.place_order(&mut place_cmd, &price_cache);
         assert_eq!(place_cmd.status(), Status::Placed);
 
         // Test CancelOrder
@@ -2188,7 +2188,7 @@ mod test {
             route_gateway_id: 0,
             original_size: 0,
         };
-        book.cancel_order(&mut cancel_cmd, price_cache.clone());
+        book.cancel_order(&mut cancel_cmd, &price_cache);
         assert_eq!(cancel_cmd.status(), Status::Cancelled);
         assert!(book.verify_state().is_ok());
     }
@@ -2209,7 +2209,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut ask_cmd, price_cache.clone());
+        book.place_order(&mut ask_cmd, &price_cache);
 
         // Test GTC
         let mut gtc_cmd = create_order_command(
@@ -2223,7 +2223,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut gtc_cmd, price_cache.clone());
+        book.place_order(&mut gtc_cmd, &price_cache);
         assert_eq!(gtc_cmd.status(), Status::Placed); // No match, gets placed
 
         // Test IOC - immediate match
@@ -2238,7 +2238,7 @@ mod test {
             Side::Bid,
             TimeInForce::Ioc,
         );
-        book.place_order(&mut ioc_cmd, price_cache.clone());
+        book.place_order(&mut ioc_cmd, &price_cache);
         assert_eq!(ioc_cmd.status(), Status::Filled);
 
         // Test FOK - add more liquidity first
@@ -2253,7 +2253,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut ask_cmd2, price_cache.clone());
+        book.place_order(&mut ask_cmd2, &price_cache);
 
         let mut fok_cmd = create_order_command(
             OrderCommandType::PlaceOrder,
@@ -2266,7 +2266,7 @@ mod test {
             Side::Bid,
             TimeInForce::Fok,
         );
-        book.place_order(&mut fok_cmd, price_cache.clone());
+        book.place_order(&mut fok_cmd, &price_cache);
         assert_eq!(fok_cmd.status(), Status::Filled);
 
         assert!(book.verify_state().is_ok());
@@ -2376,7 +2376,7 @@ mod test {
 
         let mut buy_cmd =
             harness.create_place_order_cmd(101, Side::Bid, 99_000, 10, TimeInForce::Gtc);
-        book.place_order(&mut buy_cmd, price_cache.clone());
+        book.place_order(&mut buy_cmd, &price_cache);
 
         assert_eq!(buy_cmd.status(), Status::Placed);
         assert!(buy_cmd.events().is_none());
@@ -2388,7 +2388,7 @@ mod test {
 
         let mut sell_cmd =
             harness.create_place_order_cmd(202, Side::Ask, 101_000, 5, TimeInForce::Gtc);
-        book.place_order(&mut sell_cmd, price_cache.clone());
+        book.place_order(&mut sell_cmd, &price_cache);
 
         assert_eq!(sell_cmd.status(), Status::Placed);
         assert!(sell_cmd.events().is_none());
@@ -2406,11 +2406,11 @@ mod test {
 
         let mut bid_cmd =
             harness.create_place_order_cmd(101, Side::Bid, 99_000, 10, TimeInForce::Gtc);
-        book.place_order(&mut bid_cmd, price_cache.clone());
+        book.place_order(&mut bid_cmd, &price_cache);
         book.assert_level_state(Side::Bid, 99_000, 10, 1);
 
         let mut cancel_cmd = harness.create_cancel_order_cmd(&bid_cmd);
-        book.cancel_order(&mut cancel_cmd, price_cache.clone());
+        book.cancel_order(&mut cancel_cmd, &price_cache);
 
         assert_eq!(cancel_cmd.status(), Status::Cancelled);
         book.assert_level_state(Side::Bid, 99_000, 0, 0);
@@ -2425,7 +2425,7 @@ mod test {
 
         // Don't place the order, just create a cancel command for it
         let mut cancel_cmd = harness.create_cancel_order_cmd(&bid_cmd);
-        book.cancel_order(&mut cancel_cmd, price_cache.clone());
+        book.cancel_order(&mut cancel_cmd, &price_cache);
 
         assert_eq!(cancel_cmd.status(), Status::Rejected);
         assert!(book.bids.iter().next().is_none()); // Book remains empty
@@ -2438,11 +2438,11 @@ mod test {
 
         let mut sell_cmd =
             harness.create_place_order_cmd(202, Side::Ask, 100_000, 10, TimeInForce::Gtc);
-        book.place_order(&mut sell_cmd, price_cache.clone());
+        book.place_order(&mut sell_cmd, &price_cache);
 
         let mut buy_cmd =
             harness.create_place_order_cmd(101, Side::Bid, 100_000, 10, TimeInForce::Gtc);
-        book.place_order(&mut buy_cmd, price_cache.clone());
+        book.place_order(&mut buy_cmd, &price_cache);
 
         assert_eq!(buy_cmd.status(), Status::Filled);
 
@@ -2467,11 +2467,11 @@ mod test {
 
         let mut sell_cmd =
             harness.create_place_order_cmd(202, Side::Ask, 100_000, 10, TimeInForce::Gtc);
-        book.place_order(&mut sell_cmd, price_cache.clone());
+        book.place_order(&mut sell_cmd, &price_cache);
 
         let mut buy_cmd =
             harness.create_place_order_cmd(101, Side::Bid, 100_000, 15, TimeInForce::Gtc);
-        book.place_order(&mut buy_cmd, price_cache.clone());
+        book.place_order(&mut buy_cmd, &price_cache);
 
         assert_eq!(buy_cmd.status(), Status::PartiallyFilled);
         let buy_order_id = buy_cmd.order_id;
@@ -2492,11 +2492,11 @@ mod test {
 
         let mut sell_cmd =
             harness.create_place_order_cmd(202, Side::Ask, 100_000, 20, TimeInForce::Gtc);
-        book.place_order(&mut sell_cmd, price_cache.clone());
+        book.place_order(&mut sell_cmd, &price_cache);
 
         let mut buy_cmd =
             harness.create_place_order_cmd(101, Side::Bid, 100_000, 12, TimeInForce::Gtc);
-        book.place_order(&mut buy_cmd, price_cache.clone());
+        book.place_order(&mut buy_cmd, &price_cache);
 
         assert_eq!(buy_cmd.status(), Status::Filled);
 
@@ -2522,12 +2522,12 @@ mod test {
             harness.create_place_order_cmd(202, Side::Ask, 100_000, 10, TimeInForce::Gtc);
         let mut sell_cmd_2 =
             harness.create_place_order_cmd(203, Side::Ask, 101_000, 10, TimeInForce::Gtc);
-        book.place_order(&mut sell_cmd_1, price_cache.clone());
-        book.place_order(&mut sell_cmd_2, price_cache.clone());
+        book.place_order(&mut sell_cmd_1, &price_cache);
+        book.place_order(&mut sell_cmd_2, &price_cache);
 
         let mut buy_cmd =
             harness.create_place_order_cmd(101, Side::Bid, 101_000, 25, TimeInForce::Gtc);
-        book.place_order(&mut buy_cmd, price_cache.clone());
+        book.place_order(&mut buy_cmd, &price_cache);
 
         assert_eq!(buy_cmd.status(), Status::PartiallyFilled);
         let events = collect_trade_events(buy_cmd);
@@ -2548,11 +2548,11 @@ mod test {
 
         let mut sell_cmd =
             harness.create_place_order_cmd(202, Side::Ask, 100_000, 10, TimeInForce::Gtc);
-        book.place_order(&mut sell_cmd, price_cache.clone());
+        book.place_order(&mut sell_cmd, &price_cache);
 
         let mut ioc_buy_cmd =
             harness.create_place_order_cmd(101, Side::Bid, 100_000, 15, TimeInForce::Ioc);
-        book.place_order(&mut ioc_buy_cmd, price_cache.clone());
+        book.place_order(&mut ioc_buy_cmd, &price_cache);
 
         assert_eq!(ioc_buy_cmd.status(), Status::PartiallyFilled);
 
@@ -2572,11 +2572,11 @@ mod test {
 
         let mut sell_cmd =
             harness.create_place_order_cmd(202, Side::Ask, 100_000, 10, TimeInForce::Gtc);
-        book.place_order(&mut sell_cmd, price_cache.clone());
+        book.place_order(&mut sell_cmd, &price_cache);
 
         let mut ioc_buy_cmd =
             harness.create_place_order_cmd(101, Side::Bid, 99_000, 15, TimeInForce::Ioc);
-        book.place_order(&mut ioc_buy_cmd, price_cache.clone());
+        book.place_order(&mut ioc_buy_cmd, &price_cache);
 
         assert_eq!(ioc_buy_cmd.status(), Status::Cancelled);
         assert!(ioc_buy_cmd.events().is_none());
@@ -2591,16 +2591,16 @@ mod test {
 
         book.place_order(
             &mut harness.create_place_order_cmd(202, Side::Ask, 100_000, 10, TimeInForce::Gtc),
-            price_cache.clone(),
+            &price_cache,
         );
         book.place_order(
             &mut harness.create_place_order_cmd(203, Side::Ask, 101_000, 10, TimeInForce::Gtc),
-            price_cache.clone(),
+            &price_cache,
         );
 
         let mut fok_buy_cmd =
             harness.create_place_order_cmd(101, Side::Bid, 100_000, 15, TimeInForce::Fok);
-        book.place_order(&mut fok_buy_cmd, price_cache.clone());
+        book.place_order(&mut fok_buy_cmd, &price_cache);
 
         assert_eq!(fok_buy_cmd.status(), Status::Cancelled);
         assert!(fok_buy_cmd.events().is_none());
@@ -2617,16 +2617,16 @@ mod test {
 
         book.place_order(
             &mut harness.create_place_order_cmd(202, Side::Ask, 99_000, 5, TimeInForce::Gtc),
-            price_cache.clone(),
+            &price_cache,
         );
         book.place_order(
             &mut harness.create_place_order_cmd(203, Side::Ask, 100_000, 5, TimeInForce::Gtc),
-            price_cache.clone(),
+            &price_cache,
         );
 
         let mut fok_buy_cmd =
             harness.create_place_order_cmd(101, Side::Bid, 100_000, 10, TimeInForce::Fok);
-        book.place_order(&mut fok_buy_cmd, price_cache.clone());
+        book.place_order(&mut fok_buy_cmd, &price_cache);
 
         assert_eq!(fok_buy_cmd.status(), Status::Filled);
         assert_eq!(collect_trade_events(fok_buy_cmd).len(), 2);
@@ -2645,14 +2645,14 @@ mod test {
             harness.create_place_order_cmd(202, Side::Ask, 100_000, 5, TimeInForce::Gtc);
         let mut sell_cmd_2 =
             harness.create_place_order_cmd(203, Side::Ask, 100_000, 5, TimeInForce::Gtc);
-        book.place_order(&mut sell_cmd_1, price_cache.clone());
-        book.place_order(&mut sell_cmd_2, price_cache.clone());
+        book.place_order(&mut sell_cmd_1, &price_cache);
+        book.place_order(&mut sell_cmd_2, &price_cache);
 
         book.assert_level_state(Side::Ask, 100_000, 10, 2);
 
         let mut buy_cmd =
             harness.create_place_order_cmd(101, Side::Bid, 100_000, 5, TimeInForce::Gtc);
-        book.place_order(&mut buy_cmd, price_cache.clone());
+        book.place_order(&mut buy_cmd, &price_cache);
 
         assert_eq!(buy_cmd.status(), Status::Filled);
 
@@ -2671,15 +2671,15 @@ mod test {
 
         book.place_order(
             &mut harness.create_place_order_cmd(202, Side::Ask, 99_000, 5, TimeInForce::Gtc),
-            price_cache.clone(),
+            &price_cache,
         );
         book.place_order(
             &mut harness.create_place_order_cmd(203, Side::Ask, 100_000, 5, TimeInForce::Gtc),
-            price_cache.clone(),
+            &price_cache,
         );
 
         let mut market_buy = harness.create_market_order_cmd(101, Side::Bid, 8);
-        book.place_order(&mut market_buy, price_cache.clone());
+        book.place_order(&mut market_buy, &price_cache);
 
         assert_eq!(market_buy.status(), Status::Filled);
         let events = collect_trade_events(market_buy);
@@ -2702,11 +2702,11 @@ mod test {
         for (user, price) in [(202, 100), (203, 99), (101, 98)] {
             let mut bid =
                 harness.create_place_order_cmd(user, Side::Bid, price, 5, TimeInForce::Gtc);
-            book.place_order(&mut bid, price_cache.clone());
+            book.place_order(&mut bid, &price_cache);
         }
 
         let mut market_sell = harness.create_market_order_cmd(101, Side::Ask, 15);
-        book.place_order(&mut market_sell, price_cache.clone());
+        book.place_order(&mut market_sell, &price_cache);
 
         assert_eq!(market_sell.status(), Status::PartiallyFilled);
         assert_eq!(market_sell.price(), 99, "the worst fill, not the first");
@@ -2718,7 +2718,7 @@ mod test {
         let harness = TestHarness::new(1);
 
         let mut market_buy = harness.create_market_order_cmd(101, Side::Bid, 10);
-        book.place_order(&mut market_buy, price_cache.clone());
+        book.place_order(&mut market_buy, &price_cache);
 
         assert_eq!(market_buy.status(), Status::Cancelled);
         assert!(market_buy.events().is_none());
@@ -2762,11 +2762,11 @@ mod test {
             for user in [1, 2, 3] {
                 let mut ask =
                     harness.create_place_order_cmd(user, Side::Ask, 100, 10, TimeInForce::Gtc);
-                book.place_order(&mut ask, price_cache.clone());
+                book.place_order(&mut ask, &price_cache);
             }
 
             let mut bid = harness.create_place_order_cmd(2, Side::Bid, 100, 25, tif);
-            book.place_order(&mut bid, price_cache.clone());
+            book.place_order(&mut bid, &price_cache);
 
             assert_eq!((bid.status(), bid.size()), (status, size_left), "{tif:?}");
             let events: Vec<_> = collect_trade_events(bid)
@@ -2790,27 +2790,27 @@ mod test {
 
         let mut large_sell =
             harness.create_place_order_cmd(202, Side::Ask, 100_000, 50, TimeInForce::Gtc);
-        book.place_order(&mut large_sell, price_cache.clone());
+        book.place_order(&mut large_sell, &price_cache);
         book.assert_level_state(Side::Ask, 100_000, 50, 1);
 
         // First taker buys 10
         let mut buy_1 =
             harness.create_place_order_cmd(101, Side::Bid, 100_000, 10, TimeInForce::Gtc);
-        book.place_order(&mut buy_1, price_cache.clone());
+        book.place_order(&mut buy_1, &price_cache);
         assert_eq!(buy_1.status(), Status::Filled);
         book.assert_level_state(Side::Ask, 100_000, 40, 1);
 
         // Second taker buys 25
         let mut buy_2 =
             harness.create_place_order_cmd(102, Side::Bid, 100_000, 25, TimeInForce::Gtc);
-        book.place_order(&mut buy_2, price_cache.clone());
+        book.place_order(&mut buy_2, &price_cache);
         assert_eq!(buy_2.status(), Status::Filled);
         book.assert_level_state(Side::Ask, 100_000, 15, 1);
 
         // Final taker buys the rest
         let mut buy_3 =
             harness.create_place_order_cmd(103, Side::Bid, 100_000, 15, TimeInForce::Gtc);
-        book.place_order(&mut buy_3, price_cache.clone());
+        book.place_order(&mut buy_3, &price_cache);
         assert_eq!(buy_3.status(), Status::Filled);
         let events = collect_trade_events(buy_3);
         assert!(events[0].matched_order_completed); // Maker order is now complete
@@ -2849,7 +2849,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut bid_cmd_99, price_cache.clone());
+        book.place_order(&mut bid_cmd_99, &price_cache);
         assert_eq!(price_cache.get_best_bid(market_id), 99);
         assert_eq!(
             price_cache.get_best_ask(market_id),
@@ -2869,7 +2869,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut ask_cmd_101, price_cache.clone());
+        book.place_order(&mut ask_cmd_101, &price_cache);
         assert_eq!(price_cache.get_best_bid(market_id), 99);
         assert_eq!(price_cache.get_best_ask(market_id), 101);
 
@@ -2885,7 +2885,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut bid_cmd_100, price_cache.clone());
+        book.place_order(&mut bid_cmd_100, &price_cache);
         assert_eq!(price_cache.get_best_bid(market_id), 100);
         assert_eq!(price_cache.get_best_ask(market_id), 101);
 
@@ -2901,7 +2901,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.cancel_order(&mut cancel_bid_100, price_cache.clone());
+        book.cancel_order(&mut cancel_bid_100, &price_cache);
         assert_eq!(price_cache.get_best_bid(market_id), 99);
         assert_eq!(price_cache.get_best_ask(market_id), 101);
 
@@ -2917,7 +2917,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut cross_bid_cmd, price_cache.clone());
+        book.place_order(&mut cross_bid_cmd, &price_cache);
         assert_eq!(
             price_cache.get_best_bid(market_id),
             99,
@@ -2941,7 +2941,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.cancel_order(&mut cancel_bid_99, price_cache.clone());
+        book.cancel_order(&mut cancel_bid_99, &price_cache);
         assert_eq!(
             price_cache.get_best_bid(market_id),
             0,
@@ -2975,7 +2975,7 @@ mod test {
             let size = (i + 1) * 10;
             let mut bid_cmd =
                 harness.create_place_order_cmd(200 + i, Side::Bid, price, size, TimeInForce::Gtc);
-            book.place_order(&mut bid_cmd, price_cache.clone());
+            book.place_order(&mut bid_cmd, &price_cache);
         }
 
         // Place 12 ask levels (101 up to 112)
@@ -2984,12 +2984,12 @@ mod test {
             let size = (i + 1) * 10;
             let mut ask_cmd =
                 harness.create_place_order_cmd(300 + i, Side::Ask, price, size, TimeInForce::Gtc);
-            book.place_order(&mut ask_cmd, price_cache.clone());
+            book.place_order(&mut ask_cmd, &price_cache);
         }
 
         // --- Scenario 3: Verify snapshot of a deep book ---
         let mut cmd2 = harness.create_place_order_cmd(102, Side::Bid, 80, 5, TimeInForce::Gtc);
-        book.place_order(&mut cmd2, price_cache.clone()); // This order will be placed
+        book.place_order(&mut cmd2, &price_cache); // This order will be placed
 
         let snapshot2 = cmd2.l2_data.as_ref().unwrap();
 
@@ -3016,7 +3016,7 @@ mod test {
         // --- Scenario 4: Snapshot after a trade that clears levels ---
         // A large market buy that clears the first 3 ask levels
         let mut market_buy_cmd = harness.create_market_order_cmd(103, Side::Bid, 70); // 10+20+30=60, so this clears 3 levels and takes 10 from the 4th
-        book.place_order(&mut market_buy_cmd, price_cache.clone());
+        book.place_order(&mut market_buy_cmd, &price_cache);
 
         let snapshot3 = market_buy_cmd.l2_data.as_ref().unwrap();
 
@@ -3037,7 +3037,7 @@ mod test {
         rejected_cmd.set_status(Status::Rejected);
         // We call place_order, but because the status is Rejected, it should return early
         // and not record a snapshot.
-        book.place_order(&mut rejected_cmd, price_cache.clone());
+        book.place_order(&mut rejected_cmd, &price_cache);
         assert!(rejected_cmd.l2_data.is_none());
     }
 
@@ -3059,7 +3059,7 @@ mod test {
                 Side::Bid,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
         }
 
         // Place some asks
@@ -3077,7 +3077,7 @@ mod test {
                 Side::Ask,
                 TimeInForce::Gtc,
             );
-            book.place_order(&mut cmd, price_cache.clone());
+            book.place_order(&mut cmd, &price_cache);
             if i == 2 {
                 command = cmd;
             }
@@ -3121,7 +3121,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut place_cmd, price_cache.clone());
+        book.place_order(&mut place_cmd, &price_cache);
 
         let mut unauthorized_cancel = create_order_command(
             OrderCommandType::CancelOrder,
@@ -3134,7 +3134,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.cancel_order(&mut unauthorized_cancel, price_cache.clone());
+        book.cancel_order(&mut unauthorized_cancel, &price_cache);
 
         assert_eq!(unauthorized_cancel.status(), Status::Rejected);
         assert_eq!(book.get_volume_at_price(50, Side::Bid), 100);
@@ -3152,7 +3152,7 @@ mod test {
             Side::Bid,
             TimeInForce::Gtc,
         );
-        book.cancel_order(&mut owner_cancel, price_cache.clone());
+        book.cancel_order(&mut owner_cancel, &price_cache);
 
         assert_eq!(owner_cancel.status(), Status::Cancelled);
         assert_eq!(book.total_order_count(), 0);
@@ -3175,7 +3175,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.place_order(&mut place_cmd, price_cache.clone());
+        book.place_order(&mut place_cmd, &price_cache);
 
         let mut cancel_cmd = create_order_command(
             OrderCommandType::CancelOrder,
@@ -3188,7 +3188,7 @@ mod test {
             Side::Ask,
             TimeInForce::Gtc,
         );
-        book.cancel_order(&mut cancel_cmd, price_cache.clone());
+        book.cancel_order(&mut cancel_cmd, &price_cache);
 
         assert_eq!(cancel_cmd.status(), Status::Cancelled);
         assert_eq!(cancel_cmd.user_id, 3003);

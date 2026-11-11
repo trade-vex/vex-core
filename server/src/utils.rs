@@ -59,7 +59,7 @@ macro_rules! create_risk_handler {
             if on_settled_ledger {
                 risk_engine.await_settled(sequence - 1);
             }
-            risk_engine.pre_process_command(cmd, ::std::clone::Clone::clone(&price_cache));
+            risk_engine.pre_process_command(cmd, &price_cache);
             if cmd.status == ::common::Status::Rejected
                 && !on_settled_ledger
                 && cmd.command == ::common::OrderCommandType::PlaceOrder
@@ -67,7 +67,7 @@ macro_rules! create_risk_handler {
                 // A rejected command is unchanged but for its status.
                 risk_engine.await_settled(sequence - 1);
                 cmd.status = ::common::Status::Processing;
-                risk_engine.pre_process_command(cmd, ::std::clone::Clone::clone(&price_cache));
+                risk_engine.pre_process_command(cmd, &price_cache);
             }
         }
     }};

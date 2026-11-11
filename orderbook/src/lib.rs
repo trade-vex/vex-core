@@ -47,7 +47,6 @@ use common::{
 use std::{
     collections::{HashMap, VecDeque},
     iter,
-    sync::Arc,
 };
 
 pub mod tree;
@@ -282,7 +281,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     /// 5. The command must be PlaceOrder
     ///    All the contraints are NOT checked in the ORDERBOOK, must be guaranteed by upstream systems
     ///    They are not included here to avoid redundant checks that are already made
-    pub fn place_order(&mut self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) {
+    pub fn place_order(&mut self, cmd: &mut OrderCommand, price_cache: &PriceCache) {
         // Skip processing if the order is already rejected
         if cmd.status == Status::Rejected {
             return;
@@ -367,7 +366,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     ///
     /// Note: This function does not check for the validity of the cancel order command.
     /// All the contraints are NOT checked in the ORDERBOOK, must be guaranteed by upstream systems
-    pub fn cancel_order(&mut self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) {
+    pub fn cancel_order(&mut self, cmd: &mut OrderCommand, price_cache: &PriceCache) {
         // Similar to place_order, if the command is already rejected, in case the user is not found
         if cmd.status == Status::Rejected {
             return;
@@ -400,7 +399,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
         self.update_price_cache(price_cache);
     }
 
-    fn update_price_cache(&self, price_cache: Arc<PriceCache>) {
+    fn update_price_cache(&self, price_cache: &PriceCache) {
         price_cache.update_prices(
             self.market_id,
             self.bids.best_price(),

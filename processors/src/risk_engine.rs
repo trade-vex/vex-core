@@ -12,7 +12,6 @@ use common::UserBalance;
 use common::{base_asset, order_debug, order_warn, quote_asset};
 use hashbrown::HashMap;
 use parking_lot::Mutex;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use tracing::{debug, error, info, warn};
 
@@ -83,7 +82,7 @@ impl RiskEngine {
     }
 
     /// Pre-processes a command to validate it and hold funds
-    pub fn pre_process_command(&self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) {
+    pub fn pre_process_command(&self, cmd: &mut OrderCommand, price_cache: &PriceCache) {
         // Process only if the command is for a user managed by this shard
         if !self.user_id_for_this_handler(cmd.user_id) {
             return; // Not for this shard, skip
@@ -487,7 +486,7 @@ impl RiskEngine {
     fn reserve_funds_for_order(
         &self,
         cmd: &mut OrderCommand,
-        price_cache: Arc<PriceCache>,
+        price_cache: &PriceCache,
     ) -> Result<()> {
         if cmd.size == 0 {
             return Err(RiskEngineError::InvalidArguments {
@@ -548,7 +547,7 @@ impl RiskEngine {
     /// effective cap in `price`. Market + GTC never reaches this point: `pre_process_command`
     /// rejects it first.
     #[inline]
-    fn bid_amount(&self, cmd: &OrderCommand, price_cache: Arc<PriceCache>) -> Result<(u64, u64)> {
+    fn bid_amount(&self, cmd: &OrderCommand, price_cache: &PriceCache) -> Result<(u64, u64)> {
         // Get spec early
         let spec =
             self.symbol_specs
@@ -820,7 +819,7 @@ mod tests {
 
         let mut specs = HashMap::new();
         specs.insert(market_id, spec);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let maker_id = 101;
         let taker_id = 102;
@@ -842,7 +841,7 @@ mod tests {
             1,
         );
         engine
-            .reserve_funds_for_order(&mut taker_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut taker_cmd, &price_cache)
             .unwrap();
 
         let mut maker_cmd = OrderCommand::place_order(
@@ -855,7 +854,7 @@ mod tests {
             2,
         );
         engine
-            .reserve_funds_for_order(&mut maker_cmd, price_cache)
+            .reserve_funds_for_order(&mut maker_cmd, &price_cache)
             .unwrap();
 
         let trade_event = TradeFill {
@@ -940,16 +939,16 @@ mod tests {
         assert!(engine_shard1.user_id_for_this_handler(5));
         assert!(!engine_shard1.user_id_for_this_handler(0));
         let symbol_spec = HashMap::new();
-        let price_cache = Arc::new(PriceCache::new(symbol_spec.keys()));
+        let price_cache = PriceCache::new(symbol_spec.keys());
         let mut cmd = OrderCommand::place_order(TimeInForce::Gtc, 1, 100, 10, Side::Bid, 1, 1);
 
         // shard 0 should not process user 1's command, will be skipped
-        engine_shard0.pre_process_command(&mut cmd, price_cache.clone());
+        engine_shard0.pre_process_command(&mut cmd, &price_cache);
         assert_eq!(cmd.status, Status::Processing);
 
         // shard 1 should process user 1's command
         // it will be rejected because no market spec
-        engine_shard1.pre_process_command(&mut cmd, price_cache);
+        engine_shard1.pre_process_command(&mut cmd, &price_cache);
         assert_eq!(cmd.status, Status::Rejected);
     }
 
@@ -959,7 +958,7 @@ mod tests {
         let market_id = (2_u32 << 16) | 1_u32;
         let mut specs = HashMap::new();
         specs.insert(market_id, get_spec(market_id));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         // A best ask exists, so without the GTC check the buy would be capped and funded.
         price_cache.update_prices(market_id, 90, 100);
         let engine = RiskEngine::new(specs, 0, 1);
@@ -977,7 +976,7 @@ mod tests {
                 market_id,
                 1,
             );
-            engine.pre_process_command(&mut cmd, Arc::clone(&price_cache));
+            engine.pre_process_command(&mut cmd, &price_cache);
 
             assert_eq!(cmd.status, Status::Rejected, "{side:?} market GTC");
             assert_eq!(cmd.price, sentinel, "the sentinel must not be rewritten");
@@ -995,7 +994,7 @@ mod tests {
             market_id,
             1,
         );
-        engine.pre_process_command(&mut ioc, price_cache);
+        engine.pre_process_command(&mut ioc, &price_cache);
         assert_ne!(ioc.status, Status::Rejected);
         assert_eq!(ioc.price, 100);
     }
@@ -1003,7 +1002,7 @@ mod tests {
     #[test]
     fn deposit_with_asset_id_above_u16_is_rejected() {
         let engine = RiskEngine::new(HashMap::new(), 0, 1);
-        let price_cache = Arc::new(PriceCache::new(HashMap::new().keys()));
+        let price_cache = PriceCache::new(HashMap::new().keys());
         engine.set_balance(1, 1, UserBalance::new(100, 0));
 
         // 65537 would wrap to asset 1.
@@ -1012,7 +1011,7 @@ mod tests {
             OrderCommand::withdraw_funds(1, 100, 1),
         ] {
             cmd.market_id = 65537;
-            engine.pre_process_command(&mut cmd, Arc::clone(&price_cache));
+            engine.pre_process_command(&mut cmd, &price_cache);
             assert_eq!(cmd.status, Status::Rejected, "{:?}", cmd.command);
             assert_eq!(engine.get_balance(1, 1), UserBalance::new(100, 0));
         }
@@ -1021,13 +1020,13 @@ mod tests {
     #[test]
     fn zero_amount_deposit_and_withdrawal_are_rejected() {
         let engine = RiskEngine::new(HashMap::new(), 0, 1);
-        let price_cache = Arc::new(PriceCache::new(HashMap::new().keys()));
+        let price_cache = PriceCache::new(HashMap::new().keys());
 
         for mut cmd in [
             OrderCommand::deposit_funds(1, 0, 1),
             OrderCommand::withdraw_funds(1, 0, 1),
         ] {
-            engine.pre_process_command(&mut cmd, Arc::clone(&price_cache));
+            engine.pre_process_command(&mut cmd, &price_cache);
             assert_eq!(cmd.status, Status::Rejected, "{:?}", cmd.command);
         }
         assert_eq!(engine.get_balance(1, 1), UserBalance::default());
@@ -1038,26 +1037,26 @@ mod tests {
         let market_id = (1_u32 << 16) | 2; // quote 1, base 2
         let mut specs = HashMap::new();
         specs.insert(market_id, get_spec(market_id));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let (user, quote) = (1, quote_asset(market_id));
 
         let mut deposit = OrderCommand::deposit_funds(user, 100, quote);
-        engine.pre_process_command(&mut deposit, Arc::clone(&price_cache));
+        engine.pre_process_command(&mut deposit, &price_cache);
         assert_eq!(deposit.status, Status::Processed);
         // A bid locking 60 quote (price * size at get_spec's unit scales).
         let mut bid =
             OrderCommand::place_order(TimeInForce::Gtc, user, 60, 1, Side::Bid, market_id, 1);
-        engine.pre_process_command(&mut bid, Arc::clone(&price_cache));
+        engine.pre_process_command(&mut bid, &price_cache);
         assert_eq!(engine.get_balance(user, quote), UserBalance::new(40, 60));
 
         let mut withdrawal = OrderCommand::withdraw_funds(user, 50, quote);
-        engine.pre_process_command(&mut withdrawal, Arc::clone(&price_cache));
+        engine.pre_process_command(&mut withdrawal, &price_cache);
         assert_eq!(withdrawal.status, Status::Rejected);
         assert_eq!(engine.get_balance(user, quote), UserBalance::new(40, 60));
 
         let mut withdrawal = OrderCommand::withdraw_funds(user, 40, quote);
-        engine.pre_process_command(&mut withdrawal, price_cache);
+        engine.pre_process_command(&mut withdrawal, &price_cache);
         assert_eq!(withdrawal.status, Status::Processed);
         assert_eq!(engine.get_balance(user, quote), UserBalance::new(0, 60));
     }
@@ -1105,9 +1104,9 @@ mod tests {
             1,
         );
 
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         engine
-            .reserve_funds_for_order(&mut cmd, price_cache)
+            .reserve_funds_for_order(&mut cmd, &price_cache)
             .unwrap();
 
         let balance = engine.get_balance(user_id, quote_asset);
@@ -1134,12 +1133,12 @@ mod tests {
             .unwrap();
         let mut specs = HashMap::new();
         specs.insert(market_id, spec);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let mut cmd =
             OrderCommand::place_order(TimeInForce::Gtc, user_id, 1, 1, Side::Bid, market_id, 1);
 
-        engine.pre_process_command(&mut cmd, price_cache);
+        engine.pre_process_command(&mut cmd, &price_cache);
 
         assert_eq!(cmd.status, Status::Rejected);
     }
@@ -1157,14 +1156,14 @@ mod tests {
             .unwrap();
         let mut specs = HashMap::new();
         specs.insert(market_id, spec);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         engine.set_balance(user_id, base_asset(market_id), UserBalance::new(1, 0));
         let mut cmd =
             OrderCommand::place_order(TimeInForce::Gtc, user_id, 1, 1, Side::Ask, market_id, 1);
 
         let error = engine
-            .reserve_funds_for_order(&mut cmd, price_cache)
+            .reserve_funds_for_order(&mut cmd, &price_cache)
             .unwrap_err();
 
         assert!(matches!(error, RiskEngineError::InvalidArguments { .. }));
@@ -1179,7 +1178,7 @@ mod tests {
         spec.slippage = 40_000;
         let mut specs = HashMap::new();
         specs.insert(market_id, spec);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         price_cache.update_prices(market_id, 0, 1 << 62);
         let engine = RiskEngine::new(specs, 0, 1);
         let funded = UserBalance::new(u64::MAX, 0);
@@ -1195,7 +1194,7 @@ mod tests {
         );
 
         assert_eq!(
-            engine.reserve_funds_for_order(&mut cmd, price_cache),
+            engine.reserve_funds_for_order(&mut cmd, &price_cache),
             Err(RiskEngineError::BalanceError(BalanceError::Overflow))
         );
         assert_eq!(engine.get_balance(user_id, quote_asset(market_id)), funded);
@@ -1212,7 +1211,7 @@ mod tests {
         let size = 10;
         let mut specs = HashMap::new();
         specs.insert(market_id, get_spec(market_id));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         engine.set_balance(user_id, base_asset(market_id), UserBalance::new(size, 0));
         // price == 0 is the market-SELL sentinel.
@@ -1220,7 +1219,7 @@ mod tests {
             OrderCommand::place_order(TimeInForce::Ioc, user_id, 0, size, Side::Ask, market_id, 1);
 
         engine
-            .reserve_funds_for_order(&mut cmd, price_cache)
+            .reserve_funds_for_order(&mut cmd, &price_cache)
             .expect("a market sell must be able to reserve collateral");
 
         let balance = engine.get_balance(user_id, base_asset(market_id));
@@ -1235,7 +1234,7 @@ mod tests {
         let size = 10;
         let mut specs = HashMap::new();
         specs.insert(market_id, get_spec(market_id));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let base_asset = base_asset(market_id);
         engine.set_balance(user_id, base_asset, UserBalance::new(size, 0));
@@ -1250,7 +1249,7 @@ mod tests {
         );
 
         engine
-            .reserve_funds_for_order(&mut cmd, price_cache)
+            .reserve_funds_for_order(&mut cmd, &price_cache)
             .unwrap();
 
         assert_eq!(
@@ -1265,12 +1264,12 @@ mod tests {
         let market_id = (2_u32 << 16) | 1_u32;
         let mut specs = HashMap::new();
         specs.insert(market_id, get_spec(market_id));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let mut cmd =
             OrderCommand::place_order(TimeInForce::Gtc, user_id, 100, 0, Side::Ask, market_id, 1);
 
-        engine.pre_process_command(&mut cmd, price_cache);
+        engine.pre_process_command(&mut cmd, &price_cache);
 
         assert_eq!(cmd.status, Status::Rejected);
     }
@@ -1284,7 +1283,7 @@ mod tests {
         let required_quote = price * size;
         let mut specs = HashMap::new();
         specs.insert(market_id, get_spec(market_id));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let quote_asset = quote_asset(market_id);
         engine.set_balance(user_id, quote_asset, UserBalance::new(required_quote, 0));
@@ -1298,7 +1297,7 @@ mod tests {
             1,
         );
 
-        engine.pre_process_command(&mut cmd, price_cache);
+        engine.pre_process_command(&mut cmd, &price_cache);
 
         assert_ne!(cmd.status, Status::Rejected);
         assert_eq!(
@@ -1332,9 +1331,9 @@ mod tests {
             1,
         );
 
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         engine
-            .reserve_funds_for_order(&mut cmd, price_cache)
+            .reserve_funds_for_order(&mut cmd, &price_cache)
             .unwrap();
 
         let balance = engine.get_balance(user_id, base_asset);
@@ -1397,8 +1396,8 @@ mod tests {
             1,
         );
 
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
-        let res = engine.reserve_funds_for_order(&mut cmd, price_cache);
+        let price_cache = PriceCache::new(specs.keys());
+        let res = engine.reserve_funds_for_order(&mut cmd, &price_cache);
         assert!(res.is_err());
         match res.unwrap_err() {
             RiskEngineError::BalanceError(BalanceError::InsufficientAvailableFunds { .. }) => (),
@@ -1415,7 +1414,7 @@ mod tests {
 
         let mut specs = HashMap::new();
         specs.insert(market_id, get_spec(market_id));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
 
         let engine = RiskEngine::new(specs, 0, 1);
 
@@ -1454,7 +1453,7 @@ mod tests {
             1,
         );
         engine
-            .reserve_funds_for_order(&mut taker_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut taker_cmd, &price_cache)
             .unwrap();
 
         // Maker places ASK order to sell BTC
@@ -1468,7 +1467,7 @@ mod tests {
             2,
         );
         engine
-            .reserve_funds_for_order(&mut maker_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut maker_cmd, &price_cache)
             .unwrap();
 
         // --- A trade occurs ---
@@ -1733,7 +1732,7 @@ mod tests {
             market_id,
             get_spec(market_id), // slippage is 5bp
         );
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
 
         let user_id = 1;
@@ -1750,7 +1749,7 @@ mod tests {
             1,
         );
 
-        let res = engine.reserve_funds_for_order(&mut market_buy_cmd, price_cache.clone());
+        let res = engine.reserve_funds_for_order(&mut market_buy_cmd, &price_cache);
         assert!(res.is_err());
         match res.unwrap_err() {
             RiskEngineError::InvalidArguments { .. } => (),
@@ -1767,7 +1766,7 @@ mod tests {
         engine.set_balance(user_id, usd_asset_id, UserBalance::new(required_quote, 0));
 
         engine
-            .reserve_funds_for_order(&mut market_buy_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut market_buy_cmd, &price_cache)
             .unwrap();
 
         let balance = engine.get_balance(user_id, usd_asset_id);
@@ -1794,7 +1793,7 @@ mod tests {
             usd_asset_id,
             UserBalance::new(required_quote - 1, 0),
         );
-        let res = engine.reserve_funds_for_order(&mut market_buy_cmd, price_cache.clone());
+        let res = engine.reserve_funds_for_order(&mut market_buy_cmd, &price_cache);
         assert!(res.is_err());
         match res.unwrap_err() {
             RiskEngineError::BalanceError(BalanceError::InsufficientAvailableFunds { .. }) => (),
@@ -1815,7 +1814,7 @@ mod tests {
             OrderCommand::place_order(TimeInForce::Gtc, user_id, 0, size, Side::Ask, market_id, 1);
 
         engine
-            .reserve_funds_for_order(&mut market_sell_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut market_sell_cmd, &price_cache)
             .unwrap();
         let balance = engine.get_balance(user_id, btc_asset_id);
         assert_eq!(balance.available(), 0);
@@ -1833,7 +1832,7 @@ mod tests {
         );
         assert!(
             engine
-                .reserve_funds_for_order(&mut unrepresentable_ask, price_cache)
+                .reserve_funds_for_order(&mut unrepresentable_ask, &price_cache)
                 .is_err()
         );
     }
@@ -1846,7 +1845,7 @@ mod tests {
         let market_id = ((usd_asset_id as u32) << 16) | btc_asset_id as u32;
         let mut specs = HashMap::new();
         specs.insert(market_id, get_spec(market_id));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         price_cache.update_prices(market_id, 0, 0);
         let engine = RiskEngine::new(specs, 0, 1);
         engine.set_balance(user_id, usd_asset_id, UserBalance::new(1_000, 0));
@@ -1861,7 +1860,7 @@ mod tests {
         );
 
         assert!(matches!(
-            engine.reserve_funds_for_order(&mut cmd, price_cache),
+            engine.reserve_funds_for_order(&mut cmd, &price_cache),
             Err(RiskEngineError::InvalidArguments { .. })
         ));
         assert_eq!(
@@ -1886,7 +1885,7 @@ mod tests {
         let mut specs = HashMap::new();
         specs.insert(market_id_btc_usd, get_spec(market_id_btc_usd));
         specs.insert(market_id_eth_usd, get_spec(market_id_eth_usd));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
 
         let user_id = 100;
@@ -1911,7 +1910,7 @@ mod tests {
             1,
         );
         engine
-            .reserve_funds_for_order(&mut btc_buy_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut btc_buy_cmd, &price_cache)
             .unwrap();
 
         // --- Check balances after BTC order reservation ---
@@ -1940,7 +1939,7 @@ mod tests {
             2,
         );
         engine
-            .reserve_funds_for_order(&mut eth_sell_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut eth_sell_cmd, &price_cache)
             .unwrap();
 
         // --- Check balances after both reservations ---
@@ -2036,7 +2035,7 @@ mod tests {
         let spec = get_shipped_eth_spec(market_id);
         let mut specs = HashMap::new();
         specs.insert(market_id, spec.clone());
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 2, 4);
         engine.set_balance(
             user_id,
@@ -2055,7 +2054,7 @@ mod tests {
         );
         cmd.order_id = order_id;
         engine
-            .reserve_funds_for_order(&mut cmd, price_cache)
+            .reserve_funds_for_order(&mut cmd, &price_cache)
             .unwrap();
 
         let mut spent = 0;
@@ -2142,7 +2141,7 @@ mod tests {
         let fill_size = 333_333_334;
         let mut specs = HashMap::new();
         specs.insert(market_id, get_shipped_eth_spec(market_id));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 2, 4);
         engine.set_balance(
             user_id,
@@ -2160,7 +2159,7 @@ mod tests {
         );
         cmd.order_id = 42;
         engine
-            .reserve_funds_for_order(&mut cmd, price_cache)
+            .reserve_funds_for_order(&mut cmd, &price_cache)
             .unwrap();
         let event = TradeFill {
             active_order_completed: false,

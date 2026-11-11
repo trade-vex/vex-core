@@ -5,7 +5,6 @@ use common::Status;
 use common::order_debug;
 use common::order_warn;
 use hashbrown::HashMap;
-use std::sync::Arc;
 use vex_orderbook::OrderBook;
 use vex_orderbook::tree::{BTreeAskSide, BTreeBidSide};
 
@@ -62,7 +61,7 @@ impl MatchingEngineRouter {
     }
 
     /// Main entry point for processing orders. Callers route by `market_for_this_handler` first.
-    pub fn process_order(&mut self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) {
+    pub fn process_order(&mut self, cmd: &mut OrderCommand, price_cache: &PriceCache) {
         if let Some(order_book) = self.order_books.get_mut(&cmd.market_id) {
             order_debug!(
                 "matching_dispatch",

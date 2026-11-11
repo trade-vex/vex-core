@@ -293,7 +293,7 @@ impl CoreEngine {
                 {
                     return;
                 }
-                router.process_order(cmd, Arc::clone(&price_cache_clone));
+                router.process_order(cmd, &price_cache_clone);
             }
         });
 
@@ -969,7 +969,7 @@ pub mod test {
                     {
                         return;
                     }
-                    router.process_order(cmd, Arc::clone(&price_cache_clone));
+                    router.process_order(cmd, &price_cache_clone);
                 }
             });
 

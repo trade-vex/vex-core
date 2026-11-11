@@ -680,7 +680,7 @@ mod tests {
     fn test_shipped_eth_collateral_lock_and_release_for_both_sides() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let base_asset_id = base_asset(market_id);
         let quote_asset_id = quote_asset(market_id);
@@ -699,7 +699,7 @@ mod tests {
             market_id,
             1,
         );
-        engine.pre_process_command(&mut bid, Arc::clone(&price_cache));
+        engine.pre_process_command(&mut bid, &price_cache);
         assert_eq!(
             engine.get_balance(bid_user_id, quote_asset_id),
             UserBalance::new(0, quote_cost)
@@ -721,7 +721,7 @@ mod tests {
             market_id,
             2,
         );
-        engine.pre_process_command(&mut ask, price_cache);
+        engine.pre_process_command(&mut ask, &price_cache);
         assert_eq!(
             engine.get_balance(ask_user_id, base_asset_id),
             UserBalance::new(0, size)
@@ -737,7 +737,7 @@ mod tests {
     fn test_shipped_eth_settlement_releases_both_sides_and_rounds_fees() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let base_asset_id = base_asset(market_id);
         let quote_asset_id = quote_asset(market_id);
@@ -767,8 +767,8 @@ mod tests {
             market_id,
             2,
         );
-        engine.pre_process_command(&mut bid, Arc::clone(&price_cache));
-        engine.pre_process_command(&mut ask, price_cache);
+        engine.pre_process_command(&mut bid, &price_cache);
+        engine.pre_process_command(&mut ask, &price_cache);
 
         let event = common::TradeFill {
             price,
@@ -816,7 +816,7 @@ mod tests {
     fn test_shipped_eth_ask_partial_fill_cancel_round_trip() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let base_asset_id = base_asset(market_id);
         let quote_asset_id = quote_asset(market_id);
@@ -836,7 +836,7 @@ mod tests {
             market_id,
             1,
         );
-        engine.pre_process_command(&mut ask, price_cache);
+        engine.pre_process_command(&mut ask, &price_cache);
 
         let event = common::TradeFill {
             price,
@@ -867,14 +867,14 @@ mod tests {
     fn test_shipped_eth_bid_with_zero_quote_cost_is_rejected() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         // 9_999 gwei at price 1 costs 0.9999 micro-USDT, which floors to zero.
         let mut bid =
             OrderCommand::place_order(TimeInForce::Gtc, 40, 1, 9_999, Side::Bid, market_id, 1);
 
         // Before #111, locking zero succeeded and admitted an uncollateralized BID.
-        engine.pre_process_command(&mut bid, price_cache);
+        engine.pre_process_command(&mut bid, &price_cache);
 
         assert_eq!(bid.status, Status::Rejected);
     }
@@ -884,7 +884,7 @@ mod tests {
     fn test_shipped_eth_bid_partial_fill_cancel_has_no_collateral_residue() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let base_asset_id = base_asset(market_id);
         let quote_asset_id = quote_asset(market_id);
@@ -905,7 +905,7 @@ mod tests {
             market_id,
             1,
         );
-        engine.pre_process_command(&mut bid, price_cache);
+        engine.pre_process_command(&mut bid, &price_cache);
 
         let event = common::TradeFill {
             price,
@@ -942,7 +942,7 @@ mod tests {
     fn test_shipped_eth_one_token_fee_arithmetic_does_not_overflow() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let quote_asset_id = quote_asset(market_id);
         let user_id = 60;
@@ -959,7 +959,7 @@ mod tests {
             market_id,
             1,
         );
-        engine.pre_process_command(&mut bid, price_cache);
+        engine.pre_process_command(&mut bid, &price_cache);
 
         let event = common::TradeFill {
             price,
@@ -1216,7 +1216,7 @@ mod tests {
         let spec = specs.get_mut(&market_id).unwrap();
         spec.quote_scale_k = 10;
 
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let risk_engines: Arc<Vec<RiskEngine>> = Arc::new(
             (0..4)
                 .map(|shard_id| RiskEngine::new(specs.clone(), shard_id, 4))
@@ -1229,7 +1229,7 @@ mod tests {
             .collect();
         let r1 = |cmd: &mut OrderCommand| {
             for engine in risk_engines.iter() {
-                engine.pre_process_command(cmd, Arc::clone(&price_cache));
+                engine.pre_process_command(cmd, &price_cache);
             }
         };
         let r2 = |cmd: OrderCommand| {
@@ -1258,7 +1258,7 @@ mod tests {
             1,
         );
         r1(&mut ask);
-        router.process_order(&mut ask, Arc::clone(&price_cache));
+        router.process_order(&mut ask, &price_cache);
         assert_eq!(r2(ask).status, Status::Placed);
 
         // Trade N: R1 and matching have run, R2 has not.
@@ -1272,7 +1272,7 @@ mod tests {
             2,
         );
         r1(&mut bid);
-        router.process_order(&mut bid, Arc::clone(&price_cache));
+        router.process_order(&mut bid, &price_cache);
         assert_eq!(bid.status, Status::Filled);
 
         // Deposit D > N: its R1 runs before N's R2.
@@ -1309,7 +1309,7 @@ mod tests {
         let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
         add_spec(market_id, &mut specs);
         specs.get_mut(&market_id).unwrap().quote_scale_k = 10;
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let risk_engines: Arc<Vec<RiskEngine>> = Arc::new(
             (0..4)
                 .map(|shard_id| RiskEngine::new(specs.clone(), shard_id, 4))
@@ -1324,9 +1324,9 @@ mod tests {
         checker.set_balance(taker_id, quote_asset_id, 5_000_000, 0);
         let mut admit = |mut cmd: OrderCommand| {
             for engine in risk_engines.iter() {
-                engine.pre_process_command(&mut cmd, Arc::clone(&price_cache));
+                engine.pre_process_command(&mut cmd, &price_cache);
             }
-            router.process_order(&mut cmd, Arc::clone(&price_cache));
+            router.process_order(&mut cmd, &price_cache);
             cmd
         };
         let ask = OrderCommand::place_order(
