@@ -284,7 +284,14 @@ pub mod test {
     use common::{OrderCommand, Status};
     use engine::{RiskEngines, test::TestEngineBuilder};
     use processors::events::EventsHandler;
-    use std::{cell::UnsafeCell, sync::mpsc};
+    use std::{cell::UnsafeCell, sync::mpsc, time::Duration};
+
+    /// How long a test waits for the pipeline before it fails.
+    ///
+    /// Only a test that is about to fail spends it, so it does not slow a passing run. It is
+    /// generous because every stage thread busy-spins: on a loaded host they get descheduled, and
+    /// a result that takes microseconds on an idle host can take seconds.
+    pub const PIPELINE_DEADLINE: Duration = Duration::from_secs(10);
 
     /// The events stage for tests: answers each command's gateway and publishes nothing.
     ///
@@ -317,7 +324,7 @@ pub mod test {
     /// # Example
     ///
     /// ```
-    /// use vex_server::test::setup;
+    /// use vex_server::test::{PIPELINE_DEADLINE, setup};
     /// use hashbrown::HashMap;
     ///
     /// let mut specs = HashMap::new();
@@ -328,7 +335,7 @@ pub mod test {
     ///     // Configure order command
     /// });
     ///
-    /// let result = test_env.receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+    /// let result = test_env.receiver.recv_timeout(PIPELINE_DEADLINE).unwrap();
     /// ```
     pub fn setup(specs: HashMap<u32, CoreMarketSpecification>) -> TestEngine {
         let (tx, rx) = mpsc::channel::<OrderCommand>();
@@ -375,7 +382,7 @@ pub mod test {
 
 #[cfg(test)]
 mod tests {
-    use super::test::{TestEngine, setup};
+    use super::test::{PIPELINE_DEADLINE, TestEngine, setup};
     use super::*;
     use common::{
         MarketType, OrderCommand, PriceCache, Side, Status, TimeInForce, UserBalance, base_asset,
@@ -386,7 +393,6 @@ mod tests {
     use processors::risk_engine::RiskEngine;
     use std::cell::UnsafeCell;
     use std::sync::atomic::Ordering;
-    use std::time::Duration;
     use tracing::field::{Field, Visit};
     use tracing::{Event, Level, Subscriber};
     use tracing_subscriber::layer::{Context, SubscriberExt};
@@ -1081,7 +1087,7 @@ mod tests {
 
         // 4. Wait for the command to be processed and receive it from the test handler
         let processed_cmd = rx
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(PIPELINE_DEADLINE)
             .expect("Test timed out waiting for processed command");
 
         // 5. Assertions
@@ -1167,7 +1173,7 @@ mod tests {
 
         // 5. Wait for Maker's order to be placed on the book
         let maker_placed_cmd = rx
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(PIPELINE_DEADLINE)
             .expect("Did not receive maker's placed command");
         // assert_eq!(maker_placed_cmd.order_id, maker_order_id);
         assert_eq!(maker_placed_cmd.status, Status::Placed);
@@ -1189,7 +1195,7 @@ mod tests {
 
         // 7. Wait for Taker's order to be filled. This command will contain the trade event.
         let taker_filled_cmd = rx
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(PIPELINE_DEADLINE)
             .expect("Did not receive taker's filled command");
         // assert_eq!(taker_filled_cmd.order_id, taker_order_id);
         assert_eq!(taker_filled_cmd.status, Status::Filled);
@@ -1377,7 +1383,7 @@ mod tests {
                     order_id,
                 );
             });
-            let placed = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let placed = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
             assert_eq!(placed.status, Status::Placed);
         }
         producer.publish(|cmd| {
@@ -1391,7 +1397,7 @@ mod tests {
                 3,
             );
         });
-        let filled = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let filled = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(filled.status, Status::Filled);
 
         let first = filled.events().expect("two fills");
@@ -1494,7 +1500,7 @@ mod tests {
                 );
             });
             let placed_cmd = rx
-                .recv_timeout(Duration::from_secs(1))
+                .recv_timeout(PIPELINE_DEADLINE)
                 .expect("Maker order placement timed out");
             // assert orders are placed correctly
             // assert_eq!(placed_cmd.order_id, order_id);
@@ -1529,7 +1535,7 @@ mod tests {
 
         // 6. Wait for Taker's order to be filled.
         let taker_filled_cmd = rx
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(PIPELINE_DEADLINE)
             .expect("Did not receive taker's filled command");
         // balances should be updated correctly for both taker and makers
         assert_eq!(taker_filled_cmd.balance[0].total(), 44_910); // base after 20bp fee
@@ -1702,7 +1708,7 @@ mod tests {
                     client_order_id,
                 );
             });
-            let response = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            let response = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
             assert_eq!(response.status, Status::Placed);
         }
 
@@ -1720,7 +1726,7 @@ mod tests {
                     client_order_id,
                 );
             });
-            let response = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let response = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
 
             assert_eq!(response.status, Status::Rejected, "{side:?} market GTC");
             assert_eq!(response.price, sentinel, "R1 must reject before capping");
@@ -1747,7 +1753,7 @@ mod tests {
                 5,
             );
         });
-        let response = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let response = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(response.status, Status::Placed);
         let l2 = response.l2_data.as_ref().unwrap();
         assert_eq!(l2.bid_prices, [90]);
@@ -1803,7 +1809,7 @@ mod tests {
                 2,
             );
         });
-        let maker_placed = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let maker_placed = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(maker_placed.status, Status::Placed);
         price_cache.update_prices(market_id, 0, maker_ask_price); // Manually update price cache
 
@@ -1822,7 +1828,7 @@ mod tests {
         });
 
         // 5. Wait for Taker's partially filled command
-        let taker_cmd = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let taker_cmd = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
 
         // 6. Assertions
         assert_eq!(taker_cmd.status, Status::PartiallyFilled);
@@ -1901,7 +1907,7 @@ mod tests {
                     client_order_id,
                 );
             });
-            let response = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            let response = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
             assert_eq!(response.status, Status::Placed);
         }
 
@@ -1916,7 +1922,7 @@ mod tests {
                 4,
             );
         });
-        let response = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let response = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
 
         assert_eq!(response.status, Status::PartiallyFilled);
         assert_eq!(
@@ -1980,7 +1986,8 @@ mod tests {
                 2,
             );
         });
-        let maker_placed_cmd = rx.recv().unwrap(); // Consume maker's placed command
+        // Consume maker's placed command
+        let maker_placed_cmd = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(maker_placed_cmd.status, Status::Placed);
         assert!(maker_placed_cmd.events().is_none());
         // balance must be locked for the maker
@@ -2005,7 +2012,7 @@ mod tests {
         });
 
         // 5. Assert rejection
-        let taker_rejected_cmd = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let taker_rejected_cmd = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(taker_rejected_cmd.status, Status::Cancelled);
         assert!(taker_rejected_cmd.events().is_none());
 
@@ -2031,7 +2038,7 @@ mod tests {
                 2,
             );
         });
-        rx.recv().unwrap(); // Consume maker2's placed command
+        rx.recv_timeout(PIPELINE_DEADLINE).unwrap(); // Consume maker2's placed command
 
         // 7. Place Taker's FOK order that can now be filled
         producer.publish(|cmd| {
@@ -2047,7 +2054,7 @@ mod tests {
         });
 
         // 8. Assert success
-        let taker_filled_cmd = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let taker_filled_cmd = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(taker_filled_cmd.status, Status::Filled);
 
         let mut event_opt = taker_filled_cmd.events();
@@ -2151,7 +2158,7 @@ mod tests {
                 1,
             );
         });
-        let placed_a = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let placed_a = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(placed_a.status, Status::Placed);
         assert_eq!(
             risk_engines[maker_a_shard].get_balance(maker_a_id, base_asset_id),
@@ -2183,7 +2190,7 @@ mod tests {
                 2,
             );
         });
-        let placed_b = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let placed_b = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(placed_b.status, Status::Placed);
         assert_eq!(
             risk_engines[maker_b_shard].get_balance(maker_b_id, base_asset_id),
@@ -2215,7 +2222,7 @@ mod tests {
                 3,
             );
         });
-        let placed_c = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let placed_c = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(placed_c.status, Status::Placed);
         assert_eq!(
             risk_engines[maker_c_shard].get_balance(maker_c_id, base_asset_id),
@@ -2250,7 +2257,7 @@ mod tests {
         });
 
         // Taker D's order will match A (10@1010) and B (15@1020), then 5 will rest.
-        let taker_d_cmd = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let taker_d_cmd = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(taker_d_cmd.status, Status::Filled);
         assert_eq!(
             taker_d_cmd.size, 0,
@@ -2321,7 +2328,7 @@ mod tests {
         producer.publish(|cmd| {
             *cmd = OrderCommand::cancel_order(maker_c_order_id, maker_c_id, Side::Ask, market_id);
         });
-        let cancelled_c = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let cancelled_c = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(cancelled_c.status, Status::Cancelled);
         assert_eq!(
             risk_engines[maker_c_shard].get_balance(maker_c_id, base_asset_id),
@@ -2343,7 +2350,7 @@ mod tests {
         });
 
         // Taker E's order will match 5 units from Taker D's resting order. 5 units will be cancelled.
-        let taker_e_cmd = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let taker_e_cmd = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(taker_e_cmd.status, Status::Cancelled);
         assert_eq!(
             taker_e_cmd.size, 10,
@@ -2527,7 +2534,7 @@ mod tests {
         });
         // Consume placement messages
         for _ in 0..6 {
-            rx.recv().unwrap();
+            rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         }
 
         // Sanity check Alice's and David's locked balances
@@ -2580,7 +2587,7 @@ mod tests {
                 1,
             )
         });
-        let ioc_result = rx.recv().unwrap();
+        let ioc_result = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
 
         assert_eq!(
             ioc_result.status,
@@ -2636,7 +2643,7 @@ mod tests {
                 1,
             )
         });
-        let fok_fail = rx.recv().unwrap();
+        let fok_fail = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(
             fok_fail.status,
             Status::Cancelled,
@@ -2671,7 +2678,7 @@ mod tests {
                 2,
             )
         });
-        let fok_success = rx.recv().unwrap();
+        let fok_success = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(fok_success.status, Status::Filled, "FOK should be filled");
         assert_eq!(
             fok_success.events.as_ref().unwrap().calc_filled_size(),
@@ -2727,7 +2734,7 @@ mod tests {
                 4,
             )
         });
-        let gtc_ask = rx.recv().unwrap(); // this will sit on the book
+        let gtc_ask = rx.recv_timeout(PIPELINE_DEADLINE).unwrap(); // this will sit on the book
         assert_eq!(gtc_ask.status, Status::Placed);
         let bob_gtc_order_id = gtc_ask.order_id;
 
@@ -2752,7 +2759,7 @@ mod tests {
                 4,
             )
         });
-        let rejected_bid = rx.recv().unwrap();
+        let rejected_bid = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(
             rejected_bid.status,
             Status::Rejected,
@@ -2784,7 +2791,7 @@ mod tests {
                 market_btc_usd,
             )
         });
-        let cancelled_bob = rx.recv().unwrap();
+        let cancelled_bob = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(cancelled_bob.status, Status::Cancelled);
 
         // His locked 200 BTC should now be available.
