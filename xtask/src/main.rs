@@ -96,10 +96,6 @@ enum TestCommands {
         /// Verbose logging (debug level)
         #[arg(short, long)]
         verbose: bool,
-
-        /// Stop on first failure
-        #[arg(short, long)]
-        fail_fast: bool,
     },
 
     /// The core's outbox: re-publication after a kill or a shutdown past its grace, the wait
@@ -179,11 +175,9 @@ async fn main() -> Result<(), XTaskError> {
                     run_correctness_task(project_root.into_boxed_path(), &scenario, clients).await
                 }
             }
-            TestCommands::Integration {
-                suite,
-                verbose,
-                fail_fast,
-            } => run_integration_tests(&project_root, suite, verbose, fail_fast).await,
+            TestCommands::Integration { suite, verbose } => {
+                run_integration_tests(&project_root, suite, verbose).await
+            }
             TestCommands::Outbox => run_outbox_tests(&project_root).await,
             TestCommands::Benchmark { clients } => {
                 run_benchmark(project_root.into_boxed_path(), clients).await
@@ -362,7 +356,6 @@ async fn run_integration_tests(
     root: &Path,
     suite: IntegrationSuite,
     verbose: bool,
-    fail_fast: bool,
 ) -> Result<(), XTaskError> {
     // Initialize logging
     let subscriber = if verbose {
@@ -424,10 +417,8 @@ async fn run_integration_tests(
         }
         Err(e) => {
             error!("Test suite failed: {}", e);
-            if fail_fast {
-                ctx.cleanup();
-                return Err(XTaskError::IntegrationTest(e));
-            }
+            ctx.cleanup();
+            return Err(XTaskError::IntegrationTest(e));
         }
     }
 

@@ -280,7 +280,7 @@ jobs:
         run: cargo xtask test e2e --all
 
       - name: Run integration tests
-        run: cargo xtask test integration --fail-fast
+        run: cargo xtask test integration
         env:
           VEX_ENV: development
 

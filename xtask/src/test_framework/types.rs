@@ -348,13 +348,27 @@ impl TestSuiteResult {
         self.scenarios.push(result);
     }
 
+    /// A suite that ran no scenario did not pass.
     pub fn is_success(&self) -> bool {
-        self.failed == 0
+        self.total > 0 && self.failed == 0
     }
 }
 
 impl Default for TestSuiteResult {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_suite_is_not_success() {
+        let mut suite = TestSuiteResult::new();
+        assert!(!suite.is_success());
+        suite.add_result(ScenarioResult::success("one".to_string(), Duration::ZERO));
+        assert!(suite.is_success());
     }
 }

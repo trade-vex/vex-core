@@ -111,7 +111,8 @@ cargo xtask test integration [SUITE] [OPTIONS]
 
 **Options:**
 * `--verbose` / `-v`: Enable debug logging
-* `--fail-fast` / `-f`: Stop on first failure
+
+The command exits non-zero when a scenario fails or the suite stops before its end.
 
 **Examples:**
 ```sh
@@ -120,9 +121,6 @@ cargo xtask test integration
 
 # Run only GTC tests with verbose output
 cargo xtask test integration gtc --verbose
-
-# Run balance tests and stop on first failure
-cargo xtask test integration balance --fail-fast
 ```
 
 #### Outbox Tests

@@ -42,7 +42,6 @@ cargo run --bin run_test_suite balance      # Balance operations
 
 # Options
 cargo run --bin run_test_suite all --verbose    # Detailed logging
-cargo run --bin run_test_suite all --fail-fast  # Stop on first failure
 ```
 
 ## Test Philosophy: State-Aware Continuous Testing
