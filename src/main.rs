@@ -33,27 +33,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    info!("CORE CONFIG 226: {:?}", config);
-
     info!(
         "Loaded configuration for environment: {}",
         config.environment
     );
 
-    // Validate configuration
-    config.validate().map_err(|e| {
-        error!(
-            target: "server_main",
-            action = "config_validation_failed",
-            error = %e
-        );
-        e
-    })?;
-
-    info!(
-        target: "server_main",
-        action = "config_validated"
-    );
     debug!(target: "server_main", action = "config_snapshot", config = ?config);
 
     let engine = vex_server::start(config).map_err(|e| {

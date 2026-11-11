@@ -174,8 +174,6 @@ impl VexCoreServer {
         publications: Arc<Publications>,
         shutdown: Arc<AtomicBool>,
     ) -> Result<Self, ServerError> {
-        // Validate configuration
-        Self::validate_config(&config)?;
         gateway_manager::validate_authentication_config(
             config.enable_authentication,
             &config.gateway_authentication_key,
@@ -442,16 +440,6 @@ impl VexCoreServer {
             action = "shutdown_complete",
             core_id = %self.config.core_id
         );
-        Ok(())
-    }
-
-    /// Validates the core configuration
-    fn validate_config(config: &CoreNetworkingConfig) -> Result<(), ServerError> {
-        if config.core_id.is_empty() {
-            return Err(ServerError::ConfigurationError(
-                "Core ID cannot be empty".to_string(),
-            ));
-        }
         Ok(())
     }
 
