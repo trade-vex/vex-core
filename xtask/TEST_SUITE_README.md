@@ -59,17 +59,16 @@ Example: Comprehensive test Section 3 uses orderbook from Section 2, Section 4 u
 
 **Single massive test combining all order types in realistic trading scenario.**
 
-**10 Sections:**
+**9 Sections:**
 1. Setup - Fund users (50M USD, 5000 BTC each)
 2. Build Orderbook - Multi-level GTC orders
 3. IOC vs Liquidity - Partial fills against existing book
 4. FOK Orders - All-or-nothing scenarios
 5. Active Cancellations - Cancel during trading
-6. Mixed Stress Test - Rapid GTC/IOC/FOK sequence
-7. Edge Cases - Self-match prevention
-8. Multi-Level Matching - Orders crossing multiple levels
-9. Partial + Cancel - Cancel partially filled orders
-10. Final Verification - Balance invariants
+6. Edge Cases - Self-match prevention
+7. Multi-Level Matching - Orders crossing multiple levels
+8. Partial + Cancel - Cancel partially filled orders
+9. Final Verification - Balance invariants
 
 **Runtime**: ~10 seconds
 

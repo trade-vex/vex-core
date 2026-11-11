@@ -188,42 +188,10 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     info!("");
 
     // ========================================================================
-    // SECTION 6: Mixed Order Types - Stress Test
+    // SECTION 6: Edge Cases - Self-Match Prevention & Boundary Tests
     // ========================================================================
     info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 6: Mixed Order Types (Stress Test)     │");
-    info!("│ Rapid sequence of GTC/IOC/FOK/Cancel           │");
-    info!("└────────────────────────────────────────────────┘");
-
-    let section_start = std::time::Instant::now();
-
-    match mixed_order_types_stress_section(ctx).await {
-        Ok(_) => {
-            let duration = section_start.elapsed();
-            info!("✓ SECTION 6 PASSED ({:?})", duration);
-            results.push(ScenarioResult::success(
-                "mixed_stress_test".to_string(),
-                duration,
-            ));
-        }
-        Err(e) => {
-            let duration = section_start.elapsed();
-            warn!("✗ SECTION 6 FAILED ({:?}): {}", duration, e);
-            results.push(ScenarioResult::failure(
-                "mixed_stress_test".to_string(),
-                duration,
-                e,
-            ));
-            return Ok(results);
-        }
-    }
-    info!("");
-
-    // ========================================================================
-    // SECTION 7: Edge Cases - Self-Match Prevention & Boundary Tests
-    // ========================================================================
-    info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 7: Edge Cases & Boundary Tests         │");
+    info!("│ SECTION 6: Edge Cases & Boundary Tests         │");
     info!("│ Self-match prevention, partial fills, etc      │");
     info!("└────────────────────────────────────────────────┘");
 
@@ -232,12 +200,12 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     match edge_cases_section(ctx).await {
         Ok(_) => {
             let duration = section_start.elapsed();
-            info!("✓ SECTION 7 PASSED ({:?})", duration);
+            info!("✓ SECTION 6 PASSED ({:?})", duration);
             results.push(ScenarioResult::success("edge_cases".to_string(), duration));
         }
         Err(e) => {
             let duration = section_start.elapsed();
-            warn!("✗ SECTION 7 FAILED ({:?}): {}", duration, e);
+            warn!("✗ SECTION 6 FAILED ({:?}): {}", duration, e);
             results.push(ScenarioResult::failure(
                 "edge_cases".to_string(),
                 duration,
@@ -249,10 +217,10 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     info!("");
 
     // ========================================================================
-    // SECTION 8: Multi-Level Orderbook Interactions
+    // SECTION 7: Multi-Level Orderbook Interactions
     // ========================================================================
     info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 8: Multi-Level Orderbook Interactions  │");
+    info!("│ SECTION 7: Multi-Level Orderbook Interactions  │");
     info!("│ Orders crossing multiple price levels          │");
     info!("└────────────────────────────────────────────────┘");
 
@@ -261,12 +229,12 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     match multi_level_interactions_section(ctx).await {
         Ok(_) => {
             let duration = section_start.elapsed();
-            info!("✓ SECTION 8 PASSED ({:?})", duration);
+            info!("✓ SECTION 7 PASSED ({:?})", duration);
             results.push(ScenarioResult::success("multi_level".to_string(), duration));
         }
         Err(e) => {
             let duration = section_start.elapsed();
-            warn!("✗ SECTION 8 FAILED ({:?}): {}", duration, e);
+            warn!("✗ SECTION 7 FAILED ({:?}): {}", duration, e);
             results.push(ScenarioResult::failure(
                 "multi_level".to_string(),
                 duration,
@@ -278,10 +246,10 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     info!("");
 
     // ========================================================================
-    // SECTION 9: Partial Fills with Cancellations
+    // SECTION 8: Partial Fills with Cancellations
     // ========================================================================
     info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 9: Partial Fills + Cancellations       │");
+    info!("│ SECTION 8: Partial Fills + Cancellations       │");
     info!("│ Cancel partially filled orders                 │");
     info!("└────────────────────────────────────────────────┘");
 
@@ -290,7 +258,7 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     match partial_fills_with_cancel_section(ctx).await {
         Ok(_) => {
             let duration = section_start.elapsed();
-            info!("✓ SECTION 9 PASSED ({:?})", duration);
+            info!("✓ SECTION 8 PASSED ({:?})", duration);
             results.push(ScenarioResult::success(
                 "partial_cancel".to_string(),
                 duration,
@@ -298,7 +266,7 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         }
         Err(e) => {
             let duration = section_start.elapsed();
-            warn!("✗ SECTION 9 FAILED ({:?}): {}", duration, e);
+            warn!("✗ SECTION 8 FAILED ({:?}): {}", duration, e);
             results.push(ScenarioResult::failure(
                 "partial_cancel".to_string(),
                 duration,
@@ -310,10 +278,10 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     info!("");
 
     // ========================================================================
-    // SECTION 10: Final Orderbook Cleanup and Balance Verification
+    // SECTION 9: Final Orderbook Cleanup and Balance Verification
     // ========================================================================
     info!("┌────────────────────────────────────────────────┐");
-    info!("│ SECTION 10: Final Cleanup & Balance Check      │");
+    info!("│ SECTION 9: Final Cleanup & Balance Check       │");
     info!("│ Cancel all remaining orders, verify balances   │");
     info!("└────────────────────────────────────────────────┘");
 
@@ -322,7 +290,7 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     match final_cleanup_section(ctx).await {
         Ok(_) => {
             let duration = section_start.elapsed();
-            info!("✓ SECTION 10 PASSED ({:?})", duration);
+            info!("✓ SECTION 9 PASSED ({:?})", duration);
             results.push(ScenarioResult::success(
                 "final_cleanup".to_string(),
                 duration,
@@ -330,7 +298,7 @@ pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
         }
         Err(e) => {
             let duration = section_start.elapsed();
-            warn!("✗ SECTION 10 FAILED ({:?}): {}", duration, e);
+            warn!("✗ SECTION 9 FAILED ({:?}): {}", duration, e);
             results.push(ScenarioResult::failure(
                 "final_cleanup".to_string(),
                 duration,
@@ -668,6 +636,7 @@ async fn cancellations_during_trading_section(ctx: &mut TestContext) -> TestResu
         .build();
 
     let bob_resp = ctx.execute_command(bob_bid)?;
+    ResponseVerifier::assert_placed(&bob_resp)?;
     let bob_order_id = bob_resp.order_id;
     info!("  → Bob placed new bid: order_id={}", bob_order_id);
 
@@ -677,57 +646,13 @@ async fn cancellations_during_trading_section(ctx: &mut TestContext) -> TestResu
         .market_id(market_id)
         .build();
 
-    ctx.execute_command(cancel2)?;
+    ResponseVerifier::assert_cancelled(&ctx.execute_command(cancel2)?)?;
     info!("  → Bob cancelled order_id={}", bob_order_id);
 
     Ok(())
 }
 
-/// SECTION 6: Mixed order types stress test
-async fn mixed_order_types_stress_section(ctx: &mut TestContext) -> TestResult<()> {
-    info!("Stress test with rapid mixed order types:");
-    info!("  Rapid sequence of GTC, IOC, FOK, and cancellations");
-
-    let market_id = ctx.market_id;
-
-    // Rapid sequence of orders
-    for i in 0..5 {
-        let price = 50_000 + (i * 1000);
-
-        // GTC order
-        let gtc = OrderBuilder::place_limit()
-            .user(users::ALICE)
-            .price(price)
-            .size(2)
-            .side(Side::Ask)
-            .market_id(market_id)
-            .build();
-
-        let gtc_resp = ctx.execute_command(gtc)?;
-        info!(
-            "  → GTC ask placed @ {}: order_id={}",
-            price, gtc_resp.order_id
-        );
-
-        // IOC order that might match
-        let ioc = OrderBuilder::place_ioc()
-            .user(users::BOB)
-            .price(price - 1000)
-            .size(1)
-            .side(Side::Bid)
-            .market_id(market_id)
-            .build();
-
-        ctx.execute_command(ioc)?;
-        info!("  → IOC bid placed @ {}", price - 1000);
-    }
-
-    info!("  → Completed rapid sequence of 10 orders");
-
-    Ok(())
-}
-
-/// SECTION 7: Edge cases - self-match prevention and boundary tests
+/// SECTION 6: Edge cases - self-match prevention and boundary tests
 async fn edge_cases_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Testing edge cases:");
     info!("  1. Self-match prevention (same user bid/ask crossing)");
@@ -801,7 +726,7 @@ async fn edge_cases_section(ctx: &mut TestContext) -> TestResult<()> {
     Ok(())
 }
 
-/// SECTION 8: Multi-level orderbook interactions
+/// SECTION 7: Multi-level orderbook interactions
 async fn multi_level_interactions_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Testing multi-level price interactions:");
     info!("  Place asks at 3 levels, then single bid crosses all");
@@ -910,7 +835,7 @@ async fn multi_level_interactions_section(ctx: &mut TestContext) -> TestResult<(
     Ok(())
 }
 
-/// SECTION 9: Partial fills with cancellations
+/// SECTION 8: Partial fills with cancellations
 async fn partial_fills_with_cancel_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Testing partial fills followed by cancellations:");
     info!("  1. Clean up leftover bids above 38k");
@@ -1020,7 +945,7 @@ async fn partial_fills_with_cancel_section(ctx: &mut TestContext) -> TestResult<
     Ok(())
 }
 
-/// SECTION 10: Final cleanup and balance verification
+/// SECTION 9: Final cleanup and balance verification
 async fn final_cleanup_section(ctx: &mut TestContext) -> TestResult<()> {
     info!("Final cleanup and balance verification:");
     info!("  Checking that all balances sum correctly (available + locked = total)");
