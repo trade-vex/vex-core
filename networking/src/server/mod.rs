@@ -37,9 +37,7 @@ mod recovery_tests;
 mod replay;
 
 use crate::server::cmd_handler::ReplayFragmentHandler;
-use crate::server::gateway_handler::{
-    GatewayImageAvailableHandler, GatewayImageUnavailableHandler, HandshakeMessageHandler,
-};
+use crate::server::gateway_handler::HandshakeMessageHandler;
 use crate::server::gateway_manager::GatewayManager;
 use crate::server::replay::{
     ExtendedRecordingDescriptor, JournalHolders, RecorderDescriptorReader, RecordingCounter,
@@ -166,10 +164,6 @@ pub struct VexCoreServer {
     gateways: Rc<GatewayManager>,
     /// Shared shutdown flag
     shutdown: Arc<AtomicBool>,
-    /// Image available handler
-    image_available_handler: Handler<GatewayImageAvailableHandler>,
-    /// Image unavailable handler
-    image_unavailable_handler: Handler<GatewayImageUnavailableHandler>,
     /// Handshake message handler
     handshake_handler: Handler<HandshakeMessageHandler>,
     /// Subscription for handshake messages
@@ -307,9 +301,6 @@ impl VexCoreServer {
             (None, None, None)
         };
 
-        let image_available_handler = Handler::leak(GatewayImageAvailableHandler);
-        let image_unavailable_handler = Handler::leak(GatewayImageUnavailableHandler);
-
         let publication = new_publication_with_mdc(
             &aeron,
             &config.local_address,
@@ -323,8 +314,8 @@ impl VexCoreServer {
             &config.local_address,
             config.initial_port,
             ALL_GATEWAYS_STREAM_ID,
-            Some(&image_available_handler),
-            Some(&image_unavailable_handler),
+            None::<&Handler<AeronAvailableImageLogger>>,
+            None::<&Handler<AeronUnavailableImageLogger>>,
         )?;
 
         let gateways = Rc::new(GatewayManager::new(
@@ -347,8 +338,6 @@ impl VexCoreServer {
             subscription,
             handshake_handler: Handler::leak(handshake_handler),
             shutdown,
-            image_available_handler,
-            image_unavailable_handler,
             subscription_id,
             archive,
             publications,
@@ -426,8 +415,6 @@ impl VexCoreServer {
         // (<= publication.connection.timeout, 5 s), are never read and end as 408 at the gateway;
         // upgrade to a CLOSING notice on the reply stream when deploys under load show it.
         self.subscription.close::<AeronNotificationLogger>(None)?;
-        self.image_available_handler.release();
-        self.image_unavailable_handler.release();
         self.handshake_handler.release();
         // A failure below leaves the recording open on purpose: the next start needs it.
         self.publications.drain_pipeline()?;
