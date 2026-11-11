@@ -14,7 +14,7 @@ use hashbrown::HashMap;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 /// Manages all user profiles and performs risk checks as well as settlements
 pub struct RiskEngine {
@@ -89,7 +89,7 @@ impl RiskEngine {
                 if u16::try_from(cmd.market_id).is_err() || cmd.size == 0 =>
             {
                 // market_id carries the asset id for these commands; `as u16` below would wrap it.
-                order_warn!(
+                order_debug!(
                     "risk_invalid_asset_or_amount",
                     cmd,
                     stage = "risk_r1",
@@ -99,7 +99,7 @@ impl RiskEngine {
             }
             OrderCommandType::PlaceOrder => {
                 if self.symbol_specs.get(&cmd.market_id).is_none() {
-                    order_warn!(
+                    order_debug!(
                         "risk_missing_market_spec",
                         cmd,
                         stage = "risk_r1",
@@ -113,7 +113,7 @@ impl RiskEngine {
                 // locked and before reserve_funds_for_order() rewrites a market buy's sentinel to
                 // its slippage cap, after which the book can no longer tell it from a limit order.
                 if cmd.time_in_force == common::TimeInForce::Gtc && cmd.is_market_order() {
-                    order_warn!(
+                    order_debug!(
                         "risk_market_gtc_rejected",
                         cmd,
                         stage = "risk_r1",
@@ -172,7 +172,7 @@ impl RiskEngine {
                     );
                 }
                 Err(err) => {
-                    order_warn!(
+                    order_debug!(
                         "risk_withdrawal_failed",
                         cmd,
                         stage = "risk_r1",
@@ -478,9 +478,11 @@ impl RiskEngine {
                 error = ?err
             );
         } else {
-            info!(
-                "[RiskEngine_{}] Successfully released funds for cancelled order {}",
-                self.shard_id, cmd.order_id
+            debug!(
+                target: "risk_engine",
+                event = "cancel_released",
+                shard_id = self.shard_id,
+                order_id = cmd.order_id
             );
         }
     }
@@ -701,18 +703,8 @@ impl RiskEngine {
         let asset_id = cmd.market_id as u16;
         let amount = cmd.size;
 
-        info!(
-            "[RiskEngine] Processing deposit: user={}, asset={}, amount={}",
-            cmd.user_id, asset_id, amount
-        );
-
         let mut store = self.balances.lock();
         store.add_funds(cmd.user_id, asset_id, amount)?;
-
-        info!(
-            "[RiskEngine] Successfully deposited {} units of asset {} for user {}",
-            amount, asset_id, cmd.user_id
-        );
 
         Ok(())
     }
@@ -723,18 +715,8 @@ impl RiskEngine {
         let asset_id = cmd.market_id as u16;
         let amount = cmd.size;
 
-        info!(
-            "[RiskEngine] Processing withdrawal: user={}, asset={}, amount={}",
-            cmd.user_id, asset_id, amount
-        );
-
         let mut store = self.balances.lock();
         store.subtract_funds(cmd.user_id, asset_id, amount)?;
-
-        info!(
-            "[RiskEngine] Successfully withdrew {} units of asset {} for user {}",
-            amount, asset_id, cmd.user_id
-        );
 
         Ok(())
     }

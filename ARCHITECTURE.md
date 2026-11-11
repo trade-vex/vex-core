@@ -1491,7 +1491,7 @@ order_info!(
 
 **Log Levels**:
 - `ERROR`: Unrecoverable errors
-- `WARN`: Recoverable errors (order rejection)
+- `WARN`: Recoverable errors (a failed deposit). Order rejections and `Busy` refusals are `DEBUG`: the gateway counts them per outcome (`vex_gateway_orders_total`)
 - `INFO`: High-level lifecycle events
 - `DEBUG`: Detailed processing traces
 

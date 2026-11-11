@@ -6,7 +6,7 @@ use rusteron_archive::{AeronFragmentHandlerCallback, AeronHeader};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 pub struct FragmentHandler {
     pub gateway_id: u8,
@@ -32,7 +32,9 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
                 }) {
                     Ok(sequence) => self.publications.submitted(sequence),
                     Err(e) => {
-                        error!(
+                        // Back-pressure is normal: the Busy reply is the signal, and the gateway
+                        // counts it.
+                        debug!(
                             target: "gateway_fragment",
                             gateway_id = self.gateway_id,
                             error = %e,
@@ -68,7 +70,7 @@ impl AeronFragmentHandlerCallback for ReplayFragmentHandler {
         match decode_order_command(buffer) {
             Ok(mut order_command) => {
                 order_command.status = Status::Processing;
-                info!(
+                debug!(
                     target: "replay_fragment",
                     time_stamp = ?order_command.timestamp,
                     client_order_id = ?order_command.client_order_id,
