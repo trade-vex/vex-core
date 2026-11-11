@@ -248,6 +248,8 @@ quote_cost(price, size) = price * size * quote_native_scale / (base_native_scale
 
 computed in `u128` and rounded down. An overflow, a result above `u64::MAX` or a zero denominator rejects the order. On the development market 65538 (`base_native_scale` 10^8, `quote_native_scale` 10^6, `quote_scale_k` 1) a bid of size 10 at 40,000 locks `quote_cost = 4,000`, not 400,000.
 
+A market's native scales must equal its assets' `native_scale` in the `symbols.assets` config, and every asset's `max_supply * native_scale` is at most `u64::MAX / 2`, so no sum of two balances of one asset can overflow (`vex-config/src/symbols.rs`). ETH is held in gwei (10^9).
+
 For a BID order (buying base asset with quote asset):
 ```
 locked_amount = quote_cost(price, size)   // rejected when it is 0
@@ -422,6 +424,8 @@ execution_price < limit_price  =>  refund = quote_cost(limit_price - execution_p
 ```
 
 The refund is moved from locked back to available quote currency.
+
+**Failure**: each user's side (refund, fill, a completed bid's collateral residue, credit, fee) is checked on copies and committed at once. R1 has already proved every amount fits, so a failure means the ledger is wrong: the core logs `settlement_failed` and aborts rather than publish a trade settled on one side only.
 
 **Locking**: R2 engines use `Mutex` locks on the balance store within each shard, acquired during settlement operations.
 
