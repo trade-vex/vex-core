@@ -1430,59 +1430,25 @@ impl KafkaEventsHandler {
         });
     }
 
-    fn publish_balance_event(&self, user_id: u64, cmd: &OrderCommand, balance: &[UserBalance; 2]) {
-        let base_asset_id = base_asset(cmd.market_id);
-        let quote_asset_id = quote_asset(cmd.market_id);
-
-        for (balance, asset_id) in balance.iter().zip([base_asset_id, quote_asset_id]) {
-            let balance_event = trading_proto::BalanceEvent {
-                user_id,
-                asset_id: asset_id as u32,
-                available: balance.available(),
-                locked: balance.locked(),
-                total: balance.total(),
-                timestamp: cmd.timestamp(),
-            };
-
-            let topic_name = BALANCES;
-            let composite_key = format!("{}:{}", user_id, asset_id);
-            self.publish_proto(
-                cmd,
-                topic_name,
-                &composite_key,
-                "trading.BalanceEvent",
-                balance_event,
-            );
-            debug!(
-                target: "events",
-                component = "kafka_handler",
-                action = "balance_event_published",
-                user_id,
-                market_id = cmd.market_id(),
-                asset_id,
-                topic = %topic_name
-            );
-        }
-    }
-
-    fn publish_deposit_withdrawal_event(&self, cmd: &OrderCommand) {
-        let asset_id = cmd.market_id as u16;
-
+    fn publish_balance(
+        &self,
+        user_id: u64,
+        asset_id: u16,
+        balance: &UserBalance,
+        cmd: &OrderCommand,
+    ) {
         let balance_event = trading_proto::BalanceEvent {
-            user_id: cmd.user_id(),
-            asset_id: asset_id as u32,
-            available: cmd.balance[0].available(),
-            locked: cmd.balance[0].locked(),
-            total: cmd.balance[0].total(),
+            user_id,
+            asset_id: asset_id.into(),
+            available: balance.available(),
+            locked: balance.locked(),
+            total: balance.total(),
             timestamp: cmd.timestamp(),
         };
-
-        let topic_name = BALANCES;
-        let composite_key = format!("{}:{}", cmd.user_id(), asset_id);
         self.publish_proto(
             cmd,
-            topic_name,
-            &composite_key,
+            BALANCES,
+            &format!("{user_id}:{asset_id}"),
             "trading.BalanceEvent",
             balance_event,
         );
@@ -1490,11 +1456,23 @@ impl KafkaEventsHandler {
             target: "events",
             component = "kafka_handler",
             action = "balance_event_published",
-            user_id = cmd.user_id(),
+            user_id,
             market_id = cmd.market_id(),
             asset_id,
-            topic = %topic_name
+            topic = %BALANCES
         );
+    }
+
+    fn publish_balance_event(&self, user_id: u64, cmd: &OrderCommand, balance: &[UserBalance; 2]) {
+        let assets = [base_asset(cmd.market_id), quote_asset(cmd.market_id)];
+        for (balance, asset_id) in balance.iter().zip(assets) {
+            self.publish_balance(user_id, asset_id, balance, cmd);
+        }
+    }
+
+    fn publish_deposit_withdrawal_event(&self, cmd: &OrderCommand) {
+        // For deposits and withdrawals `market_id` carries the asset id.
+        self.publish_balance(cmd.user_id(), cmd.market_id as u16, &cmd.balance[0], cmd);
     }
 
     fn publish_order_event(&self, cmd: &OrderCommand, size: u64, filled_size: u64) {
