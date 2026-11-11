@@ -296,6 +296,23 @@ jobs:
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache || true
 
+  # The image that ships (the root Dockerfile), which no other job builds. Its release build has no
+  # dependency layer to cache, so it runs only where coverage and the e2e suites do.
+  production-image:
+    name: Production image
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.base_ref == 'develop' ||
+      github.base_ref == 'main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the production image
+        run: docker build --file Dockerfile --tag vex-core:ci .
+      - name: Check the binary resolves every shared library
+        run: docker run --rm --entrypoint sh vex-core:ci -c 'ldd /usr/local/bin/vex-core | (! grep -q "not found")'
+
   # The live recovery tests (#[ignore]d in networking/src/server/recovery_tests.rs): journaling,
   # replay and restarts after a crash, against a real Java media driver and a separate archive
   # process, which some tests pause (SIGSTOP). Both run from the end-to-end tests' archive image
@@ -383,7 +400,7 @@ jobs:
   ci-required:
     name: CI required
     if: ${{ always() }}
-    needs: [test, fmt, clippy, audit, recovery-tests, coverage, xtask-tests]
+    needs: [test, fmt, clippy, audit, recovery-tests, coverage, xtask-tests, production-image]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -397,7 +414,7 @@ jobs:
           results = json.loads(os.environ["RESULTS"])
           required = ["test", "fmt", "clippy", "audit", "recovery-tests"]
           if os.environ["FULL"] == "true":
-              required += ["coverage", "xtask-tests"]
+              required += ["coverage", "xtask-tests", "production-image"]
           failed = [name for name in required if results[name]["result"] != "success"]
           if failed:
               print("Required jobs did not succeed:", ", ".join(failed))
