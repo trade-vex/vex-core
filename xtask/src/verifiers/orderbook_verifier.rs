@@ -295,26 +295,20 @@ impl<'a> OrderbookVerifier<'a> {
         let start = std::time::Instant::now();
 
         loop {
-            match self.kafka.get_orderbook(market_id).await {
-                Ok(orderbook) => {
-                    let levels = match side {
-                        Side::Bid => &orderbook.bids,
-                        Side::Ask => &orderbook.asks,
-                    };
-
-                    if let Some(level) = levels.iter().find(|level| level.price == price)
-                        && level.size == expected_volume
-                    {
-                        debug!(
-                            "Price level found: market={}, side={:?}, price={}, volume={}",
-                            market_id, side, price, level.size
-                        );
-                        return Ok(());
-                    }
-                }
-                Err(e) => {
-                    debug!("Error fetching orderbook: {}", e);
-                }
+            let orderbook = self.kafka.get_orderbook(market_id).await?;
+            let levels = match side {
+                Side::Bid => &orderbook.bids,
+                Side::Ask => &orderbook.asks,
+            };
+            if levels
+                .iter()
+                .any(|level| level.price == price && level.size == expected_volume)
+            {
+                debug!(
+                    "Price level found: market={}, side={:?}, price={}, volume={}",
+                    market_id, side, price, expected_volume
+                );
+                return Ok(());
             }
 
             if start.elapsed() > timeout {
