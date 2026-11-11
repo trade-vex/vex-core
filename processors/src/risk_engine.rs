@@ -68,6 +68,18 @@ impl RiskEngine {
             shard_id = self.shard_id
         );
         match cmd.command {
+            OrderCommandType::DepositFunds | OrderCommandType::WithdrawFunds
+                if u16::try_from(cmd.market_id).is_err() || cmd.size == 0 =>
+            {
+                // market_id carries the asset id for these commands; `as u16` below would wrap it.
+                order_warn!(
+                    "risk_invalid_asset_or_amount",
+                    cmd,
+                    stage = "risk_r1",
+                    shard_id = self.shard_id
+                );
+                cmd.set_status(Status::Rejected);
+            }
             OrderCommandType::PlaceOrder => {
                 if self.symbol_specs.get(&cmd.market_id).is_none() {
                     order_warn!(
@@ -1037,6 +1049,42 @@ mod tests {
         engine.pre_process_command(&mut ioc, price_cache);
         assert_ne!(ioc.status, Status::Rejected);
         assert_eq!(ioc.price, 100);
+    }
+
+    #[test]
+    fn deposit_with_asset_id_above_u16_is_rejected() {
+        let engine = RiskEngine::default();
+        let price_cache = Arc::new(PriceCache::new(HashMap::new().keys()));
+        engine.set_balance(1, 1, UserBalance::new(100, 0));
+
+        // 65537 would wrap to asset 1.
+        for mut cmd in [
+            OrderCommand::deposit_funds(1, 100, 1),
+            OrderCommand::withdraw_funds(1, 100, 1),
+        ] {
+            cmd.market_id = 65537;
+            engine.pre_process_command(&mut cmd, Arc::clone(&price_cache));
+            assert_eq!(cmd.status, Status::Rejected, "{:?}", cmd.command);
+            assert_eq!(engine.get_balance(1, 1), UserBalance::new(100, 0));
+        }
+    }
+
+    #[test]
+    fn zero_amount_deposit_and_withdrawal_are_rejected() {
+        let engine = RiskEngine::default();
+        let price_cache = Arc::new(PriceCache::new(HashMap::new().keys()));
+
+        for mut cmd in [
+            OrderCommand::deposit_funds(1, 0, 1),
+            OrderCommand::withdraw_funds(1, 0, 1),
+        ] {
+            engine.pre_process_command(&mut cmd, Arc::clone(&price_cache));
+            assert_eq!(cmd.status, Status::Rejected, "{:?}", cmd.command);
+        }
+        assert_eq!(
+            engine.try_get_balance(1, 1),
+            Err(RiskEngineError::from(BalanceError::UserAssetNotFound(1, 1)))
+        );
     }
 
     #[test]
