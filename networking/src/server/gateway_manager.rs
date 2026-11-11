@@ -47,7 +47,7 @@ pub struct Session {
 pub struct GatewaySlot {
     duologue: Option<Duologue>,
     port_data: u16,
-    port_control: u16,
+    port_reply: u16,
     session_id: i32,
     state: GatewaySlotState,
 }
@@ -83,7 +83,7 @@ impl Session {
             duologue: None,
             session_id,
             port_data: ports[0],
-            port_control: ports[1],
+            port_reply: ports[1],
             state: GatewaySlotState::AwaitingImage { allocated_at },
         });
         true
@@ -140,15 +140,15 @@ impl Session {
         self.slots[gateway_id as usize].is_some()
     }
 
-    /// Get all ports currently in use (both data and control ports)
+    /// Get all ports currently in use (both data and reply ports)
     pub fn get_ports_in_use(&self) -> Vec<u16> {
         let mut ports = Vec::new();
         for slot in self.slots.iter().flatten() {
             if slot.port_data != 0 {
                 ports.push(slot.port_data);
             }
-            if slot.port_control != 0 {
-                ports.push(slot.port_control);
+            if slot.port_reply != 0 {
+                ports.push(slot.port_reply);
             }
         }
         ports
@@ -512,7 +512,14 @@ impl GatewayManager {
 
         self.check_duplicate_connection(publication, session_id, gateway_id)?;
 
-        self.allocate_gateway_session(gateway_id, session_id, encryption_key, publication, now)?;
+        self.allocate_gateway_session(
+            gateway_id,
+            session_id,
+            encryption_key,
+            publication,
+            source,
+            now,
+        )?;
 
         Ok(())
     }
@@ -644,6 +651,7 @@ impl GatewayManager {
         handshake_session_id: i32,
         encryption_key: i32,
         response_publication: &AeronPublication,
+        hello_source: &str,
         now: Instant,
     ) -> Result<(), ServerError> {
         let (ports_in_use, sessions_in_use) = {
@@ -659,6 +667,9 @@ impl GatewayManager {
             .session_allocator
             .allocate(&sessions_in_use)
             .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?;
+        let publication_uri =
+            CString::new(reply_uri(hello_source, ports[1], dedicated_session_id)?)
+                .expect("Aeron source identity contains no NUL");
 
         if !self.gateway_sessions.write().unwrap().reserve(
             gateway_id,
@@ -682,11 +693,6 @@ impl GatewayManager {
             tx: self.session_event_tx.clone(),
         });
 
-        let publication_uri = CString::new(format!(
-            "aeron:udp?control={}:{}|control-mode=dynamic|session-id={dedicated_session_id}",
-            self.config.local_address, ports[1]
-        ))
-        .expect("controlled Aeron publication URI contains no NUL");
         let subscription_uri = CString::new(format!(
             "aeron:udp?endpoint={}:{}|session-id={dedicated_session_id}",
             self.config.local_address, ports[0]
@@ -898,7 +904,7 @@ impl GatewayManager {
                 gateway_id = pending.gateway_id,
                 session = format_args!("{:#x}", pending.dedicated_session_id),
                 data_port = pending.ports[0],
-                control_port = pending.ports[1]
+                reply_port = pending.ports[1]
             );
         }
 
@@ -906,6 +912,7 @@ impl GatewayManager {
             return Ok(PendingHandshakeStatus::Pending);
         }
 
+        // ACCEPT <order port the core listens on> <reply port the gateway listens on> <masked session>
         let accept_msg = format!(
             "{} gateway-{} ACCEPT {} {} {}",
             pending.handshake_session_id,
@@ -922,7 +929,7 @@ impl GatewayManager {
                     gateway_id = pending.gateway_id,
                     session = format_args!("{:#x}", pending.dedicated_session_id),
                     data_port = pending.ports[0],
-                    control_port = pending.ports[1]
+                    reply_port = pending.ports[1]
                 );
                 Ok(PendingHandshakeStatus::Complete)
             }
@@ -992,18 +999,30 @@ impl GatewayManager {
 
         // Mark ports as recently freed to avoid OS-level port binding race conditions
         // The OS may still have the UDP port bound even after Aeron closes the subscription
-        let ports_to_free = [slot.port_data, slot.port_control];
+        let ports_to_free = [slot.port_data, slot.port_reply];
         self.port_allocator.mark_freed(&ports_to_free);
         debug!(
             target: "gateway_manager",
             action = "ports_marked_freed",
             gateway_id,
             data_port = ports_to_free[0],
-            control_port = ports_to_free[1]
+            reply_port = ports_to_free[1]
         );
 
         Ok(())
     }
+}
+
+/// The gateway's reply endpoint: the host that sent HELLO, on the reply port the core allocated.
+/// Unicast, so no one else can join the channel and read the replies.
+fn reply_uri(hello_source: &str, port: u16, session_id: i32) -> Result<String, ServerError> {
+    // Aeron's source identity is `host:port`, `[v6 host]:port` for IPv6.
+    let (host, _) = hello_source.rsplit_once(':').ok_or_else(|| {
+        ServerError::GatewayMessageError(format!("HELLO source {hello_source} has no host"))
+    })?;
+    Ok(format!(
+        "aeron:udp?endpoint={host}:{port}|session-id={session_id}"
+    ))
 }
 
 /// Frees the image handlers of a dedicated subscription that never attached to a session. Aeron
@@ -1470,6 +1489,19 @@ mod tests {
         assert!(!limiter.allow(start));
         assert!(!limiter.allow(start + HANDSHAKE_RATE_WINDOW - Duration::from_nanos(1)));
         assert!(limiter.allow(start + HANDSHAKE_RATE_WINDOW));
+    }
+
+    #[test]
+    fn reply_publication_is_unicast_to_the_hello_host() {
+        assert_eq!(
+            reply_uri("172.28.0.7:41234", 50_001, 77).unwrap(),
+            "aeron:udp?endpoint=172.28.0.7:50001|session-id=77"
+        );
+        assert_eq!(
+            reply_uri("[fd00::7]:41234", 50_001, 77).unwrap(),
+            "aeron:udp?endpoint=[fd00::7]:50001|session-id=77"
+        );
+        assert!(reply_uri("aeron-session-5", 50_001, 77).is_err());
     }
 
     #[test]

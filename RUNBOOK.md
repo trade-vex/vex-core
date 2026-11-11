@@ -75,6 +75,13 @@ Every start replays the journal first; see [Restart Service](#restart-service).
 | Test | 40001 | 40002 | 50000 | localhost:8010 |
 | Production | 3521 | 3522 | 50000 | localhost:8010 |
 
+**Network**: the core's UDP ports (initial port, control port, and the gateway ports
+`base_gateway_port..base_gateway_port+63`) must be reachable from gateway hosts only. Each gateway
+gets a pair of ports in that range in ACCEPT: one the core listens on for its orders, and one the
+gateway listens on for its replies, which the core sends unicast to the host that sent HELLO. So
+gateway hosts must accept UDP `base_gateway_port..base_gateway_port+63` from the core, and there
+must be no NAT between gateway and core.
+
 ### Kafka Topics
 
 `deploy/kafka/topics.toml` declares every topic the core produces, and the Schema Registry

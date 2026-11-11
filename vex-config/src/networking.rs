@@ -114,8 +114,8 @@ impl CoreNetworkingConfig {
             initial_control_port: 40002,
             base_gateway_port: 50000,
             max_gateways: 15,
-            reserved_session_id_low: 1000,
-            reserved_session_id_high: 9999,
+            reserved_session_id_low: 1,
+            reserved_session_id_high: i32::MAX,
             enable_authentication: false,
             core_id: "vex-core-dev".to_string(),
             buffer_size: 1024 * 1024,
@@ -137,8 +137,8 @@ impl CoreNetworkingConfig {
             initial_control_port: 40002,
             base_gateway_port: 50000,
             max_gateways: 15,
-            reserved_session_id_low: 1000,
-            reserved_session_id_high: 9999,
+            reserved_session_id_low: 1,
+            reserved_session_id_high: i32::MAX,
             enable_authentication: true,
             core_id: "vex-core-test".to_string(),
             buffer_size: 1024 * 1024,
@@ -160,8 +160,8 @@ impl CoreNetworkingConfig {
             initial_control_port: 3522,
             base_gateway_port: 50000,
             max_gateways: 1000,
-            reserved_session_id_low: 1000,
-            reserved_session_id_high: 9999,
+            reserved_session_id_low: 1,
+            reserved_session_id_high: i32::MAX,
             enable_authentication: true,
             core_id: "vex-core-prod".to_string(),
             buffer_size: 4 * 1024 * 1024, // 4MB
@@ -468,6 +468,19 @@ mod tests {
         let mut config = GatewayNetworkingConfig::development_defaults();
         config.gateway_authentication_key = "123456789".into();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn session_ids_span_the_positive_i32_range() {
+        for env in [
+            Environment::Development,
+            Environment::Test,
+            Environment::Production,
+        ] {
+            let config = CoreNetworkingConfig::for_environment(&env);
+            assert!(config.reserved_session_id_low > 0);
+            assert!(config.reserved_session_id_high - config.reserved_session_id_low >= 1 << 30);
+        }
     }
 
     #[test]

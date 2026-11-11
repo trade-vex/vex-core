@@ -1,6 +1,6 @@
 use crate::utils::{
-    new_publication, new_publication_with_session, new_subscription_with_mdc,
-    new_subscription_with_mdc_and_session, offer_once,
+    new_publication, new_publication_with_session, new_subscription_with_handlers_and_session,
+    new_subscription_with_mdc, offer_once,
 };
 use common::ORDERCOMMANDSIZE;
 use common::{OrderCommand, encode_order_command, order_debug};
@@ -10,8 +10,9 @@ use rusteron_archive::bindings::{
     AERON_PUBLICATION_NOT_CONNECTED,
 };
 use rusteron_archive::{
-    Aeron, AeronCError, AeronContext, AeronFragmentHandlerCallback, AeronHeader, AeronPublication,
-    AeronReservedValueSupplierLogger, AeronSubscription, Handler,
+    Aeron, AeronAvailableImageLogger, AeronCError, AeronContext, AeronFragmentHandlerCallback,
+    AeronHeader, AeronPublication, AeronReservedValueSupplierLogger, AeronSubscription,
+    AeronUnavailableImageLogger, Handler,
 };
 use rusteron_media_driver::AeronIdleStrategy;
 use std::ffi::CString;
@@ -43,7 +44,8 @@ pub enum CoreResponse {
     /// Core accepted the gateway connection
     Accept {
         dedicated_port: u16,
-        dedicated_control_port: u16,
+        /// The port the core sends replies to, on this gateway's host
+        reply_port: u16,
         encrypted_session: i32,
         gateway_id: u8,
     },
@@ -165,9 +167,9 @@ fn parse_core_response(
                 parts[4].parse::<u16>(),
                 parts[5].parse::<i32>(),
             ) {
-                (Ok(port), Ok(control_port), Ok(encrypted_session)) => CoreResponse::Accept {
+                (Ok(port), Ok(reply_port), Ok(encrypted_session)) => CoreResponse::Accept {
                     dedicated_port: port,
-                    dedicated_control_port: control_port,
+                    reply_port,
                     encrypted_session,
                     gateway_id,
                 },
@@ -439,24 +441,20 @@ impl VexGateway {
         *self.state.write().unwrap() = GatewayState::Connecting;
 
         // Phase 1: Perform handshake with VEX Core
-        let (dedicated_port, dedicated_control_port, session_id) = self.perform_handshake()?;
+        let (dedicated_port, reply_port, session_id) = self.perform_handshake()?;
 
         debug!(
             target: "gateway_client",
             action = "handshake_success",
             gateway_id = self.config.gateway_id,
             data_port = dedicated_port,
-            control_port = dedicated_control_port,
+            reply_port,
             session = session_id
         );
 
         // Phase 2: Establish dedicated communication channel
-        let publication = self.establish_dedicated_channel(
-            dedicated_port,
-            dedicated_control_port,
-            session_id,
-            handler,
-        )?;
+        let publication =
+            self.establish_dedicated_channel(dedicated_port, reply_port, session_id, handler)?;
 
         let publisher = Publisher::new(publication, self.config.gateway_id);
 
@@ -519,13 +517,13 @@ impl VexGateway {
         match response {
             CoreResponse::Accept {
                 dedicated_port,
-                dedicated_control_port,
+                reply_port,
                 encrypted_session,
                 ..
             } => {
                 // Decrypt the session ID
                 let decrypted_session = encrypted_session ^ encryption_key;
-                Ok((dedicated_port, dedicated_control_port, decrypted_session))
+                Ok((dedicated_port, reply_port, decrypted_session))
             }
             CoreResponse::Reject { reason } => Err(GatewayError::CoreError(format!(
                 "Connection rejected: {reason}"
@@ -545,7 +543,7 @@ impl VexGateway {
     fn establish_dedicated_channel<AeronFragmentHandlerHandlerImpl>(
         &mut self,
         port: u16,
-        control_port: u16,
+        reply_port: u16,
         session_id: i32,
         handler: AeronFragmentHandlerHandlerImpl,
     ) -> Result<AeronPublication, GatewayError>
@@ -557,13 +555,15 @@ impl VexGateway {
             self.config.gateway_id, session_id
         );
 
-        // Create subscription for receiving core messages
-        let subscription = new_subscription_with_mdc_and_session(
+        // The core sends replies unicast to the host that sent HELLO, on the port it allocated.
+        let subscription = new_subscription_with_handlers_and_session(
             &self.aeron,
-            &self.config.core_address,
-            control_port,
+            "0.0.0.0",
+            reply_port,
             GATEWAY_CORE_STREAM_ID,
             session_id,
+            None::<&Handler<AeronAvailableImageLogger>>,
+            None::<&Handler<AeronUnavailableImageLogger>>,
         )?;
 
         // Create publication for sending messages to core
@@ -869,7 +869,7 @@ mod tests {
             response,
             CoreResponse::Accept {
                 dedicated_port: 40003,
-                dedicated_control_port: 40004,
+                reply_port: 40004,
                 encrypted_session: 98765,
                 gateway_id: 1,
             }

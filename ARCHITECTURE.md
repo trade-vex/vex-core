@@ -656,7 +656,7 @@ The following examples trace order processing through all pipeline stages with c
 - Gateway response via Aeron:
   ```rust
   publications.publish_response(&cmd)
-  // Sends to gateway 3's MDC control port
+  // Sends to gateway 3's reply port
   ```
 - Client receives confirmation: Order 0x0001A2B3C4D50003 placed successfully
 
@@ -1090,7 +1090,7 @@ aeron:udp?endpoint={address}:{port}|session-id={session}
 
 **Two Ports Per Gateway**:
 - Data port: Gateway sends orders to core
-- Control port: Core sends responses to gateway via MDC
+- Reply port: Core sends responses unicast to the host that sent HELLO
 
 ### Gateway Handshake Protocol
 
@@ -1102,19 +1102,19 @@ aeron:udp?endpoint={address}:{port}|session-id={session}
    publication and its MDC reply subscription are connected: the core answers once, and a reply
    sent before the subscription joins is lost
 2. Core authenticates the credential (when enabled) and validates gateway_id < MAX_GATEWAYS
-3. Core allocates session_id and two ports (data, control)
-4. Core responds `{hello_session} gateway-{id} ACCEPT {data_port} {control_port} {session_id XOR encryption_key}`
+3. Core allocates session_id and two ports (data, reply)
+4. Core responds `{hello_session} gateway-{id} ACCEPT {data_port} {reply_port} {session_id XOR encryption_key}`
    via MDC publication; the mask is never the credential, so ACCEPT cannot leak it
 
 **Phase 2 - Duologue Establishment**:
 
 5. Core creates:
    - Subscription for gateway orders: `aeron:udp?endpoint={core}:{data_port}|session-id={session}`
-   - MDC publication for responses: `aeron:udp?control={core}:{control_port}|control-mode=dynamic|session-id={session}`
+   - Publication for responses, unicast to the HELLO source host: `aeron:udp?endpoint={gateway host}:{reply_port}|session-id={session}`
 
 6. Gateway creates:
    - Publication for orders: `aeron:udp?endpoint={core}:{data_port}|session-id={session}`
-   - Subscription for responses: `aeron:udp?control={core}:{control_port}|control-mode=dynamic|session-id={session}`
+   - Subscription for responses: `aeron:udp?endpoint=0.0.0.0:{reply_port}|session-id={session}`
 
 7. Connection established
 
