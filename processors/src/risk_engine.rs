@@ -663,14 +663,6 @@ impl RiskEngine {
         self.ledger.lock().balances.get_balance(user_id, asset_id)
     }
 
-    pub fn try_get_balance(&self, user_id: u64, asset_id: u16) -> Result<UserBalance> {
-        Ok(self
-            .ledger
-            .lock()
-            .balances
-            .try_get_balance(user_id, asset_id)?)
-    }
-
     pub fn set_balance(&self, user_id: u64, asset_id: u16, balance: UserBalance) {
         self.ledger
             .lock()
@@ -724,12 +716,6 @@ impl RiskEngine {
         );
 
         Ok(())
-    }
-}
-
-impl Default for RiskEngine {
-    fn default() -> Self {
-        Self::new(HashMap::new(), 0, 1)
     }
 }
 
@@ -1015,7 +1001,7 @@ mod tests {
 
     #[test]
     fn deposit_with_asset_id_above_u16_is_rejected() {
-        let engine = RiskEngine::default();
+        let engine = RiskEngine::new(HashMap::new(), 0, 1);
         let price_cache = Arc::new(PriceCache::new(HashMap::new().keys()));
         engine.set_balance(1, 1, UserBalance::new(100, 0));
 
@@ -1033,7 +1019,7 @@ mod tests {
 
     #[test]
     fn zero_amount_deposit_and_withdrawal_are_rejected() {
-        let engine = RiskEngine::default();
+        let engine = RiskEngine::new(HashMap::new(), 0, 1);
         let price_cache = Arc::new(PriceCache::new(HashMap::new().keys()));
 
         for mut cmd in [
@@ -1043,10 +1029,7 @@ mod tests {
             engine.pre_process_command(&mut cmd, Arc::clone(&price_cache));
             assert_eq!(cmd.status, Status::Rejected, "{:?}", cmd.command);
         }
-        assert_eq!(
-            engine.try_get_balance(1, 1),
-            Err(RiskEngineError::from(BalanceError::UserAssetNotFound(1, 1)))
-        );
+        assert_eq!(engine.get_balance(1, 1), UserBalance::default());
     }
 
     #[test]
@@ -1080,7 +1063,7 @@ mod tests {
 
     #[test]
     fn test_balance_management() {
-        let engine = RiskEngine::default();
+        let engine = RiskEngine::new(HashMap::new(), 0, 1);
         let user_id = 1;
         let asset_id = 1;
         let initial_balance = UserBalance::new(1000, 0);
@@ -1092,15 +1075,7 @@ mod tests {
         assert_eq!(balance.locked(), 0);
         assert_eq!(balance.total(), 1000);
 
-        let balance_res = engine.try_get_balance(user_id, asset_id).unwrap();
-        assert_eq!(balance_res, initial_balance);
-
-        let res = engine.try_get_balance(user_id, 2); // unknown asset
-        assert!(res.is_err());
-        assert_eq!(
-            res.unwrap_err(),
-            RiskEngineError::from(BalanceError::UserAssetNotFound(user_id, 2))
-        );
+        assert_eq!(engine.get_balance(user_id, 2), UserBalance::default()); // unknown asset
     }
 
     #[test]
