@@ -20,10 +20,11 @@ cargo xtask --help
 ### Build Docker Images
 
 Builds the necessary Docker images for the `aeron-archive`, `vex-server` and `vex-client` services, which are used in all testing scenarios.
+`vex-server` and `vex-client` are two targets of `xtask/tests/Dockerfile`; the client's media driver,
+and the host-side one the integration and outbox suites start, are Aeron's Java `MediaDriver`.
 
 **Usage:**
 ```sh
-docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml up media-driver --build
 cargo xtask build-docker
 ```
 

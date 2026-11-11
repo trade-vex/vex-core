@@ -263,11 +263,6 @@ jobs:
           export BUILDX_CACHE_FROM="type=local,src=/tmp/.buildx-cache"
           export BUILDX_CACHE_TO="type=local,dest=/tmp/.buildx-cache-new,mode=max"
 
-          # Export the media driver BEFORE anything runs it. The exporter mounts ./bin
-          # and copies aeronmd into it, which is the same file the integration run
-          # executes; doing this afterwards fails with ETXTBSY and takes vex-server down
-          # with it through service_completed_successfully.
-          docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml run --rm --build --no-deps media-driver
           # Build with plain progress to see full compilation output. aeron-archive is the
           # ArchivingMediaDriver that journals vex-server's commands; xtask applies the Kafka
           # topics from deploy/kafka/ itself, since the broker creates none.

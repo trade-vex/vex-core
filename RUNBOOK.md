@@ -21,7 +21,11 @@
    ```
 
 2. **System Dependencies**
-   - **Aeron Media Driver** (with Archive support for journaling/replay)
+   - **Aeron Media Driver** (with Archive support for journaling/replay). One driver everywhere:
+     `aeron-all-1.49.0.jar` `ArchivingMediaDriver` (`xtask/tests/archive.Dockerfile`, `make
+     media-driver`); gateways run the same jar's `io.aeron.driver.MediaDriver`. The Rust binaries
+     load the Aeron C client rusteron builds (1.48.6 at rusteron 0.1.157); Aeron checks only the CnC
+     major version, so they attach to this driver. Bump the jar together with the rusteron pin.
    - **Kafka** broker for event streaming, with a Schema Registry, and the core's topics applied
      from `deploy/kafka/` (see [Kafka Topics](#kafka-topics))
    - Shared memory (`/dev/shm`) for Aeron IPC
