@@ -19,29 +19,27 @@ Test Framework → VexCore → [Journaling, Risk, Orderbook] → Events Handler 
 
 ### Prerequisites
 
-1. VexCore server: `VEX_ENV=development cargo run --bin test_server` (`VEX_ENV` is required, as for the server)
-1. VexCore server: `cargo run --bin test_server`
-2. Kafka with a Schema Registry: the server publishes to its configured broker and registers its
-   schemas at `schema_registry_url` (default `http://localhost:8081`, override with `VEX__SCHEMA_REGISTRY_URL`); the suite reads the events
-   back from `TestConfig::kafka_brokers` (default `localhost:19092`, Redpanda's host listener in
-   `tests/docker-compose.yml`). The core's topics must exist: `cargo xtask kafka apply` creates
-   them from `deploy/kafka/topics.toml` (`--single-broker` for a broker of one)
+Docker, and the images and host media driver `cargo xtask build-docker` builds. Each run starts its
+own stack (`tests/docker-compose.yml`: Redpanda with its Schema Registry, the Aeron archive and
+`vex-server`), applies the core's Kafka topics to it, starts a host media driver for the test
+client, and tears everything down at the end. The suite reads the events back from
+`TestConfig::kafka_brokers` (default `localhost:19092`, Redpanda's host listener).
 
 ### Execute
 
 ```bash
 # Comprehensive integration test (RECOMMENDED - all order types in single test)
-cargo run --bin run_test_suite all
+cargo xtask test integration             # or: make test
 
 # Individual test suites (state-aware, single continuous test per suite)
-cargo run --bin run_test_suite gtc          # GTC orders (3 sections)
-cargo run --bin run_test_suite ioc          # IOC orders (5 sections)
-cargo run --bin run_test_suite fok          # FOK orders (6 sections)
-cargo run --bin run_test_suite cancellation # Cancellations (8 sections)
-cargo run --bin run_test_suite balance      # Balance operations
+cargo xtask test integration gtc          # GTC orders (3 sections)
+cargo xtask test integration ioc          # IOC orders (5 sections)
+cargo xtask test integration fok          # FOK orders (6 sections)
+cargo xtask test integration cancellation # Cancellations (8 sections)
+cargo xtask test integration balance      # Balance operations
 
 # Options
-cargo run --bin run_test_suite all --verbose    # Detailed logging
+cargo xtask test integration all --verbose    # Detailed logging
 ```
 
 ## Test Philosophy: State-Aware Continuous Testing
