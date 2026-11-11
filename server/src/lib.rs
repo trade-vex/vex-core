@@ -3082,4 +3082,96 @@ mod tests {
             ]
         );
     }
+
+    /// Four R1 and four R2 shards move money at once under a back-to-back burst of crossing
+    /// GTC, IOC, FOK and market orders and cancels, between users on three shards. Per asset,
+    /// the users' balances plus the fees the fills report must add up to what they were given.
+    #[test]
+    fn burst_conserves_every_asset() {
+        let (base, quote) = (1u16, 2u16);
+        let market_id = (u32::from(quote) << 16) | u32::from(base);
+        let mut specs = HashMap::new();
+        add_spec(market_id, &mut specs); // maker 10 bp, taker 20 bp, slippage 5 bp
+        // Replay mode keeps the order ids the burst assigns, so it can cancel its own orders.
+        let TestEngine {
+            mut producer,
+            risk_engines,
+            receiver: rx,
+        } = setup_with(specs, ReplayControl::enabled());
+        let users = [101u64, 102, 103]; // shards 1, 2 and 3
+        let funded = [(base, 1_000_000_000u64), (quote, 1_000_000_000_000u64)];
+        let checker = BalanceChecker::new(&risk_engines);
+        for user in users {
+            for (asset, amount) in funded {
+                checker.set_balance(user, asset, amount, 0);
+            }
+        }
+
+        let mut burst = Vec::new();
+        for i in 0..25u64 {
+            let [u, v, w] = [0, 1, 2].map(|k| users[((i + k) % 3) as usize]);
+            let p = 5_000 + i % 7 * 10;
+            let order = |n, user, price, size, side, tif| {
+                let mut cmd = OrderCommand::place_order(tif, user, price, size, side, market_id, 0);
+                cmd.order_id = 10 * i + n;
+                cmd
+            };
+            let (gtc, ioc, fok) = (TimeInForce::Gtc, TimeInForce::Ioc, TimeInForce::Fok);
+            burst.extend([
+                order(1, u, p, 10_000, Side::Ask, gtc),
+                order(2, v, p - 10, 6_000, Side::Bid, gtc),
+                order(3, w, u64::MAX, 4_000, Side::Bid, ioc), // market buy
+                order(4, u, p - 20, 5_000, Side::Ask, fok),
+                order(5, w, 0, 3_000, Side::Ask, ioc), // market sell
+                order(6, u, p + 5, 2_000, Side::Bid, gtc), // meets u's own ask: STP
+                order(7, w, p, 1_000, Side::Ask, gtc),
+                OrderCommand::cancel_order(10 * i + 6, u, Side::Bid, market_id),
+                order(9, v, p - 30, 50_000, Side::Ask, fok), // more than the bids hold
+            ]);
+        }
+        for cmd in &burst {
+            producer.publish(|slot| *slot = cmd.clone());
+        }
+        let responses: Vec<OrderCommand> = burst
+            .iter()
+            .map(|_| rx.recv_timeout(PIPELINE_DEADLINE).unwrap())
+            .collect();
+
+        // Each fee is in the asset its side received: base for the bid, quote for the ask.
+        let mut fees = [0u128; 2];
+        for response in &responses {
+            let (taker, maker) = match response.side {
+                Side::Bid => (0, 1),
+                Side::Ask => (1, 0),
+            };
+            let mut fill = response.events();
+            while let Some(event) = fill {
+                fees[taker] += u128::from(event.taker_fee);
+                fees[maker] += u128::from(event.maker_fee);
+                fill = event.next_event.as_deref();
+            }
+        }
+        assert!(
+            fees.iter().all(|&fee| fee > 0),
+            "the burst traded: {fees:?}"
+        );
+
+        for (k, (asset, amount)) in funded.into_iter().enumerate() {
+            let held: u128 = users
+                .iter()
+                .map(|&user| {
+                    u128::from(
+                        risk_engines[(user & 3) as usize]
+                            .get_balance(user, asset)
+                            .total(),
+                    )
+                })
+                .sum();
+            assert_eq!(
+                held + fees[k],
+                3 * u128::from(amount),
+                "asset {asset}: balances plus fees after the burst"
+            );
+        }
+    }
 }
