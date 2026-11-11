@@ -1088,6 +1088,35 @@ mod tests {
     }
 
     #[test]
+    fn withdrawal_takes_only_available_funds() {
+        let market_id = (1_u32 << 16) | 2; // quote 1, base 2
+        let mut specs = HashMap::new();
+        specs.insert(market_id, get_spec(market_id));
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let engine = RiskEngine::new(specs, 0, 1);
+        let (user, quote) = (1, quote_asset(market_id));
+
+        let mut deposit = OrderCommand::deposit_funds(user, 100, quote);
+        engine.pre_process_command(&mut deposit, Arc::clone(&price_cache));
+        assert_eq!(deposit.status, Status::Processed);
+        // A bid locking 60 quote (price * size at get_spec's unit scales).
+        let mut bid =
+            OrderCommand::place_order(TimeInForce::Gtc, user, 60, 1, Side::Bid, market_id, 1);
+        engine.pre_process_command(&mut bid, Arc::clone(&price_cache));
+        assert_eq!(engine.get_balance(user, quote), UserBalance::new(40, 60));
+
+        let mut withdrawal = OrderCommand::withdraw_funds(user, 50, quote);
+        engine.pre_process_command(&mut withdrawal, Arc::clone(&price_cache));
+        assert_eq!(withdrawal.status, Status::Rejected);
+        assert_eq!(engine.get_balance(user, quote), UserBalance::new(40, 60));
+
+        let mut withdrawal = OrderCommand::withdraw_funds(user, 40, quote);
+        engine.pre_process_command(&mut withdrawal, price_cache);
+        assert_eq!(withdrawal.status, Status::Processed);
+        assert_eq!(engine.get_balance(user, quote), UserBalance::new(0, 60));
+    }
+
+    #[test]
     fn test_balance_management() {
         let engine = RiskEngine::default();
         let user_id = 1;
