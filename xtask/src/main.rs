@@ -370,9 +370,6 @@ async fn run_integration_tests(
     println!("Starting infrastructure services...");
     let compose = DockerComposeEnv::start(root, &["vex-server"]).await?;
 
-    println!("Waiting for services to stabilize...");
-    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-
     // Create test context with Docker server address
     let config = TestConfig {
         core_address: DOCKER_SERVER_IP.to_string(),
@@ -555,7 +552,7 @@ impl DockerComposeEnv {
         // Created here, or the containers' bind mount creates it owned by root, and the logs
         // cannot be saved into it.
         fs::create_dir_all(env.root.join("test-results/logs"))?;
-        env.compose_up(&["--wait", "redpanda"])?;
+        env.compose_up(&["redpanda"])?;
         // The Schema Registry can answer a moment after the broker reports healthy.
         let mut attempts = 0;
         while let Err(e) = apply_topics(STACK_BROKERS, STACK_SCHEMA_REGISTRY, true).await {
@@ -570,75 +567,19 @@ impl DockerComposeEnv {
         Ok(env)
     }
 
-    /// Run `docker compose up -d` with `args`
+    /// Run `docker compose up --wait` with `args`: it returns once every service it started is
+    /// running, and healthy if it has a health check
     fn compose_up(&self, args: &[&str]) -> Result<(), XTaskError> {
-        cmd("docker", ["compose", "up", "-d"].iter().chain(args))
+        cmd("docker", ["compose", "up", "--wait"].iter().chain(args))
             .dir(self.root.as_ref())
             .run()?;
         Ok(())
     }
 
-    /// Start the e2e stack with `clients` client containers and wait for vex-server to be healthy
+    /// Start the e2e stack with `clients` client containers
     async fn new(project_root: &Path, clients: u32) -> Result<Self, XTaskError> {
-        let root = project_root.join("xtask/tests");
-
         println!("Bringing up docker-compose environment...");
-        let env = Self::start(project_root, &["--scale", &format!("vex-client={clients}")]).await?;
-
-        // Wait for vex-server to be healthy (has healthcheck in docker-compose.yml)
-        println!("Waiting for vex-server to be healthy...");
-        let start = Instant::now();
-        let timeout = std::time::Duration::from_secs(120);
-        loop {
-            if start.elapsed() > timeout {
-                // Print server logs for debugging before failing
-                eprintln!("=== vex-server logs ===");
-                if let Ok(logs) = cmd!("docker", "logs", "vex-server")
-                    .dir(root.clone())
-                    .read()
-                {
-                    eprintln!("{}", logs);
-                }
-                return Err(XTaskError::Unexpected(
-                    "Timed out waiting for vex-server to become healthy".to_string(),
-                ));
-            }
-
-            if let Ok(output) = cmd!(
-                "docker",
-                "inspect",
-                "--format",
-                "{{.State.Health.Status}}",
-                "vex-server"
-            )
-            .dir(root.clone())
-            .read()
-            {
-                let status = output.trim();
-                if status == "healthy" {
-                    println!("vex-server is healthy.");
-                    break;
-                }
-                if status == "unhealthy" {
-                    eprintln!("=== vex-server logs ===");
-                    if let Ok(logs) = cmd!("docker", "logs", "vex-server")
-                        .dir(root.clone())
-                        .read()
-                    {
-                        eprintln!("{}", logs);
-                    }
-                    return Err(XTaskError::Unexpected(
-                        "vex-server became unhealthy".to_string(),
-                    ));
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_secs(2));
-        }
-
-        // Additional stabilization for Aeron subscriptions to be fully registered
-        println!("Waiting for Aeron subscriptions to stabilize...");
-        std::thread::sleep(std::time::Duration::from_secs(5));
-        Ok(env)
+        Self::start(project_root, &["--scale", &format!("vex-client={clients}")]).await
     }
 }
 

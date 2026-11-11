@@ -75,7 +75,7 @@ impl TestContext {
         info!("  Quote asset: {}", config.quote_asset_id);
         info!("  Kafka: {}", config.kafka_brokers);
 
-        let client = TestClient::new(
+        let client = TestClient::connect(
             0,
             config.default_timeout,
             &config.core_address,

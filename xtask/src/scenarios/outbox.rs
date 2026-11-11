@@ -37,11 +37,6 @@ const BUYER: u64 = 103;
 /// fewer than the 108,000 it takes to fill its queues and answer `Busy`.
 const QUEUED_ORDER_PAIRS: u64 = 25;
 
-/// How long the core gets to accept a gateway after a start: the topic check, after a `kill -9`
-/// the wait for the media driver to release the dead core's journal (up to its client liveness
-/// timeout, 10 s, and 5 s), the replay and its re-publication.
-const START_TIMEOUT: Duration = Duration::from_secs(120);
-
 /// How long a stopping core gets to exit: a graceful shutdown with the broker paused spends the
 /// 20 s delivery grace, plus up to 5 s, after its pipeline drain.
 const STOP_TIMEOUT: Duration = Duration::from_secs(60);
@@ -219,29 +214,16 @@ struct Outbox {
 }
 
 impl Outbox {
-    /// Connects a client to the core, retrying until the core accepts a gateway, which it does
-    /// once it has replayed its journal.
+    /// Connects a client to the core, once it accepts a gateway.
     fn connect(&mut self) -> TestResult<()> {
-        let start = Instant::now();
-        loop {
-            match TestClient::new(
-                0,
-                self.config.default_timeout,
-                &self.config.core_address,
-                self.config.core_port,
-                self.config.core_control_port,
-            ) {
-                Ok(client) => {
-                    self.client = Some(client);
-                    return Ok(());
-                }
-                Err(e) if start.elapsed() < START_TIMEOUT => {
-                    info!("  core not accepting gateways yet: {e}");
-                    std::thread::sleep(Duration::from_secs(1));
-                }
-                Err(e) => return Err(e),
-            }
-        }
+        self.client = Some(TestClient::connect(
+            0,
+            self.config.default_timeout,
+            &self.config.core_address,
+            self.config.core_port,
+            self.config.core_control_port,
+        )?);
+        Ok(())
     }
 
     fn execute(&mut self, command: OrderCommand) -> TestResult<OrderCommand> {
