@@ -13,6 +13,7 @@ use common::{base_asset, order_debug, order_warn, quote_asset};
 use hashbrown::HashMap;
 use parking_lot::Mutex;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use tracing::{debug, error, info, warn};
 
 /// Manages all user profiles and performs risk checks as well as settlements
@@ -26,6 +27,9 @@ pub struct RiskEngine {
     pub symbol_specs: HashMap<u32, CoreMarketSpecification>,
     shard_id: u32,
     shard_mask: u64,
+    /// Highest pipeline sequence this shard's R2 has settled; -1 before the first. R1 of the same
+    /// shard waits on it when its decision depends on credits R2 still owes the user.
+    settled_up_to: AtomicI64,
 }
 
 impl RiskEngine {
@@ -44,6 +48,19 @@ impl RiskEngine {
             symbol_specs,
             shard_id,
             shard_mask: (num_shards - 1) as u64,
+            settled_up_to: AtomicI64::new(-1),
+        }
+    }
+
+    /// Called by this shard's R2 after every sequence, settled or skipped.
+    pub fn mark_settled(&self, sequence: i64) {
+        self.settled_up_to.store(sequence, Ordering::Release);
+    }
+
+    /// Spins until this shard's R2 has settled every sequence up to `sequence`.
+    pub fn await_settled(&self, sequence: i64) {
+        while self.settled_up_to.load(Ordering::Acquire) < sequence {
+            std::hint::spin_loop();
         }
     }
 
@@ -108,7 +125,10 @@ impl RiskEngine {
 
                 // Note: Fees are always in the receiving asset, hence are cut on post-processing (settlement)
                 if let Err(err) = self.reserve_funds_for_order(cmd, price_cache) {
-                    order_warn!(
+                    // Often transient: R1 retries a failed order once R2 has settled the
+                    // earlier sequences (`create_risk_handler!`). The final `Rejected` is in the
+                    // response.
+                    order_debug!(
                         "risk_reserve_failed",
                         cmd,
                         stage = "risk_r1",

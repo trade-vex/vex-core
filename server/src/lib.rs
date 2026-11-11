@@ -338,6 +338,15 @@ pub mod test {
     /// let result = test_env.receiver.recv_timeout(PIPELINE_DEADLINE).unwrap();
     /// ```
     pub fn setup(specs: HashMap<u32, CoreMarketSpecification>) -> TestEngine {
+        setup_with(specs, ReplayControl::disabled())
+    }
+
+    /// [`setup`] with the given replay control. `ReplayControl::enabled()` makes journaling pass
+    /// commands through unchanged, as during a replay, so the test assigns order ids itself.
+    pub fn setup_with(
+        specs: HashMap<u32, CoreMarketSpecification>,
+        replay: ReplayControl,
+    ) -> TestEngine {
         let (tx, rx) = mpsc::channel::<OrderCommand>();
         let test_handler = move |cell: &UnsafeCell<OrderCommand>, _: i64, _: bool| {
             // SAFETY: This test capture handler is alone after the events and_then()
@@ -361,10 +370,7 @@ pub mod test {
 
         let (_engine, producer) = TestEngineBuilder::new()
             .with_symbol_specs(specs)
-            .with_journaling_processor(JournalingProcessor::new(
-                Arc::clone(&publications),
-                ReplayControl::disabled(),
-            ))
+            .with_journaling_processor(JournalingProcessor::new(Arc::clone(&publications), replay))
             .with_events_handler(GatewayResponsesOnly(Arc::clone(&publications)))
             .with_publications(publications)
             .with_risk_engines(Arc::clone(&risk_engines))
@@ -382,7 +388,7 @@ pub mod test {
 
 #[cfg(test)]
 mod tests {
-    use super::test::{PIPELINE_DEADLINE, TestEngine, setup};
+    use super::test::{PIPELINE_DEADLINE, TestEngine, setup, setup_with};
     use super::*;
     use common::{
         MarketType, OrderCommand, PriceCache, Side, Status, TimeInForce, UserBalance, base_asset,
@@ -2765,5 +2771,198 @@ mod tests {
         // Final state check could be added here for all users, but the intermediate checks
         // provide a more granular verification of the system's behavior under stress.
         println!("Multi-market stress test completed successfully.");
+    }
+
+    /// A client may cancel a bid and re-place it without waiting for the cancel's response. R1
+    /// then handles the re-place before R2 has released the cancelled bid's collateral; it must
+    /// still be placed, as it is when the client waits and when a replay re-decides it.
+    #[test]
+    fn cancel_then_replace_without_waiting_is_always_placed() {
+        let (base, quote) = (1u16, 2u16);
+        let market_id = (u32::from(quote) << 16) | u32::from(base);
+        let mut specs = HashMap::new();
+        add_spec(market_id, &mut specs);
+        let (price, size) = (5_000, 10_000);
+        let cost = specs[&market_id].calculate_quote_cost(price, size).unwrap();
+        let TestEngine {
+            mut producer,
+            risk_engines,
+            receiver: rx,
+        } = setup(specs);
+        let user_id = 42;
+        // Exactly one bid's worth: the re-place needs the cancelled bid's collateral back.
+        BalanceChecker::new(&risk_engines).set_balance(user_id, quote, cost, 0);
+        let bid = || {
+            OrderCommand::place_order(
+                TimeInForce::Gtc,
+                user_id,
+                price,
+                size,
+                Side::Bid,
+                market_id,
+                1,
+            )
+        };
+
+        producer.publish(|cmd| *cmd = bid());
+        let mut placed = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
+        assert_eq!(placed.status, Status::Placed);
+        for round in 0..1_000 {
+            let order_id = placed.order_id;
+            producer.publish(|cmd| {
+                *cmd = OrderCommand::cancel_order(order_id, user_id, Side::Bid, market_id);
+            });
+            producer.publish(|cmd| *cmd = bid());
+            let cancelled = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
+            assert_eq!(cancelled.status, Status::Cancelled, "round {round}");
+            placed = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
+            assert_eq!(placed.status, Status::Placed, "round {round}: re-place");
+        }
+    }
+
+    /// Replay publishes the journal back to back, so R1 runs ahead of R2; a live client that
+    /// waits for each response never lets it. A burst must decide every command as a paced run
+    /// does. Each round pins one race: a re-place right after its cancel, withdrawals of
+    /// proceeds R2 has not credited yet, and a market buy priced right after the ask it lifts.
+    #[test]
+    fn a_burst_decides_like_a_paced_run() {
+        let (base, quote) = (1u16, 2u16);
+        let market_id = (u32::from(quote) << 16) | u32::from(base);
+        let mut specs = HashMap::new();
+        add_spec(market_id, &mut specs); // maker 10 bp, taker 20 bp, slippage 5 bp
+        let spec = specs[&market_id].clone();
+        let (a, b, c) = (42, 101, 7); // shards 2, 1 and 3
+        let (p, s) = (5_000, 10_000);
+        let cost = |price| spec.calculate_quote_cost(price, s).unwrap();
+        let fee = |amount: u64, bp: u64| (amount * bp).div_ceil(10_000);
+        const ROUNDS: u64 = 300;
+
+        // (command, expected status, expected response price)
+        let mut script = Vec::new();
+        for i in 0..ROUNDS {
+            let order = |user, price, side, tif, n| {
+                let mut cmd = OrderCommand::place_order(tif, user, price, s, side, market_id, 0);
+                cmd.order_id = 20 * i + n;
+                cmd
+            };
+            let ask_i = p + 1 + i;
+            let cap_i = ask_i + ask_i * 5 / 10_000;
+            let gtc = TimeInForce::Gtc;
+            script.extend([
+                (order(a, p, Side::Bid, gtc, 1), Status::Placed, None),
+                (
+                    OrderCommand::cancel_order(20 * i + 1, a, Side::Bid, market_id),
+                    Status::Cancelled,
+                    None,
+                ),
+                (order(a, p, Side::Bid, gtc, 3), Status::Placed, None),
+                (order(b, p, Side::Ask, gtc, 4), Status::Filled, None),
+                (
+                    OrderCommand::withdraw_funds(b, cost(p) - fee(cost(p), 20), quote),
+                    Status::Processed,
+                    None,
+                ),
+                (
+                    OrderCommand::withdraw_funds(a, s - fee(s, 10), base),
+                    Status::Processed,
+                    None,
+                ),
+                (
+                    OrderCommand::deposit_funds(a, cost(p), quote),
+                    Status::Processed,
+                    None,
+                ),
+                (
+                    OrderCommand::deposit_funds(b, s, base),
+                    Status::Processed,
+                    None,
+                ),
+                (order(b, ask_i, Side::Ask, gtc, 8), Status::Placed, None),
+                (
+                    order(c, u64::MAX, Side::Bid, TimeInForce::Ioc, 9),
+                    Status::Filled,
+                    Some(cap_i),
+                ),
+                (
+                    OrderCommand::withdraw_funds(b, cost(ask_i) - fee(cost(ask_i), 10), quote),
+                    Status::Processed,
+                    None,
+                ),
+                (
+                    OrderCommand::deposit_funds(b, s, base),
+                    Status::Processed,
+                    None,
+                ),
+            ]);
+        }
+
+        let run = |paced: bool| {
+            let TestEngine {
+                mut producer,
+                risk_engines,
+                receiver: rx,
+            } = setup_with(specs.clone(), ReplayControl::enabled());
+            let checker = BalanceChecker::new(&risk_engines);
+            checker.set_balance(a, quote, cost(p), 0);
+            checker.set_balance(b, base, s, 0);
+            checker.set_balance(c, quote, 10u64.pow(15), 0);
+            let mut responses = Vec::with_capacity(script.len());
+            for (cmd, _, _) in &script {
+                producer.publish(|slot| *slot = cmd.clone());
+                if paced {
+                    responses.push(rx.recv_timeout(PIPELINE_DEADLINE).unwrap());
+                }
+            }
+            while responses.len() < script.len() {
+                responses.push(rx.recv_timeout(PIPELINE_DEADLINE).unwrap());
+            }
+            for (k, (response, (cmd, status, price))) in responses.iter().zip(&script).enumerate() {
+                assert_eq!(
+                    response.status, *status,
+                    "paced={paced} command {k}: {:?} {}",
+                    cmd.command, cmd.order_id
+                );
+                if let Some(price) = price {
+                    assert_eq!(response.price, *price, "paced={paced} command {k}: cap");
+                }
+            }
+            // Balance snapshots may include a later command R1 already admitted (events.rs
+            // contract item 4), so the runs are compared on decisions and on the final ledger.
+            let decisions: Vec<_> = responses
+                .iter()
+                .map(|r| (r.command, r.order_id, r.status, r.price, r.size))
+                .collect();
+            let ledger: Vec<_> = [
+                (a, base),
+                (a, quote),
+                (b, base),
+                (b, quote),
+                (c, base),
+                (c, quote),
+            ]
+            .map(|(user, asset)| risk_engines[(user & 3) as usize].get_balance(user, asset))
+            .to_vec();
+            (decisions, ledger)
+        };
+
+        let burst = run(false);
+        let paced = run(true);
+        assert_eq!(
+            burst.0, paced.0,
+            "a burst decided differently from a paced run"
+        );
+        assert_eq!(burst.1, paced.1, "a burst left a different ledger");
+        let bought = (0..ROUNDS).map(|i| cost(p + 1 + i)).sum::<u64>();
+        assert_eq!(
+            paced.1,
+            [
+                UserBalance::new(0, 0),
+                UserBalance::new(cost(p), 0),
+                UserBalance::new(s, 0),
+                UserBalance::new(0, 0),
+                UserBalance::new(ROUNDS * (s - fee(s, 20)), 0),
+                UserBalance::new(10u64.pow(15) - bought, 0),
+            ]
+        );
     }
 }
