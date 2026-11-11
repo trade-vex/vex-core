@@ -3459,6 +3459,23 @@ mod test {
     }
 
     #[test]
+    fn market_sell_response_price_is_the_last_fill() {
+        let (mut book, price_cache) = create_test_orderbook();
+        let harness = TestHarness::new(1);
+        for (user, price) in [(202, 100), (203, 99)] {
+            let mut bid =
+                harness.create_place_order_cmd(user, Side::Bid, price, 5, TimeInForce::Gtc);
+            book.place_order(&mut bid, price_cache.clone());
+        }
+
+        let mut market_sell = harness.create_market_order_cmd(101, Side::Ask, 10);
+        book.place_order(&mut market_sell, price_cache.clone());
+
+        assert_eq!(market_sell.status(), Status::Filled);
+        assert_eq!(market_sell.price(), 99, "the worst fill, not the first");
+    }
+
+    #[test]
     fn test_market_order_on_empty_book_is_cancelled() {
         let (mut book, price_cache) = create_test_orderbook();
         let harness = TestHarness::new(1);

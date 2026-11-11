@@ -46,6 +46,7 @@ use common::{
 };
 use std::{
     collections::{HashMap, VecDeque},
+    iter,
     sync::Arc,
 };
 
@@ -353,12 +354,14 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             }
         }
 
-        // For market sell orders, update cmd.price to actual execution price
+        // A market sell reports its worst execution price: the last fill's.
         if cmd.side == Side::Ask
             && cmd.is_market_order()
-            && let Some(event) = cmd.events()
+            && let Some(price) = iter::successors(cmd.events(), |e| e.next_event.as_deref())
+                .map(|e| e.price)
+                .last()
         {
-            cmd.set_price(event.price);
+            cmd.set_price(price);
         }
 
         self.record_snapshot(cmd);

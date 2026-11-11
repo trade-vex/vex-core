@@ -237,8 +237,8 @@ impl OrderCommand {
     /// True when `price` is the market-order sentinel: `u64::MAX` for a buy, `0` for a sell.
     ///
     /// In the pipeline, Risk R1 replaces a market buy's sentinel with its slippage cap, so the
-    /// order book only sees the sell sentinel, which matching then replaces with the execution
-    /// price once the sell trades.
+    /// order book only sees the sell sentinel, which matching then replaces with its last
+    /// (worst) fill's price once the sell trades.
     pub fn is_market_order(&self) -> bool {
         match self.side {
             Side::Bid => self.price == u64::MAX,
