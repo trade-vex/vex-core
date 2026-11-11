@@ -93,8 +93,8 @@ impl RiskEngine {
                 }
 
                 // A market order can never rest. Reject Market + GTC here, before any funds are
-                // locked and before bid_amount() rewrites a market buy's sentinel to its slippage
-                // cap, after which the book can no longer tell it from a limit order.
+                // locked and before reserve_funds_for_order() rewrites a market buy's sentinel to
+                // its slippage cap, after which the book can no longer tell it from a limit order.
                 if cmd.time_in_force == common::TimeInForce::Gtc && cmd.is_market_order() {
                     order_warn!(
                         "risk_market_gtc_rejected",
@@ -479,17 +479,17 @@ impl RiskEngine {
             });
         }
 
-        let (asset_to_lock, amount_to_lock) = match cmd.side {
+        let (asset_to_lock, amount_to_lock, price) = match cmd.side {
             // For a Bid (buy), we lock the quote currency. Amount = price * size.
             Side::Bid => {
-                let amount = self.bid_amount(cmd, price_cache)?;
+                let (amount, price) = self.bid_amount(cmd, price_cache)?;
                 if amount == 0 {
                     return Err(RiskEngineError::InvalidArguments {
                         price: cmd.price,
                         size: cmd.size,
                     });
                 }
-                (quote_asset(cmd.market_id), amount)
+                (quote_asset(cmd.market_id), amount, price)
             }
             // For an Ask (sell), we lock the base currency. Amount = size.
             Side::Ask => {
@@ -502,13 +502,16 @@ impl RiskEngine {
                         size: cmd.size,
                     });
                 }
-                (base_asset(cmd.market_id), cmd.size)
+                (base_asset(cmd.market_id), cmd.size, cmd.price)
             }
         };
 
         // Acquire a lock on the store and perform the operation
         let mut store = self.balances.lock();
         store.lock_funds(cmd.user_id, asset_to_lock, amount_to_lock)?;
+        // Only a locked order carries its lock price (so a cancel releases exactly what was
+        // locked); a rejected market buy keeps its sentinel.
+        cmd.price = price;
         if cmd.side == Side::Bid {
             self.bid_collateral
                 .lock()
@@ -517,16 +520,18 @@ impl RiskEngine {
         Ok(())
     }
 
-    /// Applies the R1 funding bound to market BUY orders.
+    /// Returns (quote to lock, effective price) for a bid: the R1 funding bound for a market BUY,
+    /// `cmd.price` otherwise.
     ///
-    /// Market BUY orders are capped, not swept: the `u64::MAX` market sentinel is replaced with
-    /// `best_ask + floor(best_ask * slippage_bps / 10_000)`. The matching engine then uses that
-    /// effective price as a limit, so liquidity above the cap remains unfilled. The response
-    /// carries the ordinary status for its time-in-force (IOC: `Filled`, `PartiallyFilled` or
-    /// `Cancelled`; FOK: `Filled` or `Cancelled`) and returns the effective cap in `price`.
-    /// Market + GTC never reaches this point: `pre_process_command` rejects it first.
+    /// Market BUY orders are capped, not swept: once its funds are locked, the `u64::MAX` market
+    /// sentinel is replaced with `best_ask + floor(best_ask * slippage_bps / 10_000)`. The
+    /// matching engine then uses that effective price as a limit, so liquidity above the cap
+    /// remains unfilled. The response carries the ordinary status for its time-in-force (IOC:
+    /// `Filled`, `PartiallyFilled` or `Cancelled`; FOK: `Filled` or `Cancelled`) and returns the
+    /// effective cap in `price`. Market + GTC never reaches this point: `pre_process_command`
+    /// rejects it first.
     #[inline]
-    fn bid_amount(&self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) -> Result<u64> {
+    fn bid_amount(&self, cmd: &OrderCommand, price_cache: Arc<PriceCache>) -> Result<(u64, u64)> {
         // Get spec early
         let spec =
             self.symbol_specs
@@ -560,16 +565,16 @@ impl RiskEngine {
                 .checked_add(slippage_adjustment)
                 .ok_or(BalanceError::Overflow)?;
 
-            // Persist the price used for locking on the command itself.
-            // To ensure that if the order is cancelled (fully or partially),
-            // the correct amount of funds can be released.
-            cmd.price = conservative_price;
-            spec.calculate_quote_cost(conservative_price, cmd.size)
-                .ok_or(BalanceError::Overflow.into())
+            let amount = spec
+                .calculate_quote_cost(conservative_price, cmd.size)
+                .ok_or(BalanceError::Overflow)?;
+            Ok((amount, conservative_price))
         } else {
             // Limit order
-            spec.calculate_quote_cost(cmd.price, cmd.size)
-                .ok_or(BalanceError::Overflow.into())
+            let amount = spec
+                .calculate_quote_cost(cmd.price, cmd.size)
+                .ok_or(BalanceError::Overflow)?;
+            Ok((amount, cmd.price))
         }
     }
 
@@ -1857,8 +1862,22 @@ mod tests {
         let balance = engine.get_balance(user_id, usd_asset_id);
         assert_eq!(balance.available(), 0);
         assert_eq!(balance.locked(), required_quote);
+        assert_eq!(
+            market_buy_cmd.price, conservative_price,
+            "a locked market buy carries its cap"
+        );
 
         // --- Test 3: Market Buy with insufficient funds ---
+        // Step 2 locked and so re-priced its command; a market buy must start from the sentinel.
+        let mut market_buy_cmd = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            user_id,
+            u64::MAX,
+            size,
+            Side::Bid,
+            market_id,
+            1,
+        );
         engine.set_balance(
             user_id,
             usd_asset_id,
@@ -1870,6 +1889,11 @@ mod tests {
             RiskEngineError::BalanceError(BalanceError::InsufficientAvailableFunds { .. }) => (),
             e => panic!("Expected InsufficientAvailableFunds, got {e:?}"),
         }
+        assert_eq!(
+            market_buy_cmd.price,
+            u64::MAX,
+            "a rejected market buy keeps the market sentinel"
+        );
 
         // --- Test 4: Market Sell ---
         // A market SELL carries price 0; u64::MAX is the market BUY sentinel. This previously

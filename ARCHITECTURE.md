@@ -273,7 +273,7 @@ Market orders require special handling since the execution price is unknown at f
 let best_ask = price_cache.get_prices(market_id).map_or(0, |(_, best_ask)| best_ask);
 let slippage_adjustment = best_ask * spec.slippage / 10_000;  // in u128, rounded down
 let conservative_price = best_ask + slippage_adjustment;
-cmd.price = conservative_price;  // Mutate price field; the response returns it
+cmd.price = conservative_price;  // only once the lock holds; the response returns it
 locked_amount = spec.calculate_quote_cost(conservative_price, size);
 ```
 
