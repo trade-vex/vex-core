@@ -71,6 +71,12 @@ pub struct CoreNetworkingConfig {
     pub reserved_session_id_high: i32,
     /// Enable authentication for gateways
     pub enable_authentication: bool,
+    /// Shared bearer credential every gateway presents in its HELLO: an opaque secret of at least
+    /// 32 characters (`openssl rand -hex 32`), or empty, which outside production runs the
+    /// handshake unauthenticated. Carried in cleartext over `aeron:udp`: trusted network segments
+    /// only.
+    #[serde(default)]
+    pub gateway_authentication_key: GatewayAuthenticationKey,
     /// Core identifier
     pub core_id: String,
     /// Buffer size for network operations (bytes)
@@ -114,6 +120,7 @@ impl CoreNetworkingConfig {
             reserved_session_id_low: 1,
             reserved_session_id_high: i32::MAX,
             enable_authentication: false,
+            gateway_authentication_key: GatewayAuthenticationKey::default(),
             core_id: "vex-core-dev".to_string(),
             buffer_size: 1024 * 1024,
             retry_attempts: 3,
@@ -136,6 +143,7 @@ impl CoreNetworkingConfig {
             reserved_session_id_low: 1,
             reserved_session_id_high: i32::MAX,
             enable_authentication: true,
+            gateway_authentication_key: GatewayAuthenticationKey::default(),
             core_id: "vex-core-test".to_string(),
             buffer_size: 1024 * 1024,
             retry_attempts: 3,
@@ -158,6 +166,7 @@ impl CoreNetworkingConfig {
             reserved_session_id_low: 1,
             reserved_session_id_high: i32::MAX,
             enable_authentication: true,
+            gateway_authentication_key: GatewayAuthenticationKey::default(),
             core_id: "vex-core-prod".to_string(),
             buffer_size: 4 * 1024 * 1024, // 4MB
             retry_attempts: 5,
@@ -193,6 +202,13 @@ impl CoreNetworkingConfig {
 
         if self.core_id.is_empty() {
             return Err(ConfigError::network("Core ID cannot be empty"));
+        }
+
+        // An empty key is resolved at startup: production refuses it, dev/test run unauthenticated.
+        if self.enable_authentication && !self.gateway_authentication_key.is_empty() {
+            self.gateway_authentication_key
+                .check()
+                .map_err(ConfigError::network)?;
         }
 
         if self.buffer_size == 0 {
@@ -261,15 +277,6 @@ pub struct GatewayNetworkingConfig {
 }
 
 impl GatewayNetworkingConfig {
-    /// Create configuration optimized for the given environment
-    pub fn for_environment(env: &Environment) -> Self {
-        match env {
-            Environment::Development => Self::development_defaults(),
-            Environment::Test => Self::test_defaults(),
-            Environment::Production => Self::production_defaults(),
-        }
-    }
-
     /// Development environment defaults
     pub fn development_defaults() -> Self {
         Self {
@@ -307,26 +314,6 @@ impl GatewayNetworkingConfig {
             reconnection_attempts: 3,
             reconnection_delay_ms: 1000,
             buffer_size: 256 * 1024, // 256KB
-        }
-    }
-
-    /// Production environment defaults
-    pub fn production_defaults() -> Self {
-        Self {
-            context_dir: "/var/lib/vex/aeron-gateway".to_string(),
-            local_address: "127.0.0.1".to_string(),
-            core_address: "127.0.0.1".to_string(), // Example production IP
-            core_port: 3521,
-            core_control_port: 3522,
-            gateway_id: 1,
-            gateway_authentication_key: GatewayAuthenticationKey::default(),
-            max_message_size: ORDERCOMMANDSIZE,
-            enable_heartbeat: true,
-            heartbeat_interval_seconds: 5,
-            connection_timeout_seconds: 15,
-            reconnection_attempts: 10,
-            reconnection_delay_ms: 5000,
-            buffer_size: 2 * 1024 * 1024, // 2MB
         }
     }
 
@@ -459,6 +446,22 @@ mod tests {
         let mut config = GatewayNetworkingConfig::development_defaults();
         config.gateway_authentication_key = "123456789".into();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn core_key_is_checked_when_authentication_is_enabled() {
+        let mut config = CoreNetworkingConfig::development_defaults();
+        config.gateway_authentication_key = "123456789".into();
+        assert!(config.validate(&Environment::Development).is_ok());
+
+        config.enable_authentication = true;
+        assert!(matches!(
+            config.validate(&Environment::Development),
+            Err(ConfigError::NetworkError(message)) if message.contains("at least 32 characters")
+        ));
+
+        config.gateway_authentication_key = "0123456789abcdef".repeat(4).as_str().into();
+        assert!(config.validate(&Environment::Development).is_ok());
     }
 
     #[test]

@@ -16,20 +16,6 @@ core_networking:
   response_control_channel: aeron:udp?endpoint=localhost:0
   recording_events_channel: aeron:udp?endpoint=localhost:0
   enable_core_pinning: false
-gateway_networking:
-  context_dir: /tmp/aeron-test-client
-  local_address: 127.0.0.1
-  core_address: 127.0.0.1
-  core_port: 3521
-  core_control_port: 3522
-  gateway_id: 1
-  max_message_size: 64
-  enable_heartbeat: true
-  heartbeat_interval_seconds: 10
-  connection_timeout_seconds: 60
-  reconnection_attempts: 5
-  reconnection_delay_ms: 2000
-  buffer_size: 524288
 logging:
   level: debug
   format: pretty

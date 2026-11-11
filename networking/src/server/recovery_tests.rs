@@ -105,7 +105,6 @@ impl Fixture {
         let producer = collector(Arc::clone(&publications), Arc::clone(&replayed));
         let server = VexCoreServer::new(
             self.config.clone(),
-            GatewayAuthenticationKey::default(),
             producer,
             publications,
             Arc::new(AtomicBool::new(false)),
@@ -293,7 +292,6 @@ fn live_every_start_replays_the_journal_and_reads_its_tail_from_the_last_term() 
         let producer = collector(Arc::clone(&publications), Arc::clone(&replayed));
         let mut server = VexCoreServer::new(
             fixture.config.clone(),
-            GatewayAuthenticationKey::default(),
             producer,
             Arc::clone(&publications),
             Arc::new(AtomicBool::new(false)),
@@ -344,7 +342,6 @@ fn c8_2_live_held_terminal_second_recovery_has_no_duplicate_journal_entries() {
         let fixture = Fixture::new();
         let mut server = VexCoreServer::new(
             fixture.config.clone(),
-            GatewayAuthenticationKey::default(),
             producer,
             worker_publications,
             Arc::new(AtomicBool::new(false)),
@@ -500,7 +497,6 @@ fn c8_3_live_subscription_left_by_a_crash_before_the_publication_connected_is_st
     let producer = collector(Arc::clone(&publications), Arc::new(Mutex::new(Vec::new())));
     let mut server = VexCoreServer::new(
         fixture.config,
-        GatewayAuthenticationKey::default(),
         producer,
         publications,
         Arc::new(AtomicBool::new(false)),
@@ -537,7 +533,6 @@ fn c7_1_live_queued_shutdown_lagging_archive_survives_recovery() {
         .build();
     let mut server = VexCoreServer::new(
         fixture.config.clone(),
-        GatewayAuthenticationKey::default(),
         producer.clone(),
         Arc::clone(&publications),
         Arc::new(AtomicBool::new(false)),
@@ -624,7 +619,6 @@ fn shutdown_keeps_reply_publications_until_the_pipeline_drains() {
         .build();
     let mut server = VexCoreServer::new(
         fixture.config.clone(),
-        GatewayAuthenticationKey::default(),
         producer.clone(),
         Arc::clone(&publications),
         Arc::new(AtomicBool::new(false)),

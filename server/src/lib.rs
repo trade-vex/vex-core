@@ -132,13 +132,8 @@ pub fn start(mut config: VexConfig) -> Result<RunningEngine, EngineError> {
         info!("Balance preload complete");
     }
 
-    let gateway_authentication_key = config.gateway_networking.gateway_authentication_key.clone();
-    let (thread_handle, shutdown_flag) = engine.run(
-        producer,
-        replay_control,
-        config.core_networking,
-        gateway_authentication_key,
-    );
+    let (thread_handle, shutdown_flag) =
+        engine.run(producer, replay_control, config.core_networking);
 
     Ok(RunningEngine {
         thread: thread_handle,
@@ -208,11 +203,7 @@ fn report_disabled_journaling(config: &VexConfig) {
 /// choice explicitly: no key means no handshake authentication. `validate` has already refused
 /// that combination in production.
 fn resolve_gateway_authentication(config: &mut VexConfig) {
-    if config
-        .gateway_networking
-        .gateway_authentication_key
-        .is_empty()
-    {
+    if config.core_networking.gateway_authentication_key.is_empty() {
         config.core_networking.enable_authentication = false;
     }
     if !config.core_networking.enable_authentication {
@@ -447,7 +438,7 @@ mod tests {
         assert!(!config.core_networking.enable_authentication);
 
         let mut keyed = VexConfig::new(vex_config::Environment::Test);
-        keyed.gateway_networking.gateway_authentication_key = "123456789".into();
+        keyed.core_networking.gateway_authentication_key = "123456789".into();
         resolve_gateway_authentication(&mut keyed);
         assert!(keyed.core_networking.enable_authentication);
     }

@@ -53,7 +53,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{debug, error, info, warn};
-use vex_config::{CoreNetworkingConfig, GatewayAuthenticationKey};
+use vex_config::CoreNetworkingConfig;
 
 pub use gateway_publications::Publications;
 
@@ -170,7 +170,6 @@ impl VexCoreServer {
     /// Creates a new VEX Core instance
     pub fn new(
         config: CoreNetworkingConfig,
-        authentication_key: GatewayAuthenticationKey,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
         publications: Arc<Publications>,
         shutdown: Arc<AtomicBool>,
@@ -179,7 +178,7 @@ impl VexCoreServer {
         Self::validate_config(&config)?;
         gateway_manager::validate_authentication_config(
             config.enable_authentication,
-            &authentication_key,
+            &config.gateway_authentication_key,
         )?;
 
         if !config.enable_authentication {
@@ -310,7 +309,6 @@ impl VexCoreServer {
 
         let gateways = Rc::new(GatewayManager::new(
             config.clone(),
-            authentication_key,
             aeron,
             producer,
             Arc::clone(&publications),

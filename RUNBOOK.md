@@ -380,7 +380,7 @@ netstat -tuln | grep -E "40001|3521"
   the gateway means no pair of ports was free (each freed port waits 10 s before reuse)
 - Gateway authentication (required in production, which refuses to start without both):
   `VEX__CORE_NETWORKING__ENABLE_AUTHENTICATION=true` and
-  `VEX__GATEWAY_NETWORKING__GATEWAY_AUTHENTICATION_KEY=<at least 32 characters; openssl rand -hex 32>`
+  `VEX__CORE_NETWORKING__GATEWAY_AUTHENTICATION_KEY=<at least 32 characters; openssl rand -hex 32>`
   on vex-core; every gateway must be given the same value (vex-gateway `[core]` `auth_key`, or `APP__CORE__AUTH_KEY`). Without a key,
   dev/test run the handshake unauthenticated. `Connection rejected: Handshake rejected` on the
   gateway together with `action="handshake_rejected"` and

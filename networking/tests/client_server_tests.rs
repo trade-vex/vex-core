@@ -118,6 +118,7 @@ fn test_client_server_communication() {
         let mut server_config = CoreNetworkingConfig::test_defaults();
         server_config.initial_port = server_addr.port();
         server_config.initial_control_port = server_addr.port() + 1;
+        server_config.gateway_authentication_key = GATEWAY_AUTHENTICATION_KEY.into();
         info!("server_config: {:?}", server_config);
         let producer = build_multi_producer(
             1024,
@@ -146,14 +147,8 @@ fn test_client_server_communication() {
         .build();
         let publications = Arc::new(Publications::new());
         let shutdown_flag = Arc::new(AtomicBool::new(false));
-        let mut server = VexCoreServer::new(
-            server_config,
-            GATEWAY_AUTHENTICATION_KEY.into(),
-            producer,
-            publications,
-            shutdown_flag,
-        )
-        .unwrap();
+        let mut server =
+            VexCoreServer::new(server_config, producer, publications, shutdown_flag).unwrap();
         match server.start() {
             Ok(()) => println!("Server run() completed successfully (unexpected)"),
             Err(e) => println!("Server run() error: {e}"),
@@ -192,6 +187,7 @@ fn test_every_gateway_receives_its_handshake_reply() {
     server_config.initial_port = core_port;
     server_config.initial_control_port = core_port + 1;
     server_config.base_gateway_port = find_unused_udp_port(51000).unwrap();
+    server_config.gateway_authentication_key = GATEWAY_AUTHENTICATION_KEY.into();
     let server_shutdown = Arc::new(AtomicBool::new(false));
     let server = thread::spawn({
         let shutdown = Arc::clone(&server_shutdown);
@@ -201,7 +197,6 @@ fn test_every_gateway_receives_its_handshake_reply() {
                 .build();
             VexCoreServer::new(
                 server_config,
-                GATEWAY_AUTHENTICATION_KEY.into(),
                 producer,
                 Arc::new(Publications::new()),
                 shutdown,

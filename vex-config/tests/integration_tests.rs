@@ -79,7 +79,7 @@ fn production_configuration_rejects_balance_preload() {
     // PRs #176 (auth) and #151 (symbols) added production gates that run BEFORE the preload
     // rule; satisfy them so this test still isolates the preload rule rather than passing
     // because an earlier gate fired.
-    production.gateway_networking.gateway_authentication_key = GatewayAuthenticationKey::from(
+    production.core_networking.gateway_authentication_key = GatewayAuthenticationKey::from(
         "5f0c3a9e7d2b4816c4e1a7f39b0d2c6e8a1f4b7d3e9c0a2f6b8d1e4c7a3f9b05",
     );
     production.symbols = VexConfig::new(Environment::Development).symbols;
@@ -105,7 +105,7 @@ fn test_empty_gateway_authentication_key_by_environment() {
 
     let mut authenticated_production = production;
     authenticated_production
-        .gateway_networking
+        .core_networking
         .gateway_authentication_key = GatewayAuthenticationKey::from(
         "5f0c3a9e7d2b4816c4e1a7f39b0d2c6e8a1f4b7d3e9c0a2f6b8d1e4c7a3f9b05",
     );
@@ -147,7 +147,7 @@ fn test_different_file_formats() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let mut config = VexConfig::new(Environment::Production);
     config.symbols = VexConfig::new(Environment::Development).symbols;
-    config.gateway_networking.gateway_authentication_key = GatewayAuthenticationKey::from(
+    config.core_networking.gateway_authentication_key = GatewayAuthenticationKey::from(
         "5f0c3a9e7d2b4816c4e1a7f39b0d2c6e8a1f4b7d3e9c0a2f6b8d1e4c7a3f9b05",
     );
 
@@ -219,7 +219,6 @@ fn test_environment_variable_overrides() -> Result<(), Box<dyn std::error::Error
     unsafe {
         env::set_var("TEST__CORE_NETWORKING__INITIAL_PORT", "9999");
         env::set_var("TEST__LOGGING__LEVEL", "error");
-        env::set_var("TEST__GATEWAY_NETWORKING__MAX_MESSAGE_SIZE", "32768");
     }
 
     // No file: the environment defaults stand in for it, and the overrides still apply.
@@ -232,14 +231,12 @@ fn test_environment_variable_overrides() -> Result<(), Box<dyn std::error::Error
     unsafe {
         env::remove_var("TEST__CORE_NETWORKING__INITIAL_PORT");
         env::remove_var("TEST__LOGGING__LEVEL");
-        env::remove_var("TEST__GATEWAY_NETWORKING__MAX_MESSAGE_SIZE");
     }
 
     let config = result?;
     assert_eq!(config.environment, Environment::Development);
     assert_eq!(config.core_networking.initial_port, 9999);
     assert_eq!(config.logging.level, vex_config::logging::LogLevel::Error);
-    assert_eq!(config.gateway_networking.max_message_size, 32768);
 
     Ok(())
 }
@@ -295,7 +292,7 @@ fn test_production_config_without_schema_registry_url_fails_to_load()
     let path = temp_dir.path().join("config.prod.toml");
     let mut config = VexConfig::new(Environment::Production);
     config.symbols = VexConfig::new(Environment::Development).symbols;
-    config.gateway_networking.gateway_authentication_key = GatewayAuthenticationKey::from(
+    config.core_networking.gateway_authentication_key = GatewayAuthenticationKey::from(
         "5f0c3a9e7d2b4816c4e1a7f39b0d2c6e8a1f4b7d3e9c0a2f6b8d1e4c7a3f9b05",
     );
     config.save_to_file(&path)?;
@@ -343,6 +340,22 @@ fn load_with_variable(prefix: &str, variable: &str, value: &str) -> vex_config::
 fn test_schema_registry_url_environment_override() -> Result<(), Box<dyn std::error::Error>> {
     let config = load_with_variable("VEX", "VEX__SCHEMA_REGISTRY_URL", "http://redpanda:8081")?;
     assert_eq!(config.schema_registry_url, "http://redpanda:8081");
+    Ok(())
+}
+
+#[test]
+fn gateway_authentication_key_is_a_core_networking_setting()
+-> Result<(), Box<dyn std::error::Error>> {
+    let key = "0123456789abcdef".repeat(4);
+    let config = load_with_variable(
+        "AUTHKEY",
+        "AUTHKEY__CORE_NETWORKING__GATEWAY_AUTHENTICATION_KEY",
+        &key,
+    )?;
+    assert_eq!(
+        config.core_networking.gateway_authentication_key.as_str(),
+        key
+    );
     Ok(())
 }
 

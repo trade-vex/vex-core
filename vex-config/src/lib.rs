@@ -33,8 +33,6 @@ pub struct VexConfig {
     pub environment: Environment,
     /// Core networking configuration
     pub core_networking: CoreNetworkingConfig,
-    /// Gateway networking configuration
-    pub gateway_networking: GatewayNetworkingConfig,
     /// Logging configuration
     pub logging: LoggingConfig,
     /// Symbol specifications configuration
@@ -64,7 +62,6 @@ impl VexConfig {
     pub fn new(environment: Environment) -> Self {
         Self {
             core_networking: CoreNetworkingConfig::for_environment(&environment),
-            gateway_networking: GatewayNetworkingConfig::for_environment(&environment),
             logging: LoggingConfig::for_environment(&environment),
             symbols: SymbolSpecificationConfig::for_environment(&environment),
             kafka_broker: default_kafka_broker(),
@@ -126,13 +123,9 @@ impl VexConfig {
     /// Validate the entire configuration
     pub fn validate(&self) -> Result<()> {
         self.core_networking.validate(&self.environment)?;
-        self.gateway_networking.validate()?;
         if self.is_production()
             && (!self.core_networking.enable_authentication
-                || self
-                    .gateway_networking
-                    .gateway_authentication_key
-                    .is_empty())
+                || self.core_networking.gateway_authentication_key.is_empty())
         {
             return Err(ConfigError::validation(
                 "Production requires gateway authentication and a nonempty gateway authentication key",
@@ -177,8 +170,6 @@ impl VexConfig {
         }
 
         self.core_networking.merge_with(&other.core_networking)?;
-        self.gateway_networking
-            .merge_with(&other.gateway_networking)?;
         self.logging.merge_with(&other.logging)?;
         self.symbols.merge_with(&other.symbols)?;
 
@@ -228,7 +219,7 @@ mod tests {
         // PR #176 added an earlier production gate (authentication + key). Satisfy it so this
         // test still exercises PR #151's symbols rule rather than tripping on the auth rule.
         production.core_networking.enable_authentication = true;
-        production.gateway_networking.gateway_authentication_key = GatewayAuthenticationKey::from(
+        production.core_networking.gateway_authentication_key = GatewayAuthenticationKey::from(
             "5f0c3a9e7d2b4816c4e1a7f39b0d2c6e8a1f4b7d3e9c0a2f6b8d1e4c7a3f9b05",
         );
         assert!(matches!(

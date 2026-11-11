@@ -259,7 +259,6 @@ pub struct GatewayManager {
     aeron: Aeron,
     /// Core configuration
     config: CoreNetworkingConfig,
-    authentication_key: GatewayAuthenticationKey,
     /// Port allocator for gateway sessions
     port_allocator: PortAllocator,
     /// Session ID allocator
@@ -284,7 +283,6 @@ impl GatewayManager {
     /// Creates a new gateway manager
     pub fn new(
         config: CoreNetworkingConfig,
-        authentication_key: GatewayAuthenticationKey,
         aeron: Aeron,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
         publications: Arc<Publications>,
@@ -302,7 +300,6 @@ impl GatewayManager {
             )
             .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?,
             config,
-            authentication_key,
             producer,
             publications,
             session_event_rx,
@@ -438,7 +435,8 @@ impl GatewayManager {
         // Authenticate before parsing the id, checking for duplicates, or allocating any
         // resource, so an unauthenticated peer can never reach the allocator (PR #176).
         if self.authentication_is_enabled()
-            && let Err(e) = authenticate_gateway(&self.authentication_key, credential)
+            && let Err(e) =
+                authenticate_gateway(&self.config.gateway_authentication_key, credential)
         {
             return self.reject_handshake(publication, session_id, gateway_id_str, source, e);
         }
@@ -567,7 +565,7 @@ impl GatewayManager {
     }
 
     fn authentication_is_enabled(&self) -> bool {
-        self.config.enable_authentication && !self.authentication_key.is_empty()
+        self.config.enable_authentication && !self.config.gateway_authentication_key.is_empty()
     }
 
     fn reject_handshake(
@@ -1257,7 +1255,6 @@ mod tests {
             .build();
         let manager = GatewayManager::new(
             config,
-            GatewayAuthenticationKey::default(),
             aeron.clone(),
             producer.clone(),
             Arc::new(Publications::new()),
@@ -1378,7 +1375,6 @@ mod tests {
         let publications = Arc::new(Publications::new());
         let manager = GatewayManager::new(
             config,
-            GatewayAuthenticationKey::default(),
             aeron.clone(),
             producer.clone(),
             Arc::clone(&publications),
@@ -1474,7 +1470,6 @@ mod tests {
             .build();
         let manager = GatewayManager::new(
             config.clone(),
-            GatewayAuthenticationKey::default(),
             aeron.clone(),
             producer,
             Arc::new(Publications::new()),
