@@ -1964,6 +1964,7 @@ impl EventsHandler for KafkaEventsHandler {
                     stage = "events",
                     handler = "kafka"
                 );
+                // Events first: a dropped reply is resolved from the read model.
                 self.publish_events(cmd);
                 self.publications.publish_response(cmd);
             }

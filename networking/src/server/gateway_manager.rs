@@ -3,7 +3,7 @@ use crate::server::duologue::{
     DuologueImageUnavailable,
 };
 use crate::server::gateway_publications::Publications;
-use crate::utils::{PortAllocator, SessionAllocator, send_message};
+use crate::utils::{PORT_COOLDOWN_SECONDS, PortAllocator, SessionAllocator, send_message};
 use common::{MAX_GATEWAYS, OrderCommand};
 use disruptor::{MultiProducer, SingleConsumerBarrier};
 use rusteron_archive::{
@@ -13,8 +13,8 @@ use rusteron_archive::{
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::CString;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
-use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 use vex_config::{CoreNetworkingConfig, GatewayAuthenticationKey};
@@ -35,10 +35,9 @@ enum GatewaySlotState {
 }
 
 const PORTS_PER_GATEWAY: usize = 2;
-
-fn gateway_port_capacity(max_gateways: u16) -> usize {
-    usize::from(max_gateways) * PORTS_PER_GATEWAY
-}
+/// Every slot's ports, and as many again in their cooldown after a full turnover: the UDP range
+/// `base_gateway_port..base_gateway_port + 63` that gateways reach.
+const PORT_POOL: usize = 2 * MAX_GATEWAYS * PORTS_PER_GATEWAY;
 
 pub struct Session {
     slots: [Option<GatewaySlot>; MAX_GATEWAYS],
@@ -47,7 +46,7 @@ pub struct Session {
 pub struct GatewaySlot {
     duologue: Option<Duologue>,
     port_data: u16,
-    port_control: u16,
+    port_reply: u16,
     session_id: i32,
     state: GatewaySlotState,
 }
@@ -83,7 +82,7 @@ impl Session {
             duologue: None,
             session_id,
             port_data: ports[0],
-            port_control: ports[1],
+            port_reply: ports[1],
             state: GatewaySlotState::AwaitingImage { allocated_at },
         });
         true
@@ -140,15 +139,15 @@ impl Session {
         self.slots[gateway_id as usize].is_some()
     }
 
-    /// Get all ports currently in use (both data and control ports)
+    /// Get all ports currently in use (both data and reply ports)
     pub fn get_ports_in_use(&self) -> Vec<u16> {
         let mut ports = Vec::new();
         for slot in self.slots.iter().flatten() {
             if slot.port_data != 0 {
                 ports.push(slot.port_data);
             }
-            if slot.port_control != 0 {
-                ports.push(slot.port_control);
+            if slot.port_reply != 0 {
+                ports.push(slot.port_reply);
             }
         }
         ports
@@ -255,7 +254,7 @@ enum PendingHandshakeStatus {
 /// session allocation, resource management, and cleanup operations.
 pub struct GatewayManager {
     /// Active gateway sessions mapped by gateway id
-    gateway_sessions: RwLock<Session>,
+    gateway_sessions: RefCell<Session>,
     /// Aeron messaging instance
     aeron: Aeron,
     /// Core configuration
@@ -277,6 +276,8 @@ pub struct GatewayManager {
     pending_handshakes: RefCell<[Option<PendingHandshake>; MAX_GATEWAYS]>,
     /// Bounds unauthenticated session allocation work
     handshake_rate_limiter: RefCell<HandshakeRateLimiter>,
+    /// Bounds the REJECT replies and log lines a flood of bad HELLOs can cause
+    rejected_handshakes: RefCell<HandshakeRateLimiter>,
 }
 
 impl GatewayManager {
@@ -291,13 +292,10 @@ impl GatewayManager {
         let (session_event_tx, session_event_rx) = channel();
 
         Ok(Self {
-            gateway_sessions: RwLock::new(Session::new()),
+            gateway_sessions: RefCell::new(Session::new()),
             aeron,
-            port_allocator: PortAllocator::new(
-                config.base_gateway_port,
-                gateway_port_capacity(config.max_gateways),
-            )
-            .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?,
+            port_allocator: PortAllocator::new(config.base_gateway_port, PORT_POOL)
+                .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?,
             session_allocator: SessionAllocator::new(
                 config.reserved_session_id_low,
                 config.reserved_session_id_high,
@@ -311,23 +309,26 @@ impl GatewayManager {
             session_event_tx,
             pending_handshakes: RefCell::new([(); MAX_GATEWAYS].map(|_| None)),
             handshake_rate_limiter: RefCell::new(HandshakeRateLimiter::new()),
+            rejected_handshakes: RefCell::new(HandshakeRateLimiter::new()),
         })
     }
 
     /// Checks if a gateway is currently connected
     pub fn is_gateway_connected(&self, gateway_id: u8) -> bool {
-        match self.gateway_sessions.read() {
-            Ok(guard) => guard.is_gateway_connected(gateway_id),
-            Err(e) => {
-                error!(
-                    target: "gateway_manager",
-                    action = "lock_poisoned",
-                    context = "is_gateway_connected",
-                    error = %e
-                );
-                false // Assume not connected if lock is poisoned
-            }
-        }
+        self.gateway_sessions
+            .borrow()
+            .is_gateway_connected(gateway_id)
+    }
+
+    /// Gives `gateway_id` a slot without a handshake, so a test can hold a session open.
+    #[cfg(test)]
+    pub(super) fn reserve_slot(&self, gateway_id: u8, session_id: i32) -> bool {
+        self.gateway_sessions.borrow_mut().reserve(
+            gateway_id,
+            session_id,
+            [10_000, 10_001],
+            Instant::now(),
+        )
     }
 
     /// Applies liveness changes reported by Aeron image callbacks.
@@ -340,8 +341,7 @@ impl GatewayManager {
                 }) => {
                     let marked_live = self
                         .gateway_sessions
-                        .write()
-                        .unwrap()
+                        .borrow_mut()
                         .mark_live(gateway_id, session_id);
                     if !marked_live {
                         warn!(
@@ -358,8 +358,7 @@ impl GatewayManager {
                 }) => {
                     let session_matches = self
                         .gateway_sessions
-                        .read()
-                        .unwrap()
+                        .borrow()
                         .slots
                         .get(gateway_id as usize)
                         .and_then(Option::as_ref)
@@ -388,7 +387,8 @@ impl GatewayManager {
     /// Processes gateway handshake message
     ///
     /// Handles the complete handshake flow including message parsing,
-    /// authentication, resource allocation, and session creation.
+    /// authentication, resource allocation, and session creation. A rejected HELLO is answered
+    /// (within the rejection limit) and returns `Ok`.
     pub fn process_handshake_message(
         &self,
         publication: &AeronPublication,
@@ -396,8 +396,13 @@ impl GatewayManager {
         source: &str,
         buffer: &[u8],
     ) -> Result<(), ServerError> {
-        let message = std::str::from_utf8(buffer)
-            .map_err(|e| ServerError::GatewayMessageError(format!("Invalid UTF-8: {e}")))?;
+        let message = match std::str::from_utf8(buffer) {
+            Ok(message) => message,
+            Err(e) => {
+                let error = ServerError::GatewayMessageError(format!("Invalid UTF-8: {e}"));
+                return self.reject_handshake(publication, session_id, "unknown", source, error);
+            }
+        };
 
         debug!(
             target: "gateway_manager",
@@ -410,58 +415,30 @@ impl GatewayManager {
         // Parse "HELLO gateway_id credential encryption_key": the credential authenticates the
         // gateway; the per-handshake encryption key only masks the session id sent in ACCEPT.
         let mut parts = message.split_whitespace();
-
-        let hello = parts
-            .next()
-            .ok_or_else(|| ServerError::GatewayMessageError("Empty message".to_string()))?;
-        if hello != "HELLO" {
-            let error_msg = format!("{session_id} unknown REJECT Malformed HELLO message");
-            send_message(publication, error_msg.as_bytes())?;
-            return Err(ServerError::GatewayMessageError(
-                "Malformed HELLO message".to_string(),
-            ));
+        if parts.next() != Some("HELLO") {
+            let error = ServerError::GatewayMessageError("Not a HELLO message".to_string());
+            return self.reject_handshake(publication, session_id, "unknown", source, error);
         }
-
-        let gateway_id_str = parts
-            .next()
-            .ok_or_else(|| ServerError::GatewayMessageError("Missing gateway ID".to_string()))?;
-
-        let credential_str = parts
-            .next()
-            .ok_or_else(|| ServerError::GatewayMessageError("Missing credential".to_string()))?;
-
-        let credential = match credential_str.parse::<i32>() {
-            Ok(credential) => credential,
-            Err(_) if self.authentication_is_enabled() => {
-                return self.reject_handshake(
-                    publication,
-                    session_id,
-                    gateway_id_str,
-                    source,
-                    ServerError::AuthenticationError("Invalid credentials".to_string()),
-                );
-            }
-            Err(e) => {
-                return Err(ServerError::GatewayMessageError(format!(
-                    "Invalid credential: {e}"
-                )));
-            }
+        let Some(gateway_id_str) = parts.next() else {
+            let error = ServerError::GatewayMessageError("Missing gateway ID".to_string());
+            return self.reject_handshake(publication, session_id, "unknown", source, error);
         };
-
+        let Some(credential) = parts.next() else {
+            let error = ServerError::GatewayMessageError("Missing credential".to_string());
+            return self.reject_handshake(publication, session_id, gateway_id_str, source, error);
+        };
         // A HELLO without its own encryption key comes from a client that masked the session
         // with the credential; reject it rather than fall back to that.
         let Some(Ok(encryption_key)) = parts.next().map(str::parse::<i32>) else {
-            let error_msg = format!("{session_id} {gateway_id_str} REJECT Malformed HELLO message");
-            send_message(publication, error_msg.as_bytes())?;
-            return Err(ServerError::GatewayMessageError(
-                "Malformed HELLO message".to_string(),
-            ));
+            let error =
+                ServerError::GatewayMessageError("Missing or invalid encryption key".to_string());
+            return self.reject_handshake(publication, session_id, gateway_id_str, source, error);
         };
 
         // Authenticate before parsing the id, checking for duplicates, or allocating any
         // resource, so an unauthenticated peer can never reach the allocator (PR #176).
         if self.authentication_is_enabled()
-            && let Err(e) = self.authenticate_gateway(credential)
+            && let Err(e) = authenticate_gateway(&self.authentication_key, credential)
         {
             return self.reject_handshake(publication, session_id, gateway_id_str, source, e);
         }
@@ -516,7 +493,19 @@ impl GatewayManager {
 
         self.check_duplicate_connection(publication, session_id, gateway_id)?;
 
-        self.allocate_gateway_session(gateway_id, session_id, encryption_key, publication, now)?;
+        if let Err(e) = self.allocate_gateway_session(
+            gateway_id,
+            session_id,
+            encryption_key,
+            publication,
+            source,
+            now,
+        ) {
+            // Ports in their cooldown or a failed Aeron registration pass: say when to retry.
+            let msg = format!("{session_id} {gateway_id_str} UNAVAILABLE {PORT_COOLDOWN_SECONDS}");
+            send_message(publication, msg.as_bytes())?;
+            return Err(e);
+        }
 
         Ok(())
     }
@@ -524,11 +513,13 @@ impl GatewayManager {
     /// Polls all active gateway sessions
     pub fn poll(&self) -> Result<(), ServerError> {
         self.process_session_events();
+        // Before the handshakes, so a close is never applied to a session attached in this poll.
+        self.close_slow_gateways();
         self.process_pending_handshakes();
         self.reap_idle_handshakes();
 
         // polls all active gateway sessions
-        let guard = self.gateway_sessions.read().unwrap();
+        let guard = self.gateway_sessions.borrow();
         for subscription in guard.iter() {
             if let Err(e) = subscription.poll() {
                 error!(
@@ -542,13 +533,27 @@ impl GatewayManager {
         Ok(())
     }
 
+    /// Closes the sessions whose replies could not be delivered (`Publications::publish_response`).
+    fn close_slow_gateways(&self) {
+        for gateway_id in 0..MAX_GATEWAYS as u8 {
+            if self.publications.take_closing(gateway_id) {
+                warn!(target: "gateway_manager", action = "slow_gateway_closed", gateway_id);
+                if let Err(e) = self.remove_gateway_session(gateway_id) {
+                    // Already gone: its image went unavailable in the same poll.
+                    debug!(
+                        target: "gateway_manager",
+                        action = "slow_gateway_already_closed",
+                        gateway_id,
+                        error = %e
+                    );
+                }
+            }
+        }
+    }
+
     /// Shuts down all gateway connections
     pub fn shutdown_all_gateways(&self) -> Result<(), ServerError> {
-        let gateways_ids: Vec<u8> = self
-            .gateway_sessions
-            .read()
-            .expect("Gateway sessions lock poisoned during shutdown")
-            .gateway_ids();
+        let gateways_ids: Vec<u8> = self.gateway_sessions.borrow().gateway_ids();
 
         for gateway_id in gateways_ids {
             self.remove_gateway_session(gateway_id)?;
@@ -573,16 +578,20 @@ impl GatewayManager {
         source: &str,
         error: ServerError,
     ) -> Result<(), ServerError> {
-        warn!(
-            target: "gateway_manager",
-            action = "handshake_rejected",
-            source,
-            session = format_args!("{:#x}", session_id),
-            reason = %error
-        );
-        let error_msg = format!("{session_id} {gateway_label} REJECT Handshake rejected");
-        send_message(publication, error_msg.as_bytes())?;
-        Err(error)
+        // Past HANDSHAKE_RATE_LIMIT rejections a second nothing is sent or logged, so a flood of
+        // bad HELLOs costs the ingress thread one compare each and fills no log.
+        if self.rejected_handshakes.borrow_mut().allow(Instant::now()) {
+            warn!(
+                target: "gateway_manager",
+                action = "handshake_rejected",
+                source,
+                session = format_args!("{:#x}", session_id),
+                reason = %error
+            );
+            let error_msg = format!("{session_id} {gateway_label} REJECT Handshake rejected");
+            send_message(publication, error_msg.as_bytes())?;
+        }
+        Ok(())
     }
 
     fn check_duplicate_connection(
@@ -624,10 +633,11 @@ impl GatewayManager {
         handshake_session_id: i32,
         encryption_key: i32,
         response_publication: &AeronPublication,
+        hello_source: &str,
         now: Instant,
     ) -> Result<(), ServerError> {
         let (ports_in_use, sessions_in_use) = {
-            let guard = self.gateway_sessions.read().unwrap();
+            let guard = self.gateway_sessions.borrow();
             (guard.get_ports_in_use(), guard.get_sessions_in_use())
         };
         let allocated_ports = self
@@ -639,13 +649,15 @@ impl GatewayManager {
             .session_allocator
             .allocate(&sessions_in_use)
             .map_err(|e| ServerError::ResourceAllocationError(e.to_string()))?;
+        let publication_uri =
+            CString::new(reply_uri(hello_source, ports[1], dedicated_session_id)?)
+                .expect("Aeron source identity contains no NUL");
 
-        if !self.gateway_sessions.write().unwrap().reserve(
-            gateway_id,
-            dedicated_session_id,
-            ports,
-            now,
-        ) {
+        if !self
+            .gateway_sessions
+            .borrow_mut()
+            .reserve(gateway_id, dedicated_session_id, ports, now)
+        {
             return Err(ServerError::GatewayMessageError(format!(
                 "Gateway gateway-{gateway_id} became occupied during allocation"
             )));
@@ -662,11 +674,6 @@ impl GatewayManager {
             tx: self.session_event_tx.clone(),
         });
 
-        let publication_uri = CString::new(format!(
-            "aeron:udp?control={}:{}|control-mode=dynamic|session-id={dedicated_session_id}",
-            self.config.local_address, ports[1]
-        ))
-        .expect("controlled Aeron publication URI contains no NUL");
         let subscription_uri = CString::new(format!(
             "aeron:udp?endpoint={}:{}|session-id={dedicated_session_id}",
             self.config.local_address, ports[0]
@@ -841,7 +848,7 @@ impl GatewayManager {
                 Arc::clone(&self.publications),
             );
             let attach_result = {
-                self.gateway_sessions.write().unwrap().attach_duologue(
+                self.gateway_sessions.borrow_mut().attach_duologue(
                     pending.gateway_id,
                     pending.dedicated_session_id,
                     gateway_session,
@@ -878,7 +885,7 @@ impl GatewayManager {
                 gateway_id = pending.gateway_id,
                 session = format_args!("{:#x}", pending.dedicated_session_id),
                 data_port = pending.ports[0],
-                control_port = pending.ports[1]
+                reply_port = pending.ports[1]
             );
         }
 
@@ -886,6 +893,7 @@ impl GatewayManager {
             return Ok(PendingHandshakeStatus::Pending);
         }
 
+        // ACCEPT <order port the core listens on> <reply port the gateway listens on> <masked session>
         let accept_msg = format!(
             "{} gateway-{} ACCEPT {} {} {}",
             pending.handshake_session_id,
@@ -902,7 +910,7 @@ impl GatewayManager {
                     gateway_id = pending.gateway_id,
                     session = format_args!("{:#x}", pending.dedicated_session_id),
                     data_port = pending.ports[0],
-                    control_port = pending.ports[1]
+                    reply_port = pending.ports[1]
                 );
                 Ok(PendingHandshakeStatus::Complete)
             }
@@ -921,7 +929,7 @@ impl GatewayManager {
 
     fn reap_idle_handshakes(&self) {
         let now = Instant::now();
-        let expired = self.gateway_sessions.read().unwrap().expired_pending(now);
+        let expired = self.gateway_sessions.borrow().expired_pending(now);
         for gateway_id in expired {
             warn!(
                 target: "gateway_manager",
@@ -940,17 +948,13 @@ impl GatewayManager {
         }
     }
 
-    fn authenticate_gateway(&self, credentials: i32) -> Result<(), ServerError> {
-        authenticate_gateway(&self.authentication_key, credentials)
-    }
-
     /// Removes a gateway session and frees all associated resources
     pub fn remove_gateway_session(&self, gateway_id: u8) -> Result<(), ServerError> {
         if (gateway_id as usize) < MAX_GATEWAYS {
             self.pending_handshakes.borrow_mut()[gateway_id as usize] = None;
         }
 
-        let slot = match self.gateway_sessions.write().unwrap().remove(gateway_id) {
+        let slot = match self.gateway_sessions.borrow_mut().remove(gateway_id) {
             Some(slot) => slot,
             None => {
                 return Err(ServerError::GatewayMessageError(format!(
@@ -976,18 +980,30 @@ impl GatewayManager {
 
         // Mark ports as recently freed to avoid OS-level port binding race conditions
         // The OS may still have the UDP port bound even after Aeron closes the subscription
-        let ports_to_free = [slot.port_data, slot.port_control];
+        let ports_to_free = [slot.port_data, slot.port_reply];
         self.port_allocator.mark_freed(&ports_to_free);
         debug!(
             target: "gateway_manager",
             action = "ports_marked_freed",
             gateway_id,
             data_port = ports_to_free[0],
-            control_port = ports_to_free[1]
+            reply_port = ports_to_free[1]
         );
 
         Ok(())
     }
+}
+
+/// The gateway's reply endpoint: the host that sent HELLO, on the reply port the core allocated.
+/// Unicast, so no one else can join the channel and read the replies.
+fn reply_uri(hello_source: &str, port: u16, session_id: i32) -> Result<String, ServerError> {
+    // Aeron's source identity is `host:port`, `[v6 host]:port` for IPv6.
+    let (host, _) = hello_source.rsplit_once(':').ok_or_else(|| {
+        ServerError::GatewayMessageError(format!("HELLO source {hello_source} has no host"))
+    })?;
+    Ok(format!(
+        "aeron:udp?endpoint={host}:{port}|session-id={session_id}"
+    ))
 }
 
 /// Frees the image handlers of a dedicated subscription that never attached to a session. Aeron
@@ -1020,25 +1036,21 @@ fn release_unattached_image_handlers(
     }
 }
 
-fn constant_time_i32_eq(left: i32, right: i32) -> bool {
-    let mut difference = 0_u8;
-    for (left_byte, right_byte) in left.to_ne_bytes().iter().zip(right.to_ne_bytes()) {
-        difference |= left_byte ^ right_byte;
-    }
-    difference == 0
-}
-
+/// Compares every byte whatever the first difference, so the time taken does not tell a guess
+/// how much of it was right.
 fn authenticate_gateway(
     authentication_key: &GatewayAuthenticationKey,
-    credentials: i32,
+    credential: &str,
 ) -> Result<(), ServerError> {
-    let expected = authentication_key.as_i32().ok_or_else(|| {
-        ServerError::ConfigurationError(
-            "Gateway authentication key must be a signed 32-bit integer".to_string(),
-        )
-    })?;
-
-    if constant_time_i32_eq(expected, credentials) {
+    let (key, credential) = (
+        authentication_key.as_str().as_bytes(),
+        credential.as_bytes(),
+    );
+    let mut difference = u8::from(key.len() != credential.len());
+    for i in 0..key.len().max(credential.len()) {
+        difference |= key.get(i).copied().unwrap_or(0) ^ credential.get(i).copied().unwrap_or(0);
+    }
+    if difference == 0 {
         Ok(())
     } else {
         Err(ServerError::AuthenticationError(
@@ -1054,11 +1066,10 @@ pub(super) fn validate_authentication_config(
     enable_authentication: bool,
     authentication_key: &GatewayAuthenticationKey,
 ) -> Result<(), ServerError> {
-    if enable_authentication && authentication_key.as_i32().is_none() {
-        return Err(ServerError::ConfigurationError(
-            "Gateway authentication is enabled but the authentication key is not a signed 32-bit integer"
-                .to_string(),
-        ));
+    if enable_authentication {
+        authentication_key
+            .check()
+            .map_err(ServerError::ConfigurationError)?;
     }
     Ok(())
 }
@@ -1067,12 +1078,14 @@ pub(super) fn validate_authentication_config(
 mod tests {
     use super::*;
     use crate::server::VexCoreServer;
+    use crate::server::gateway_publications::SLOW_GATEWAY_TIMEOUT;
     use crate::server::progress::{DRAIN_TIMEOUT, wait_until};
     use common::{ORDERCOMMANDSIZE, encode_order_command};
     use disruptor::{BusySpin, build_multi_producer};
     use rusteron_archive::{
-        AeronAvailableImageCallback, AeronImage, AeronNotificationCallback,
-        AeronReservedValueSupplierLogger, AeronUnavailableImageLogger, IntoCString,
+        AeronAvailableImageCallback, AeronAvailableImageLogger, AeronImage,
+        AeronNotificationCallback, AeronReservedValueSupplierLogger, AeronUnavailableImageLogger,
+        IntoCString,
     };
     use rusteron_media_driver::{AeronCError, AeronDriver, AeronDriverContext};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1271,7 +1284,7 @@ mod tests {
             Arc::clone(&manager.publications),
         );
         {
-            let mut sessions = manager.gateway_sessions.write().unwrap();
+            let mut sessions = manager.gateway_sessions.borrow_mut();
             assert!(sessions.reserve(1, 101, [10_000, 10_001], Instant::now()));
             assert!(sessions.attach_duologue(1, 101, session).is_ok());
         }
@@ -1345,6 +1358,166 @@ mod tests {
         );
     }
 
+    /// A gateway that stops reading its replies must neither stall the replies to the others nor
+    /// keep its session: its replies are offered once and dropped, and after the slow-gateway
+    /// timeout the server thread closes its session.
+    ///
+    /// Runs an embedded media driver; the reply channels use IPC, so it binds no port.
+    #[test]
+    fn a_gateway_that_stops_reading_replies_loses_its_session() {
+        let driver = EmbeddedDriver::launch(format!(
+            "/dev/shm/vex-slow-gateway-test-{}",
+            std::process::id()
+        ));
+        let mut config = CoreNetworkingConfig::test_defaults();
+        config.context_dir = driver.dir.clone();
+        let aeron = VexCoreServer::initialize_aeron(&config).unwrap();
+        let producer = build_multi_producer(64, OrderCommand::default, BusySpin)
+            .handle_events_with(|_, _, _| {})
+            .build();
+        let publications = Arc::new(Publications::new());
+        let manager = GatewayManager::new(
+            config,
+            GatewayAuthenticationKey::default(),
+            aeron.clone(),
+            producer.clone(),
+            Arc::clone(&publications),
+        )
+        .unwrap();
+
+        // Two sessions, each with its reply channel and the gateway subscribed to it.
+        let reply_channel = |gateway_id: u8| {
+            let stream_id = DUOLOGUE_STREAM_ID + 10 + i32::from(gateway_id);
+            let publication = aeron
+                .add_publication(
+                    &"aeron:ipc?term-length=65536".into_c_string(),
+                    stream_id,
+                    DRAIN_TIMEOUT,
+                )
+                .unwrap();
+            let subscription = aeron
+                .add_subscription(
+                    &"aeron:ipc".into_c_string(),
+                    stream_id,
+                    None::<&Handler<AeronAvailableImageLogger>>,
+                    None::<&Handler<AeronUnavailableImageLogger>>,
+                    DRAIN_TIMEOUT,
+                )
+                .unwrap();
+            wait_until(DRAIN_TIMEOUT, || Ok(publication.is_connected())).unwrap();
+            assert!(manager.reserve_slot(gateway_id, 100 + i32::from(gateway_id)));
+            let publication = Arc::new(publication);
+            publications
+                .set(gateway_id, Arc::clone(&publication))
+                .unwrap();
+            (publication, subscription)
+        };
+        // Gateway 1 never reads its replies; gateway 2 reads each one.
+        let (slow_reply, _slow_gateway) = reply_channel(1);
+        let (_, gateway) = reply_channel(2);
+        let reply = |gateway_id: u8| OrderCommand {
+            route_gateway_id: gateway_id,
+            ..OrderCommand::default()
+        };
+        let answer_gateway_2 = || {
+            publications.publish_response(&reply(2));
+            wait_until(DRAIN_TIMEOUT, || Ok(gateway.poll_once(|_, _| {}, 1)? == 1)).unwrap();
+        };
+
+        // Fill gateway 1's window.
+        for _ in 0..10_000 {
+            if slow_reply.position() >= slow_reply.position_limit() {
+                break;
+            }
+            publications.publish_response(&reply(1));
+            answer_gateway_2();
+        }
+        assert!(slow_reply.position() >= slow_reply.position_limit());
+
+        // Its replies now fail, at the cost of one offer each, never a wait.
+        let started = Instant::now();
+        for _ in 0..20 {
+            publications.publish_response(&reply(1));
+        }
+        let stalled = started.elapsed();
+        assert!(
+            stalled < Duration::from_millis(100),
+            "20 replies to a gateway that does not read took {stalled:?}"
+        );
+        answer_gateway_2();
+        manager.poll().unwrap();
+        assert!(manager.is_gateway_connected(1));
+
+        // Undeliverable for the timeout: its session goes, gateway 2's stays.
+        std::thread::sleep(SLOW_GATEWAY_TIMEOUT);
+        publications.publish_response(&reply(1));
+        manager.poll().unwrap();
+        assert!(!manager.is_gateway_connected(1));
+        assert!(publications.get(1).unwrap().is_none());
+        assert!(manager.is_gateway_connected(2));
+        assert!(publications.get(2).unwrap().is_some());
+        answer_gateway_2();
+    }
+
+    /// Runs an embedded media driver; the handshake reply uses IPC, so it binds no port.
+    #[test]
+    fn allocation_failure_after_authentication_answers_unavailable() {
+        let driver = EmbeddedDriver::launch(format!(
+            "/dev/shm/vex-unavailable-test-{}",
+            std::process::id()
+        ));
+        let mut config = CoreNetworkingConfig::test_defaults();
+        config.context_dir = driver.dir.clone();
+        let aeron = VexCoreServer::initialize_aeron(&config).unwrap();
+        let producer = build_multi_producer(64, OrderCommand::default, BusySpin)
+            .handle_events_with(|_, _, _| {})
+            .build();
+        let manager = GatewayManager::new(
+            config.clone(),
+            GatewayAuthenticationKey::default(),
+            aeron.clone(),
+            producer,
+            Arc::new(Publications::new()),
+        )
+        .unwrap();
+        // Every port of the pool in its cooldown, as after a burst of reconnects.
+        let pool: Vec<u16> = (config.base_gateway_port..).take(PORT_POOL).collect();
+        manager.port_allocator.mark_freed(&pool);
+
+        let channel = "aeron:ipc".into_c_string();
+        let replies = aeron
+            .add_subscription(
+                &channel,
+                DUOLOGUE_STREAM_ID,
+                None::<&Handler<AeronAvailableImageLogger>>,
+                None::<&Handler<AeronUnavailableImageLogger>>,
+                DRAIN_TIMEOUT,
+            )
+            .unwrap();
+        let handshake = aeron
+            .add_publication(&channel, DUOLOGUE_STREAM_ID, DRAIN_TIMEOUT)
+            .unwrap();
+        wait_until(DRAIN_TIMEOUT, || Ok(handshake.is_connected())).unwrap();
+
+        let hello = b"HELLO gateway-1 - 3";
+        assert!(matches!(
+            manager.process_handshake_message(&handshake, 7, "127.0.0.1:40000", hello),
+            Err(ServerError::ResourceAllocationError(_))
+        ));
+
+        let mut reply = String::new();
+        wait_until(DRAIN_TIMEOUT, || {
+            let read = replies.poll_once(
+                |message, _| reply = String::from_utf8_lossy(message).into_owned(),
+                1,
+            )?;
+            Ok(read == 1)
+        })
+        .unwrap();
+        assert_eq!(reply, "7 gateway-1 UNAVAILABLE 10");
+        assert!(!manager.is_gateway_connected(1));
+    }
+
     #[test]
     fn handshake_rate_limit_uses_a_rolling_window() {
         let start = Instant::now();
@@ -1359,45 +1532,45 @@ mod tests {
     }
 
     #[test]
-    fn correct_gateway_credential_is_accepted() {
-        let key = GatewayAuthenticationKey::from("123456789");
-        assert!(authenticate_gateway(&key, 123456789).is_ok());
+    fn reply_publication_is_unicast_to_the_hello_host() {
+        assert_eq!(
+            reply_uri("172.28.0.7:41234", 50_001, 77).unwrap(),
+            "aeron:udp?endpoint=172.28.0.7:50001|session-id=77"
+        );
+        assert_eq!(
+            reply_uri("[fd00::7]:41234", 50_001, 77).unwrap(),
+            "aeron:udp?endpoint=[fd00::7]:50001|session-id=77"
+        );
+        assert!(reply_uri("aeron-session-5", 50_001, 77).is_err());
     }
 
     #[test]
-    fn enabled_authentication_requires_a_signed_32_bit_key() {
-        for key in ["", "not-a-number", "2147483648"] {
+    fn credential_is_compared_as_bytes() {
+        let hex64 = "0123456789abcdef".repeat(4);
+        let key = GatewayAuthenticationKey::from(hex64.as_str());
+        let one_off = format!("{}0", &hex64[..63]);
+
+        assert!(authenticate_gateway(&key, &hex64).is_ok());
+        assert!(authenticate_gateway(&key, &one_off).is_err());
+        assert!(authenticate_gateway(&key, &hex64[..32]).is_err());
+        assert!(authenticate_gateway(&key, &format!("{hex64}0")).is_err());
+    }
+
+    #[test]
+    fn enabled_authentication_requires_a_long_key() {
+        for key in ["", "123456789", &"a b".repeat(16)] {
             assert!(matches!(
                 validate_authentication_config(true, &GatewayAuthenticationKey::from(key)),
                 Err(ServerError::ConfigurationError(_))
             ));
         }
+        let hex64 = "0123456789abcdef".repeat(4);
         assert!(
-            validate_authentication_config(true, &GatewayAuthenticationKey::from("-123456789"))
+            validate_authentication_config(true, &GatewayAuthenticationKey::from(hex64.as_str()))
                 .is_ok()
         );
         assert!(
             validate_authentication_config(false, &GatewayAuthenticationKey::default()).is_ok()
         );
-    }
-
-    #[test]
-    fn wrong_gateway_credential_is_rejected_without_a_slot() {
-        let key = GatewayAuthenticationKey::from("123456789");
-        let sessions = Session::new();
-
-        assert!(authenticate_gateway(&key, 987654321).is_err());
-        assert!(!sessions.is_gateway_connected(1));
-    }
-
-    #[test]
-    fn port_allocator_has_two_ports_for_every_gateway() {
-        let allocator = PortAllocator::new(
-            10_000,
-            gateway_port_capacity(MAX_GATEWAYS.try_into().unwrap()),
-        )
-        .unwrap();
-
-        assert_eq!(allocator.total_ports(), MAX_GATEWAYS * PORTS_PER_GATEWAY);
     }
 }

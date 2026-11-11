@@ -1,9 +1,6 @@
-use rusteron_archive::{
-    AeronAvailableImageCallback, AeronFragmentHandlerCallback, AeronHeader, AeronImage,
-    AeronPublication, AeronSubscription, AeronUnavailableImageCallback,
-};
+use rusteron_archive::{AeronFragmentHandlerCallback, AeronHeader, AeronImage, AeronPublication};
 use std::rc::Rc;
-use tracing::{debug, error};
+use tracing::error;
 
 use super::gateway_manager::GatewayManager;
 
@@ -50,7 +47,6 @@ impl AeronFragmentHandlerCallback for HandshakeMessageHandler {
         }
         .unwrap_or_else(|| format!("aeron-session-{session_id}"));
 
-        // Process the handshake message
         if let Err(e) =
             self.gateways
                 .process_handshake_message(&self.publication, session_id, &source, buffer)
@@ -62,67 +58,5 @@ impl AeronFragmentHandlerCallback for HandshakeMessageHandler {
                 error = %e
             );
         }
-    }
-}
-
-/// Handles gateway image availability events
-pub struct GatewayImageAvailableHandler;
-
-impl AeronAvailableImageCallback for GatewayImageAvailableHandler {
-    fn handle_aeron_on_available_image(
-        &mut self,
-        _subscription: AeronSubscription,
-        image: AeronImage,
-    ) {
-        let (session_id, binding) = match image.get_constants() {
-            Ok(b) => (b.session_id, b),
-            Err(e) => {
-                error!(
-                    target: "gateway_handler",
-                    action = "image_constants_failed",
-                    error = %e
-                );
-                return;
-            }
-        };
-        let address = binding.source_identity();
-
-        debug!(
-            target: "gateway_handler",
-            action = "image_available",
-            session = format_args!("{:#x}", session_id),
-            address = %address
-        );
-    }
-}
-
-/// Handles gateway image unavailability events
-pub struct GatewayImageUnavailableHandler;
-
-impl AeronUnavailableImageCallback for GatewayImageUnavailableHandler {
-    fn handle_aeron_on_unavailable_image(
-        &mut self,
-        _subscription: AeronSubscription,
-        image: AeronImage,
-    ) {
-        let (session_id, binding) = match image.get_constants() {
-            Ok(b) => (b.session_id, b),
-            Err(e) => {
-                error!(
-                    target: "gateway_handler",
-                    action = "image_constants_failed",
-                    error = %e
-                );
-                return;
-            }
-        };
-        let address = binding.source_identity();
-
-        debug!(
-            target: "gateway_handler",
-            action = "image_unavailable",
-            session = format_args!("{:#x}", session_id),
-            address = %address
-        );
     }
 }

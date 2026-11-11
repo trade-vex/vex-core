@@ -662,7 +662,7 @@ The following examples trace order processing through all pipeline stages with c
 - Gateway response via Aeron:
   ```rust
   publications.publish_response(&cmd)
-  // Sends to gateway 3's MDC control port
+  // Sends to gateway 3's reply port
   ```
 - Client receives confirmation: Order 0x0001A2B3C4D50003 placed successfully
 
@@ -1088,15 +1088,11 @@ aeron:udp?endpoint={address}:{port}|session-id={session}
 
 ### Port Allocation
 
-**PortAllocator**: Randomly selects ports from `[base_gateway_port, base_gateway_port + max_gateways)`.
-
-**Why Random**: Reduces effectiveness of sequential port scanning. Avoids predictable port assignment patterns.
-
-**Collision Detection**: Tracks allocated ports in `Session` struct. Allocation loops until finding unused port or reaching max attempts.
+**PortAllocator**: Hands out the lowest free ports of `[base_gateway_port, base_gateway_port + 64)`: two per gateway for the 16 slots (`MAX_GATEWAYS`), and as many again for ports in their 10 s cooldown after a full turnover. The ports in use are read from the `Session` struct; when no pair is free, the core answers `UNAVAILABLE 10`.
 
 **Two Ports Per Gateway**:
 - Data port: Gateway sends orders to core
-- Control port: Core sends responses to gateway via MDC
+- Reply port: Core sends responses unicast to the host that sent HELLO
 
 ### Gateway Handshake Protocol
 
@@ -1108,19 +1104,19 @@ aeron:udp?endpoint={address}:{port}|session-id={session}
    publication and its MDC reply subscription are connected: the core answers once, and a reply
    sent before the subscription joins is lost
 2. Core authenticates the credential (when enabled) and validates gateway_id < MAX_GATEWAYS
-3. Core allocates session_id and two ports (data, control)
-4. Core responds `{hello_session} gateway-{id} ACCEPT {data_port} {control_port} {session_id XOR encryption_key}`
+3. Core allocates session_id and two ports (data, reply)
+4. Core responds `{hello_session} gateway-{id} ACCEPT {data_port} {reply_port} {session_id XOR encryption_key}`
    via MDC publication; the mask is never the credential, so ACCEPT cannot leak it
 
 **Phase 2 - Duologue Establishment**:
 
 5. Core creates:
    - Subscription for gateway orders: `aeron:udp?endpoint={core}:{data_port}|session-id={session}`
-   - MDC publication for responses: `aeron:udp?control={core}:{control_port}|control-mode=dynamic|session-id={session}`
+   - Publication for responses, unicast to the HELLO source host: `aeron:udp?endpoint={gateway host}:{reply_port}|session-id={session}`
 
 6. Gateway creates:
    - Publication for orders: `aeron:udp?endpoint={core}:{data_port}|session-id={session}`
-   - Subscription for responses: `aeron:udp?control={core}:{control_port}|control-mode=dynamic|session-id={session}`
+   - Subscription for responses: `aeron:udp?endpoint=0.0.0.0:{reply_port}|session-id={session}`
 
 7. Connection established
 
@@ -1231,10 +1227,11 @@ During the replay, journaling skips every command (they are journaled already), 
 4. Closes duologue, removes publication, releases resources
 
 **Shutdown** (on the server thread, once the shutdown flag is set):
-1. Closes every gateway duologue, connected or not, releasing its ring producer (see Asynchronous Close), then the handshake subscription and its handlers
-2. Drains the pipeline, then waits until the archive has recorded everything journaling offered
+1. Closes the handshake subscription and its handlers; the poll loop has stopped, so no command is read any more
+2. Drains the pipeline, which answers every accepted command through the still-open sessions, then waits until the archive has recorded everything journaling offered
 3. Stops archive recording via `stop_recording_subscription()` and closes the archive connection
-4. Drops the server, with its Aeron client, then the last ring producer: the pipeline joins its consumers, and the events stage delivers what it holds within its 20 s grace and writes the delivered watermark
+4. Closes every gateway duologue, connected or not, releasing its ring producer (see Asynchronous Close)
+5. Drops the server, with its Aeron client, then the last ring producer: the pipeline joins its consumers, and the events stage delivers what it holds within its 20 s grace and writes the delivered watermark
 
 ### Message Encoding
 
@@ -1254,7 +1251,7 @@ fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) 
     let cmd = decode_order_command(buffer)?;
     if self.producer.try_publish(|target| { *target = cmd.clone(); }).is_err() {
         // Ring full: nothing enqueued, so tell the gateway to retry.
-        self.publications.try_publish_response(&busy_response(cmd)); // one offer, never sleeps
+        self.publications.publish_response(&busy_response(cmd)); // one offer, never sleeps
     }
 }
 ```
@@ -1271,7 +1268,11 @@ fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) 
 
 **Thread Safety**: `Publication` is thread-safe. `Subscription` is not (polled from single thread).
 
-**Back-Pressure**: `publication.offer()` returns negative codes when buffer full. VEX-CORE does not queue: a pipeline response is re-offered at most 10 times with 1 ms backoff (`Publications::publish_response`), while the ingress thread's ring-full `Busy` reply is offered once and never sleeps (`Publications::try_publish_response`).
+**Back-Pressure**: `publication.offer()` returns negative codes when buffer full. VEX-CORE does not queue: every reply (a pipeline response or the ingress thread's ring-full `Busy`) is offered once and never sleeps (`Publications::publish_response`); a gateway whose replies fail for `SLOW_GATEWAY_TIMEOUT` (1 s) loses its session and reconnects. The invariants:
+1. The events thread never sleeps for a gateway. It offers each reply once (`offer_once`: one immediate re-offer only on `ADMIN_ACTION`).
+2. A command's Kafka events are published before its reply, so a dropped reply is resolved from the read model.
+3. A reply is dropped only when its gateway's channel is full or gone; a gateway undeliverable for 1 s loses its session (the events thread drops its reply publication, the server thread's next poll closes the session); once the gateway sees the close (Aeron's `publication.connection.timeout`, 5 s), its waiting requests fail (408), its new orders are refused (503), and it reconnects.
+4. At shutdown, sessions outlive the drain: every accepted command is answered before any session closes.
 
 **Gateway Send Outcomes**: `Publisher::try_send_order_command` never sleeps. `BACK_PRESSURED` returns `GatewayError::Busy`, as does an `ADMIN_ACTION` (log-buffer term rotation) that persists across one immediate re-offer; `NOT_CONNECTED` (no core subscribed) returns `GatewayError::NotConnected`; any other failure (`CLOSED`, `MAX_POSITION_EXCEEDED`, `ERROR`) is `GatewayError::SendError`. `GatewayError::Busy` and a `Status::Busy` reply are the same retryable outcome.
 

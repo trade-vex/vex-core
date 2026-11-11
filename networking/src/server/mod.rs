@@ -6,25 +6,15 @@
 //!
 //! ## Key Features
 //! - High-performance gateway connection management
-//! - Concurrent session handling with lock-free data structures
+//! - Session handling on one thread, without locks
 //! - Automatic resource cleanup and connection lifecycle management
-//! - Configurable connection limits and authentication
+//! - Up to `MAX_GATEWAYS` gateways, with handshake authentication
 //!
-//! ## Rchitecture
+//! ## Architecture
 //! The server is built around three main components:
 //! - `VexCoreServer`: Main server orchestrating connections and cleanup
 //! - `GatewayManager`: Handles individual gateway sessions and handshakes
 //! - Message handlers: Process Aeron image and fragment events
-//!
-//! ## Usage
-//! ```ignore, rust,no_run
-//! use networking::server::{VexCoreServer};
-//! use vex_config::CoreNetworkingConfig;
-//!
-//! let config = CoreNetworkingConfig::test_defaults();
-//! let mut server = VexCoreServer::new(config).unwrap();
-//! server.start().unwrap(); // Runs indefinitely
-//! ```
 
 mod cmd_handler;
 mod duologue;
@@ -37,9 +27,7 @@ mod recovery_tests;
 mod replay;
 
 use crate::server::cmd_handler::ReplayFragmentHandler;
-use crate::server::gateway_handler::{
-    GatewayImageAvailableHandler, GatewayImageUnavailableHandler, HandshakeMessageHandler,
-};
+use crate::server::gateway_handler::HandshakeMessageHandler;
 use crate::server::gateway_manager::GatewayManager;
 use crate::server::replay::{
     ExtendedRecordingDescriptor, JournalHolders, RecorderDescriptorReader, RecordingCounter,
@@ -50,7 +38,7 @@ use crate::server::replay::{
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
 use common::{OrderCommand, decode_order_command};
 use disruptor::{MultiProducer, SingleConsumerBarrier};
-use progress::{DRAIN_TIMEOUT, finish_shutdown, wait_until};
+use progress::{DRAIN_TIMEOUT, wait_until};
 use rusteron_archive::bindings::AERON_NULL_COUNTER_ID;
 use rusteron_archive::{
     Aeron, AeronArchiveAsyncConnect, AeronArchiveReplayParams, AeronAvailableImageLogger,
@@ -166,10 +154,6 @@ pub struct VexCoreServer {
     gateways: Rc<GatewayManager>,
     /// Shared shutdown flag
     shutdown: Arc<AtomicBool>,
-    /// Image available handler
-    image_available_handler: Handler<GatewayImageAvailableHandler>,
-    /// Image unavailable handler
-    image_unavailable_handler: Handler<GatewayImageUnavailableHandler>,
     /// Handshake message handler
     handshake_handler: Handler<HandshakeMessageHandler>,
     /// Subscription for handshake messages
@@ -307,9 +291,6 @@ impl VexCoreServer {
             (None, None, None)
         };
 
-        let image_available_handler = Handler::leak(GatewayImageAvailableHandler);
-        let image_unavailable_handler = Handler::leak(GatewayImageUnavailableHandler);
-
         let publication = new_publication_with_mdc(
             &aeron,
             &config.local_address,
@@ -323,8 +304,8 @@ impl VexCoreServer {
             &config.local_address,
             config.initial_port,
             ALL_GATEWAYS_STREAM_ID,
-            Some(&image_available_handler),
-            Some(&image_unavailable_handler),
+            None::<&Handler<AeronAvailableImageLogger>>,
+            None::<&Handler<AeronUnavailableImageLogger>>,
         )?;
 
         let gateways = Rc::new(GatewayManager::new(
@@ -347,8 +328,6 @@ impl VexCoreServer {
             subscription,
             handshake_handler: Handler::leak(handshake_handler),
             shutdown,
-            image_available_handler,
-            image_unavailable_handler,
             subscription_id,
             archive,
             publications,
@@ -408,7 +387,7 @@ impl VexCoreServer {
 
     /// Gracefully shuts down the core server
     ///
-    /// Closes all active gateway connections and cleans up resources.
+    /// Drains the pipeline, waits for the archive, then closes every gateway session.
     /// This method should only be called when the shutdown flag is already set.
     ///
     /// # Returns
@@ -420,50 +399,45 @@ impl VexCoreServer {
             core_id = %self.config.core_id
         );
 
-        self.gateways.shutdown_all_gateways()?;
+        // The poll loop has returned, so no command is read any more. Sessions stay open: the
+        // drain answers every accepted command through them.
+        // shortcut: a gateway's orders offered after this point, before it sees its session close
+        // (<= publication.connection.timeout, 5 s), are never read and end as 408 at the gateway;
+        // upgrade to a CLOSING notice on the reply stream when deploys under load show it.
         self.subscription.close::<AeronNotificationLogger>(None)?;
-        self.image_available_handler.release();
-        self.image_unavailable_handler.release();
         self.handshake_handler.release();
-        // Ingress is closed. Keep the recording subscription and client alive until
-        // accepted commands finish journaling and the archive catches the publication.
-        finish_shutdown(
-            || self.publications.drain_pipeline(),
-            || {
-                if let (Some(archive), Some(recording_id), Some(publication)) = (
-                    self.archive.as_ref(),
-                    self.recording_id,
-                    self.publications.archive_publication(),
-                ) {
-                    let target = publication.position();
-                    if target < 0 {
-                        return Err(ServerError::DrainError(format!(
-                            "archive publication position: {target}"
-                        )));
-                    }
-                    wait_until(DRAIN_TIMEOUT, || {
-                        Ok(archive.get_max_recorded_position(recording_id)? >= target)
-                    })
-                    .map_err(|error| {
-                        ServerError::DrainError(format!(
-                            "recording {recording_id} did not reach publication position {target}: {error}"
-                        ))
-                    })?;
-                }
-                Ok(())
-            },
-            || {
-                if let Some(sub_id) = self.subscription_id
-                    && let Some(ref archive) = self.archive
-                {
-                    archive.stop_recording_subscription(sub_id)?;
-                }
-                if let Some(ref archive) = self.archive {
-                    archive.close()?;
-                }
-                Ok(())
-            },
-        )?;
+        // A failure below leaves the recording open on purpose: the next start needs it.
+        self.publications.drain_pipeline()?;
+        if let (Some(archive), Some(recording_id), Some(publication)) = (
+            self.archive.as_ref(),
+            self.recording_id,
+            self.publications.archive_publication(),
+        ) {
+            let target = publication.position();
+            if target < 0 {
+                return Err(ServerError::DrainError(format!(
+                    "archive publication position: {target}"
+                )));
+            }
+            wait_until(DRAIN_TIMEOUT, || {
+                Ok(archive.get_max_recorded_position(recording_id)? >= target)
+            })
+            .map_err(|error| {
+                ServerError::DrainError(format!(
+                    "recording {recording_id} did not reach publication position {target}: {error}"
+                ))
+            })?;
+        }
+        if let Some(sub_id) = self.subscription_id
+            && let Some(ref archive) = self.archive
+        {
+            archive.stop_recording_subscription(sub_id)?;
+        }
+        if let Some(ref archive) = self.archive {
+            archive.close()?;
+        }
+        // Every reply went out during the drain; only now drop the gateway sessions.
+        self.gateways.shutdown_all_gateways()?;
 
         info!(
             target: "core_server",
@@ -475,11 +449,6 @@ impl VexCoreServer {
 
     /// Validates the core configuration
     fn validate_config(config: &CoreNetworkingConfig) -> Result<(), ServerError> {
-        if config.max_gateways == 0 {
-            return Err(ServerError::ConfigurationError(
-                "Max gateways must be greater than 0".to_string(),
-            ));
-        }
         if config.core_id.is_empty() {
             return Err(ServerError::ConfigurationError(
                 "Core ID cannot be empty".to_string(),
