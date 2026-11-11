@@ -642,10 +642,13 @@ fn producer_config(brokers: &str) -> ClientConfig {
 }
 
 /// The producer's context: logs each delivery report, counts each acknowledged event off its
-/// command's [`Watermark`] entry, and aborts on a failed delivery of an event. Its callbacks run on
-/// the producer's polling thread, and on a thread that flushes it.
+/// command's [`Watermark`] entry, hands each acknowledged watermark record to `publications`, and
+/// aborts on a failed delivery of an event. Its callbacks run on the producer's polling thread,
+/// and on a thread that flushes it.
 struct DeliveryLog {
     shutdown: Shutdown,
+    /// Where an acknowledged W goes: the snapshot purge must never pass a W a restart may not read.
+    publications: Arc<Publications>,
     /// The failed deliveries of watermark records, and when one was last logged.
     watermark_failures: Mutex<StallLog>,
 }
@@ -696,12 +699,20 @@ impl ProducerContext for DeliveryLog {
 }
 
 impl DeliveryLog {
-    /// A watermark record's delivery report. A lost record leaves the previous watermark in
-    /// place, which only makes the next start re-publish more, so a failure is logged
-    /// (rate-limited) and otherwise ignored; it never aborts.
+    /// A watermark record's delivery report. An acknowledged record raises
+    /// [`Publications::delivered`]. A lost record leaves the previous watermark in place, both in
+    /// Kafka and in memory, which only makes the next start re-publish more, so a failure is
+    /// logged (rate-limited) and otherwise ignored; it never aborts.
     fn watermark_delivered(&self, result: &DeliveryResult<'_>) {
-        let Err((error, _)) = result else {
-            return;
+        let (error, _) = match result {
+            Ok(message) => {
+                // The payload is one `encode_watermark` wrote, so it always decodes.
+                if let Ok(delivered) = decode_watermark(message.payload()) {
+                    self.publications.set_delivered(delivered);
+                }
+                return;
+            }
+            Err(failed) => failed,
         };
         let mut failures = self
             .watermark_failures
@@ -723,10 +734,15 @@ impl DeliveryLog {
 
 type EventProducer = ThreadedProducer<DeliveryLog>;
 
-fn create_producer(config: &ClientConfig, shutdown: &Shutdown) -> EventProducer {
+fn create_producer(
+    config: &ClientConfig,
+    shutdown: &Shutdown,
+    publications: Arc<Publications>,
+) -> EventProducer {
     config
         .create_with_context(DeliveryLog {
             shutdown: shutdown.clone(),
+            publications,
             watermark_failures: Mutex::default(),
         })
         .expect("Producer creation failed")
@@ -1391,7 +1407,11 @@ impl KafkaEventsHandler {
         publications.set_delivered(delivered);
 
         let shutdown = Shutdown::with_grace(SHUTDOWN_GRACE);
-        let producer = create_producer(&producer_config(brokers), &shutdown);
+        let producer = create_producer(
+            &producer_config(brokers),
+            &shutdown,
+            Arc::clone(&publications),
+        );
         let encoder = schema_encoder(schema_registry_url);
         let schema = trading_schema();
 
@@ -1403,18 +1423,12 @@ impl KafkaEventsHandler {
             schema_registry = %schema_registry_url
         );
 
-        let watermarks = Arc::clone(&publications);
         let sender = OrderedSender::spawn(SENDER_CAPACITY, shutdown.clone(), move |events| {
             let mut watermark = Watermark::starting_at(delivered);
             let mut refusals = StallLog::default();
             // Without a journal nothing replays, so nothing reads W, and nothing writes it.
-            let mut persist = |delivered| {
-                let written = !journaled || write_watermark(&producer, delivered, &mut refusals);
-                if written {
-                    watermarks.set_delivered(delivered);
-                }
-                written
-            };
+            let mut persist =
+                |delivered| !journaled || write_watermark(&producer, delivered, &mut refusals);
             let in_channel = run_sender(
                 events,
                 &shutdown,
@@ -2322,7 +2336,11 @@ mod tests {
     #[test]
     fn a_shutdown_flush_is_bounded_and_counts_what_librdkafka_still_holds() {
         let shutdown = Shutdown::with_grace(Duration::from_millis(100));
-        let producer = create_producer(&producer_config(NO_BROKER), &shutdown);
+        let producer = create_producer(
+            &producer_config(NO_BROKER),
+            &shutdown,
+            Arc::new(Publications::new()),
+        );
         let mut watermark = Watermark::default();
         let discarded = watermark.track(1);
         enqueue(
@@ -2491,7 +2509,11 @@ mod tests {
         assert_eq!(config.get("enable.idempotence"), Some("true"));
         assert_eq!(config.get("acks"), Some("all"));
         // librdkafka refuses settings that conflict with idempotence when the producer is created.
-        let _producer = create_producer(&config, &Shutdown::with_grace(SHUTDOWN_GRACE));
+        let _producer = create_producer(
+            &config,
+            &Shutdown::with_grace(SHUTDOWN_GRACE),
+            Arc::new(Publications::new()),
+        );
     }
 
     /// A producer context that sends each failed delivery, as its key and error, to the test,
@@ -3213,7 +3235,11 @@ mod tests {
     #[test]
     fn a_discarded_event_never_counts_as_delivered() {
         let shutdown = Shutdown::with_grace(SHUTDOWN_GRACE);
-        let producer = create_producer(&producer_config(NO_BROKER), &shutdown);
+        let producer = create_producer(
+            &producer_config(NO_BROKER),
+            &shutdown,
+            Arc::new(Publications::new()),
+        );
         let mut watermark = Watermark::default();
         let tracking = watermark.track(10);
         enqueue(&producer, &outbound_at("k", 10), b"0", tracking, &shutdown).unwrap();
@@ -3324,9 +3350,11 @@ mod tests {
     #[test]
     fn a_failed_watermark_delivery_is_logged_and_never_aborts() {
         // No shutdown has begun, so a failed delivery of an event would abort the test process.
+        let publications = Arc::new(Publications::new());
         let producer = create_producer(
             &producer_config(NO_BROKER),
             &Shutdown::with_grace(SHUTDOWN_GRACE),
+            Arc::clone(&publications),
         );
         assert!(write_watermark(&producer, 7, &mut StallLog::default()));
         // As a lost record would, its delivery fails.
@@ -3344,6 +3372,11 @@ mod tests {
             assert!(Instant::now() < deadline, "the purge reports the record");
             thread::sleep(Duration::from_millis(10));
         }
+        assert_eq!(
+            publications.delivered(),
+            0,
+            "a record queued but never acknowledged does not raise W"
+        );
     }
 
     fn deposit_at(user_id: u64, timestamp: u64) -> OrderCommand {

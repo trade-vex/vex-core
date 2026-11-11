@@ -135,14 +135,16 @@ impl Publications {
         self.journal_tail.store(timestamp, Ordering::Release);
     }
 
-    /// The delivered watermark W as the events stage last handed it to Kafka (the value read at
-    /// start until then): every event of every command up to this timestamp is acknowledged.
+    /// The delivered watermark W as the brokers last acknowledged its record (the value read at
+    /// start until then), so a restart reads at least this: every event of every command up to
+    /// this timestamp is acknowledged.
     pub fn delivered(&self) -> u64 {
         self.delivered.load(Ordering::Acquire)
     }
 
+    /// Raises W to `timestamp`; a lower value (a late report) leaves it.
     pub fn set_delivered(&self, timestamp: u64) {
-        self.delivered.store(timestamp, Ordering::Release);
+        self.delivered.fetch_max(timestamp, Ordering::AcqRel);
     }
 
     pub fn set(
