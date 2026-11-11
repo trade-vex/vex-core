@@ -1,6 +1,6 @@
 use crate::utils::{
     new_publication, new_publication_with_session, new_subscription_with_mdc,
-    new_subscription_with_mdc_and_session,
+    new_subscription_with_mdc_and_session, offer_once,
 };
 use common::ORDERCOMMANDSIZE;
 use common::{OrderCommand, encode_order_command, order_debug};
@@ -353,15 +353,9 @@ impl Publisher {
     }
 }
 
-/// Offers once and classifies the result. `ADMIN_ACTION` (e.g. a log-buffer term rotation) is not
-/// back-pressure; Aeron documents that the next attempt is likely to succeed, so it gets exactly
-/// one immediate re-offer. Never sleeps.
-fn offer_order(mut offer: impl FnMut() -> i64) -> Result<(), GatewayError> {
-    let mut result = offer();
-    if result == i64::from(AERON_PUBLICATION_ADMIN_ACTION) {
-        result = offer();
-    }
-    classify_order_offer_result(result)
+/// Offers once (`offer_once`) and classifies the result. Never sleeps.
+fn offer_order(offer: impl FnMut() -> i64) -> Result<(), GatewayError> {
+    classify_order_offer_result(offer_once(offer))
 }
 
 /// `CLOSED`, `MAX_POSITION_EXCEEDED`, `ERROR` and unknown codes are `SendError`: they mean this

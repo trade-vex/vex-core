@@ -1249,7 +1249,7 @@ fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) 
     let cmd = decode_order_command(buffer)?;
     if self.producer.try_publish(|target| { *target = cmd.clone(); }).is_err() {
         // Ring full: nothing enqueued, so tell the gateway to retry.
-        self.publications.try_publish_response(&busy_response(cmd)); // one offer, never sleeps
+        self.publications.publish_response(&busy_response(cmd)); // one offer, never sleeps
     }
 }
 ```
@@ -1266,7 +1266,11 @@ fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) 
 
 **Thread Safety**: `Publication` is thread-safe. `Subscription` is not (polled from single thread).
 
-**Back-Pressure**: `publication.offer()` returns negative codes when buffer full. VEX-CORE does not queue: a pipeline response is re-offered at most 10 times with 1 ms backoff (`Publications::publish_response`), while the ingress thread's ring-full `Busy` reply is offered once and never sleeps (`Publications::try_publish_response`).
+**Back-Pressure**: `publication.offer()` returns negative codes when buffer full. VEX-CORE does not queue: every reply (a pipeline response or the ingress thread's ring-full `Busy`) is offered once and never sleeps (`Publications::publish_response`); a gateway whose replies fail for `SLOW_GATEWAY_TIMEOUT` (1 s) loses its session and reconnects. The invariants:
+1. The events thread never sleeps for a gateway. It offers each reply once (`offer_once`: one immediate re-offer only on `ADMIN_ACTION`).
+2. A command's Kafka events are published before its reply, so a dropped reply is resolved from the read model.
+3. A reply is dropped only when its gateway's channel is full or gone; a gateway undeliverable for 1 s loses its session (the events thread drops its reply publication, the server thread's next poll closes the session); once the gateway sees the close (Aeron's `publication.connection.timeout`, 5 s), its waiting requests fail (408), its new orders are refused (503), and it reconnects.
+4. At shutdown, sessions outlive the drain: every accepted command is answered before any session closes.
 
 **Gateway Send Outcomes**: `Publisher::try_send_order_command` never sleeps. `BACK_PRESSURED` returns `GatewayError::Busy`, as does an `ADMIN_ACTION` (log-buffer term rotation) that persists across one immediate re-offer; `NOT_CONNECTED` (no core subscribed) returns `GatewayError::NotConnected`; any other failure (`CLOSED`, `MAX_POSITION_EXCEEDED`, `ERROR`) is `GatewayError::SendError`. `GatewayError::Busy` and a `Status::Busy` reply are the same retryable outcome.
 

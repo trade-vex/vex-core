@@ -1,6 +1,7 @@
 use crate::server::ServerError;
 use rand::Rng;
 use rand::thread_rng;
+use rusteron_archive::bindings::AERON_PUBLICATION_ADMIN_ACTION;
 use rusteron_archive::{
     Aeron, AeronAvailableImageCallback, AeronAvailableImageLogger, AeronCError, AeronPublication,
     AeronReservedValueSupplierLogger, AeronSubscription, AeronUnavailableImageCallback,
@@ -172,6 +173,17 @@ pub fn send_message(publication: &AeronPublication, buffer: &[u8]) -> Result<(),
         return Err(AeronCError::from_code(result as i32));
     }
     Ok(())
+}
+
+/// Offers once, and once more at an `ADMIN_ACTION` (a log-buffer term rotation, which Aeron
+/// documents as likely to succeed on the next attempt). Never sleeps.
+pub fn offer_once(mut offer: impl FnMut() -> i64) -> i64 {
+    let result = offer();
+    if result == i64::from(AERON_PUBLICATION_ADMIN_ACTION) {
+        offer()
+    } else {
+        result
+    }
 }
 
 pub fn send_message_with_retries(
@@ -430,6 +442,25 @@ impl SessionAllocator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offer_once_reoffers_only_an_admin_action() {
+        use rusteron_archive::bindings::AERON_PUBLICATION_BACK_PRESSURED;
+        let scripted = |results: &[i32]| {
+            let mut offers = 0;
+            let result = offer_once(|| {
+                offers += 1;
+                i64::from(results[offers - 1])
+            });
+            (result, offers)
+        };
+        let admin = AERON_PUBLICATION_ADMIN_ACTION;
+        let back_pressured = AERON_PUBLICATION_BACK_PRESSURED;
+
+        assert_eq!(scripted(&[admin, 0]), (0, 2));
+        assert_eq!(scripted(&[back_pressured]), (i64::from(back_pressured), 1));
+        assert_eq!(scripted(&[admin, admin]), (i64::from(admin), 2));
+    }
 
     #[test]
     fn session_allocator_rejects_inverted_range() {

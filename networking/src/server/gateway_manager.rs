@@ -535,6 +535,8 @@ impl GatewayManager {
     /// Polls all active gateway sessions
     pub fn poll(&self) -> Result<(), ServerError> {
         self.process_session_events();
+        // Before the handshakes, so a close is never applied to a session attached in this poll.
+        self.close_slow_gateways();
         self.process_pending_handshakes();
         self.reap_idle_handshakes();
 
@@ -551,6 +553,24 @@ impl GatewayManager {
             }
         }
         Ok(())
+    }
+
+    /// Closes the sessions whose replies could not be delivered (`Publications::publish_response`).
+    fn close_slow_gateways(&self) {
+        for gateway_id in 0..MAX_GATEWAYS as u8 {
+            if self.publications.take_closing(gateway_id) {
+                warn!(target: "gateway_manager", action = "slow_gateway_closed", gateway_id);
+                if let Err(e) = self.remove_gateway_session(gateway_id) {
+                    // Already gone: its image went unavailable in the same poll.
+                    debug!(
+                        target: "gateway_manager",
+                        action = "slow_gateway_already_closed",
+                        gateway_id,
+                        error = %e
+                    );
+                }
+            }
+        }
     }
 
     /// Shuts down all gateway connections
@@ -1078,12 +1098,14 @@ pub(super) fn validate_authentication_config(
 mod tests {
     use super::*;
     use crate::server::VexCoreServer;
+    use crate::server::gateway_publications::SLOW_GATEWAY_TIMEOUT;
     use crate::server::progress::{DRAIN_TIMEOUT, wait_until};
     use common::{ORDERCOMMANDSIZE, encode_order_command};
     use disruptor::{BusySpin, build_multi_producer};
     use rusteron_archive::{
-        AeronAvailableImageCallback, AeronImage, AeronNotificationCallback,
-        AeronReservedValueSupplierLogger, AeronUnavailableImageLogger, IntoCString,
+        AeronAvailableImageCallback, AeronAvailableImageLogger, AeronImage,
+        AeronNotificationCallback, AeronReservedValueSupplierLogger, AeronUnavailableImageLogger,
+        IntoCString,
     };
     use rusteron_media_driver::{AeronCError, AeronDriver, AeronDriverContext};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1354,6 +1376,107 @@ mod tests {
             Err(TryRecvError::Disconnected),
             "a closed session kept a ring producer, so the pipeline never joined its consumer"
         );
+    }
+
+    /// A gateway that stops reading its replies must neither stall the replies to the others nor
+    /// keep its session: its replies are offered once and dropped, and after the slow-gateway
+    /// timeout the server thread closes its session.
+    ///
+    /// Runs an embedded media driver; the reply channels use IPC, so it binds no port.
+    #[test]
+    fn a_gateway_that_stops_reading_replies_loses_its_session() {
+        let driver = EmbeddedDriver::launch(format!(
+            "/dev/shm/vex-slow-gateway-test-{}",
+            std::process::id()
+        ));
+        let mut config = CoreNetworkingConfig::test_defaults();
+        config.context_dir = driver.dir.clone();
+        let aeron = VexCoreServer::initialize_aeron(&config).unwrap();
+        let producer = build_multi_producer(64, OrderCommand::default, BusySpin)
+            .handle_events_with(|_, _, _| {})
+            .build();
+        let publications = Arc::new(Publications::new());
+        let manager = GatewayManager::new(
+            config,
+            GatewayAuthenticationKey::default(),
+            aeron.clone(),
+            producer.clone(),
+            Arc::clone(&publications),
+        )
+        .unwrap();
+
+        // Two sessions, each with its reply channel and the gateway subscribed to it.
+        let reply_channel = |gateway_id: u8| {
+            let stream_id = DUOLOGUE_STREAM_ID + 10 + i32::from(gateway_id);
+            let publication = aeron
+                .add_publication(
+                    &"aeron:ipc?term-length=65536".into_c_string(),
+                    stream_id,
+                    DRAIN_TIMEOUT,
+                )
+                .unwrap();
+            let subscription = aeron
+                .add_subscription(
+                    &"aeron:ipc".into_c_string(),
+                    stream_id,
+                    None::<&Handler<AeronAvailableImageLogger>>,
+                    None::<&Handler<AeronUnavailableImageLogger>>,
+                    DRAIN_TIMEOUT,
+                )
+                .unwrap();
+            wait_until(DRAIN_TIMEOUT, || Ok(publication.is_connected())).unwrap();
+            assert!(manager.reserve_slot(gateway_id, 100 + i32::from(gateway_id)));
+            let publication = Arc::new(publication);
+            publications
+                .set(gateway_id, Arc::clone(&publication))
+                .unwrap();
+            (publication, subscription)
+        };
+        // Gateway 1 never reads its replies; gateway 2 reads each one.
+        let (slow_reply, _slow_gateway) = reply_channel(1);
+        let (_, gateway) = reply_channel(2);
+        let reply = |gateway_id: u8| OrderCommand {
+            route_gateway_id: gateway_id,
+            ..OrderCommand::default()
+        };
+        let answer_gateway_2 = || {
+            publications.publish_response(&reply(2));
+            wait_until(DRAIN_TIMEOUT, || Ok(gateway.poll_once(|_, _| {}, 1)? == 1)).unwrap();
+        };
+
+        // Fill gateway 1's window.
+        for _ in 0..10_000 {
+            if slow_reply.position() >= slow_reply.position_limit() {
+                break;
+            }
+            publications.publish_response(&reply(1));
+            answer_gateway_2();
+        }
+        assert!(slow_reply.position() >= slow_reply.position_limit());
+
+        // Its replies now fail, at the cost of one offer each, never a wait.
+        let started = Instant::now();
+        for _ in 0..20 {
+            publications.publish_response(&reply(1));
+        }
+        let stalled = started.elapsed();
+        assert!(
+            stalled < Duration::from_millis(100),
+            "20 replies to a gateway that does not read took {stalled:?}"
+        );
+        answer_gateway_2();
+        manager.poll().unwrap();
+        assert!(manager.is_gateway_connected(1));
+
+        // Undeliverable for the timeout: its session goes, gateway 2's stays.
+        std::thread::sleep(SLOW_GATEWAY_TIMEOUT);
+        publications.publish_response(&reply(1));
+        manager.poll().unwrap();
+        assert!(!manager.is_gateway_connected(1));
+        assert!(publications.get(1).unwrap().is_none());
+        assert!(manager.is_gateway_connected(2));
+        assert!(publications.get(2).unwrap().is_some());
+        answer_gateway_2();
     }
 
     #[test]

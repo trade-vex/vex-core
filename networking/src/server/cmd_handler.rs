@@ -38,9 +38,8 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
                             error = %e,
                             "failed to publish order command to ring buffer"
                         );
-                        // Single offer: a retry backoff here would stall every gateway's ingress.
                         self.publications
-                            .try_publish_response(&busy_response(order_command));
+                            .publish_response(&busy_response(order_command));
                     }
                 }
             }
