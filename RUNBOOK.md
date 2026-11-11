@@ -63,7 +63,6 @@ Every start replays the journal first; see [Restart Service](#restart-service).
 | `VEX_ENV` | Environment: exactly `development`, `test` or `production`; any other value is a startup error | Required |
 | `VEX__KAFKA_BROKER` | Kafka broker address; overrides the configured `kafka_broker` like any `VEX__*` key | config `kafka_broker` (`localhost:9092` in the dev/test defaults) |
 | `VEX__SCHEMA_REGISTRY_URL` | Schema Registry URL for the events' protobuf schemas; overrides the configured `schema_registry_url` like any `VEX__*` key. Must be an `http://` or `https://` URL | config `schema_registry_url` (`http://localhost:8081` in the dev/test defaults) |
-| `ENABLE_CORE_PINNING` | Enable CPU core pinning for processor threads: `true` or `false`; any other value is a startup error | `false` (dev/test), `true` (prod) |
 | `RUST_LOG` | Log level (trace, debug, info, warn, error) | `info` |
 | `VEX__*` | Configuration overrides (e.g., `VEX__CORE_NETWORKING__CONTEXT_DIR`) | - |
 
@@ -398,7 +397,7 @@ VEX_ENV=development RUST_LOG=debug ./target/release/vex-core 2>&1 | grep -E "dis
 ```
 
 **Solutions**:
-- Enable CPU core pinning in production: `ENABLE_CORE_PINNING=true`
+- Enable CPU core pinning in production: `VEX__CORE_NETWORKING__ENABLE_CORE_PINNING=true`
 - Ensure adequate CPU cores (journaling, 4 risk engines, 4 matching engines, events handler)
 - Profile with `perf` or `flamegraph` if persistent
 

@@ -161,7 +161,7 @@ impl CorePinning {
         }
 
         Err(EngineError::Configuration(format!(
-            "Core pinning requires CPU cores {required_cores:?}, but the process CPU affinity mask allows {available_cores:?}; missing required cores {missing_cores:?}. Adjust the process cpuset or set ENABLE_CORE_PINNING=false to start without pinning"
+            "Core pinning requires CPU cores {required_cores:?}, but the process CPU affinity mask allows {available_cores:?}; missing required cores {missing_cores:?}. Adjust the process cpuset or set VEX__CORE_NETWORKING__ENABLE_CORE_PINNING=false to start without pinning"
         )))
     }
 
@@ -170,7 +170,7 @@ impl CorePinning {
         let available_cores = core_affinity::get_core_ids()
             .ok_or_else(|| {
                 EngineError::Configuration(format!(
-                    "Core pinning requires CPU cores {required_cores:?}, but the process CPU affinity mask could not be read. Set ENABLE_CORE_PINNING=false to start without pinning"
+                    "Core pinning requires CPU cores {required_cores:?}, but the process CPU affinity mask could not be read. Set VEX__CORE_NETWORKING__ENABLE_CORE_PINNING=false to start without pinning"
                 ))
             })?
             .into_iter()
@@ -683,7 +683,7 @@ mod core_pinning_tests {
         );
         assert!(message.contains("affinity mask allows [1, 2, 3, 4, 5, 6, 7, 9"));
         assert!(message.contains("missing required cores [8]"));
-        assert!(message.contains("ENABLE_CORE_PINNING=false"));
+        assert!(message.contains("VEX__CORE_NETWORKING__ENABLE_CORE_PINNING=false"));
     }
 
     #[test]
