@@ -13,7 +13,8 @@ use common::{base_asset, order_debug, order_warn, quote_asset};
 use hashbrown::HashMap;
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use std::sync::atomic::{AtomicI64, Ordering};
+use tracing::{debug, error, warn};
 
 /// Manages all user profiles and performs risk checks as well as settlements
 pub struct RiskEngine {
@@ -26,6 +27,9 @@ pub struct RiskEngine {
     pub symbol_specs: HashMap<u32, CoreMarketSpecification>,
     shard_id: u32,
     shard_mask: u64,
+    /// Highest pipeline sequence this shard's R2 has settled; -1 before the first. R1 of the same
+    /// shard waits on it when its decision depends on credits R2 still owes the user.
+    settled_up_to: AtomicI64,
 }
 
 impl RiskEngine {
@@ -44,6 +48,19 @@ impl RiskEngine {
             symbol_specs,
             shard_id,
             shard_mask: (num_shards - 1) as u64,
+            settled_up_to: AtomicI64::new(-1),
+        }
+    }
+
+    /// Called by this shard's R2 after every sequence, settled or skipped.
+    pub fn mark_settled(&self, sequence: i64) {
+        self.settled_up_to.store(sequence, Ordering::Release);
+    }
+
+    /// Spins until this shard's R2 has settled every sequence up to `sequence`.
+    pub fn await_settled(&self, sequence: i64) {
+        while self.settled_up_to.load(Ordering::Acquire) < sequence {
+            std::hint::spin_loop();
         }
     }
 
@@ -68,9 +85,21 @@ impl RiskEngine {
             shard_id = self.shard_id
         );
         match cmd.command {
+            OrderCommandType::DepositFunds | OrderCommandType::WithdrawFunds
+                if u16::try_from(cmd.market_id).is_err() || cmd.size == 0 =>
+            {
+                // market_id carries the asset id for these commands; `as u16` below would wrap it.
+                order_debug!(
+                    "risk_invalid_asset_or_amount",
+                    cmd,
+                    stage = "risk_r1",
+                    shard_id = self.shard_id
+                );
+                cmd.set_status(Status::Rejected);
+            }
             OrderCommandType::PlaceOrder => {
                 if self.symbol_specs.get(&cmd.market_id).is_none() {
-                    order_warn!(
+                    order_debug!(
                         "risk_missing_market_spec",
                         cmd,
                         stage = "risk_r1",
@@ -81,10 +110,10 @@ impl RiskEngine {
                 }
 
                 // A market order can never rest. Reject Market + GTC here, before any funds are
-                // locked and before bid_amount() rewrites a market buy's sentinel to its slippage
-                // cap, after which the book can no longer tell it from a limit order.
+                // locked and before reserve_funds_for_order() rewrites a market buy's sentinel to
+                // its slippage cap, after which the book can no longer tell it from a limit order.
                 if cmd.time_in_force == common::TimeInForce::Gtc && cmd.is_market_order() {
-                    order_warn!(
+                    order_debug!(
                         "risk_market_gtc_rejected",
                         cmd,
                         stage = "risk_r1",
@@ -96,7 +125,10 @@ impl RiskEngine {
 
                 // Note: Fees are always in the receiving asset, hence are cut on post-processing (settlement)
                 if let Err(err) = self.reserve_funds_for_order(cmd, price_cache) {
-                    order_warn!(
+                    // Often transient: R1 retries a failed order once R2 has settled the
+                    // earlier sequences (`create_risk_handler!`). The final `Rejected` is in the
+                    // response.
+                    order_debug!(
                         "risk_reserve_failed",
                         cmd,
                         stage = "risk_r1",
@@ -140,7 +172,7 @@ impl RiskEngine {
                     );
                 }
                 Err(err) => {
-                    order_warn!(
+                    order_debug!(
                         "risk_withdrawal_failed",
                         cmd,
                         stage = "risk_r1",
@@ -164,7 +196,9 @@ impl RiskEngine {
     }
 
     /// Handles a single trade event from the matching engine to settle funds
-    /// This is called by the R2 handler for each individual event in the linked list
+    /// This is called by the R2 handler for each individual event in the linked list.
+    /// A settlement that fails aborts the process: R1 admitted both orders, so it cannot happen
+    /// unless the ledger is already wrong.
     pub fn handle_trade_event(
         &self,
         user_id: u64,
@@ -211,17 +245,13 @@ impl RiskEngine {
                 price = event.price,
                 size = event.size,
                 taker_order = ?taker_order,
-                error = ?err
+                error = ?err,
+                "R1 admitted both orders, so this is a ledger invariant violation; aborting the exchange rather than settle one side"
             );
-            // The zeroed snapshot would otherwise become the maker's latest row. Publish what the
-            // store actually holds: unchanged if settlement failed before its commit, or the
-            // committed state if a later step (bid-collateral release) failed after it.
-            if user_id == event.maker_user_id {
-                event.maker_balance = [
-                    self.get_balance(user_id, base_asset(market_id)),
-                    self.get_balance(user_id, quote_asset(market_id)),
-                ];
-            }
+            // The counterparty may already be settled on another shard. Stopping here keeps the
+            // events stage from publishing a one-sided trade; the journal replays to this command,
+            // so this is a page, not a restart.
+            std::process::abort();
         } else {
             debug!(
                 target: "risk_engine",
@@ -334,14 +364,9 @@ impl RiskEngine {
         // Compute and validate every mutation against copies before changing the store.
         let mut store = self.balances.lock();
 
-        // Fee accrual is computed and overflow-checked BEFORE any balance mutation, so a
-        // saturated accumulator can never leave a half-settled trade (PR #173 accounting
-        // inside PR #153's copy-then-commit). Lock order stays balances -> accrued_fees.
-        let mut accrued_fees = if fee_amount == 0 {
-            None
-        } else {
-            Some(self.accrued_fees.lock())
-        };
+        // Fee accrual is overflow-checked here too, so a saturated accumulator can never leave a
+        // half-settled trade. Lock order everywhere: balances -> accrued_fees -> bid_collateral.
+        let mut accrued_fees = (fee_amount != 0).then(|| self.accrued_fees.lock());
         let accrued_fee_total = accrued_fees
             .as_ref()
             .map(|fees| {
@@ -353,84 +378,79 @@ impl RiskEngine {
             })
             .transpose()?;
 
-        let mut balance_sub = store.get_balance(user_id, asset_to_subtract);
-
-        if balance_sub.locked < refund_amount {
-            return Err(BalanceError::InsufficientLockedFunds {
-                locked: balance_sub.locked,
-                needed: refund_amount,
-            }
-            .into());
-        }
-        balance_sub.locked -= refund_amount;
-        balance_sub.available = balance_sub
-            .available
-            .checked_add(refund_amount)
+        // A bid's collateral record decides what this fill consumes and, when the order completes,
+        // the rounding residue R1 locked beyond its fills. Decided here so the residue's unlock is
+        // part of the one commit below.
+        let mut collateral = (user_side == Side::Bid).then(|| self.bid_collateral.lock());
+        let consumed = refund_amount
+            .checked_add(amount_to_subtract)
+            .ok_or(BalanceError::Overflow)?;
+        let residue = match collateral.as_deref() {
+            Some(collateral) if order_completed => match collateral.get(&order_id) {
+                Some(locked) => locked.saturating_sub(consumed),
+                None => {
+                    warn!(
+                        target: "risk_engine",
+                        event = "missing_bid_collateral",
+                        shard_id = self.shard_id,
+                        order_id,
+                        user_id
+                    );
+                    0
+                }
+            },
+            _ => 0,
+        };
+        let locked_needed = consumed
+            .checked_add(residue)
+            .ok_or(BalanceError::Overflow)?;
+        let back_to_available = refund_amount
+            .checked_add(residue)
             .ok_or(BalanceError::Overflow)?;
 
-        if balance_sub.locked < amount_to_subtract {
+        let mut balance_sub = store.get_balance(user_id, asset_to_subtract);
+        if balance_sub.locked < locked_needed {
             return Err(BalanceError::InsufficientLockedFunds {
                 locked: balance_sub.locked,
-                needed: amount_to_subtract,
+                needed: locked_needed,
             }
             .into());
         }
-        balance_sub.locked -= amount_to_subtract;
-
-        let mut balance_add = if asset_to_add == asset_to_subtract {
-            balance_sub
-        } else {
-            store.get_balance(user_id, asset_to_add)
-        };
+        balance_sub.locked -= locked_needed;
+        balance_sub.available = balance_sub
+            .available
+            .checked_add(back_to_available)
+            .ok_or(BalanceError::Overflow)?;
+        // A separate copy: the config rejects a market whose base and quote are one asset.
+        let mut balance_add = store.get_balance(user_id, asset_to_add);
         balance_add.available = balance_add
             .available
             .checked_add(amount_to_add)
             .ok_or(BalanceError::Overflow)?;
 
-        // PR #178 made get_balance_mut fallible so a REJECTED operation can no longer insert
-        // an empty row. This is the commit point: every validation above has passed, so the
-        // write must succeed even for an asset the user is receiving for the first time.
-        // set_balance inserts-or-updates, which keeps #153's all-or-nothing commit intact.
-        if asset_to_add == asset_to_subtract {
-            store.set_balance(user_id, asset_to_add, balance_add);
-        } else {
-            store.set_balance(user_id, asset_to_subtract, balance_sub);
-            store.set_balance(user_id, asset_to_add, balance_add);
-        }
-
+        // Commit. Nothing below can fail. set_balance inserts-or-updates, so an asset the user
+        // receives for the first time gets its row here.
+        store.set_balance(user_id, asset_to_subtract, balance_sub);
+        store.set_balance(user_id, asset_to_add, balance_add);
         if let (Some(fees), Some(total)) = (accrued_fees.as_mut(), accrued_fee_total) {
             fees.insert(fee_asset, total);
         }
-
-        // PR #171 collateral bookkeeping runs AFTER the balances commit, so a
-        // failed settlement cannot desynchronise the tracked reservation.
-        if refund_amount > 0 {
-            self.subtract_bid_collateral(order_id, refund_amount);
-        }
-        if user_side == Side::Bid {
-            self.subtract_bid_collateral(order_id, amount_to_subtract);
-        }
-
-        if user_side == Side::Bid && order_completed {
-            self.release_remaining_bid_collateral(
-                &mut store,
-                order_id,
-                user_id,
-                quote_asset(market_id),
-            )?;
-            balance_sub = store.get_balance(user_id, asset_to_subtract);
+        if let Some(collateral) = collateral.as_mut() {
+            if order_completed {
+                collateral.remove(&order_id);
+            } else if let Some(locked) = collateral.get_mut(&order_id) {
+                *locked = locked.saturating_sub(consumed);
+            }
         }
 
         if is_maker {
-            if asset_to_subtract == base_asset(market_id) {
+            event.maker_balance = if asset_to_subtract == base_asset(market_id) {
                 // Maker was on ASK side, selling base for quote.
-                event.maker_balance[0] = balance_sub;
-                event.maker_balance[1] = balance_add;
+                [balance_sub, balance_add]
             } else {
                 // Maker was on BID side, buying base with quote.
-                event.maker_balance[0] = balance_add;
-                event.maker_balance[1] = balance_sub;
-            }
+                [balance_add, balance_sub]
+            };
         }
         Ok(())
     }
@@ -458,9 +478,11 @@ impl RiskEngine {
                 error = ?err
             );
         } else {
-            info!(
-                "[RiskEngine_{}] Successfully released funds for cancelled order {}",
-                self.shard_id, cmd.order_id
+            debug!(
+                target: "risk_engine",
+                event = "cancel_released",
+                shard_id = self.shard_id,
+                order_id = cmd.order_id
             );
         }
     }
@@ -479,17 +501,17 @@ impl RiskEngine {
             });
         }
 
-        let (asset_to_lock, amount_to_lock) = match cmd.side {
+        let (asset_to_lock, amount_to_lock, price) = match cmd.side {
             // For a Bid (buy), we lock the quote currency. Amount = price * size.
             Side::Bid => {
-                let amount = self.bid_amount(cmd, price_cache)?;
+                let (amount, price) = self.bid_amount(cmd, price_cache)?;
                 if amount == 0 {
                     return Err(RiskEngineError::InvalidArguments {
                         price: cmd.price,
                         size: cmd.size,
                     });
                 }
-                (quote_asset(cmd.market_id), amount)
+                (quote_asset(cmd.market_id), amount, price)
             }
             // For an Ask (sell), we lock the base currency. Amount = size.
             Side::Ask => {
@@ -502,13 +524,16 @@ impl RiskEngine {
                         size: cmd.size,
                     });
                 }
-                (base_asset(cmd.market_id), cmd.size)
+                (base_asset(cmd.market_id), cmd.size, cmd.price)
             }
         };
 
         // Acquire a lock on the store and perform the operation
         let mut store = self.balances.lock();
         store.lock_funds(cmd.user_id, asset_to_lock, amount_to_lock)?;
+        // Only a locked order carries its lock price (so a cancel releases exactly what was
+        // locked); a rejected market buy keeps its sentinel.
+        cmd.price = price;
         if cmd.side == Side::Bid {
             self.bid_collateral
                 .lock()
@@ -517,16 +542,18 @@ impl RiskEngine {
         Ok(())
     }
 
-    /// Applies the R1 funding bound to market BUY orders.
+    /// Returns (quote to lock, effective price) for a bid: the R1 funding bound for a market BUY,
+    /// `cmd.price` otherwise.
     ///
-    /// Market BUY orders are capped, not swept: the `u64::MAX` market sentinel is replaced with
-    /// `best_ask + floor(best_ask * slippage_bps / 10_000)`. The matching engine then uses that
-    /// effective price as a limit, so liquidity above the cap remains unfilled. The response
-    /// carries the ordinary status for its time-in-force (IOC: `Filled`, `PartiallyFilled` or
-    /// `Cancelled`; FOK: `Filled` or `Cancelled`) and returns the effective cap in `price`.
-    /// Market + GTC never reaches this point: `pre_process_command` rejects it first.
+    /// Market BUY orders are capped, not swept: once its funds are locked, the `u64::MAX` market
+    /// sentinel is replaced with `best_ask + floor(best_ask * slippage_bps / 10_000)`. The
+    /// matching engine then uses that effective price as a limit, so liquidity above the cap
+    /// remains unfilled. The response carries the ordinary status for its time-in-force (IOC:
+    /// `Filled`, `PartiallyFilled` or `Cancelled`; FOK: `Filled` or `Cancelled`) and returns the
+    /// effective cap in `price`. Market + GTC never reaches this point: `pre_process_command`
+    /// rejects it first.
     #[inline]
-    fn bid_amount(&self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) -> Result<u64> {
+    fn bid_amount(&self, cmd: &OrderCommand, price_cache: Arc<PriceCache>) -> Result<(u64, u64)> {
         // Get spec early
         let spec =
             self.symbol_specs
@@ -560,16 +587,16 @@ impl RiskEngine {
                 .checked_add(slippage_adjustment)
                 .ok_or(BalanceError::Overflow)?;
 
-            // Persist the price used for locking on the command itself.
-            // To ensure that if the order is cancelled (fully or partially),
-            // the correct amount of funds can be released.
-            cmd.price = conservative_price;
-            spec.calculate_quote_cost(conservative_price, cmd.size)
-                .ok_or(BalanceError::Overflow.into())
+            let amount = spec
+                .calculate_quote_cost(conservative_price, cmd.size)
+                .ok_or(BalanceError::Overflow)?;
+            Ok((amount, conservative_price))
         } else {
             // Limit order
-            spec.calculate_quote_cost(cmd.price, cmd.size)
-                .ok_or(BalanceError::Overflow.into())
+            let amount = spec
+                .calculate_quote_cost(cmd.price, cmd.size)
+                .ok_or(BalanceError::Overflow)?;
+            Ok((amount, cmd.price))
         }
     }
 
@@ -608,13 +635,6 @@ impl RiskEngine {
             Side::Ask => store
                 .unlock_funds(user_id, base_asset(market_id), size)
                 .map_err(RiskEngineError::BalanceError),
-        }
-    }
-
-    fn subtract_bid_collateral(&self, order_id: u64, amount: u64) {
-        let mut collateral = self.bid_collateral.lock();
-        if let Some(remaining) = collateral.get_mut(&order_id) {
-            *remaining = remaining.saturating_sub(amount);
         }
     }
 
@@ -683,18 +703,8 @@ impl RiskEngine {
         let asset_id = cmd.market_id as u16;
         let amount = cmd.size;
 
-        info!(
-            "[RiskEngine] Processing deposit: user={}, asset={}, amount={}",
-            cmd.user_id, asset_id, amount
-        );
-
         let mut store = self.balances.lock();
         store.add_funds(cmd.user_id, asset_id, amount)?;
-
-        info!(
-            "[RiskEngine] Successfully deposited {} units of asset {} for user {}",
-            amount, asset_id, cmd.user_id
-        );
 
         Ok(())
     }
@@ -705,18 +715,8 @@ impl RiskEngine {
         let asset_id = cmd.market_id as u16;
         let amount = cmd.size;
 
-        info!(
-            "[RiskEngine] Processing withdrawal: user={}, asset={}, amount={}",
-            cmd.user_id, asset_id, amount
-        );
-
         let mut store = self.balances.lock();
         store.subtract_funds(cmd.user_id, asset_id, amount)?;
-
-        info!(
-            "[RiskEngine] Successfully withdrew {} units of asset {} for user {}",
-            amount, asset_id, cmd.user_id
-        );
 
         Ok(())
     }
@@ -920,7 +920,7 @@ mod tests {
             .market_id(market_id)
             .market_type(MarketType::Spot)
             .quote_scale_k(10)
-            .base_native_scale(1_000_000_000_000_000_000)
+            .base_native_scale(1_000_000_000)
             .quote_native_scale(1_000_000)
             .maker_fee(10)
             .taker_fee(20)
@@ -928,7 +928,7 @@ mod tests {
             .build()
             .unwrap();
 
-        settle_trade_and_assert_conservation(spec, 20_000, 1_000_000_000_000_000_000);
+        settle_trade_and_assert_conservation(spec, 20_000, 1_000_000_000);
     }
 
     #[test]
@@ -1056,6 +1056,71 @@ mod tests {
         engine.pre_process_command(&mut ioc, price_cache);
         assert_ne!(ioc.status, Status::Rejected);
         assert_eq!(ioc.price, 100);
+    }
+
+    #[test]
+    fn deposit_with_asset_id_above_u16_is_rejected() {
+        let engine = RiskEngine::default();
+        let price_cache = Arc::new(PriceCache::new(HashMap::new().keys()));
+        engine.set_balance(1, 1, UserBalance::new(100, 0));
+
+        // 65537 would wrap to asset 1.
+        for mut cmd in [
+            OrderCommand::deposit_funds(1, 100, 1),
+            OrderCommand::withdraw_funds(1, 100, 1),
+        ] {
+            cmd.market_id = 65537;
+            engine.pre_process_command(&mut cmd, Arc::clone(&price_cache));
+            assert_eq!(cmd.status, Status::Rejected, "{:?}", cmd.command);
+            assert_eq!(engine.get_balance(1, 1), UserBalance::new(100, 0));
+        }
+    }
+
+    #[test]
+    fn zero_amount_deposit_and_withdrawal_are_rejected() {
+        let engine = RiskEngine::default();
+        let price_cache = Arc::new(PriceCache::new(HashMap::new().keys()));
+
+        for mut cmd in [
+            OrderCommand::deposit_funds(1, 0, 1),
+            OrderCommand::withdraw_funds(1, 0, 1),
+        ] {
+            engine.pre_process_command(&mut cmd, Arc::clone(&price_cache));
+            assert_eq!(cmd.status, Status::Rejected, "{:?}", cmd.command);
+        }
+        assert_eq!(
+            engine.try_get_balance(1, 1),
+            Err(RiskEngineError::from(BalanceError::UserAssetNotFound(1, 1)))
+        );
+    }
+
+    #[test]
+    fn withdrawal_takes_only_available_funds() {
+        let market_id = (1_u32 << 16) | 2; // quote 1, base 2
+        let mut specs = HashMap::new();
+        specs.insert(market_id, get_spec(market_id));
+        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let engine = RiskEngine::new(specs, 0, 1);
+        let (user, quote) = (1, quote_asset(market_id));
+
+        let mut deposit = OrderCommand::deposit_funds(user, 100, quote);
+        engine.pre_process_command(&mut deposit, Arc::clone(&price_cache));
+        assert_eq!(deposit.status, Status::Processed);
+        // A bid locking 60 quote (price * size at get_spec's unit scales).
+        let mut bid =
+            OrderCommand::place_order(TimeInForce::Gtc, user, 60, 1, Side::Bid, market_id, 1);
+        engine.pre_process_command(&mut bid, Arc::clone(&price_cache));
+        assert_eq!(engine.get_balance(user, quote), UserBalance::new(40, 60));
+
+        let mut withdrawal = OrderCommand::withdraw_funds(user, 50, quote);
+        engine.pre_process_command(&mut withdrawal, Arc::clone(&price_cache));
+        assert_eq!(withdrawal.status, Status::Rejected);
+        assert_eq!(engine.get_balance(user, quote), UserBalance::new(40, 60));
+
+        let mut withdrawal = OrderCommand::withdraw_funds(user, 40, quote);
+        engine.pre_process_command(&mut withdrawal, price_cache);
+        assert_eq!(withdrawal.status, Status::Processed);
+        assert_eq!(engine.get_balance(user, quote), UserBalance::new(0, 60));
     }
 
     #[test]
@@ -1537,33 +1602,6 @@ mod tests {
     }
 
     #[test]
-    fn failed_maker_settlement_publishes_the_unchanged_balance_not_zeros() {
-        let base_asset_id = 2u16;
-        let quote_asset_id = 1u16;
-        let market_id = ((quote_asset_id as u32) << 16) | base_asset_id as u32;
-        let mut specs = HashMap::new();
-        specs.insert(market_id, get_spec(market_id));
-        let engine = RiskEngine::new(specs, 0, 1);
-        let maker_id = 101;
-        let size = 10;
-
-        // The maker's locked base cannot cover the fill, so settlement fails.
-        engine.set_balance(maker_id, base_asset_id, UserBalance::new(5, size - 1));
-        engine.set_balance(maker_id, quote_asset_id, UserBalance::new(11, 0));
-
-        let mut trade_event = MatcherTradeEvent::default();
-        trade_event.price = 100;
-        trade_event.size = size;
-        trade_event.maker_user_id = maker_id;
-        engine.handle_trade_event(maker_id, market_id, Side::Ask, &mut trade_event, None);
-
-        assert_eq!(
-            trade_event.maker_balance,
-            [UserBalance::new(5, size - 1), UserBalance::new(11, 0)]
-        );
-    }
-
-    #[test]
     fn test_trade_settlement_subtract_failure_leaves_balances_unchanged() {
         let base_asset_id = 2u16;
         let quote_asset_id = 1u16;
@@ -1610,8 +1648,8 @@ mod tests {
             result,
             Err(RiskEngineError::BalanceError(
                 BalanceError::InsufficientLockedFunds {
-                    locked: 50,
-                    needed: 1_000,
+                    locked: 150,
+                    needed: 1_100,
                 }
             ))
         );
@@ -1627,7 +1665,59 @@ mod tests {
     }
 
     #[test]
-    fn test_trade_settlement_fee_at_18_decimal_scale() {
+    fn settle_trade_failure_leaves_the_store_and_collateral_untouched() {
+        let base_asset_id = 2u16;
+        let quote_asset_id = 1u16;
+        let market_id = ((quote_asset_id as u32) << 16) | base_asset_id as u32;
+        let spec = get_spec(market_id);
+        let mut specs = HashMap::new();
+        specs.insert(market_id, spec.clone());
+        let engine = RiskEngine::new(specs, 0, 1);
+        let user_id = 102;
+        let order_id = 7;
+
+        // The order's record says 100 is locked, the store only 60: this completing fill of 50
+        // also releases the 50 residue, which the store cannot cover.
+        engine.bid_collateral.lock().insert(order_id, 100);
+        engine.set_balance(user_id, quote_asset_id, UserBalance::new(0, 60));
+        let mut trade_event = MatcherTradeEvent::default();
+        trade_event.price = 1;
+        trade_event.size = 50;
+        trade_event.maker_user_id = 101;
+        trade_event.active_order_completed = true;
+
+        let result = engine.settle_trade(
+            user_id,
+            market_id,
+            Side::Bid,
+            &mut trade_event,
+            &spec,
+            Some((order_id, 1)),
+        );
+
+        assert_eq!(
+            result,
+            Err(RiskEngineError::BalanceError(
+                BalanceError::InsufficientLockedFunds {
+                    locked: 60,
+                    needed: 100,
+                }
+            ))
+        );
+        assert_eq!(
+            engine.get_balance(user_id, quote_asset_id),
+            UserBalance::new(0, 60)
+        );
+        assert_eq!(
+            engine.get_balance(user_id, base_asset_id),
+            UserBalance::default()
+        );
+        assert_eq!(engine.bid_collateral.lock().get(&order_id), Some(&100));
+        assert_eq!(engine.get_accrued_fee(base_asset_id), 0);
+    }
+
+    #[test]
+    fn test_trade_settlement_fee_at_1e18_units() {
         let base_asset_id = 2u16;
         let quote_asset_id = 1u16;
         let market_id = ((quote_asset_id as u32) << 16) | base_asset_id as u32;
@@ -1774,8 +1864,22 @@ mod tests {
         let balance = engine.get_balance(user_id, usd_asset_id);
         assert_eq!(balance.available(), 0);
         assert_eq!(balance.locked(), required_quote);
+        assert_eq!(
+            market_buy_cmd.price, conservative_price,
+            "a locked market buy carries its cap"
+        );
 
         // --- Test 3: Market Buy with insufficient funds ---
+        // Step 2 locked and so re-priced its command; a market buy must start from the sentinel.
+        let mut market_buy_cmd = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            user_id,
+            u64::MAX,
+            size,
+            Side::Bid,
+            market_id,
+            1,
+        );
         engine.set_balance(
             user_id,
             usd_asset_id,
@@ -1787,6 +1891,11 @@ mod tests {
             RiskEngineError::BalanceError(BalanceError::InsufficientAvailableFunds { .. }) => (),
             e => panic!("Expected InsufficientAvailableFunds, got {e:?}"),
         }
+        assert_eq!(
+            market_buy_cmd.price,
+            u64::MAX,
+            "a rejected market buy keeps the market sentinel"
+        );
 
         // --- Test 4: Market Sell ---
         // A market SELL carries price 0; u64::MAX is the market BUY sentinel. This previously
@@ -2003,7 +2112,7 @@ mod tests {
             .market_id(market_id)
             .market_type(MarketType::Spot)
             .quote_scale_k(10)
-            .base_native_scale(1_000_000_000_000_000_000)
+            .base_native_scale(1_000_000_000)
             .quote_native_scale(1_000_000)
             .maker_fee(0)
             .taker_fee(0)
@@ -2012,12 +2121,12 @@ mod tests {
             .unwrap()
     }
 
-    fn assert_shipped_eth_bid_accounting(fill_sizes: &[u64], fully_filled: bool) {
+    fn assert_shipped_eth_bid_accounting(price: u64, fill_sizes: &[u64], fully_filled: bool) {
         let user_id = 50;
         let market_id = (2_u32 << 16) | 1_u32;
-        let price = 30_000;
         let order_size = 1_000_000_000;
-        let initial_quote = 10;
+        // Covers the 1 ETH lock at 30_000 (3_000_000_000) and at 30_001 (3_000_100_000).
+        let initial_quote = 3_000_100_000;
         let order_id = 42;
 
         let spec = get_shipped_eth_spec(market_id);
@@ -2080,22 +2189,29 @@ mod tests {
 
     #[test]
     fn test_shipped_eth_bid_full_fill_has_no_collateral_residue() {
-        assert_shipped_eth_bid_accounting(&[333_333_334, 666_666_666], true);
+        assert_shipped_eth_bid_accounting(30_000, &[333_333_334, 666_666_666], true);
+    }
+
+    #[test]
+    fn test_shipped_eth_bid_full_fill_releases_rounding_residue() {
+        // At 30_001 the lock is 3_000_100_000 and the fills cost 1_000_033_335 + 2_000_066_664:
+        // the last fill releases the 1 unit residue along with its own settlement.
+        assert_shipped_eth_bid_accounting(30_001, &[333_333_334, 666_666_666], true);
     }
 
     #[test]
     fn test_shipped_eth_bid_partial_fill_cancel_has_no_collateral_residue() {
-        assert_shipped_eth_bid_accounting(&[333_333_334], false);
+        assert_shipped_eth_bid_accounting(30_000, &[333_333_334], false);
     }
 
     #[test]
     fn test_shipped_eth_bid_cancel_without_fill_has_no_collateral_residue() {
-        assert_shipped_eth_bid_accounting(&[], false);
+        assert_shipped_eth_bid_accounting(30_000, &[], false);
     }
 
     #[test]
     fn test_shipped_eth_bid_multiple_partial_fills_cancel_has_no_collateral_residue() {
-        assert_shipped_eth_bid_accounting(&[333_333_334, 333_333_334], false);
+        assert_shipped_eth_bid_accounting(30_000, &[333_333_334, 333_333_334], false);
     }
 
     #[test]

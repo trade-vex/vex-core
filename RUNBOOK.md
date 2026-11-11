@@ -21,7 +21,11 @@
    ```
 
 2. **System Dependencies**
-   - **Aeron Media Driver** (with Archive support for journaling/replay)
+   - **Aeron Media Driver** (with Archive support for journaling/replay). One driver everywhere:
+     `aeron-all-1.49.0.jar` `ArchivingMediaDriver` (`xtask/tests/archive.Dockerfile`, `make
+     media-driver`); gateways run the same jar's `io.aeron.driver.MediaDriver`. The Rust binaries
+     load the Aeron C client rusteron builds (1.48.6 at rusteron 0.1.157); Aeron checks only the CnC
+     major version, so they attach to this driver. Bump the jar together with the rusteron pin.
    - **Kafka** broker for event streaming, with a Schema Registry, and the core's topics applied
      from `deploy/kafka/` (see [Kafka Topics](#kafka-topics))
    - Shared memory (`/dev/shm`) for Aeron IPC
@@ -63,7 +67,6 @@ Every start replays the journal first; see [Restart Service](#restart-service).
 | `VEX_ENV` | Environment: exactly `development`, `test` or `production`; any other value is a startup error | Required |
 | `VEX__KAFKA_BROKER` | Kafka broker address; overrides the configured `kafka_broker` like any `VEX__*` key | config `kafka_broker` (`localhost:9092` in the dev/test defaults) |
 | `VEX__SCHEMA_REGISTRY_URL` | Schema Registry URL for the events' protobuf schemas; overrides the configured `schema_registry_url` like any `VEX__*` key. Must be an `http://` or `https://` URL | config `schema_registry_url` (`http://localhost:8081` in the dev/test defaults) |
-| `ENABLE_CORE_PINNING` | Enable CPU core pinning for processor threads: `true` or `false`; any other value is a startup error | `false` (dev/test), `true` (prod) |
 | `RUST_LOG` | Log level (trace, debug, info, warn, error) | `info` |
 | `VEX__*` | Configuration overrides (e.g., `VEX__CORE_NETWORKING__CONTEXT_DIR`) | - |
 
@@ -74,6 +77,13 @@ Every start replays the journal first; see [Restart Service](#restart-service).
 | Development | 40001 | 40002 | 50000 | localhost:8010 |
 | Test | 40001 | 40002 | 50000 | localhost:8010 |
 | Production | 3521 | 3522 | 50000 | localhost:8010 |
+
+**Network**: the core's UDP ports (initial port, control port, and the gateway ports
+`base_gateway_port..base_gateway_port+63`) must be reachable from gateway hosts only. Each gateway
+gets a pair of ports in that range in ACCEPT: one the core listens on for its orders, and one the
+gateway listens on for its replies, which the core sends unicast to the host that sent HELLO. So
+gateway hosts must accept UDP `base_gateway_port..base_gateway_port+63` from the core, and there
+must be no NAT between gateway and core.
 
 ### Kafka Topics
 
@@ -123,18 +133,20 @@ environment: Test
 kafka_broker: "localhost:9092"
 schema_registry_url: "http://localhost:8081"
 
-logging:
-  level: "info"
-  format: "pretty"
-  output: "stdout"
-
 symbols:
+  # Every asset a market or preload names. native_scale = 10^decimals, and
+  # max_supply * native_scale must not exceed u64::MAX / 2 (ETH is held in gwei, not wei).
+  assets:
+    "1": { native_scale: 1000000, max_supply: 1000000000000 }   # USDT
+    "2": { native_scale: 100000000, max_supply: 21000000 }      # BTC
   symbols:
     65538:
       market_id: 65538
       base_asset: 2
       quote_asset: 1
       quote_scale_k: 1000000
+      base_native_scale: 100000000   # must equal assets.2.native_scale
+      quote_native_scale: 1000000    # must equal assets.1.native_scale
       maker_fee: 10
       taker_fee: 20
       slippage: 5
@@ -160,16 +172,10 @@ journaled command (#198 replaces it with journaled genesis deposits).
 
 1. Environment-specific config file (based on `VEX_ENV`)
 2. Environment variables with `VEX__` prefix (nested keys use `__`, e.g., `VEX__CORE_NETWORKING__INITIAL_PORT`)
-3. Hardcoded overrides in `main.rs` (e.g., `context_dir`, `local_address`)
 
-### Note on main.rs Overrides
-
-The `main` function overrides these values at runtime:
-
-- `core_networking.local_address` → `0.0.0.0`
-- `core_networking.context_dir` → `/dev/shm/aeron`
-
-Ensure the **Aeron Media Driver uses the same `context_dir`** as vex-core (or the directory vex-core is configured to use).
+The Docker image sets `VEX__CORE_NETWORKING__LOCAL_ADDRESS=0.0.0.0` and
+`VEX__CORE_NETWORKING__CONTEXT_DIR=/dev/shm/aeron`; outside Docker the configured values apply.
+Ensure the **Aeron Media Driver uses the same `context_dir`** as vex-core.
 
 ---
 
@@ -195,8 +201,9 @@ VEX_ENV=development make server
 kill -TERM <pid>
 
 # vex-core handles Ctrl+C and performs graceful shutdown, with gateways connected or not:
-# it closes every gateway session, drains the pipeline, waits for the archive to record every
-# accepted command, then delivers the events still queued and writes the delivered watermark.
+# it stops ingress, drains the pipeline and answers every accepted command, waits for the archive
+# to record every accepted command, closes every gateway session, then delivers the events still
+# queued and writes the delivered watermark.
 # It logs `flush_complete` once the brokers have acknowledged every event, or
 # `shutdown_with_undelivered_events` with the count of those the next start re-publishes.
 # A shutdown that delivers everything leaves the next start nothing to re-publish.
@@ -250,7 +257,8 @@ Every start, with journaling configured:
    extends. An empty archive holds nothing to replay, so the start is fresh. The replay
    re-publishes the events of every command above the watermark, the events a previous run may
    not have delivered, and answers no gateway. It takes as long as Kafka needs to accept them,
-   and fails only once 10 s pass without progress (`DrainError`).
+   and fails only once 10 s pass without progress (`DrainError`). It logs `completed` with the
+   `commands` replayed and `elapsed_ms`.
 4. **Stamps every live command above the last journaled command** (`journal_tail_read`), so
    order ids and timestamps never repeat any the archive holds, even if this host's clock is
    behind. A start fails if it cannot read it.
@@ -322,7 +330,7 @@ netstat -tuln | grep -E "40001|40002|3521|3522|8010"
 **Solutions**:
 - Start the media driver: `make media-driver`
 - Ensure vex-core and media driver use the **same** Aeron context directory
-- **Note**: `main.rs` hardcodes `context_dir` to `/dev/shm/aeron`; the Makefile media driver uses `/dev/shm/aeron-test-server` by default. Align these (e.g., set `AERON_DIR=/dev/shm/aeron` when starting the media driver, or update the Makefile `AERON_DIR`) so both use the same path
+- The development and test configs use `/dev/shm/aeron-test-server`, as the Makefile media driver does; the Docker image uses `/dev/shm/aeron`
 - Check that `request_control_channel` (default `localhost:8010`) matches the Archiving Media Driver
 - Verify no firewall blocking UDP ports 40001, 40002, 8010 (or production ports)
 
@@ -360,23 +368,23 @@ netstat -tuln | grep -E "40001|3521"
 # Verify the gateway's [core] section matches core
 # Gateway: core.address, core.port, core.control_port (override: APP__CORE__<KEY>)
 # Core: initial_port, initial_control_port (from config)
-
-# Check session ID limits
-# reserved_session_id_low/high in config
 ```
 
 **Solutions**:
 - Ensure vex-core is running and media driver is up
 - Verify the gateway's `[core]` `address`, `port` and `control_port` (`APP__CORE__ADDRESS`, `APP__CORE__PORT`, `APP__CORE__CONTROL_PORT`) match vex-core's address, `initial_port` and `initial_control_port`
-- Check `max_gateways` is not exceeded
+- At most 16 gateways (`gateway_id` 0-15) can be connected; the core opens UDP
+  `base_gateway_port..base_gateway_port+63` for them. `Core unavailable, retry after 10 seconds` on
+  the gateway means no pair of ports was free (each freed port waits 10 s before reuse)
 - Gateway authentication (required in production, which refuses to start without both):
   `VEX__CORE_NETWORKING__ENABLE_AUTHENTICATION=true` and
-  `VEX__GATEWAY_NETWORKING__GATEWAY_AUTHENTICATION_KEY=<signed 32-bit integer>` on vex-core; every
-  gateway must be given the same value (vex-gateway `[core]` `auth_key`, or `APP__CORE__AUTH_KEY`). Without a key,
+  `VEX__CORE_NETWORKING__GATEWAY_AUTHENTICATION_KEY=<at least 32 characters; openssl rand -hex 32>`
+  on vex-core; every gateway must be given the same value (vex-gateway `[core]` `auth_key`, or `APP__CORE__AUTH_KEY`). Without a key,
   dev/test run the handshake unauthenticated. `Connection rejected: Handshake rejected` on the
   gateway together with `action="handshake_rejected"` and
   `reason=Authentication failed: Invalid credentials` in the vex-core log means
-  the keys differ. The key travels in cleartext in the HELLO message, so keep gateway ↔ core
+  the keys differ. Past 16 rejected handshakes a second the core neither answers nor logs them, so
+  during a flood of bad HELLOs a gateway with the wrong key times out instead. The key travels in cleartext in the HELLO message, so keep gateway ↔ core
   traffic on a trusted network segment
 
 ### Order Processing Delays or Backpressure
@@ -393,8 +401,7 @@ VEX_ENV=development RUST_LOG=debug ./target/release/vex-core 2>&1 | grep -E "dis
 ```
 
 **Solutions**:
-- Enable CPU core pinning in production: `ENABLE_CORE_PINNING=true`
-- Increase `buffer_size` in networking config if needed
+- Enable CPU core pinning in production: `VEX__CORE_NETWORKING__ENABLE_CORE_PINNING=true`
 - Ensure adequate CPU cores (journaling, 4 risk engines, 4 matching engines, events handler)
 - Profile with `perf` or `flamegraph` if persistent
 
@@ -428,7 +435,7 @@ top -p $(pgrep vex-core)
 ```
 
 **Solutions**:
-- Check disruptor `BUFFER_SIZE` (default 1024 in release)
+- Check disruptor `BUFFER_SIZE` (1024, `server/src/engine.rs`)
 - Review Kafka consumer buffers
 - Use `tikv-jemallocator` (already default) for allocator
 - Restart periodically if memory grows over time
@@ -456,6 +463,9 @@ top -p $(pgrep vex-core)
    tail -100 /var/log/vex/vex-core.log
    # Or wherever logs are configured
    ```
+   A `settlement_failed` error before the exit is a deliberate abort: a fill R1 admitted could not
+   settle, so the ledger or an asset's `max_supply` is wrong. Page; do not restart in a loop, as
+   the replay reaches the same command and aborts again.
 
 4. **Restart**
    ```bash
@@ -517,7 +527,7 @@ top -p $(pgrep vex-core)
 
 3. **Check Config**
    - The gateway's `[core]` `address`, `port` and `control_port` must match vex-core
-   - Ensure `max_gateways` and session ID limits are not exceeded
+   - At most 16 gateways can be connected at once
 
 ### Need to Recover from Journal
 

@@ -42,24 +42,18 @@ impl ExtendedRecordingDescriptor {
 }
 
 #[derive(Debug)]
-#[allow(unused)]
 pub struct RecordingInfo {
-    pub control_session_id: i64,
-    pub correlation_id: i64,
     pub recording_id: i64,
-    pub start_timestamp: i64,
-    pub stop_timestamp: i64,
     pub start_position: i64,
     pub stop_position: i64,
     pub initial_term_id: i32,
-    pub segment_file_length: i32,
     pub term_buffer_length: i32,
-    pub mtu_length: i32,
+    #[expect(
+        dead_code,
+        reason = "the journal purge below a snapshot needs it; snapshots are not built yet"
+    )]
+    pub segment_file_length: i32,
     pub session_id: i32,
-    pub stream_id: i32,
-    pub stripped_channel_length: usize,
-    pub original_channel_length: usize,
-    pub source_identity_length: usize,
 }
 
 #[derive(Debug, Default)]
@@ -67,23 +61,6 @@ pub struct RecorderDescriptorReader {
     /// Recordings with valid positions, oldest first: live, empty or holding commands.
     pub recordings: Vec<RecordingInfo>,
     pub skipped_invalid: usize,
-}
-
-#[derive(Debug)]
-pub struct RecordingCounter;
-
-impl AeronArchiveRecordingDescriptorConsumerFuncCallback for RecordingCounter {
-    fn handle_aeron_archive_recording_descriptor_consumer_func(
-        &mut self,
-        _recording_descriptor: AeronArchiveRecordingDescriptor,
-    ) {
-    }
-}
-
-impl RecorderDescriptorReader {
-    pub fn new() -> Self {
-        Self::default()
-    }
 }
 
 /// What holds the journal while a start waits for it (see [`await_journal_release`]).
@@ -333,22 +310,13 @@ impl AeronArchiveRecordingDescriptorConsumerFuncCallback for RecorderDescriptorR
             // Performing a deep copy here is essential;
             // the descriptor lifetime ends after the callback.
             self.recordings.push(RecordingInfo {
-                control_session_id: recording_descriptor.control_session_id,
-                correlation_id: recording_descriptor.correlation_id,
                 recording_id: recording_descriptor.recording_id,
-                start_timestamp: recording_descriptor.start_timestamp,
-                stop_timestamp: recording_descriptor.stop_timestamp,
                 start_position: recording_descriptor.start_position,
                 stop_position: recording_descriptor.stop_position,
                 initial_term_id: recording_descriptor.initial_term_id,
-                segment_file_length: recording_descriptor.segment_file_length,
                 term_buffer_length: recording_descriptor.term_buffer_length,
-                mtu_length: recording_descriptor.mtu_length,
+                segment_file_length: recording_descriptor.segment_file_length,
                 session_id: recording_descriptor.session_id,
-                stream_id: recording_descriptor.stream_id,
-                stripped_channel_length: recording_descriptor.stripped_channel_length,
-                original_channel_length: recording_descriptor.original_channel_length,
-                source_identity_length: recording_descriptor.source_identity_length,
             });
         } else {
             self.skipped_invalid += 1;
@@ -372,22 +340,13 @@ mod tests {
 
     fn recording(start_position: i64, stop_position: i64) -> RecordingInfo {
         RecordingInfo {
-            control_session_id: 0,
-            correlation_id: 0,
             recording_id: 7,
-            start_timestamp: 0,
-            stop_timestamp: 0,
             start_position,
             stop_position,
             initial_term_id: 1,
-            segment_file_length: TERM_LENGTH as i32,
             term_buffer_length: TERM_LENGTH as i32,
-            mtu_length: 1408,
+            segment_file_length: TERM_LENGTH as i32,
             session_id: 17,
-            stream_id: 2001,
-            stripped_channel_length: 0,
-            original_channel_length: 0,
-            source_identity_length: 0,
         }
     }
 
@@ -611,7 +570,7 @@ mod tests {
     /// The archive's `(recording_id, start, stop)` descriptors, oldest first, as the reader keeps
     /// them.
     fn listed(descriptors: &[(i64, i64, i64)]) -> RecorderDescriptorReader {
-        let mut reader = RecorderDescriptorReader::new();
+        let mut reader = RecorderDescriptorReader::default();
         for &(recording_id, start, stop) in descriptors {
             reader.handle_aeron_archive_recording_descriptor_consumer_func(descriptor(
                 recording_id,

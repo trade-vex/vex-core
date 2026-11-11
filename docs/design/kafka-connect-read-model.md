@@ -659,9 +659,8 @@ Option E fails for four reasons:
     the archive or the host dies (Q7, §9).
   - A2: Replay regenerates the same events for each command. Payloads may differ within contract
     item 4 (Q6).
-  - **A2 caveat:** replay is not deterministic for market BUYs (#140 item 2, declined in #178 as a
-    pipeline-topology decision). R1 reads `PriceCache` while matching writes it, so a replayed
-    market BUY can lock a different price than the original run did. See §9.
+  - A2 holds for market BUYs too (#140 item 2, fixed by audit core 2): R1 decides on the settled
+    ledger, so a replay takes every decision the live run took. See §9.
 
 ### 4.5 Code it touches
 
@@ -861,7 +860,7 @@ Each test fails, or cannot run, without the change it covers.
 `DRAIN_TIMEOUT`; one that stops fails after it.
 
 **vex-core (C1), xtask E2E** (Redpanda, the registry and an `ArchivingMediaDriver`,
-`xtask/tests/docker-compose.yml`). The orders are limit orders only (A2, §9).
+`xtask/tests/docker-compose.yml`). The orders include market buys and a cancel/re-place (A2, §9).
 - **Kill with events queued:**
   1. `docker pause` the broker.
   2. Place orders until some events are queued behind the paused broker. Intake need not answer
@@ -918,8 +917,8 @@ Postgres, with the pinned core):
 - `kill -9` with events queued.
 
 The engine-side reference is the E2E test client's own ledger, built from command responses and
-cross-checked against `KafkaVerifier`'s latest event per key. The orders are limit orders only
-(§9).
+cross-checked against `KafkaVerifier`'s latest event per key. The orders include market buys and
+a cancel/re-place (§9).
 
 ## 8. Decisions
 
@@ -951,8 +950,9 @@ requirement the review added.
   `trading.u64(bigint) → numeric` function serves ad-hoc SQL. ClickHouse uses `UInt64`.
 - **Reason:** Connect and Postgres have no unsigned 64-bit type, so values ≥ 2^63 arrive as negative
   `INT64`. Examples:
-  - a balance above 9.22 units of an asset with 18 decimals;
-  - order ids from about mid-2029: the snowflake has 48 bits of 1,024 ns ticks from 2025.
+  - order ids from about mid-2029: the snowflake has 48 bits of 1,024 ns ticks from 2025;
+  - a bid's size, which only its quote cost bounds. A balance cannot get there: every asset's
+    `max_supply * native_scale` is at most `u64::MAX / 2` (vex-config `symbols.assets`).
 
   Carrying such values as strings in the proto would change the contract, which the issue puts out
   of scope.
@@ -1043,17 +1043,14 @@ requirement the review added.
 
 ## 9. Risks
 
-- **A2, #140 item 2 (the highest).**
-  - A replayed market BUY can lock a different price than the original run: R1 reads `PriceCache`
-    while matching writes it, and #178 declined the fix as a pipeline-topology decision.
-  - The engine after replay then disagrees with responses already sent, and with the events Kafka
-    already holds. No sink tie-break repairs that.
-  - It predates #189, and the outbox does not make it worse. But for any journal that contains
-    market orders, it falsifies the issue's acceptance criterion: "latest-state rows match the
-    engine across a replay".
-  - The acceptance E2E therefore uses limit orders only (§7).
-  - The owner decides whether #140 item 2 is a pre-production blocker for the ledger itself. The
-    design review's assessment is that it is.
+- **A2, #140 item 2: fixed** (audit core 2).
+  - R1 ran ahead of R2, so a replay, which publishes the journal back to back, could decide a
+    command differently from the live run: a market BUY locked a price read from a book matching
+    had not caught up with, and a withdrawal or re-place could miss credits R2 still owed.
+  - R1 now decides on the settled ledger: a market BUY, deposit or withdrawal waits until its
+    shard's R2 has settled every earlier sequence, and any other order that fails is decided
+    once more after that wait (`create_risk_handler!`).
+  - The acceptance E2E (§7) includes market buys and a cancel/re-place.
 - **Journal durability (Q7).** If the media driver, the archive or the host dies, the journal can
   miss commands whose events and responses went out. It is a pre-production blocker, tracked in its
   own issue.

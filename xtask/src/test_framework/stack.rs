@@ -8,8 +8,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// Redpanda: the Kafka broker, with its Schema Registry.
 pub const BROKER: &str = "vex-redpanda";
 
-/// The core (`test_server`), its own container's only process. It shares the network and IPC
-/// namespaces of the Aeron archive's container, so the journal outlives it.
+/// The core (the `vex-core` binary), its own container's only process. It shares the network and
+/// IPC namespaces of the Aeron archive's container, so the journal outlives it.
 pub const CORE: &str = "vex-server";
 
 fn docker(args: &[&str]) -> TestResult<String> {

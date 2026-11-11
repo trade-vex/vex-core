@@ -105,7 +105,6 @@ impl Fixture {
         let producer = collector(Arc::clone(&publications), Arc::clone(&replayed));
         let server = VexCoreServer::new(
             self.config.clone(),
-            GatewayAuthenticationKey::default(),
             producer,
             publications,
             Arc::new(AtomicBool::new(false)),
@@ -293,7 +292,6 @@ fn live_every_start_replays_the_journal_and_reads_its_tail_from_the_last_term() 
         let producer = collector(Arc::clone(&publications), Arc::clone(&replayed));
         let mut server = VexCoreServer::new(
             fixture.config.clone(),
-            GatewayAuthenticationKey::default(),
             producer,
             Arc::clone(&publications),
             Arc::new(AtomicBool::new(false)),
@@ -344,7 +342,6 @@ fn c8_2_live_held_terminal_second_recovery_has_no_duplicate_journal_entries() {
         let fixture = Fixture::new();
         let mut server = VexCoreServer::new(
             fixture.config.clone(),
-            GatewayAuthenticationKey::default(),
             producer,
             worker_publications,
             Arc::new(AtomicBool::new(false)),
@@ -500,7 +497,6 @@ fn c8_3_live_subscription_left_by_a_crash_before_the_publication_connected_is_st
     let producer = collector(Arc::clone(&publications), Arc::new(Mutex::new(Vec::new())));
     let mut server = VexCoreServer::new(
         fixture.config,
-        GatewayAuthenticationKey::default(),
         producer,
         publications,
         Arc::new(AtomicBool::new(false)),
@@ -537,7 +533,6 @@ fn c7_1_live_queued_shutdown_lagging_archive_survives_recovery() {
         .build();
     let mut server = VexCoreServer::new(
         fixture.config.clone(),
-        GatewayAuthenticationKey::default(),
         producer.clone(),
         Arc::clone(&publications),
         Arc::new(AtomicBool::new(false)),
@@ -599,4 +594,72 @@ fn c7_1_live_queued_shutdown_lagging_archive_survives_recovery() {
     let mut expected = replayed.lock().unwrap().clone();
     expected.extend([1, 2, 3]);
     assert_eq!(*recovered.lock().unwrap(), expected);
+}
+
+#[test]
+#[ignore = "needs dedicated live Aeron driver/archive; set VEX_RECOVERY_AERON_DIR and VEX_RECOVERY_ARCHIVE_CHANNEL"]
+fn shutdown_keeps_reply_publications_until_the_pipeline_drains() {
+    const REPLY_TEST_STREAM_ID: i32 = 3001;
+    let fixture = Fixture::new();
+    let publications = Arc::new(Publications::new());
+    let (answering, ack) = (Arc::clone(&publications), Arc::clone(&publications));
+    let (release, gate) = mpsc::channel();
+    // The start replays whatever the archive already holds; only the live command is held.
+    let live = Arc::new(AtomicBool::new(false));
+    let answerable = Arc::new(Mutex::new(None));
+    let (handler_live, handler_answerable) = (Arc::clone(&live), Arc::clone(&answerable));
+    let mut producer = build_multi_producer(64, OrderCommand::default, BusySpin)
+        .handle_events_with(move |_, sequence, _| {
+            if handler_live.load(Ordering::Acquire) {
+                gate.recv_timeout(DRAIN_TIMEOUT).unwrap();
+                *handler_answerable.lock().unwrap() = Some(answering.get(1).unwrap().is_some());
+            }
+            ack.completed(sequence);
+        })
+        .build();
+    let mut server = VexCoreServer::new(
+        fixture.config.clone(),
+        producer.clone(),
+        Arc::clone(&publications),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .unwrap();
+    live.store(true, Ordering::Release);
+    // Gateway 1's session, with its reply channel, holds one accepted command in the pipeline.
+    assert!(server.gateways.reserve_slot(1, 101));
+    let reply = fixture
+        .aeron
+        .add_publication(
+            &"aeron:ipc?term-length=65536".into_c_string(),
+            REPLY_TEST_STREAM_ID,
+            DRAIN_TIMEOUT,
+        )
+        .unwrap();
+    publications.set(1, Arc::new(reply)).unwrap();
+    publications.submitted(
+        producer
+            .try_publish(|cmd| {
+                *cmd = OrderCommand {
+                    route_gateway_id: 1,
+                    ..OrderCommand::default()
+                };
+            })
+            .unwrap(),
+    );
+    // The terminal stage answers only once shutdown has begun.
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        release.send(()).unwrap();
+    });
+    server.shutdown().unwrap();
+    releaser.join().unwrap();
+    assert_eq!(
+        *answerable.lock().unwrap(),
+        Some(true),
+        "shutdown closed gateway 1's session before the drain answered it"
+    );
+    assert!(
+        publications.get(1).unwrap().is_none(),
+        "shutdown left the session open"
+    );
 }

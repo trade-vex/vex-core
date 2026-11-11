@@ -5,12 +5,14 @@ use common::{MAX_GATEWAYS, ORDERCOMMANDSIZE};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// Shared numeric key used to authenticate gateway handshakes.
+/// Shared secret that authenticates gateway handshakes.
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct GatewayAuthenticationKey(String);
 
 impl GatewayAuthenticationKey {
+    pub const MIN_LEN: usize = 32;
+
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -19,8 +21,18 @@ impl GatewayAuthenticationKey {
         &self.0
     }
 
-    pub fn as_i32(&self) -> Option<i32> {
-        self.0.parse().ok()
+    /// Usable as a HELLO credential: long enough to be unguessable, one whitespace-free token.
+    pub fn check(&self) -> std::result::Result<(), String> {
+        if self.0.len() < Self::MIN_LEN {
+            return Err(format!(
+                "gateway_authentication_key must be at least {} characters; generate it with `openssl rand -hex 32`",
+                Self::MIN_LEN
+            ));
+        }
+        if self.0.contains(char::is_whitespace) {
+            return Err("gateway_authentication_key must not contain whitespace".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -53,34 +65,26 @@ pub struct CoreNetworkingConfig {
     pub initial_control_port: u16,
     /// The base port to use for individual gateway connections
     pub base_gateway_port: u16,
-    /// The maximum number of gateways to support
-    pub max_gateways: u16,
     /// Reserved session id lower bound
     pub reserved_session_id_low: i32,
     /// Reserved session id upper bound
     pub reserved_session_id_high: i32,
     /// Enable authentication for gateways
     pub enable_authentication: bool,
+    /// Shared bearer credential every gateway presents in its HELLO: an opaque secret of at least
+    /// 32 characters (`openssl rand -hex 32`), or empty, which outside production runs the
+    /// handshake unauthenticated. Carried in cleartext over `aeron:udp`: trusted network segments
+    /// only.
+    #[serde(default)]
+    pub gateway_authentication_key: GatewayAuthenticationKey,
     /// Core identifier
     pub core_id: String,
-    /// Buffer size for network operations (bytes)
-    pub buffer_size: usize,
-    /// Connection retry attempts
-    pub retry_attempts: u32,
-    /// Connection retry delay in milliseconds
-    pub retry_delay_ms: u64,
     /// Control Response Channel for Aeron Archive
     pub request_control_channel: String,
     pub response_control_channel: String,
     pub recording_events_channel: String,
     /// CPU core pinning for processor threads
-    /// Disabled by default in development/test, enabled in production.
-    #[serde(default = "default_enable_core_pinning")]
     pub enable_core_pinning: bool,
-}
-
-fn default_enable_core_pinning() -> bool {
-    false
 }
 
 impl CoreNetworkingConfig {
@@ -101,14 +105,11 @@ impl CoreNetworkingConfig {
             initial_port: 40001,
             initial_control_port: 40002,
             base_gateway_port: 50000,
-            max_gateways: 15,
-            reserved_session_id_low: 1000,
-            reserved_session_id_high: 9999,
+            reserved_session_id_low: 1,
+            reserved_session_id_high: i32::MAX,
             enable_authentication: false,
+            gateway_authentication_key: GatewayAuthenticationKey::default(),
             core_id: "vex-core-dev".to_string(),
-            buffer_size: 1024 * 1024,
-            retry_attempts: 3,
-            retry_delay_ms: 1000,
             request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
             response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
             recording_events_channel: "aeron:udp?endpoint=localhost:0".to_string(),
@@ -124,14 +125,11 @@ impl CoreNetworkingConfig {
             initial_port: 40001,
             initial_control_port: 40002,
             base_gateway_port: 50000,
-            max_gateways: 15,
-            reserved_session_id_low: 1000,
-            reserved_session_id_high: 9999,
+            reserved_session_id_low: 1,
+            reserved_session_id_high: i32::MAX,
             enable_authentication: true,
+            gateway_authentication_key: GatewayAuthenticationKey::default(),
             core_id: "vex-core-test".to_string(),
-            buffer_size: 1024 * 1024,
-            retry_attempts: 3,
-            retry_delay_ms: 1000,
             request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
             response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
             recording_events_channel: "aeron:udp?endpoint=localhost:0".to_string(),
@@ -147,14 +145,11 @@ impl CoreNetworkingConfig {
             initial_port: 3521,
             initial_control_port: 3522,
             base_gateway_port: 50000,
-            max_gateways: 1000,
-            reserved_session_id_low: 1000,
-            reserved_session_id_high: 9999,
+            reserved_session_id_low: 1,
+            reserved_session_id_high: i32::MAX,
             enable_authentication: true,
+            gateway_authentication_key: GatewayAuthenticationKey::default(),
             core_id: "vex-core-prod".to_string(),
-            buffer_size: 4 * 1024 * 1024, // 4MB
-            retry_attempts: 5,
-            retry_delay_ms: 2000,
             request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
             response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
             recording_events_channel: "aeron:udp?endpoint=localhost:8012".to_string(),
@@ -178,10 +173,6 @@ impl CoreNetworkingConfig {
             ));
         }
 
-        if self.max_gateways == 0 {
-            return Err(ConfigError::network("Max gateways must be greater than 0"));
-        }
-
         if self.reserved_session_id_low >= self.reserved_session_id_high {
             return Err(ConfigError::network(
                 "Reserved session ID low must be less than high",
@@ -192,8 +183,11 @@ impl CoreNetworkingConfig {
             return Err(ConfigError::network("Core ID cannot be empty"));
         }
 
-        if self.buffer_size == 0 {
-            return Err(ConfigError::network("Buffer size must be greater than 0"));
+        // An empty key is resolved at startup: production refuses it, dev/test run unauthenticated.
+        if self.enable_authentication && !self.gateway_authentication_key.is_empty() {
+            self.gateway_authentication_key
+                .check()
+                .map_err(ConfigError::network)?;
         }
 
         if self.context_dir.is_empty() {
@@ -208,14 +202,6 @@ impl CoreNetworkingConfig {
 
         Ok(())
     }
-
-    /// Merge with another configuration, with the other taking precedence
-    pub fn merge_with(&mut self, other: &Self) -> Result<()> {
-        // For networking config, we do a field-by-field merge
-        // In a real implementation, you might want more sophisticated merging rules
-        *self = other.clone();
-        Ok(())
-    }
 }
 
 /// Gateway networking configuration for connecting to VEX Core
@@ -223,8 +209,6 @@ impl CoreNetworkingConfig {
 pub struct GatewayNetworkingConfig {
     /// The directory used for the underlying Aeron media driver
     pub context_dir: String,
-    /// The local IP address for this gateway
-    pub local_address: String,
     /// VEX Core address to connect to
     pub core_address: String,
     /// VEX Core port for initial handshake
@@ -233,9 +217,9 @@ pub struct GatewayNetworkingConfig {
     pub core_control_port: u16,
     /// Gateway identifier for this instance
     pub gateway_id: u8,
-    /// Shared bearer credential used to authenticate with VEX Core: a signed 32-bit integer equal
-    /// to the core's key, or empty when the core runs without authentication. `VexGateway::new`
-    /// rejects any other value.
+    /// Shared bearer credential used to authenticate with VEX Core: an opaque secret of at least
+    /// 32 characters (`openssl rand -hex 32`) equal to the core's key, or empty when the core runs
+    /// without authentication. `VexGateway::new` rejects any other value.
     ///
     /// This credential is carried in cleartext over `aeron:udp` and is meaningful
     /// only on a trusted or private network segment.
@@ -243,47 +227,19 @@ pub struct GatewayNetworkingConfig {
     pub gateway_authentication_key: GatewayAuthenticationKey,
     /// Maximum message size in bytes, 64 for OrderCommand
     pub max_message_size: usize,
-    /// Enable heartbeat mechanism
-    pub enable_heartbeat: bool,
-    /// Heartbeat interval in seconds
-    pub heartbeat_interval_seconds: u64,
-    /// Connection timeout in seconds
-    pub connection_timeout_seconds: u64,
-    /// Reconnection attempts
-    pub reconnection_attempts: u32,
-    /// Reconnection delay in milliseconds
-    pub reconnection_delay_ms: u64,
-    /// Buffer size for gateway operations
-    pub buffer_size: usize,
 }
 
 impl GatewayNetworkingConfig {
-    /// Create configuration optimized for the given environment
-    pub fn for_environment(env: &Environment) -> Self {
-        match env {
-            Environment::Development => Self::development_defaults(),
-            Environment::Test => Self::test_defaults(),
-            Environment::Production => Self::production_defaults(),
-        }
-    }
-
     /// Development environment defaults
     pub fn development_defaults() -> Self {
         Self {
             context_dir: "/tmp/aeron-test-client".to_string(),
-            local_address: "127.0.0.1".to_string(),
             core_address: "127.0.0.1".to_string(),
             core_port: 3521,
             core_control_port: 3522,
             gateway_id: 1,
             gateway_authentication_key: GatewayAuthenticationKey::default(),
             max_message_size: ORDERCOMMANDSIZE,
-            enable_heartbeat: true,
-            heartbeat_interval_seconds: 10,
-            connection_timeout_seconds: 60,
-            reconnection_attempts: 5,
-            reconnection_delay_ms: 2000,
-            buffer_size: 512 * 1024, // 512KB
         }
     }
 
@@ -291,39 +247,12 @@ impl GatewayNetworkingConfig {
     pub fn test_defaults() -> Self {
         Self {
             context_dir: "/dev/shm/aeron-test-client".to_string(),
-            local_address: "127.0.0.1".to_string(),
             core_address: "127.0.0.1".to_string(),
             core_port: 3521,
             core_control_port: 3522,
             gateway_id: 1,
             gateway_authentication_key: GatewayAuthenticationKey::default(),
             max_message_size: ORDERCOMMANDSIZE,
-            enable_heartbeat: true,
-            heartbeat_interval_seconds: 5,
-            connection_timeout_seconds: 30,
-            reconnection_attempts: 3,
-            reconnection_delay_ms: 1000,
-            buffer_size: 256 * 1024, // 256KB
-        }
-    }
-
-    /// Production environment defaults
-    pub fn production_defaults() -> Self {
-        Self {
-            context_dir: "/var/lib/vex/aeron-gateway".to_string(),
-            local_address: "127.0.0.1".to_string(),
-            core_address: "127.0.0.1".to_string(), // Example production IP
-            core_port: 3521,
-            core_control_port: 3522,
-            gateway_id: 1,
-            gateway_authentication_key: GatewayAuthenticationKey::default(),
-            max_message_size: ORDERCOMMANDSIZE,
-            enable_heartbeat: true,
-            heartbeat_interval_seconds: 5,
-            connection_timeout_seconds: 15,
-            reconnection_attempts: 10,
-            reconnection_delay_ms: 5000,
-            buffer_size: 2 * 1024 * 1024, // 2MB
         }
     }
 
@@ -350,12 +279,10 @@ impl GatewayNetworkingConfig {
             )));
         }
 
-        if !self.gateway_authentication_key.is_empty()
-            && self.gateway_authentication_key.as_i32().is_none()
-        {
-            return Err(ConfigError::network(
-                "Gateway authentication key must be a signed 32-bit integer",
-            ));
+        if !self.gateway_authentication_key.is_empty() {
+            self.gateway_authentication_key
+                .check()
+                .map_err(ConfigError::network)?;
         }
 
         if self.max_message_size == 0 {
@@ -369,32 +296,10 @@ impl GatewayNetworkingConfig {
             return Err(ConfigError::network("Max message size cannot exceed 10MB"));
         }
 
-        if self.connection_timeout_seconds == 0 {
-            return Err(ConfigError::network(
-                "Connection timeout must be greater than 0",
-            ));
-        }
-
-        if self.heartbeat_interval_seconds == 0 && self.enable_heartbeat {
-            return Err(ConfigError::network(
-                "Heartbeat interval must be greater than 0 when heartbeat is enabled",
-            ));
-        }
-
         if self.context_dir.is_empty() {
             return Err(ConfigError::network("Context directory cannot be empty"));
         }
 
-        if self.buffer_size == 0 {
-            return Err(ConfigError::network("Buffer size must be greater than 0"));
-        }
-
-        Ok(())
-    }
-
-    /// Merge with another configuration, with the other taking precedence
-    pub fn merge_with(&mut self, other: &Self) -> Result<()> {
-        *self = other.clone();
         Ok(())
     }
 }
@@ -437,6 +342,70 @@ mod tests {
         config.gateway_id = 16;
         config.max_message_size = 0;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn key_shorter_than_32_chars_fails_validation() {
+        let hex64 = "0123456789abcdef".repeat(4);
+        assert!(GatewayAuthenticationKey::from("short").check().is_err());
+        assert!(
+            GatewayAuthenticationKey::from(hex64.as_str())
+                .check()
+                .is_ok()
+        );
+        let spaced = format!("{} {}", &hex64[..32], &hex64[32..]);
+        assert!(
+            GatewayAuthenticationKey::from(spaced.as_str())
+                .check()
+                .is_err()
+        );
+
+        let mut config = GatewayNetworkingConfig::development_defaults();
+        config.gateway_authentication_key = "123456789".into();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn core_key_is_checked_when_authentication_is_enabled() {
+        let mut config = CoreNetworkingConfig::development_defaults();
+        config.gateway_authentication_key = "123456789".into();
+        assert!(config.validate(&Environment::Development).is_ok());
+
+        config.enable_authentication = true;
+        assert!(matches!(
+            config.validate(&Environment::Development),
+            Err(ConfigError::NetworkError(message)) if message.contains("at least 32 characters")
+        ));
+
+        config.gateway_authentication_key = "0123456789abcdef".repeat(4).as_str().into();
+        assert!(config.validate(&Environment::Development).is_ok());
+    }
+
+    #[test]
+    fn enable_core_pinning_is_required() {
+        let mut json = serde_json::to_value(CoreNetworkingConfig::production_defaults()).unwrap();
+        json.as_object_mut().unwrap().remove("enable_core_pinning");
+
+        let error = serde_json::from_value::<CoreNetworkingConfig>(json).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("missing field `enable_core_pinning`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn session_ids_span_the_positive_i32_range() {
+        for env in [
+            Environment::Development,
+            Environment::Test,
+            Environment::Production,
+        ] {
+            let config = CoreNetworkingConfig::for_environment(&env);
+            assert!(config.reserved_session_id_low > 0);
+            assert!(config.reserved_session_id_high - config.reserved_session_id_low >= 1 << 30);
+        }
     }
 
     #[test]

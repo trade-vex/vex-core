@@ -1322,10 +1322,9 @@ fn final_maker_balances(
 ///   before the archive recorded the command (#197): the restart then neither replays that
 ///   command nor, on a host whose clock is behind, avoids stamping a new command with its
 ///   timestamp and id.
-/// - **A2: replay regenerates each command's events**, up to item 4. Not for market buys (#140):
-///   R1 reads the price cache while matching writes it, so a replayed market buy can lock a
-///   different price than the original run did, and its re-published events then differ from the
-///   copies that Kafka already holds.
+/// - **A2: replay regenerates each command's events**, up to item 4. It holds for every command:
+///   R1 decides on the settled ledger (`create_risk_handler!`), so a replay, which runs the
+///   journal back to back, takes every decision the live run took.
 ///
 /// Not covered:
 /// - A registry that rejects the schema (as incompatible, say) is retried like an outage, because
@@ -1965,6 +1964,7 @@ impl EventsHandler for KafkaEventsHandler {
                     stage = "events",
                     handler = "kafka"
                 );
+                // Events first: a dropped reply is resolved from the read model.
                 self.publish_events(cmd);
                 self.publications.publish_response(cmd);
             }

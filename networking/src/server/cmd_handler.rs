@@ -6,7 +6,7 @@ use rusteron_archive::{AeronFragmentHandlerCallback, AeronHeader};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 pub struct FragmentHandler {
     pub gateway_id: u8,
@@ -32,15 +32,16 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
                 }) {
                     Ok(sequence) => self.publications.submitted(sequence),
                     Err(e) => {
-                        error!(
+                        // Back-pressure is normal: the Busy reply is the signal, and the gateway
+                        // counts it.
+                        debug!(
                             target: "gateway_fragment",
                             gateway_id = self.gateway_id,
                             error = %e,
                             "failed to publish order command to ring buffer"
                         );
-                        // Single offer: a retry backoff here would stall every gateway's ingress.
                         self.publications
-                            .try_publish_response(&busy_response(order_command));
+                            .publish_response(&busy_response(order_command));
                     }
                 }
             }
@@ -57,7 +58,6 @@ impl AeronFragmentHandlerCallback for FragmentHandler {
 }
 
 pub struct ReplayFragmentHandler {
-    pub gateway_id: u8,
     pub producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
     pub commands_published: i64,
     pub publications: Arc<Publications>,
@@ -66,39 +66,12 @@ pub struct ReplayFragmentHandler {
 }
 
 impl AeronFragmentHandlerCallback for ReplayFragmentHandler {
-    fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) {
-        if cfg!(debug_assertions) {
-            let values = match header.get_values() {
-                Ok(values) => values,
-                Err(e) => {
-                    self.replay_error = Some(format!("failed to decode replay header: {e}"));
-                    error!(
-                        target: "replay_fragment",
-                        gateway_id = self.gateway_id,
-                        error = %e,
-                        "failed to decode header values"
-                    );
-                    return;
-                }
-            };
-            debug!(
-                target: "replay_fragment",
-                gateway_id = self.gateway_id,
-                session_id = values.frame.session_id,
-                stream_id = values.frame.stream_id,
-                term_id = values.frame.term_id,
-                term_offset = values.frame.term_offset,
-                frame_size = values.position_bits_to_shift(),
-                "received replay fragment"
-            );
-        }
-
+    fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], _header: AeronHeader) {
         match decode_order_command(buffer) {
             Ok(mut order_command) => {
                 order_command.status = Status::Processing;
-                info!(
+                debug!(
                     target: "replay_fragment",
-                    gateway_id = self.gateway_id,
                     time_stamp = ?order_command.timestamp,
                     client_order_id = ?order_command.client_order_id,
                     "processing replay order command"
@@ -125,7 +98,6 @@ impl AeronFragmentHandlerCallback for ReplayFragmentHandler {
                 self.replay_error = Some(format!("failed to decode replay order command: {e:?}"));
                 error!(
                     target: "replay_fragment",
-                    gateway_id = self.gateway_id,
                     error = ?e,
                     "failed to decode replay order command"
                 );

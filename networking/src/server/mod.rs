@@ -6,25 +6,15 @@
 //!
 //! ## Key Features
 //! - High-performance gateway connection management
-//! - Concurrent session handling with lock-free data structures
+//! - Session handling on one thread, without locks
 //! - Automatic resource cleanup and connection lifecycle management
-//! - Configurable connection limits and authentication
+//! - Up to `MAX_GATEWAYS` gateways, with handshake authentication
 //!
-//! ## Rchitecture
+//! ## Architecture
 //! The server is built around three main components:
 //! - `VexCoreServer`: Main server orchestrating connections and cleanup
 //! - `GatewayManager`: Handles individual gateway sessions and handshakes
 //! - Message handlers: Process Aeron image and fragment events
-//!
-//! ## Usage
-//! ```ignore, rust,no_run
-//! use networking::server::{VexCoreServer};
-//! use vex_config::CoreNetworkingConfig;
-//!
-//! let config = CoreNetworkingConfig::test_defaults();
-//! let mut server = VexCoreServer::new(config).unwrap();
-//! server.start().unwrap(); // Runs indefinitely
-//! ```
 
 mod cmd_handler;
 mod duologue;
@@ -37,20 +27,18 @@ mod recovery_tests;
 mod replay;
 
 use crate::server::cmd_handler::ReplayFragmentHandler;
-use crate::server::gateway_handler::{
-    GatewayImageAvailableHandler, GatewayImageUnavailableHandler, HandshakeMessageHandler,
-};
+use crate::server::gateway_handler::HandshakeMessageHandler;
 use crate::server::gateway_manager::GatewayManager;
 use crate::server::replay::{
-    ExtendedRecordingDescriptor, JournalHolders, RecorderDescriptorReader, RecordingCounter,
-    RecordingInfo, assert_replay_complete, await_journal_release, drain_replay,
-    ensure_replayable_recording, ensure_stopped_recordings, fail_on_replay_error,
-    is_live_recording, journal_publication, replay_lineage, tail_recording, tail_window_start,
+    ExtendedRecordingDescriptor, JournalHolders, RecorderDescriptorReader, RecordingInfo,
+    assert_replay_complete, await_journal_release, drain_replay, ensure_replayable_recording,
+    ensure_stopped_recordings, fail_on_replay_error, is_live_recording, journal_publication,
+    replay_lineage, tail_recording, tail_window_start,
 };
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
 use common::{OrderCommand, decode_order_command};
 use disruptor::{MultiProducer, SingleConsumerBarrier};
-use progress::{DRAIN_TIMEOUT, finish_shutdown, wait_until};
+use progress::{DRAIN_TIMEOUT, wait_until};
 use rusteron_archive::bindings::AERON_NULL_COUNTER_ID;
 use rusteron_archive::{
     Aeron, AeronArchiveAsyncConnect, AeronArchiveReplayParams, AeronAvailableImageLogger,
@@ -65,7 +53,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{debug, error, info, warn};
-use vex_config::{CoreNetworkingConfig, GatewayAuthenticationKey};
+use vex_config::CoreNetworkingConfig;
 
 pub use gateway_publications::Publications;
 
@@ -166,10 +154,6 @@ pub struct VexCoreServer {
     gateways: Rc<GatewayManager>,
     /// Shared shutdown flag
     shutdown: Arc<AtomicBool>,
-    /// Image available handler
-    image_available_handler: Handler<GatewayImageAvailableHandler>,
-    /// Image unavailable handler
-    image_unavailable_handler: Handler<GatewayImageUnavailableHandler>,
     /// Handshake message handler
     handshake_handler: Handler<HandshakeMessageHandler>,
     /// Subscription for handshake messages
@@ -186,16 +170,13 @@ impl VexCoreServer {
     /// Creates a new VEX Core instance
     pub fn new(
         config: CoreNetworkingConfig,
-        authentication_key: GatewayAuthenticationKey,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
         publications: Arc<Publications>,
         shutdown: Arc<AtomicBool>,
     ) -> Result<Self, ServerError> {
-        // Validate configuration
-        Self::validate_config(&config)?;
         gateway_manager::validate_authentication_config(
             config.enable_authentication,
-            &authentication_key,
+            &config.gateway_authentication_key,
         )?;
 
         if !config.enable_authentication {
@@ -307,9 +288,6 @@ impl VexCoreServer {
             (None, None, None)
         };
 
-        let image_available_handler = Handler::leak(GatewayImageAvailableHandler);
-        let image_unavailable_handler = Handler::leak(GatewayImageUnavailableHandler);
-
         let publication = new_publication_with_mdc(
             &aeron,
             &config.local_address,
@@ -323,13 +301,12 @@ impl VexCoreServer {
             &config.local_address,
             config.initial_port,
             ALL_GATEWAYS_STREAM_ID,
-            Some(&image_available_handler),
-            Some(&image_unavailable_handler),
+            None::<&Handler<AeronAvailableImageLogger>>,
+            None::<&Handler<AeronUnavailableImageLogger>>,
         )?;
 
         let gateways = Rc::new(GatewayManager::new(
             config.clone(),
-            authentication_key,
             aeron,
             producer,
             Arc::clone(&publications),
@@ -347,8 +324,6 @@ impl VexCoreServer {
             subscription,
             handshake_handler: Handler::leak(handshake_handler),
             shutdown,
-            image_available_handler,
-            image_unavailable_handler,
             subscription_id,
             archive,
             publications,
@@ -408,7 +383,7 @@ impl VexCoreServer {
 
     /// Gracefully shuts down the core server
     ///
-    /// Closes all active gateway connections and cleans up resources.
+    /// Drains the pipeline, waits for the archive, then closes every gateway session.
     /// This method should only be called when the shutdown flag is already set.
     ///
     /// # Returns
@@ -420,71 +395,51 @@ impl VexCoreServer {
             core_id = %self.config.core_id
         );
 
-        self.gateways.shutdown_all_gateways()?;
+        // The poll loop has returned, so no command is read any more. Sessions stay open: the
+        // drain answers every accepted command through them.
+        // shortcut: a gateway's orders offered after this point, before it sees its session close
+        // (<= publication.connection.timeout, 5 s), are never read and end as 408 at the gateway;
+        // upgrade to a CLOSING notice on the reply stream when deploys under load show it.
         self.subscription.close::<AeronNotificationLogger>(None)?;
-        self.image_available_handler.release();
-        self.image_unavailable_handler.release();
         self.handshake_handler.release();
-        // Ingress is closed. Keep the recording subscription and client alive until
-        // accepted commands finish journaling and the archive catches the publication.
-        finish_shutdown(
-            || self.publications.drain_pipeline(),
-            || {
-                if let (Some(archive), Some(recording_id), Some(publication)) = (
-                    self.archive.as_ref(),
-                    self.recording_id,
-                    self.publications.archive_publication(),
-                ) {
-                    let target = publication.position();
-                    if target < 0 {
-                        return Err(ServerError::DrainError(format!(
-                            "archive publication position: {target}"
-                        )));
-                    }
-                    wait_until(DRAIN_TIMEOUT, || {
-                        Ok(archive.get_max_recorded_position(recording_id)? >= target)
-                    })
-                    .map_err(|error| {
-                        ServerError::DrainError(format!(
-                            "recording {recording_id} did not reach publication position {target}: {error}"
-                        ))
-                    })?;
-                }
-                Ok(())
-            },
-            || {
-                if let Some(sub_id) = self.subscription_id
-                    && let Some(ref archive) = self.archive
-                {
-                    archive.stop_recording_subscription(sub_id)?;
-                }
-                if let Some(ref archive) = self.archive {
-                    archive.close()?;
-                }
-                Ok(())
-            },
-        )?;
+        // A failure below leaves the recording open on purpose: the next start needs it.
+        self.publications.drain_pipeline()?;
+        if let (Some(archive), Some(recording_id), Some(publication)) = (
+            self.archive.as_ref(),
+            self.recording_id,
+            self.publications.archive_publication(),
+        ) {
+            let target = publication.position();
+            if target < 0 {
+                return Err(ServerError::DrainError(format!(
+                    "archive publication position: {target}"
+                )));
+            }
+            wait_until(DRAIN_TIMEOUT, || {
+                Ok(archive.get_max_recorded_position(recording_id)? >= target)
+            })
+            .map_err(|error| {
+                ServerError::DrainError(format!(
+                    "recording {recording_id} did not reach publication position {target}: {error}"
+                ))
+            })?;
+        }
+        if let Some(sub_id) = self.subscription_id
+            && let Some(ref archive) = self.archive
+        {
+            archive.stop_recording_subscription(sub_id)?;
+        }
+        if let Some(ref archive) = self.archive {
+            archive.close()?;
+        }
+        // Every reply went out during the drain; only now drop the gateway sessions.
+        self.gateways.shutdown_all_gateways()?;
 
         info!(
             target: "core_server",
             action = "shutdown_complete",
             core_id = %self.config.core_id
         );
-        Ok(())
-    }
-
-    /// Validates the core configuration
-    fn validate_config(config: &CoreNetworkingConfig) -> Result<(), ServerError> {
-        if config.max_gateways == 0 {
-            return Err(ServerError::ConfigurationError(
-                "Max gateways must be greater than 0".to_string(),
-            ));
-        }
-        if config.core_id.is_empty() {
-            return Err(ServerError::ConfigurationError(
-                "Core ID cannot be empty".to_string(),
-            ));
-        }
         Ok(())
     }
 
@@ -627,12 +582,7 @@ impl VexCoreServer {
             &RECORDING_CHANNEL.into_c_string(),
             RECORDING_STREAM_ID,
         )?;
-        let mut recording_counter = Handler::leak(RecordingCounter);
-        let archive_recording_count =
-            archive.list_recordings(0, i32::MAX, Some(&recording_counter));
-        recording_counter.release();
-        let archive_recording_count = archive_recording_count?;
-        let mut reader = Handler::leak(RecorderDescriptorReader::new());
+        let mut reader = Handler::leak(RecorderDescriptorReader::default());
         let matching_recording_count = archive.list_recordings_for_uri(
             0,
             i32::MAX,
@@ -648,7 +598,6 @@ impl VexCoreServer {
         info!(
             target: "replay",
             action = "recordings_listed",
-            archive_recording_count,
             matching_recording_count,
             skipped_invalid
         );
@@ -723,12 +672,12 @@ impl VexCoreServer {
         );
         let mut message_handler = Handler::leak(ReplayFragmentHandler {
             producer,
-            gateway_id: 0,
             commands_published: 0,
             replay_error: None,
             publications: Arc::clone(&publications),
             shutdown: Arc::clone(&shutdown),
         });
+        let started = Instant::now();
         let replay_result = Self::replay_range(
             aeron,
             archive,
@@ -746,6 +695,7 @@ impl VexCoreServer {
                 )
             },
         );
+        let commands = message_handler.commands_published;
         // Release the producer whatever the outcome: a stranded clone would keep the disruptor
         // from shutting down after a failed start. Callbacks are no longer polled.
         message_handler.release();
@@ -757,7 +707,9 @@ impl VexCoreServer {
             target: "replay",
             action = "completed",
             recording_id,
-            session_id
+            session_id,
+            commands,
+            elapsed_ms = started.elapsed().as_millis()
         );
         ExtendedRecordingDescriptor::new(
             record.initial_term_id,

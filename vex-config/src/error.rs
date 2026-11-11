@@ -32,10 +32,6 @@ pub enum ConfigError {
     #[error("Configuration not found: {0}")]
     NotFound(String),
 
-    /// Configuration merge error
-    #[error("Merge error: {0}")]
-    MergeError(String),
-
     /// Configuration load error with search-path context
     #[error("Configuration load failed after trying paths {paths:?}: {source}")]
     LoadError {
@@ -49,21 +45,12 @@ pub enum ConfigError {
     /// Network configuration error
     #[error("Network configuration error: {0}")]
     NetworkError(String),
-
-    /// Logging configuration error
-    #[error("Logging configuration error: {0}")]
-    LoggingError(String),
 }
 
 impl ConfigError {
     /// Create a new validation error
     pub fn validation<S: Into<String>>(msg: S) -> Self {
         ConfigError::ValidationError(msg.into())
-    }
-
-    /// Create a new IO error
-    pub fn io<S: Into<String>>(msg: S) -> Self {
-        ConfigError::IoError(msg.into())
     }
 
     /// Create a new parse error
@@ -87,11 +74,6 @@ impl ConfigError {
     /// Create a new network error
     pub fn network<S: Into<String>>(msg: S) -> Self {
         ConfigError::NetworkError(msg.into())
-    }
-
-    /// Create a new logging error
-    pub fn logging<S: Into<String>>(msg: S) -> Self {
-        ConfigError::LoggingError(msg.into())
     }
 }
 

@@ -1,13 +1,8 @@
-//! VEX Configuration Management
-//!
-//! This crate provides comprehensive configuration management for VEX Core,
-//! supporting multiple environments (dev, test, prod) with advanced configuration operations.
-//! Features auto-detection of environment from environment variables and multiple loading strategies.
+//! Configuration for VEX Core: environment defaults, one optional file, VEX__* overrides and validation.
 
 pub mod environment;
 pub mod error;
 pub mod loader;
-pub mod logging;
 pub mod networking;
 pub mod symbols;
 
@@ -17,7 +12,6 @@ pub mod balance_preload;
 pub use environment::Environment;
 pub use error::{ConfigError, Result};
 pub use loader::ConfigLoader;
-pub use logging::LoggingConfig;
 pub use networking::{CoreNetworkingConfig, GatewayAuthenticationKey, GatewayNetworkingConfig};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
@@ -33,10 +27,6 @@ pub struct VexConfig {
     pub environment: Environment,
     /// Core networking configuration
     pub core_networking: CoreNetworkingConfig,
-    /// Gateway networking configuration
-    pub gateway_networking: GatewayNetworkingConfig,
-    /// Logging configuration
-    pub logging: LoggingConfig,
     /// Symbol specifications configuration
     pub symbols: SymbolSpecificationConfig,
     /// Kafka broker address for event streaming
@@ -64,8 +54,6 @@ impl VexConfig {
     pub fn new(environment: Environment) -> Self {
         Self {
             core_networking: CoreNetworkingConfig::for_environment(&environment),
-            gateway_networking: GatewayNetworkingConfig::for_environment(&environment),
-            logging: LoggingConfig::for_environment(&environment),
             symbols: SymbolSpecificationConfig::for_environment(&environment),
             kafka_broker: default_kafka_broker(),
             schema_registry_url: default_schema_registry_url(),
@@ -91,54 +79,17 @@ impl VexConfig {
         ConfigLoader::new().load_from_file(path)
     }
 
-    /// Load configuration with custom search paths and environment
-    pub fn load_with_options(
-        environment: Option<Environment>,
-        search_paths: Vec<String>,
-    ) -> Result<Self> {
-        ConfigLoader::new()
-            .with_search_paths(search_paths)
-            .load_with_environment(environment)
-    }
-
-    /// Save configuration as `.toml` or `.json`, chosen by the file extension.
-    pub fn save_to_file<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
-        self.validate()?;
-
-        let path = path.as_ref();
-        let content = match path.extension().and_then(|ext| ext.to_str()) {
-            Some("toml") => toml::to_string_pretty(self)
-                .map_err(|e| ConfigError::SerializationError(e.to_string()))?,
-            Some("json") => serde_json::to_string_pretty(self)
-                .map_err(|e| ConfigError::SerializationError(e.to_string()))?,
-            _ => {
-                return Err(ConfigError::ValidationError(
-                    "Unsupported file format. Use .toml or .json".to_string(),
-                ));
-            }
-        };
-
-        std::fs::write(path, content).map_err(|e| ConfigError::IoError(e.to_string()))?;
-
-        Ok(())
-    }
-
     /// Validate the entire configuration
     pub fn validate(&self) -> Result<()> {
         self.core_networking.validate(&self.environment)?;
-        self.gateway_networking.validate()?;
         if self.is_production()
             && (!self.core_networking.enable_authentication
-                || self
-                    .gateway_networking
-                    .gateway_authentication_key
-                    .is_empty())
+                || self.core_networking.gateway_authentication_key.is_empty())
         {
             return Err(ConfigError::validation(
                 "Production requires gateway authentication and a nonempty gateway authentication key",
             ));
         }
-        self.logging.validate()?;
         self.symbols.validate()?;
         // The registry client does not check the URL either; a malformed one would fail every
         // event's registration, and that is retried forever rather than failing startup.
@@ -163,25 +114,8 @@ impl VexConfig {
                     "Balance preload cannot be enabled in production".to_string(),
                 ));
             }
-            self.balance_preload.validate()?;
+            self.balance_preload.validate(&self.symbols)?;
         }
-        Ok(())
-    }
-
-    /// Merge configuration with another config, with the other config taking precedence
-    pub fn merge_with(&mut self, other: &Self) -> Result<()> {
-        if self.environment != other.environment {
-            return Err(ConfigError::ValidationError(
-                "Cannot merge configurations with different environments".to_string(),
-            ));
-        }
-
-        self.core_networking.merge_with(&other.core_networking)?;
-        self.gateway_networking
-            .merge_with(&other.gateway_networking)?;
-        self.logging.merge_with(&other.logging)?;
-        self.symbols.merge_with(&other.symbols)?;
-
         Ok(())
     }
 
@@ -206,12 +140,6 @@ impl VexConfig {
     }
 }
 
-impl Default for VexConfig {
-    fn default() -> Self {
-        Self::new(Environment::Development)
-    }
-}
-
 impl Display for VexConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:#?}", self)
@@ -228,8 +156,9 @@ mod tests {
         // PR #176 added an earlier production gate (authentication + key). Satisfy it so this
         // test still exercises PR #151's symbols rule rather than tripping on the auth rule.
         production.core_networking.enable_authentication = true;
-        production.gateway_networking.gateway_authentication_key =
-            GatewayAuthenticationKey::from("123456789");
+        production.core_networking.gateway_authentication_key = GatewayAuthenticationKey::from(
+            "5f0c3a9e7d2b4816c4e1a7f39b0d2c6e8a1f4b7d3e9c0a2f6b8d1e4c7a3f9b05",
+        );
         assert!(matches!(
             production.validate(),
             Err(ConfigError::ValidationError(message))
@@ -244,5 +173,24 @@ mod tests {
     #[test]
     fn test_valid_configuration_accepted() {
         assert!(VexConfig::new(Environment::Development).validate().is_ok());
+    }
+
+    #[cfg(feature = "balance-preload")]
+    #[test]
+    fn preload_above_asset_supply_is_rejected() {
+        let mut config = VexConfig::new(Environment::Development);
+        config.balance_preload.enabled = true;
+        let eth_supply = config.symbols.assets[&3].atomic_supply() as u64;
+        for (asset_id, amount, accepted) in
+            [(3, eth_supply, true), (3, u64::MAX, false), (9, 1, false)]
+        {
+            config.balance_preload.users =
+                [(1, vec![balance_preload::UserBalance { asset_id, amount }])].into();
+            assert_eq!(
+                config.validate().is_ok(),
+                accepted,
+                "asset {asset_id} amount {amount}"
+            );
+        }
     }
 }

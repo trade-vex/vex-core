@@ -2,19 +2,22 @@ use common::OrderCommandType;
 use common::{OrderCommand, decode_order_command};
 use common::{Side, TimeInForce};
 use disruptor::{BusySpin, ProcessorSettings, build_multi_producer};
-use rusteron_archive::{AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port};
+use rusteron_archive::{
+    Aeron, AeronContext, AeronFragmentHandlerCallback, AeronHeader, find_unused_udp_port,
+};
 use rusteron_media_driver::{AeronDriver, AeronDriverContext};
 use std::ffi::CString;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{net::SocketAddr, thread};
 use tracing::{error, info};
 use vex_config::{CoreNetworkingConfig, GatewayNetworkingConfig};
 use vex_networking::client::{GatewayError, VexGateway};
 use vex_networking::server::{Publications, VexCoreServer};
+use vex_networking::utils::{new_publication, new_subscription_with_mdc, send_message};
 
 /// Fragment handler for processing OrderCommand messages from core
 struct OrderCommandHandler {
@@ -57,7 +60,12 @@ fn create_test_addresses() -> (SocketAddr, SocketAddr) {
 }
 
 /// Both sides share it, so the handshake runs with authentication enabled.
-const GATEWAY_AUTHENTICATION_KEY: &str = "123456789";
+const GATEWAY_AUTHENTICATION_KEY: &str =
+    "5f0c3a9e7d2b4816c4e1a7f39b0d2c6e8a1f4b7d3e9c0a2f6b8d1e4c7a3f9b05";
+/// Well-formed, but not the core's key.
+const WRONG_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+/// The core's handshake stream (`ALL_GATEWAYS_STREAM_ID`, private to the crate).
+const HANDSHAKE_STREAM_ID: i32 = 1001;
 
 #[test_log::test]
 #[ignore = "This test needs media drivers running, Tests will be added in x-tasks"]
@@ -110,6 +118,7 @@ fn test_client_server_communication() {
         let mut server_config = CoreNetworkingConfig::test_defaults();
         server_config.initial_port = server_addr.port();
         server_config.initial_control_port = server_addr.port() + 1;
+        server_config.gateway_authentication_key = GATEWAY_AUTHENTICATION_KEY.into();
         info!("server_config: {:?}", server_config);
         let producer = build_multi_producer(
             1024,
@@ -138,14 +147,8 @@ fn test_client_server_communication() {
         .build();
         let publications = Arc::new(Publications::new());
         let shutdown_flag = Arc::new(AtomicBool::new(false));
-        let mut server = VexCoreServer::new(
-            server_config,
-            GATEWAY_AUTHENTICATION_KEY.into(),
-            producer,
-            publications,
-            shutdown_flag,
-        )
-        .unwrap();
+        let mut server =
+            VexCoreServer::new(server_config, producer, publications, shutdown_flag).unwrap();
         match server.start() {
             Ok(()) => println!("Server run() completed successfully (unexpected)"),
             Err(e) => println!("Server run() error: {e}"),
@@ -163,6 +166,8 @@ fn test_client_server_communication() {
 /// The core answers each HELLO exactly once over its MDC handshake publication. Once one gateway
 /// is subscribed, that publication counts as connected, so a later gateway that sent HELLO before
 /// its own reply subscription had joined lost its ACCEPT or REJECT and timed out instead.
+///
+/// A flood of bad HELLOs (wrong key or malformed) is answered (and logged) only 16 times a second.
 #[test_log::test]
 #[ignore = "Starts an embedded Aeron media driver and binds UDP ports"]
 fn test_every_gateway_receives_its_handshake_reply() {
@@ -182,6 +187,7 @@ fn test_every_gateway_receives_its_handshake_reply() {
     server_config.initial_port = core_port;
     server_config.initial_control_port = core_port + 1;
     server_config.base_gateway_port = find_unused_udp_port(51000).unwrap();
+    server_config.gateway_authentication_key = GATEWAY_AUTHENTICATION_KEY.into();
     let server_shutdown = Arc::new(AtomicBool::new(false));
     let server = thread::spawn({
         let shutdown = Arc::clone(&server_shutdown);
@@ -191,7 +197,6 @@ fn test_every_gateway_receives_its_handshake_reply() {
                 .build();
             VexCoreServer::new(
                 server_config,
-                GATEWAY_AUTHENTICATION_KEY.into(),
                 producer,
                 Arc::new(Publications::new()),
                 shutdown,
@@ -200,6 +205,52 @@ fn test_every_gateway_receives_its_handshake_reply() {
             .start()
         }
     });
+
+    // 17 bad HELLOs at once, wrong key or bare: REJECT for the first 16, nothing for the 17th.
+    {
+        let context = AeronContext::new().unwrap();
+        context
+            .set_dir(&CString::new(aeron_dir.clone()).unwrap())
+            .unwrap();
+        let aeron = Aeron::new(&context).unwrap();
+        aeron.start().unwrap();
+        let hello = new_publication(&aeron, "127.0.0.1", core_port, HANDSHAKE_STREAM_ID).unwrap();
+        let replies =
+            new_subscription_with_mdc(&aeron, "127.0.0.1", core_port + 1, HANDSHAKE_STREAM_ID)
+                .unwrap();
+        let connected_by = Instant::now() + Duration::from_secs(20);
+        while !hello.is_connected() || !replies.is_connected() {
+            assert!(
+                Instant::now() < connected_by,
+                "handshake channel never connected"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        for gateway_id in 0..17 {
+            let message = match gateway_id % 2 {
+                0 => format!("HELLO gateway-{gateway_id} {WRONG_KEY} 0"),
+                _ => "HELLO".to_string(),
+            };
+            send_message(&hello, message.as_bytes()).unwrap();
+        }
+        let mut rejected = 0;
+        // Past the limiter's one-second window, so the gateways below get their REJECT.
+        let quiet_by = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < quiet_by {
+            replies
+                .poll_once(
+                    |message, _| {
+                        rejected += usize::from(
+                            String::from_utf8_lossy(message).ends_with("REJECT Handshake rejected"),
+                        );
+                    },
+                    10,
+                )
+                .unwrap();
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(rejected, 16);
+    }
 
     let start_gateway = |gateway_id: u8, key: &str| {
         let mut config = GatewayNetworkingConfig::test_defaults();
@@ -224,7 +275,7 @@ fn test_every_gateway_receives_its_handshake_reply() {
         let publisher = started.unwrap_or_else(|e| panic!("gateway-{gateway_id}: {e}"));
         gateways.push((gateway, publisher));
 
-        let (rejected, started) = start_gateway(gateway_id + 1, "987654321");
+        let (rejected, started) = start_gateway(gateway_id + 1, WRONG_KEY);
         let error = started.err().expect("a wrong key must be rejected");
         assert!(
             error.to_string().contains("Handshake rejected"),

@@ -6,26 +6,13 @@ This guide explains how to use the Docker setup for the VEX Core project, includ
 
 The project includes several Docker configurations:
 
-1. **Media Driver** - Aeron IPC/UDP media driver for high-performance messaging
+1. **Media Driver** - Aeron's Java `ArchivingMediaDriver` (aeron-all 1.49.0): the media driver and the Aeron Archive that journals vex-core's commands
 2. **SBE Code Generator** - Generates Rust code from SBE schemas
 3. **VEX Core** - Main trading engine application
 
 ## Quick Start
 
-### 1. Test Media Driver Independently
-
-To test if the media driver is working properly:
-
-```bash
-./docker-scripts.sh test-media-driver
-```
-
-This will:
-- Build and start the media driver
-- Run a test client to verify connectivity
-- Show logs and status
-
-### 2. Generate SBE Code
+### 1. Generate SBE Code
 
 To generate Rust code from the `resources/ordercmd.xml` SBE schema:
 
@@ -38,7 +25,7 @@ This will:
 - Generate Rust code from `resources/ordercmd.xml`
 - Output generated files to `./target/generated/`
 
-### 3. Start Full Application
+### 2. Start Full Application
 
 To run the complete application (media driver + vex-core):
 
@@ -48,10 +35,9 @@ VEX_ENV=development ./docker-scripts.sh start-full
 
 ## Docker Files
 
-### 1. `media-driver/Dockerfile`
-- Builds Aeron media driver from source
-- Includes health checks
-- Exposes port 8080 for monitoring
+### 1. `../xtask/tests/archive.Dockerfile`
+- The media driver image: the `aeron-all` jar, pinned by version and checksum, run as `ArchivingMediaDriver`
+- The same image the end-to-end tests and CI's recovery tests run
 
 ### 2. `Dockerfile.sbe`
 - Generates Rust code from SBE schemas
@@ -65,19 +51,13 @@ VEX_ENV=development ./docker-scripts.sh start-full
 ## Docker Compose Files
 
 ### 1. `docker-compose.yml` (Main)
-- Includes media driver, SBE generator, and vex-core
+- Includes media driver and vex-core, plus the SBE generator, which runs only when named
 - Proper service dependencies and health checks
-- **Development only, with no durability.** It runs a media driver but no Aeron Archive, so it
-  starts vex-core with an empty archive channel (`VEX__CORE_NETWORKING__REQUEST_CONTROL_CHANNEL=`).
-  Commands are not journaled, so nothing survives a restart, nothing is replayed, and events queued
-  when the process dies are not re-published. Production needs an Aeron Archive; vex-core refuses
-  an empty archive channel with `VEX_ENV=production`
+- **Development only.** vex-core journals its commands to the archive in the media driver's
+  container, and every start replays them. The journal lives in that container, so `docker compose
+  down` deletes it
 - `VEX_ENV` must be set to `development` or `test` in the shell that runs compose. Compose passes it
   through; without it vex-core exits at startup (`No environment selected`)
-
-### 2. `docker-compose.media-driver.yml`
-- Standalone media driver for testing
-- Includes test client for verification
 
 ## Available Commands
 
@@ -85,7 +65,6 @@ Use the helper script `./docker-scripts.sh` with these commands:
 
 | Command | Description |
 |---------|-------------|
-| `test-media-driver` | Test media driver independently |
 | `generate-sbe` | Generate SBE Rust code |
 | `start-full` | Start complete application |
 | `stop-all` | Stop all containers |
@@ -97,11 +76,6 @@ Use the helper script `./docker-scripts.sh` with these commands:
 ## Manual Docker Commands
 
 If you prefer to use Docker directly:
-
-### Test Media Driver Only
-```bash
-docker-compose -f docker-compose.media-driver.yml up --build
-```
 
 ### Generate SBE Code Only
 ```bash
@@ -132,17 +106,17 @@ The generated code includes:
 
 1. **Check if media driver is running**:
    ```bash
-   docker-compose -f docker-compose.media-driver.yml logs media-driver
+   docker compose logs media-driver
    ```
 
 2. **Verify health check**:
    ```bash
-   docker-compose -f docker-compose.media-driver.yml ps
+   docker compose ps
    ```
 
 3. **Check Aeron directory**:
    ```bash
-   docker exec -it vex-media-driver-test ls -la /tmp/aeron
+   ls -la /dev/shm/aeron-test-server
    ```
 
 ### SBE Generation Issues
@@ -165,23 +139,17 @@ The generated code includes:
 
 ### Common Issues
 
-1. **Port conflicts**: Make sure port 8080 is available
-2. **Permission issues**: Ensure Docker has proper permissions
-3. **Volume issues**: Clean volumes with `./docker-scripts.sh clean-all`
+1. **Permission issues**: Ensure Docker has proper permissions
+2. **Volume issues**: Clean volumes with `./docker-scripts.sh clean-all`
 
 ## Development Workflow
 
-1. **Test media driver first**:
-   ```bash
-   ./docker-scripts.sh test-media-driver
-   ```
-
-2. **Generate SBE code**:
+1. **Generate SBE code**:
    ```bash
    ./docker-scripts.sh generate-sbe
    ```
 
-3. **Run full application**:
+2. **Run full application**:
    ```bash
    VEX_ENV=development ./docker-scripts.sh start-full
    ```
@@ -189,19 +157,14 @@ The generated code includes:
 ## Environment Variables
 
 ### Media Driver
-- `AERON_DIR=/dev/shm/aeron` - Aeron IPC directory (must be the directory vex-core uses, below)
-- `AERON_EVENT_LOG=all` - Enable all event logging
+- Configured by the image's Java system properties (`archive.Dockerfile`): Aeron directory
+  `/dev/shm/aeron-test-server`, archive control channel `aeron:udp?endpoint=localhost:8010`
 
 ### VEX Core
 - `VEX_ENV=development|test|production` - Required explicit environment selection
 - `RUST_LOG=info` - Rust logging level
 - `VEX__KAFKA_BROKER`, `VEX__SCHEMA_REGISTRY_URL` - Kafka broker and Schema Registry URL (config `kafka_broker`, `schema_registry_url`), passed through from the calling shell. The compose stack runs neither, and the development defaults (`localhost:9092`, `http://localhost:8081`) point at the container itself, so set both. Without a reachable Kafka and registry, events back up and order intake halts (RUNBOOK "Kafka is Down")
-- Aeron IPC directory: always `/dev/shm/aeron` (set in `src/main.rs`). vex-core does not read `AERON_DIR`; point the media driver at this directory instead.
-
-## Monitoring
-
-The media driver exposes port 8080 for monitoring. You can access monitoring endpoints at:
-- `http://localhost:8080` (when running)
+- Aeron IPC directory: the image sets `/dev/shm/aeron` with `VEX__CORE_NETWORKING__CONTEXT_DIR` (and the bind address with `VEX__CORE_NETWORKING__LOCAL_ADDRESS=0.0.0.0`); `docker-compose.yml` overrides it with the media driver's `/dev/shm/aeron-test-server`. vex-core does not read `AERON_DIR`.
 
 ## Clean Up
 
