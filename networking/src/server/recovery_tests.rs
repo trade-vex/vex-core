@@ -28,6 +28,10 @@ impl Fixture {
         config.request_control_channel = std::env::var("VEX_RECOVERY_ARCHIVE_CHANNEL")
             .expect("set VEX_RECOVERY_ARCHIVE_CHANNEL to a disposable archive control channel");
         config.enable_authentication = false;
+        config.snapshot_dir = std::env::temp_dir()
+            .join("vex-recovery-snapshots")
+            .display()
+            .to_string();
         let aeron = VexCoreServer::initialize_aeron(&config).unwrap();
         let archive = VexCoreServer::initialize_archive(&config, &aeron).unwrap();
         let release_timeout = VexCoreServer::journal_release_timeout(&config.context_dir).unwrap();
@@ -100,6 +104,14 @@ impl Fixture {
 
     /// Starts a core on this journal, and returns it with the order ids its start replayed.
     fn start_core(&self) -> (VexCoreServer, Vec<u64>) {
+        self.start_core_from(None).unwrap()
+    }
+
+    /// [`Fixture::start_core`] with the engine restored from the snapshot `loaded`.
+    fn start_core_from(
+        &self,
+        loaded: Option<SnapshotHeader>,
+    ) -> Result<(VexCoreServer, Vec<u64>), ServerError> {
         let publications = Arc::new(Publications::new());
         let replayed = Arc::new(Mutex::new(Vec::new()));
         let producer = collector(Arc::clone(&publications), Arc::clone(&replayed));
@@ -108,10 +120,11 @@ impl Fixture {
             producer,
             publications,
             Arc::new(AtomicBool::new(false)),
-        )
-        .unwrap();
+            Box::new(Vec::new),
+            loaded,
+        )?;
         let replayed = replayed.lock().unwrap().clone();
-        (server, replayed)
+        Ok((server, replayed))
     }
 
     fn replay(
@@ -130,6 +143,7 @@ impl Fixture {
             &self.aeron,
             &self.archive,
             replay_lineage(&recordings).expect("a recording to replay"),
+            None,
             producer,
             Arc::new(AtomicBool::new(false)),
             publications,
@@ -295,6 +309,8 @@ fn live_every_start_replays_the_journal_and_reads_its_tail_from_the_last_term() 
             producer,
             Arc::clone(&publications),
             Arc::new(AtomicBool::new(false)),
+            Box::new(Vec::new),
+            None,
         )
         .unwrap();
         assert_eq!(server.recording_id, Some(id));
@@ -345,6 +361,8 @@ fn c8_2_live_held_terminal_second_recovery_has_no_duplicate_journal_entries() {
             producer,
             worker_publications,
             Arc::new(AtomicBool::new(false)),
+            Box::new(Vec::new),
+            None,
         )
         .unwrap();
         worker_mode.store(false, Ordering::Release);
@@ -500,6 +518,8 @@ fn c8_3_live_subscription_left_by_a_crash_before_the_publication_connected_is_st
         producer,
         publications,
         Arc::new(AtomicBool::new(false)),
+        Box::new(Vec::new),
+        None,
     )
     .expect("restart must not fail with \"recording exists\"");
     server.shutdown().unwrap();
@@ -536,6 +556,8 @@ fn c7_1_live_queued_shutdown_lagging_archive_survives_recovery() {
         producer.clone(),
         Arc::clone(&publications),
         Arc::new(AtomicBool::new(false)),
+        Box::new(Vec::new),
+        None,
     )
     .unwrap();
     live.store(true, Ordering::Release);
@@ -622,6 +644,8 @@ fn shutdown_keeps_reply_publications_until_the_pipeline_drains() {
         producer.clone(),
         Arc::clone(&publications),
         Arc::new(AtomicBool::new(false)),
+        Box::new(Vec::new),
+        None,
     )
     .unwrap();
     live.store(true, Ordering::Release);
@@ -661,5 +685,72 @@ fn shutdown_keeps_reply_publications_until_the_pipeline_drains() {
     assert!(
         publications.get(1).unwrap().is_none(),
         "shutdown left the session open"
+    );
+}
+
+#[test]
+#[ignore = "needs dedicated live Aeron driver/archive; set VEX_RECOVERY_AERON_DIR and VEX_RECOVERY_ARCHIVE_CHANNEL"]
+fn a_start_after_a_snapshot_replays_only_the_commands_after_it() {
+    let fixture = Fixture::new();
+    let dir = std::path::PathBuf::from(&fixture.config.snapshot_dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let (id, subscription_id, publication) = fixture.recording(3);
+    let header = SnapshotHeader {
+        recording_id: id,
+        position: publication.position(),
+        last_timestamp: 3,
+    };
+    snapshot::write(
+        &dir,
+        &Snapshot {
+            header,
+            state: Vec::new(),
+        },
+    )
+    .unwrap();
+    journal_command(&publication, 4);
+    journal_command(&publication, 5);
+    wait_until(DRAIN_TIMEOUT, || {
+        Ok(fixture.archive.get_recording_position(id)? >= publication.position())
+    })
+    .unwrap();
+    fixture.stop(subscription_id, publication);
+
+    let loaded = snapshot::load(&dir, 3)
+        .unwrap()
+        .expect("a snapshot at the watermark");
+    assert_eq!(loaded.header, header);
+    let (mut server, replayed) = fixture.start_core_from(Some(header)).unwrap();
+    assert_eq!(replayed, [4, 5]);
+    server.shutdown().unwrap();
+
+    // Above the watermark, the snapshot holds commands whose events Kafka may lack: the start
+    // replays the whole journal.
+    assert_eq!(snapshot::load(&dir, 2).unwrap(), None);
+    let (mut server, replayed) = fixture.start_core_from(None).unwrap();
+    assert_eq!(replayed, [1, 2, 3, 4, 5]);
+    server.shutdown().unwrap();
+}
+
+#[test]
+#[ignore = "needs dedicated live Aeron driver/archive; set VEX_RECOVERY_AERON_DIR and VEX_RECOVERY_ARCHIVE_CHANNEL"]
+fn a_snapshot_from_another_journal_fails_the_start() {
+    let fixture = Fixture::new();
+    let (id, subscription_id, publication) = fixture.recording(1);
+    let position = publication.position();
+    fixture.stop(subscription_id, publication);
+    let foreign = SnapshotHeader {
+        recording_id: id + 1,
+        position,
+        last_timestamp: 1,
+    };
+    let Err(error) = fixture.start_core_from(Some(foreign)) else {
+        panic!("a start from another journal's snapshot must fail");
+    };
+    let error = error.to_string();
+    assert!(
+        error.contains(&format!("of recording {}", id + 1))
+            && error.contains(&format!("(recording {id} [")),
+        "{error}"
     );
 }

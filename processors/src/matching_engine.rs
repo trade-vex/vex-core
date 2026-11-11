@@ -47,20 +47,8 @@ impl MatchingEngineRouter {
         );
     }
 
-    /// Check if this router handles the given market_id
-    ///
-    /// The bitwise AND operation efficiently distributes symbols across shards:
-    /// - With 4 shards (shard_mask = 3 = 0b11), symbols are distributed as:
-    ///   - Market 0, 4, 8, 12... → Shard 0 (0 & 3 = 0)
-    ///   - Market 1, 5, 9, 13... → Shard 1 (1 & 3 = 1)
-    ///   - Market 2, 6, 10, 14... → Shard 2 (2 & 3 = 2)
-    ///   - Market 3, 7, 11, 15... → Shard 3 (3 & 3 = 3)
-    #[inline]
-    pub fn market_for_this_handler(&self, market_id: u64) -> bool {
-        (self.shard_mask == 0) || ((market_id & self.shard_mask) == self.shard_id as u64)
-    }
-
-    /// Main entry point for processing orders. Callers route by `market_for_this_handler` first.
+    /// Main entry point for processing orders. Callers route first: a router owns the markets
+    /// with `market_id & shard_mask == shard_id`.
     pub fn process_order(&mut self, cmd: &mut OrderCommand, price_cache: &PriceCache) {
         if let Some(order_book) = self.order_books.get_mut(&cmd.market_id) {
             order_debug!(

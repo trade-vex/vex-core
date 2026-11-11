@@ -129,11 +129,13 @@ Runs the core's outbox scenarios, in order, on one continuous ledger: a `kill -9
 queued behind a paused broker, restarted at once (the start must wait for the media driver to
 release the killed core's journal), a graceful shutdown that runs out of its delivery grace with
 the broker paused, a start while the broker does not answer, a clean restart, starts that must
-refuse a missing or non-compacted `vex-core.delivered`, and a restart whose replay cannot
-re-publish (the registry paused) that must fail within a minute and recover on the next start.
+refuse a missing or non-compacted `vex-core.delivered`, a restart whose replay cannot
+re-publish (the registry paused) that must fail within a minute and recover on the next start,
+and a `kill -9` after a snapshot, whose restart must replay only the two orders journaled since
+and keep every resting order, each of which then cancels.
 Every graceful shutdown keeps the test gateway connected, as gateways are in production; the clean
 one must deliver everything and write the watermark of the last command, so that the restart
-re-publishes nothing. The oracle is the
+loads the shutdown's snapshot, replays nothing and re-publishes nothing. The oracle is the
 test client's own ledger, built from the core's responses: Kafka must hold every event it expects,
 by `(topic, key, timestamp)`, and its latest balance per key must equal the ledger's. Each round
 rests a bid and an ask, cancels the bid and re-places it without waiting for the cancel's

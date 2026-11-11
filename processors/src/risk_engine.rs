@@ -1,5 +1,7 @@
 use crate::error::{Result, RiskEngineError};
+use borsh::{BorshDeserialize, BorshSerialize};
 use common::BalanceError;
+use common::BalanceKey;
 use common::BalanceStore;
 use common::CoreMarketSpecification;
 use common::OrderCommand;
@@ -20,6 +22,13 @@ struct Ledger {
     balances: BalanceStore,
     /// Quote each open bid has locked and not yet spent, by order id.
     bid_collateral: HashMap<u64, u64>,
+}
+
+/// One shard's ledger in a snapshot (`RiskEngine::export`).
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
+pub struct RiskShardState {
+    pub balances: Vec<(BalanceKey, UserBalance)>,
+    pub bid_collateral: Vec<(u64, u64)>,
 }
 
 /// What settling one side of a fill did.
@@ -658,6 +667,28 @@ impl RiskEngine {
         }
         ledger.bid_collateral.remove(&order_id);
         Ok(())
+    }
+
+    /// This shard's ledger, for a snapshot. Call only while the pipeline is drained.
+    pub fn export(&self) -> RiskShardState {
+        let ledger = self.ledger.lock();
+        RiskShardState {
+            balances: ledger.balances.entries().collect(),
+            bid_collateral: ledger
+                .bid_collateral
+                .iter()
+                .map(|(order_id, collateral)| (*order_id, *collateral))
+                .collect(),
+        }
+    }
+
+    /// Loads a snapshot's ledger into this shard, which has processed nothing yet.
+    pub fn import(&self, state: RiskShardState) {
+        let mut ledger = self.ledger.lock();
+        for (key, balance) in state.balances {
+            ledger.balances.insert(key, balance);
+        }
+        ledger.bid_collateral.extend(state.bid_collateral);
     }
 
     pub fn get_balance(&self, user_id: u64, asset_id: u16) -> UserBalance {

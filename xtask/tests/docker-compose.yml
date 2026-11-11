@@ -76,8 +76,13 @@ services:
       - VEX__KAFKA_BROKER=redpanda:9092
       # Redpanda's built-in Schema Registry (enabled on port 8081 by the image's default config).
       - VEX__SCHEMA_REGISTRY_URL=http://redpanda:8081
+      # In the archive container's /dev/shm (shared through `ipc:`), like the journal: both
+      # outlive a vex-server restart, and go with the stack.
+      - VEX__CORE_NETWORKING__SNAPSHOT_DIR=/dev/shm/vex-snapshots
       - LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
       - RUST_LOG=debug
+      # Plain logs: the suites match `field=value` in them.
+      - NO_COLOR=1
     healthcheck:
       test: ["CMD-SHELL", "pgrep -x vex-core && test -f /dev/shm/aeron-test-server/cnc.dat"]
       interval: 5s

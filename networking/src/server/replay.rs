@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, info};
 
-use crate::server::{RECORDING_CHANNEL, RECORDING_STREAM_ID, ServerError};
+use crate::server::{RECORDING_CHANNEL, RECORDING_STREAM_ID, ServerError, SnapshotHeader};
 
 /// How often a start that waits for the journal's release asks what still holds it.
 const JOURNAL_RELEASE_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -48,10 +48,7 @@ pub struct RecordingInfo {
     pub stop_position: i64,
     pub initial_term_id: i32,
     pub term_buffer_length: i32,
-    #[expect(
-        dead_code,
-        reason = "the journal purge below a snapshot needs it; snapshots are not built yet"
-    )]
+    /// Where the journal may be purged below a snapshot.
     pub segment_file_length: i32,
     pub session_id: i32,
 }
@@ -229,6 +226,44 @@ fn holds_commands(record: &RecordingInfo) -> bool {
 /// resurrect the lineage that run discarded. Takes stopped recordings, oldest first.
 pub fn replay_lineage(recordings: &[RecordingInfo]) -> Option<&RecordingInfo> {
     recordings.last().filter(|record| holds_commands(record))
+}
+
+/// Where a start's replay of `record` begins: at the loaded snapshot, which must be of this
+/// recording, or at the recording's start, which must not have been purged.
+pub(super) fn replay_start(
+    record: &RecordingInfo,
+    loaded: Option<SnapshotHeader>,
+) -> Result<i64, ServerError> {
+    match loaded {
+        Some(snapshot)
+            if snapshot.recording_id != record.recording_id
+                || !(record.start_position..=record.stop_position).contains(&snapshot.position) =>
+        {
+            Err(foreign_snapshot(
+                snapshot,
+                &format!(
+                    "recording {} [{}, {}]",
+                    record.recording_id, record.start_position, record.stop_position
+                ),
+            ))
+        }
+        Some(snapshot) => Ok(snapshot.position),
+        None if record.start_position > 0 => Err(ServerError::ReplayError(format!(
+            "the journal was purged below position {} and no snapshot is at or below the \
+             delivered watermark; see RUNBOOK: No usable snapshot",
+            record.start_position
+        ))),
+        None => Ok(record.start_position),
+    }
+}
+
+/// A loaded snapshot that `journal` does not hold.
+pub(super) fn foreign_snapshot(snapshot: SnapshotHeader, journal: &str) -> ServerError {
+    ServerError::ReplayError(format!(
+        "the snapshot at position {} of recording {} does not belong to the journal ({journal}); \
+         a ledger reset must delete the snapshots too (RUNBOOK: Resetting the ledger)",
+        snapshot.position, snapshot.recording_id
+    ))
 }
 
 /// The recording that holds the last command in the journal: the newest one holding any. A newer
@@ -625,6 +660,48 @@ mod tests {
         assert_eq!(window(0, 2 * TERM_LENGTH + 5 * FRAMESIZE), 2 * TERM_LENGTH);
         // Never before the recording's own start.
         assert_eq!(window(10 * FRAMESIZE, 12 * FRAMESIZE), 10 * FRAMESIZE);
+    }
+
+    #[test]
+    fn a_start_replays_from_its_snapshot_of_this_journal_or_from_an_unpurged_start() {
+        let snapshot = |recording_id, position| {
+            Some(SnapshotHeader {
+                recording_id,
+                position,
+                last_timestamp: 3,
+            })
+        };
+        let record = recording(0, 5 * FRAMESIZE);
+        assert_eq!(replay_start(&record, None).unwrap(), 0);
+        assert_eq!(
+            replay_start(&record, snapshot(7, 3 * FRAMESIZE)).unwrap(),
+            3 * FRAMESIZE
+        );
+        // At the recording's stop: nothing to replay.
+        assert_eq!(
+            replay_start(&record, snapshot(7, 5 * FRAMESIZE)).unwrap(),
+            5 * FRAMESIZE
+        );
+        for (id, position) in [(8, 3 * FRAMESIZE), (7, 6 * FRAMESIZE)] {
+            let error = replay_start(&record, snapshot(id, position))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(&format!("recording {id}"))
+                    && error.contains("recording 7 [0, 480]"),
+                "{error}"
+            );
+        }
+
+        // Purged below 2 frames: only a snapshot at or above them can start.
+        let purged = recording(2 * FRAMESIZE, 5 * FRAMESIZE);
+        let error = replay_start(&purged, None).unwrap_err().to_string();
+        assert!(error.contains("No usable snapshot"), "{error}");
+        assert!(replay_start(&purged, snapshot(7, FRAMESIZE)).is_err());
+        assert_eq!(
+            replay_start(&purged, snapshot(7, 2 * FRAMESIZE)).unwrap(),
+            2 * FRAMESIZE
+        );
     }
 
     #[test]

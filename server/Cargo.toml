@@ -9,6 +9,7 @@ balance-preload = ["vex-config/balance-preload"]
 
 [dependencies]
 # Workspace crates containing our data models and order book logic
+borsh = { workspace = true }
 common = { workspace = true }
 processors = { workspace = true }
 vex-config = { workspace = true }
@@ -18,6 +19,7 @@ hashbrown = { workspace = true }
 disruptor = { workspace = true }
 core_affinity = { workspace = true }
 thiserror = { workspace = true }
+parking_lot = { workspace = true }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

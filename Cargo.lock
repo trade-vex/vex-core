@@ -1701,6 +1701,7 @@ dependencies = [
 name = "processors"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "common",
  "hashbrown 0.15.5",
  "parking_lot",
@@ -2894,6 +2895,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "common",
+ "crc32fast",
  "disruptor",
  "rand",
  "rusteron-archive",
@@ -2916,10 +2918,12 @@ dependencies = [
 name = "vex-server"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "common",
  "core_affinity",
  "disruptor",
  "hashbrown 0.15.5",
+ "parking_lot",
  "processors",
  "test-log",
  "thiserror 2.0.17",

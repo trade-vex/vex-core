@@ -5,6 +5,7 @@ edition = "2024"
 build = "build.rs"
 
 [dependencies]
+borsh = { workspace = true }
 common = { workspace = true }
 vex-orderbook = { workspace = true }
 thiserror = { workspace = true }

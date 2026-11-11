@@ -147,8 +147,15 @@ fn test_client_server_communication() {
         .build();
         let publications = Arc::new(Publications::new());
         let shutdown_flag = Arc::new(AtomicBool::new(false));
-        let mut server =
-            VexCoreServer::new(server_config, producer, publications, shutdown_flag).unwrap();
+        let mut server = VexCoreServer::new(
+            server_config,
+            producer,
+            publications,
+            shutdown_flag,
+            Box::new(Vec::new),
+            None,
+        )
+        .unwrap();
         match server.start() {
             Ok(()) => println!("Server run() completed successfully (unexpected)"),
             Err(e) => println!("Server run() error: {e}"),
@@ -200,6 +207,8 @@ fn test_every_gateway_receives_its_handshake_reply() {
                 producer,
                 Arc::new(Publications::new()),
                 shutdown,
+                Box::new(Vec::new),
+                None,
             )
             .unwrap()
             .start()

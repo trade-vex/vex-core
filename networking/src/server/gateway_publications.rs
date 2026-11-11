@@ -61,6 +61,7 @@ pub struct Publications {
     started: Instant,
     progress: PipelineProgress,
     journal_tail: AtomicU64,
+    delivered: AtomicU64,
 }
 
 impl Publications {
@@ -68,6 +69,7 @@ impl Publications {
         Self {
             progress: PipelineProgress::new(),
             journal_tail: AtomicU64::new(0),
+            delivered: AtomicU64::new(0),
             gateways: core::array::from_fn::<
                 ArcSwapOption<AeronPublication>,
                 { MAX_GATEWAYS + 1 },
@@ -97,7 +99,17 @@ impl Publications {
     }
 
     pub fn drain_pipeline(&self) -> Result<(), ServerError> {
-        self.progress.drain(DRAIN_TIMEOUT)
+        self.drain_pipeline_within(DRAIN_TIMEOUT)
+    }
+
+    /// [`Self::drain_pipeline`], failing once `stall` passes without progress.
+    pub fn drain_pipeline_within(&self, stall: Duration) -> Result<(), ServerError> {
+        self.progress.drain(stall)
+    }
+
+    /// The last sequence submitted to the pipeline; -1 before the first.
+    pub fn submitted_sequence(&self) -> i64 {
+        self.progress.submitted_sequence()
     }
 
     pub(super) fn archive_publication(&self) -> Option<Arc<AeronPublication>> {
@@ -108,8 +120,9 @@ impl Publications {
         self.gateways[MAX_GATEWAYS].store(Some(Arc::new(publication)));
     }
 
-    /// Timestamp of the last command in the journal when this process started, which journaling
-    /// stamps every live command above. The server sets it before it accepts any command.
+    /// Timestamp of the last command journaled so far: the journal's last command when this
+    /// process started, which the server sets before it accepts any command, then each command
+    /// journaling stamps (above it). A snapshot records it as the last command it holds.
     ///
     /// 0 while there is none: an empty archive, or journaling disabled (no archive control
     /// channel). Timestamps, and the order ids derived from them, then follow the wall clock
@@ -120,6 +133,16 @@ impl Publications {
 
     pub fn set_journal_tail(&self, timestamp: u64) {
         self.journal_tail.store(timestamp, Ordering::Release);
+    }
+
+    /// The delivered watermark W as the events stage last handed it to Kafka (the value read at
+    /// start until then): every event of every command up to this timestamp is acknowledged.
+    pub fn delivered(&self) -> u64 {
+        self.delivered.load(Ordering::Acquire)
+    }
+
+    pub fn set_delivered(&self, timestamp: u64) {
+        self.delivered.store(timestamp, Ordering::Release);
     }
 
     pub fn set(

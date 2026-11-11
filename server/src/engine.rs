@@ -1,3 +1,4 @@
+use crate::snapshot::EngineState;
 use crate::{create_risk_handler, create_risk_r2_handler};
 use common::{
     CoreMarketSpecification, OrderCommand, OrderCommandType, PriceCache, Status, TimeInForce,
@@ -7,6 +8,7 @@ use disruptor::{
     BusySpin, MultiProducer, ProcessorSettings, SingleConsumerBarrier, build_multi_producer,
 };
 use hashbrown::HashMap;
+use parking_lot::Mutex;
 use processors::{
     events::EventsHandler,
     journaling::{JournalingProcessor, ReplayControl},
@@ -25,6 +27,7 @@ use vex_config::CoreNetworkingConfig;
 use vex_networking::server::Publications;
 use vex_networking::server::ServerError;
 use vex_networking::server::VexCoreServer;
+use vex_networking::server::{SnapshotHeader, StateCapture};
 
 fn finish_replay(publications: &Publications, control: &ReplayControl) -> EngineResult<()> {
     publications.drain_pipeline().map_err(|error| {
@@ -39,6 +42,10 @@ pub type OrderProducer = MultiProducer<OrderCommand, SingleConsumerBarrier>;
 
 /// Type alias for a shared reference to the risk engines
 pub type RiskEngines = Arc<Vec<RiskEngine>>;
+
+/// The matching shards, each locked by its own pipeline thread for every command it owns, and by
+/// the server thread for a snapshot, which it takes only while the pipeline is drained.
+pub type Routers = Vec<Arc<Mutex<MatchingEngineRouter>>>;
 
 /// Result type for engine operations
 pub type EngineResult<T> = Result<T, EngineError>;
@@ -199,15 +206,17 @@ impl CorePinning {
 pub struct CoreEngine {
     /// Gateway Publications for sending responses back to gateways
     publications: Arc<Publications>,
-    /// The risk shards the pipeline settles on; tests read balances from them
-    #[cfg(test)]
+    /// The risk shards the pipeline settles on, which a snapshot captures
     pub(crate) risk_engines: RiskEngines,
+    /// The order books, which a snapshot captures
+    pub(crate) routers: Routers,
 }
 
 impl CoreEngine {
     /// Internal constructor that builds the disruptor pipeline
     ///
-    /// This method creates the complete processing pipeline with all stages.
+    /// This method creates the complete processing pipeline with all stages, after restoring the
+    /// risk shards and order books from `state`, a snapshot's, if given.
     ///
     /// # Errors
     ///
@@ -220,6 +229,7 @@ impl CoreEngine {
         publications: Arc<Publications>,
         core_pinning: CorePinning,
         enable_pinning: bool,
+        state: Option<&[u8]>,
     ) -> EngineResult<(Self, OrderProducer)> {
         if enable_pinning {
             core_pinning.validate_process_affinity()?;
@@ -232,6 +242,7 @@ impl CoreEngine {
             publications,
             core_pinning,
             enable_pinning,
+            state,
         )?;
         Ok((engine, producer))
     }
@@ -243,6 +254,7 @@ impl CoreEngine {
         publications: Arc<Publications>,
         core_pinning: CorePinning,
         enable_pinning: bool,
+        state: Option<&[u8]>,
     ) -> EngineResult<(Self, OrderProducer)> {
         let price_cache = Arc::new(PriceCache::new(symbol_specs.keys()));
 
@@ -259,16 +271,35 @@ impl CoreEngine {
 
         let risk_engines_arc = Self::initialize_risk_engines(&symbol_specs, NUM_RISK_ENGINES);
 
-        let matching_engine_routers =
+        let mut matching_engine_routers =
             Self::initialize_matching_engines(&symbol_specs, NUM_MATCHING_ENGINES);
 
-        let router_handlers = matching_engine_routers.into_iter().map(|mut router| {
-            let price_cache_clone = Arc::clone(&price_cache);
+        // Before the pipeline exists, so nothing else touches the shards yet.
+        if let Some(state) = state {
+            EngineState::restore(
+                state,
+                &risk_engines_arc,
+                &mut matching_engine_routers,
+                &price_cache,
+            )?;
+        }
+        let routers: Routers = matching_engine_routers
+            .into_iter()
+            .map(|router| Arc::new(Mutex::new(router)))
+            .collect();
+
+        let router_handlers = routers.iter().map(|router| {
+            let (router, price_cache_clone) = (Arc::clone(router), Arc::clone(&price_cache));
+            // Markets are distributed across shards by `market_id & shard_mask`.
+            let (shard_id, shard_mask) = {
+                let router = router.lock();
+                (u64::from(router.shard_id), router.shard_mask)
+            };
             move |cell: &UnsafeCell<OrderCommand>, _sequence: i64, _end_of_batch: bool| {
                 // SAFETY: This is a shared scalar read; peer matching handlers may read
                 // market_id concurrently, and none of them mutates it.
                 let market_id = unsafe { (*cell.get()).market_id };
-                if !router.market_for_this_handler(market_id as u64) {
+                if u64::from(market_id) & shard_mask != shard_id {
                     return;
                 }
                 // SAFETY: The market predicate above is exclusive, so this router alone in
@@ -280,7 +311,7 @@ impl CoreEngine {
                 {
                     return;
                 }
-                router.process_order(cmd, &price_cache_clone);
+                router.lock().process_order(cmd, &price_cache_clone);
             }
         });
 
@@ -309,8 +340,8 @@ impl CoreEngine {
 
         let engine = Self {
             publications,
-            #[cfg(test)]
             risk_engines: risk_engines_arc,
+            routers,
         };
         Ok((engine, producer))
     }
@@ -545,6 +576,7 @@ impl CoreEngine {
     ///
     /// * `producer` - The disruptor producer for publishing orders
     /// * `networking_config` - Network configuration including ports and limits
+    /// * `loaded` - The snapshot the engine was restored from, which the replay starts at
     ///
     /// # Returns
     ///
@@ -558,10 +590,13 @@ impl CoreEngine {
         producer: OrderProducer,
         replay_control: ReplayControl,
         networking_config: CoreNetworkingConfig,
+        loaded: Option<SnapshotHeader>,
     ) -> (JoinHandle<Result<(), EngineError>>, Arc<AtomicBool>) {
         let publications = Arc::clone(&self.publications);
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_for_thread = Arc::clone(&shutdown_flag);
+        let (risk, routers) = (Arc::clone(&self.risk_engines), self.routers.clone());
+        let capture: StateCapture = Box::new(move || EngineState::capture(&risk, &routers));
 
         let handle = thread::Builder::new()
             .name("vex-core-server".into())
@@ -575,6 +610,8 @@ impl CoreEngine {
                     producer,
                     Arc::clone(&publications),
                     shutdown_for_thread,
+                    capture,
+                    loaded,
                 )
                 .map_err(|e| {
                     EngineError::ServerInitialization(format!(

@@ -44,6 +44,7 @@ impl JournalingProcessor {
                 .unwrap();
         }
         self.publications.publish_to_archive(cmd);
+        self.publications.set_journal_tail(cmd.timestamp);
         order_debug!("command_ingested", cmd, stage = "journal");
     }
 
@@ -171,7 +172,8 @@ mod tests {
         let publications = Arc::new(Publications::new());
         // The previous run's last command was stamped an hour ahead of this host's wall clock.
         let recorded = recorded_tail(&publications, wall_clock_nanos() + HOUR_NANOS);
-        let mut journal = JournalingProcessor::new(publications, ReplayControl::disabled());
+        let mut journal =
+            JournalingProcessor::new(Arc::clone(&publications), ReplayControl::disabled());
 
         let mut live = order();
         journal.journal_command(&mut live);
@@ -181,6 +183,8 @@ mod tests {
             live.order_id > recorded.order_id,
             "the first live id must be above every recorded one"
         );
+        // A snapshot records it as the last command it holds.
+        assert_eq!(publications.journal_tail(), live.timestamp);
     }
 
     #[test]

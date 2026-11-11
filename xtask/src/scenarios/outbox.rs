@@ -1,6 +1,7 @@
 //! The core's outbox, end to end: a journaled core re-publishes from its journal whatever a death
 //! or a shutdown left undelivered, waits for Kafka at start, refuses to start on a topic that
-//! no-loss cannot rest on, and fails a start whose replay cannot re-publish instead of hanging.
+//! no-loss cannot rest on, fails a start whose replay cannot re-publish instead of hanging, and
+//! starts from its last snapshot, replaying only the commands journaled after it.
 //!
 //! The scenarios share one continuous ledger, in order, on the stack of
 //! `xtask/tests/docker-compose.yml`: Redpanda with its Schema Registry, an Aeron
@@ -217,6 +218,8 @@ struct Outbox {
     kafka: KafkaVerifier,
     ledger: Ledger,
     order_pairs: u64,
+    /// Every order resting in the book, as its placement answered.
+    resting: Vec<OrderCommand>,
 }
 
 impl Outbox {
@@ -278,6 +281,7 @@ impl Outbox {
             self.ledger
                 .cancelled(&cancelled, &placed_bid, &self.market)?;
             self.ledger.placed(&replaced, &self.market)?;
+            self.resting.push(replaced);
 
             let buy = OrderBuilder::place_market()
                 .user(BUYER)
@@ -469,7 +473,12 @@ impl Outbox {
             });
         }
         let before = self.kafka.end_offsets()?;
+        let since = stack::now();
         self.start_core()?;
+        // The shutdown's snapshot holds every command: the start replays none.
+        let logs = stack::logs_since(CORE, &since)?;
+        expect_logged(&logs, "snapshot_loaded")?;
+        expect_logged(&logs, "commands=0 ")?;
         // The core accepts gateways once its replay has drained; give whatever it re-published
         // time to land.
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -569,6 +578,46 @@ impl Outbox {
         self.start_core()?;
         self.verify().await
     }
+
+    /// A clean stop takes a snapshot, which the next start loads. After a `kill -9`, the start
+    /// loads it again and replays only the two orders journaled since. Every order resting from
+    /// before the snapshot and after it is in the book: each cancels.
+    async fn kill_after_a_snapshot_replays_only_the_tail(&mut self) -> TestResult<()> {
+        self.stop_core()?;
+        self.start_core()?;
+        for (user, side, price) in [(BIDDER, Side::Bid, 30_000), (ASKER, Side::Ask, 70_000)] {
+            let order = OrderBuilder::place_limit()
+                .user(user)
+                .price(price)
+                .size(1)
+                .side(side)
+                .market_id(self.config.market_id)
+                .build();
+            let placed = self.execute(order)?;
+            self.ledger.placed(&placed, &self.market)?;
+            self.resting.push(placed);
+        }
+        self.client = None;
+        stack::signal(CORE, "KILL")?;
+        stack::wait_exited(CORE, STOP_TIMEOUT)?;
+
+        let since = stack::now();
+        self.start_core()?;
+        let logs = stack::logs_since(CORE, &since)?;
+        expect_logged(&logs, "snapshot_loaded")?;
+        expect_logged(&logs, "commands=2 ")?;
+        for order in std::mem::take(&mut self.resting) {
+            let cancel = OrderCommand::cancel_order(
+                order.order_id,
+                order.user_id,
+                order.side,
+                order.market_id,
+            );
+            let cancelled = self.execute(cancel)?;
+            self.ledger.cancelled(&cancelled, &order, &self.market)?;
+        }
+        self.verify().await
+    }
 }
 
 fn expect_logged(logs: &str, expected: &str) -> TestResult<()> {
@@ -634,6 +683,7 @@ pub async fn run_all(
         kafka,
         ledger: Ledger::default(),
         order_pairs: 0,
+        resting: Vec::new(),
     };
     outbox.connect()?;
 
@@ -673,6 +723,11 @@ pub async fn run_all(
         results,
         "restart_with_the_registry_unreachable_fails_within_a_minute",
         outbox.restart_with_the_registry_unreachable_fails_within_a_minute()
+    );
+    scenario!(
+        results,
+        "kill_after_a_snapshot_replays_only_the_tail",
+        outbox.kill_after_a_snapshot_replays_only_the_tail()
     );
     Ok(results)
 }

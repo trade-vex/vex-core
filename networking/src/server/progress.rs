@@ -28,6 +28,10 @@ impl PipelineProgress {
         self.completed.store(sequence, Ordering::Release);
     }
 
+    pub(crate) fn submitted_sequence(&self) -> i64 {
+        self.submitted.load(Ordering::Acquire)
+    }
+
     /// Waits until the terminal handler has completed every sequence submitted so far. Fails only
     /// once `stall` passes without `completed` advancing, as `replay::drain_replay` does:
     /// a drain that re-publishes a replay waits for Kafka, which can take as long as Kafka needs,

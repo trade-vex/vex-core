@@ -415,7 +415,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             return false;
         }
 
-        let order = Order {
+        self.rest(Order {
             order_id: cmd.order_id,
             user_id: cmd.user_id,
             price: cmd.price,
@@ -425,14 +425,37 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             time_in_force: cmd.time_in_force,
             status: cmd.status,
             timestamp: cmd.timestamp,
-        };
-        let level = match cmd.side {
-            Side::Bid => self.bids.get_or_create_level(cmd.price),
-            Side::Ask => self.asks.get_or_create_level(cmd.price),
+        });
+        true
+    }
+
+    fn rest(&mut self, order: Order) {
+        let level = match order.side {
+            Side::Bid => self.bids.get_or_create_level(order.price),
+            Side::Ask => self.asks.get_or_create_level(order.price),
         };
         level.add_order(order);
-        self.orders.insert(cmd.order_id, (cmd.price, cmd.side));
-        true
+        self.orders
+            .insert(order.order_id, (order.price, order.side));
+    }
+
+    /// Resting orders in matching priority: bids high to low, then asks low to high, FIFO within
+    /// a level.
+    pub fn resting_orders(&self) -> impl Iterator<Item = &Order> + '_ {
+        self.bids
+            .iter()
+            .chain(self.asks.iter())
+            .flat_map(|(_, level)| level.orders.iter())
+    }
+
+    /// Rests `orders`, as [`Self::resting_orders`] yielded them, in this empty book, and
+    /// publishes its top of book.
+    pub fn restore(&mut self, orders: impl IntoIterator<Item = Order>, price_cache: &PriceCache) {
+        debug_assert!(self.orders.is_empty(), "restore into an empty book only");
+        for order in orders {
+            self.rest(order);
+        }
+        self.update_price_cache(price_cache);
     }
 
     /// Check if an order can be filled completely

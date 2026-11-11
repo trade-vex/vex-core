@@ -164,9 +164,11 @@ balance_preload:
         amount: 50000000
 ```
 
-Balance preload credits the engine only, at every start, before the replay. It is never journaled
-and never published to Kafka, so a read model shows a preloaded balance only after the key's first
-journaled command (#198 replaces it with journaled genesis deposits).
+Balance preload credits the engine only, at every start that loads no snapshot, before the
+replay; a snapshot holds the preloaded balances already, so a changed preload list applies only
+without one. It is never journaled and never published to Kafka, so a read model shows a preloaded
+balance only after the key's first journaled command (#198 replaces it with journaled genesis
+deposits).
 
 ### Configuration Precedence
 
@@ -202,8 +204,8 @@ kill -TERM <pid>
 
 # vex-core handles Ctrl+C and performs graceful shutdown, with gateways connected or not:
 # it stops ingress, drains the pipeline and answers every accepted command, waits for the archive
-# to record every accepted command, closes every gateway session, then delivers the events still
-# queued and writes the delivered watermark.
+# to record every accepted command, writes a snapshot (see Snapshots), closes every gateway
+# session, then delivers the events still queued and writes the delivered watermark.
 # It logs `flush_complete` once the brokers have acknowledged every event, or
 # `shutdown_with_undelivered_events` with the count of those the next start re-publishes.
 # A shutdown that delivers everything leaves the next start nothing to re-publish.
@@ -253,19 +255,44 @@ Every start, with journaling configured:
    longer, instead of failing. After a graceful stop, the driver frees the closed publication
    within two of its timer checks (draining, then lingering; `aeron.timer.interval`, 1 s by
    default), so a start right after it waits up to about 2 s.
-3. **Replays the journal**: the newest recording that holds commands, which the start then
-   extends. An empty archive holds nothing to replay, so the start is fresh. The replay
-   re-publishes the events of every command above the watermark, the events a previous run may
-   not have delivered, and answers no gateway. It takes as long as Kafka needs to accept them,
-   and fails only once 10 s pass without progress (`DrainError`). It logs `completed` with the
-   `commands` replayed and `elapsed_ms`.
-4. **Stamps every live command above the last journaled command** (`journal_tail_read`), so
+3. **Loads the newest snapshot at or below the watermark** (see [Snapshots](#snapshots)), logging
+   `snapshot_loaded`; a newer one logs `snapshot_ahead_of_watermark` and is skipped. Without one,
+   the engine starts empty.
+4. **Replays the journal** from the snapshot's position, or from its start without one: the
+   newest recording that holds commands, which the start then extends. An empty archive holds
+   nothing to replay, so the start is fresh; after a graceful stop that delivered everything, the
+   shutdown's snapshot leaves nothing to replay. The replay re-publishes the events of every
+   command above the watermark, the events a previous run may not have delivered, and answers no
+   gateway. It takes as long as Kafka needs to accept them, and fails only once 10 s pass without
+   progress (`DrainError`). It logs `completed` with its `start_position`, the `commands`
+   replayed and `elapsed_ms`.
+5. **Stamps every live command above the last journaled command** (`journal_tail_read`), so
    order ids and timestamps never repeat any the archive holds, even if this host's clock is
    behind. A start fails if it cannot read it.
 
 There is no start without replay: a new ledger is a [reset](#resetting-the-ledger). With
 journaling disabled there is no journal, nothing is replayed or re-published, and ids and
 timestamps follow the wall clock alone.
+
+### Snapshots
+
+With journaling configured, the core writes its state (every balance, the quote each open bid
+holds, every resting order) to `core_networking.snapshot_dir` (`VEX__CORE_NETWORKING__SNAPSHOT_DIR`,
+required with journaling) as `snapshot-<journal position>.bin`, checksummed:
+
+- every 5,000,000 commands, and at every graceful stop. Ingress pauses while the pipeline drains
+  and the state is serialized (milliseconds at launch scale, about 80 ms at 1M balances and 1M
+  resting orders); the file is written off the server thread. Logs `written` with `bytes` and
+  `pause_ms`; a failure logs `write_failed` and the next round tries again.
+- Two files are kept: a start can load only a snapshot whose last command is at or below the
+  delivered watermark, which the newest passes about 200 ms after it is taken, so the start falls
+  back to the one before. An unreadable file logs `snapshot_corrupt` and is skipped.
+- After each snapshot, the journal's segments below the previous snapshot are deleted
+  (`journal_purged`), once that snapshot is at or below the watermark. So the journal holds about
+  two intervals (about 1 GB), and a start replays at most about 5M commands.
+- `/dev/shm` (the development and test default, `/dev/shm/vex-snapshots`) does not survive a
+  reboot, like the journal there. Production uses a persistent disk (`/var/lib/vex/snapshots`),
+  next to the archive's.
 
 ### View Logs
 
@@ -304,6 +331,9 @@ ls -la config.dev.yaml config.test.yaml config.prod.yaml 2>/dev/null
 - `Kafka answered for topic <topic> with an error that waiting cannot clear` or `Kafka described no setting of topic <topic>`: usually a denied ACL (`Topic authorization failed`, or no DescribeConfigs); grant the ACLs in `deploy/kafka/README.md`
 - `the core may not read the watermark from topic vex-core.delivered`: grant the core Read on `vex-core.delivered` and Describe on the consumer group `vex-core.watermark-reader` (`deploy/kafka/README.md`, "ACLs")
 - The process runs but never accepts gateways, logging `waiting_for_kafka`: the configured `kafka_broker` (or `VEX__KAFKA_BROKER`) does not answer. The core waits for it before it starts
+- `the journal was purged below position <p> and no snapshot is at or below the delivered watermark`: see [No usable snapshot](#no-usable-snapshot)
+- `the snapshot at position <p> of recording <r> does not belong to the journal`: the snapshot directory holds another journal's snapshots, left by a partial reset; delete them (see [Resetting the ledger](#resetting-the-ledger)), or point `snapshot_dir` at this journal's
+- `the snapshot holds market <m>, which the config does not`: a market was removed from the config while orders rested in it. Restore it, cancel its orders, then remove it
 - `the journal (aeron:ipc stream 2001) is still held after ...`: a live recording of the journal, or a publication of it, outlasted the media driver's client liveness timeout and 5 s more. A killed core holds them only until that timeout passes and the archive has recorded the rest of its publication. So either another process is journaling to this media driver and archive (run one core per archive), or the archive is lagging: it is still recording a large backlog that the killed core's publication held unrecorded (its recording position still advances; start again once the recording has stopped). The error lists the recordings and the publications' session ids (`make aeron-stat` shows the publications)
 - A config file must set `schema_registry_url`, or `VEX__SCHEMA_REGISTRY_URL` must; only the built-in dev/test defaults, used when no file exists, supply one. A value that is not an `http://` or `https://` URL is rejected
 - Check that `/dev/shm` has sufficient space for Aeron
@@ -427,6 +457,27 @@ VEX_ENV=development RUST_LOG=debug ./target/release/vex-core 2>&1 | grep -E "dis
 - Check `request_control_channel` and archive configuration
 - A `DrainError` means the pipeline stopped advancing for 10 s, usually because Kafka stopped accepting the re-published events: restore Kafka and start again. Each start re-publishes from the last watermark written, so restarts converge
 
+### No usable snapshot
+
+**Symptom**: the start fails with `the journal was purged below position <p> and no snapshot is at
+or below the delivered watermark; see RUNBOOK: No usable snapshot`.
+
+The journal below the older snapshot was deleted once the watermark had passed it, so the
+watermark read back is older than the one written then: watermark records were lost, or
+`vex-core.delivered` was emptied or re-created.
+
+**Fix**: take the newest snapshot's last command timestamp, bytes 24..32 of the file
+(little-endian). Confirm in Kafka, or the read model, that the events of the commands up to that
+timestamp are present. Then, with the core stopped, write it as the watermark, an 8-byte
+big-endian u64 under the key `w`, and start again:
+
+```bash
+file=$(ls <snapshot_dir>/snapshot-*.bin | tail -1)
+timestamp=$(od -A n -t u8 -j 24 -N 8 "$file" | tr -d ' ')   # on a little-endian host
+printf '%016x' "$timestamp" | xxd -r -p > w.bin
+kcat -b <brokers> -t vex-core.delivered -P -k w w.bin          # the file is one message
+```
+
 ### High Memory Usage
 
 **Symptom**: vex-core consumes excessive memory
@@ -511,7 +562,7 @@ top -p $(pgrep vex-core)
 2. **Mitigation**
    - Restore Kafka or the Schema Registry; intake resumes by itself
    - A registry that rejects the schema (for example as incompatible with the subject's earlier versions) also shows up as a `protobuf_encoding_failed` stall. The client library reports it exactly like an outage. Fix the subject's compatibility setting or the deployed schema
-   - A topic deleted while the core runs shows up as a `producer_send_waiting` stall. Re-create it from `deploy/kafka/topics.toml` (see [Kafka Topics](#kafka-topics)). If it was `vex-core.delivered`, the next start re-publishes the whole journal
+   - A topic deleted while the core runs shows up as a `producer_send_waiting` stall. Re-create it from `deploy/kafka/topics.toml` (see [Kafka Topics](#kafka-topics)). If it was `vex-core.delivered`, the next start re-publishes the whole journal, or fails once snapshots have purged its start (see [No usable snapshot](#no-usable-snapshot))
    - After an abort, or a shutdown that reported undelivered events, start the core again: it re-publishes them
 
 ### Gateway Cannot Connect
@@ -545,7 +596,7 @@ new partition count for an event topic is a reset too (`deploy/kafka/README.md`)
 
 1. Stop the gateway, the core and the Kafka Connect connectors.
 2. Delete the archive's recordings (the journal), with the media driver stopped: the archive
-   directory (`aeron.archive.dir`).
+   directory (`aeron.archive.dir`), and the snapshot directory (`snapshot_dir`).
 3. Delete the seven event topics and `vex-core.delivered`, then re-create them with
    `cargo xtask kafka apply` (see [Kafka Topics](#kafka-topics)).
 4. Delete the connectors' consumer groups (`connect-<connector>`), so that they read the new
@@ -560,7 +611,9 @@ then either reset the connectors' offsets to the earliest, if the topics' retent
 the whole history, or make the core re-publish the whole journal. For the latter, stop the core,
 write a tombstone (a null value) for the key `w` on `vex-core.delivered`, and start it: a
 tombstone reads as watermark 0. The replay then re-publishes every journaled command, taking as
-long as Kafka needs.
+long as Kafka needs. That needs the whole journal: once snapshots have purged its start
+(`journal_purged`), the start fails instead (see [No usable snapshot](#no-usable-snapshot)), and
+the topics are the only source.
 
 ```bash
 # With the core stopped. kcat: -Z sends the empty value as null (a tombstone).

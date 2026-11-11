@@ -1,7 +1,8 @@
 use ahash::AHashMap;
+use borsh::{BorshDeserialize, BorshSerialize};
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct UserBalance {
     pub available: u64,
     pub locked: u64,
@@ -23,7 +24,7 @@ impl UserBalance {
 }
 
 /// The key for the balances map. A user's balance is per-asset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, BorshSerialize, BorshDeserialize)]
 pub struct BalanceKey {
     user_id: u64,
     asset_id: u16,
@@ -73,6 +74,15 @@ impl BalanceStore {
 
     pub fn set_balance(&mut self, user_id: u64, asset_id: u16, balance: UserBalance) {
         let key = BalanceKey { user_id, asset_id };
+        self.balances.insert(key, balance);
+    }
+
+    /// Every balance, in no particular order (a snapshot's export).
+    pub fn entries(&self) -> impl Iterator<Item = (BalanceKey, UserBalance)> + '_ {
+        self.balances.iter().map(|(key, balance)| (*key, *balance))
+    }
+
+    pub fn insert(&mut self, key: BalanceKey, balance: UserBalance) {
         self.balances.insert(key, balance);
     }
 

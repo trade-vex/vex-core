@@ -16,7 +16,7 @@ pub use market_specification::{
 };
 pub use order::{Order, PriceCache};
 pub use snowflake::Snowflake;
-pub use user_profile::{BalanceError, BalanceStore, UserBalance};
+pub use user_profile::{BalanceError, BalanceKey, BalanceStore, UserBalance};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use sbe_order::order_command_type::OrderCommandType as SbeOrderCommandType;

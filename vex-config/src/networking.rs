@@ -83,6 +83,9 @@ pub struct CoreNetworkingConfig {
     pub request_control_channel: String,
     pub response_control_channel: String,
     pub recording_events_channel: String,
+    /// Where the engine's state snapshots go, which bound a start's replay. Required with
+    /// journaling; a persistent disk in production (`/dev/shm` is for development and tests only).
+    pub snapshot_dir: String,
     /// CPU core pinning for processor threads
     pub enable_core_pinning: bool,
 }
@@ -113,6 +116,7 @@ impl CoreNetworkingConfig {
             request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
             response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
             recording_events_channel: "aeron:udp?endpoint=localhost:0".to_string(),
+            snapshot_dir: "/dev/shm/vex-snapshots".to_string(),
             enable_core_pinning: false,
         }
     }
@@ -133,6 +137,7 @@ impl CoreNetworkingConfig {
             request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
             response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
             recording_events_channel: "aeron:udp?endpoint=localhost:0".to_string(),
+            snapshot_dir: "/dev/shm/vex-snapshots".to_string(),
             enable_core_pinning: false,
         }
     }
@@ -153,6 +158,7 @@ impl CoreNetworkingConfig {
             request_control_channel: "aeron:udp?endpoint=localhost:8010".to_string(),
             response_control_channel: "aeron:udp?endpoint=localhost:0".to_string(),
             recording_events_channel: "aeron:udp?endpoint=localhost:8012".to_string(),
+            snapshot_dir: "/var/lib/vex/snapshots".to_string(),
             enable_core_pinning: true,
         }
     }
@@ -197,6 +203,12 @@ impl CoreNetworkingConfig {
         if environment.is_production() && self.request_control_channel.is_empty() {
             return Err(ConfigError::network(
                 "Archive request control channel cannot be empty in production",
+            ));
+        }
+
+        if !self.request_control_channel.is_empty() && self.snapshot_dir.is_empty() {
+            return Err(ConfigError::network(
+                "snapshot_dir is required when journaling is configured",
             ));
         }
 
@@ -329,6 +341,19 @@ mod tests {
         assert!(config.validate(&Environment::Development).is_ok());
         assert!(config.validate(&Environment::Test).is_ok());
         assert!(config.validate(&Environment::Production).is_err());
+    }
+
+    #[test]
+    fn snapshot_dir_is_required_with_journaling() {
+        let mut config = CoreNetworkingConfig::development_defaults();
+        config.snapshot_dir.clear();
+        assert!(matches!(
+            config.validate(&Environment::Development),
+            Err(ConfigError::NetworkError(message)) if message.contains("snapshot_dir is required")
+        ));
+
+        config.request_control_channel.clear();
+        assert!(config.validate(&Environment::Development).is_ok());
     }
 
     #[test]

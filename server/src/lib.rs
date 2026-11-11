@@ -1,4 +1,5 @@
 pub mod engine;
+mod snapshot;
 mod utils;
 
 use common::CoreMarketSpecification;
@@ -9,11 +10,12 @@ use processors::{
     journaling::{JournalingProcessor, ReplayControl},
 };
 use std::{
+    path::Path,
     sync::{Arc, atomic::AtomicBool},
     thread::JoinHandle,
 };
 use vex_config::VexConfig;
-use vex_networking::server::Publications;
+use vex_networking::server::{Publications, SnapshotHeader};
 
 // Re-export for convenience
 pub use engine::EngineError;
@@ -90,17 +92,19 @@ pub fn start(mut config: VexConfig) -> Result<RunningEngine, EngineError> {
         }
     };
     #[allow(unused_mut)] // mut needed when balance-preload feature is enabled
-    let ((engine, mut producer), replay_control) = init_internal(
+    let ((engine, mut producer), replay_control, loaded) = init_internal(
         config.symbols.symbols.clone(),
         config.kafka_broker.clone(),
         config.schema_registry_url.clone(),
         journaling,
         config.core_networking.enable_core_pinning,
+        Path::new(&config.core_networking.snapshot_dir),
     )?;
 
-    // Balance preload for test/local environments
+    // Balance preload for test/local environments. A loaded snapshot holds the preloaded
+    // balances already; applying them again would double them.
     #[cfg(feature = "balance-preload")]
-    if config.balance_preload.enabled {
+    if config.balance_preload.enabled && loaded.is_none() {
         use tracing::info;
 
         info!(
@@ -123,7 +127,7 @@ pub fn start(mut config: VexConfig) -> Result<RunningEngine, EngineError> {
     }
 
     let (thread_handle, shutdown_flag) =
-        engine.run(producer, replay_control, config.core_networking);
+        engine.run(producer, replay_control, config.core_networking, loaded);
 
     Ok(RunningEngine {
         thread: thread_handle,
@@ -133,8 +137,8 @@ pub fn start(mut config: VexConfig) -> Result<RunningEngine, EngineError> {
 
 /// Publishes the configured deposits, then waits until every one has cleared the pipeline.
 ///
-/// Preload is re-applied on every start, so it must never be journaled: a journaled deposit
-/// would be credited twice on replay. It runs while the replay flag is set, as every start sets
+/// Preload is re-applied on every start that loads no snapshot (a snapshot holds it), so it must
+/// never be journaled: a journaled deposit would be credited twice on replay. It runs while the replay flag is set, as every start sets
 /// it until the journal is replayed, so journaling passes it through unstamped (timestamp 0) and
 /// the events stage, which re-publishes only replayed commands above the delivered watermark,
 /// never publishes it. Journaling also skips commands while no archive publication is installed,
@@ -213,13 +217,21 @@ fn resolve_gateway_authentication(config: &mut VexConfig) {
 ///
 /// The replay flag starts enabled: every start replays the journal (an empty or absent one
 /// replays nothing), and `CoreEngine::run` clears the flag once the replay has drained.
+///
+/// With journaling enabled, the engine starts from the newest snapshot in `snapshot_dir` at or
+/// below the delivered watermark, if any, whose header it returns: the replay starts there.
 pub fn init_internal(
     symbol_specs: HashMap<u32, CoreMarketSpecification>,
     kafka_broker: String,
     schema_registry_url: String,
     journaling: Journaling,
     enable_core_pinning: bool,
-) -> EngineResult<((CoreEngine, OrderProducer), ReplayControl)> {
+    snapshot_dir: &Path,
+) -> EngineResult<(
+    (CoreEngine, OrderProducer),
+    ReplayControl,
+    Option<SnapshotHeader>,
+)> {
     let replay_control = ReplayControl::enabled();
     let publications = Arc::new(Publications::new());
     let journaling_processor =
@@ -233,6 +245,19 @@ pub fn init_internal(
         journaling,
     )
     .map_err(EngineError::ServerInitialization)?;
+    let loaded = match journaling {
+        Journaling::Enabled { .. } => {
+            vex_networking::server::snapshot::load(snapshot_dir, publications.delivered()).map_err(
+                |error| {
+                    EngineError::ServerInitialization(format!(
+                        "reading snapshots from {}: {error}",
+                        snapshot_dir.display()
+                    ))
+                },
+            )?
+        }
+        Journaling::Disabled => None,
+    };
 
     let engine = CoreEngine::new(
         symbol_specs,
@@ -241,9 +266,14 @@ pub fn init_internal(
         publications,
         engine::CorePinning::default(),
         enable_core_pinning,
+        loaded.as_ref().map(|snapshot| snapshot.state.as_slice()),
     )?;
 
-    Ok((engine, replay_control))
+    Ok((
+        engine,
+        replay_control,
+        loaded.map(|snapshot| snapshot.header),
+    ))
 }
 
 /// Test utilities for vex-server
@@ -327,7 +357,7 @@ pub mod test {
         specs: HashMap<u32, CoreMarketSpecification>,
         replay: ReplayControl,
     ) -> TestEngine {
-        let (engine, producer, receiver) = build(specs, replay);
+        let (engine, producer, receiver) = build(specs, replay, None);
         TestEngine {
             producer,
             risk_engines: engine.risk_engines,
@@ -335,11 +365,13 @@ pub mod test {
         }
     }
 
-    /// Builds the pipeline with [`CoreEngine::new`], as `init_internal` does, with `Capture` as
-    /// the events stage. The receiver gets each finished command.
+    /// Builds the pipeline with [`CoreEngine::new`], as `init_internal` does, from a snapshot's
+    /// `state` if given, with `Capture` as the events stage. The receiver gets each finished
+    /// command.
     pub fn build(
         specs: HashMap<u32, CoreMarketSpecification>,
         replay: ReplayControl,
+        state: Option<&[u8]>,
     ) -> (CoreEngine, OrderProducer, mpsc::Receiver<OrderCommand>) {
         let (sender, receiver) = mpsc::channel();
         let publications = Arc::new(Publications::new());
@@ -353,6 +385,7 @@ pub mod test {
             publications,
             engine::CorePinning::default(),
             false,
+            state,
         )
         .expect("Failed to build test engine");
         (engine, producer, receiver)
@@ -451,7 +484,7 @@ mod tests {
         let mut specs = HashMap::new();
         add_spec((1 << 16) | 2, &mut specs);
         // Preload runs while the replay flag is set, as `init_internal` sets it at every start.
-        let (engine, mut producer, _receiver) = test::build(specs, ReplayControl::enabled());
+        let (engine, mut producer, _receiver) = test::build(specs, ReplayControl::enabled(), None);
 
         let mut preload = vex_config::BalancePreloadConfig::new();
         preload.enabled = true;

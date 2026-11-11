@@ -1388,6 +1388,7 @@ impl KafkaEventsHandler {
             Journaling::Enabled { production } => read_delivered(brokers, production, &rt)?,
         };
         let journaled = matches!(journaling, Journaling::Enabled { .. });
+        publications.set_delivered(delivered);
 
         let shutdown = Shutdown::with_grace(SHUTDOWN_GRACE);
         let producer = create_producer(&producer_config(brokers), &shutdown);
@@ -1402,12 +1403,18 @@ impl KafkaEventsHandler {
             schema_registry = %schema_registry_url
         );
 
+        let watermarks = Arc::clone(&publications);
         let sender = OrderedSender::spawn(SENDER_CAPACITY, shutdown.clone(), move |events| {
             let mut watermark = Watermark::starting_at(delivered);
             let mut refusals = StallLog::default();
             // Without a journal nothing replays, so nothing reads W, and nothing writes it.
-            let mut persist =
-                |delivered| !journaled || write_watermark(&producer, delivered, &mut refusals);
+            let mut persist = |delivered| {
+                let written = !journaled || write_watermark(&producer, delivered, &mut refusals);
+                if written {
+                    watermarks.set_delivered(delivered);
+                }
+                written
+            };
             let in_channel = run_sender(
                 events,
                 &shutdown,
