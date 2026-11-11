@@ -84,13 +84,7 @@ pub struct CoreNetworkingConfig {
     pub response_control_channel: String,
     pub recording_events_channel: String,
     /// CPU core pinning for processor threads
-    /// Disabled by default in development/test, enabled in production.
-    #[serde(default = "default_enable_core_pinning")]
     pub enable_core_pinning: bool,
-}
-
-fn default_enable_core_pinning() -> bool {
-    false
 }
 
 impl CoreNetworkingConfig {
@@ -385,6 +379,20 @@ mod tests {
 
         config.gateway_authentication_key = "0123456789abcdef".repeat(4).as_str().into();
         assert!(config.validate(&Environment::Development).is_ok());
+    }
+
+    #[test]
+    fn enable_core_pinning_is_required() {
+        let mut json = serde_json::to_value(CoreNetworkingConfig::production_defaults()).unwrap();
+        json.as_object_mut().unwrap().remove("enable_core_pinning");
+
+        let error = serde_json::from_value::<CoreNetworkingConfig>(json).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("missing field `enable_core_pinning`"),
+            "{error}"
+        );
     }
 
     #[test]
