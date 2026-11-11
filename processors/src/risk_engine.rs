@@ -813,9 +813,10 @@ mod tests {
         let gross_quote = spec
             .calculate_quote_cost(price, size)
             .expect("test notional fits");
-        let taker_fee = u64::try_from((size as u128 * spec.taker_fee as u128) / 10000).unwrap();
+        let taker_fee =
+            u64::try_from((size as u128 * spec.taker_fee as u128).div_ceil(10000)).unwrap();
         let maker_fee =
-            u64::try_from((gross_quote as u128 * spec.maker_fee as u128) / 10000).unwrap();
+            u64::try_from((gross_quote as u128 * spec.maker_fee as u128).div_ceil(10000)).unwrap();
 
         let mut specs = HashMap::new();
         specs.insert(market_id, spec);
