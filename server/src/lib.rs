@@ -1807,9 +1807,7 @@ mod tests {
             mut producer,
             risk_engines,
             receiver: rx,
-        } = setup(specs.clone());
-
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        } = setup(specs);
 
         let maker_id = 101; // Shard 1
         let taker_id = 42; // Shard 2
@@ -1846,7 +1844,6 @@ mod tests {
         });
         let maker_placed = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(maker_placed.status, Status::Placed);
-        price_cache.update_prices(market_id, 0, maker_ask_price); // Manually update price cache
 
         // 4. Place Taker's IOC Market Buy order, larger than available liquidity
         let taker_order_size = 10_000;
