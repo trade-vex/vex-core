@@ -335,10 +335,8 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             TimeInForce::Gtc => {
                 // Handle GTC (Good 'Til Canceled) orders
                 let remaining = self.match_order(cmd);
-                if remaining == 0 && cmd.size != 0 {
+                if remaining == 0 {
                     cmd.set_status(Status::Filled);
-                } else if cmd.is_market_order() {
-                    cmd.set_status(Status::Cancelled);
                 } else if self.add_to_book(cmd, remaining) {
                     cmd.set_status(if remaining == cmd.size {
                         Status::Placed
@@ -455,6 +453,8 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
 
     /// Add order to the book
     fn add_to_book(&mut self, cmd: &OrderCommand, remaining_size: u64) -> bool {
+        // A market order's remainder never rests, and R1 accepts a GTC ask at u64::MAX, which
+        // would rest at the PriceCache's no-asks value.
         if cmd.price == 0 || cmd.price == u64::MAX {
             return false;
         }

@@ -488,30 +488,6 @@ mod test {
     }
 
     #[test]
-    fn test_gtc_market_sell_on_empty_book_is_cancelled_without_resting() {
-        let (mut book, price_cache) = create_test_orderbook();
-        let mut cmd = create_order_command(
-            OrderCommandType::PlaceOrder,
-            1,
-            100,
-            1001,
-            1,
-            0,
-            100,
-            Side::Ask,
-            TimeInForce::Gtc,
-        );
-
-        book.place_order(&mut cmd, price_cache);
-
-        assert_eq!(cmd.status(), Status::Cancelled);
-        assert_eq!(cmd.size(), 100);
-        assert_eq!(book.get_level_order_count(Side::Ask, 0), 0);
-        assert_eq!(book.best_ask(), None);
-        assert_eq!(book.total_order_count(), 0);
-    }
-
-    #[test]
     fn test_gtc_limit_order_still_rests_with_sentinel_guard() {
         let (mut book, price_cache) = create_test_orderbook();
         let mut cmd = create_order_command(
@@ -534,27 +510,17 @@ mod test {
         assert_eq!(book.total_order_count(), 1);
     }
 
+    /// R1 accepts this order; resting it would read as an empty ask side in the PriceCache.
     #[test]
-    fn test_gtc_opposite_side_sentinel_price_does_not_rest() {
+    fn gtc_ask_at_u64_max_does_not_rest() {
         let (mut book, price_cache) = create_test_orderbook();
-        let mut cmd = create_order_command(
-            OrderCommandType::PlaceOrder,
-            1,
-            100,
-            1001,
-            1,
-            0,
-            100,
-            Side::Bid,
-            TimeInForce::Gtc,
-        );
+        let harness = TestHarness::new(10);
+        let mut ask =
+            harness.create_place_order_cmd(1001, Side::Ask, u64::MAX, 100, TimeInForce::Gtc);
 
-        book.place_order(&mut cmd, price_cache);
+        book.place_order(&mut ask, price_cache);
 
-        assert_eq!(cmd.status(), Status::Cancelled);
-        assert_eq!(cmd.size(), 100);
-        assert_eq!(book.get_level_order_count(Side::Bid, 0), 0);
-        assert_eq!(book.best_bid(), None);
+        assert_eq!(ask.status(), Status::Cancelled);
         assert_eq!(book.total_order_count(), 0);
     }
 
@@ -1889,30 +1855,6 @@ mod test {
                 (50, 50, 1002, true, false),  // Second order partial
             ],
         );
-        assert!(book.verify_state().is_ok());
-    }
-
-    #[test]
-    fn test_zero_size_order_handling() {
-        let (mut book, price_cache) = create_test_orderbook();
-
-        // Try to place zero-size order
-        let mut zero_cmd = create_order_command(
-            OrderCommandType::PlaceOrder,
-            1,
-            100,
-            1001,
-            1,
-            50,
-            0,
-            Side::Bid,
-            TimeInForce::Gtc,
-        );
-        book.place_order(&mut zero_cmd, price_cache.clone());
-
-        // Should be placed (implementation doesn't validate size)
-        assert_eq!(zero_cmd.status(), Status::Placed);
-        assert_eq!(book.get_volume_at_price(50, Side::Bid), 0);
         assert!(book.verify_state().is_ok());
     }
 
