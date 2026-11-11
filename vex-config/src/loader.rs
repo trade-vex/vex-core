@@ -122,7 +122,7 @@ impl ConfigLoader {
         };
 
         // The first existing file wins, as documented. Layering every existing file let a later
-        // search path (e.g. the shipped zero-fee `./config.dev.yaml`) silently override an
+        // search path (e.g. the shipped `./config.dev.yaml`) silently override an
         // operator's earlier file key by key.
         let mut builder = match search_paths.iter().find(|path| Path::new(path).exists()) {
             Some(path) => {

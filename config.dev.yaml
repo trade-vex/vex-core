@@ -79,8 +79,8 @@ symbols:
       quote_scale_k: 1
       base_native_scale: 100000000
       quote_native_scale: 1000000
-      taker_fee: 0
-      maker_fee: 0
+      taker_fee: 20
+      maker_fee: 10
       slippage: 150
 kafka_broker: localhost:9092
 schema_registry_url: http://localhost:8081

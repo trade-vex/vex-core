@@ -73,7 +73,7 @@
 //! - Market ID: 65538 (0x00010002)
 //! - Base Asset: 2 (BTC), native scale 10^8
 //! - Quote Asset: 1 (USD), native scale 10^6, `quote_scale_k` 1
-//! - Maker Fee: 0bp, Taker Fee: 0bp
+//! - Maker Fee: 10bp, Taker Fee: 20bp, each on the asset that side receives
 //! - Slippage: 150bp (the market-buy price cap above the best ask)
 
 pub mod builders;

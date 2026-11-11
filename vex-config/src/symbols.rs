@@ -161,8 +161,9 @@ impl SymbolSpecificationConfig {
                 quote_scale_k: 1,
                 base_native_scale: 100_000_000, // BTC has 8 decimals
                 quote_native_scale: 1_000_000,  // USDT has 6 decimals
-                taker_fee: 0,
-                maker_fee: 0,
+                // The xtask suites trade this market: they settle fees end to end.
+                taker_fee: 20,
+                maker_fee: 10,
                 slippage: 150, // 1.5%
             },
         );
@@ -233,8 +234,9 @@ impl SymbolSpecificationConfig {
                 quote_scale_k: 1,
                 base_native_scale: 100_000_000, // BTC has 8 decimals
                 quote_native_scale: 1_000_000,  // USDT has 6 decimals
-                taker_fee: 0,
-                maker_fee: 0,
+                // The xtask suites trade this market: they settle fees end to end.
+                taker_fee: 20,
+                maker_fee: 10,
                 slippage: 150, // 1.5%
             },
         );

@@ -554,8 +554,8 @@ mod tests {
         )
         .symbols[&market_id]
             .clone();
-        // The shipped dev/test fees are zero. These are the committed configuration's
-        // 10 bp maker / 20 bp taker rates, so the fee arithmetic is actually exercised.
+        // The shipped ETH market charges no fee: both markets get the 10 bp maker / 20 bp taker
+        // rates the shipped BTC market charges, so the fee arithmetic runs at both scales.
         spec.maker_fee = 10;
         spec.taker_fee = 20;
         spec.slippage = 5;

@@ -734,7 +734,7 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
     );
 
     // Verify trade execution
-    {
+    let trade = {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
 
         // Should execute against best ask (53,000)
@@ -745,14 +745,15 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
             .price(best_ask_price) // Should execute at best ask, NOT conservative price
             .size(buy_size);
 
-        trade_verifier
+        let trade = trade_verifier
             .wait_and_assert_trade(market_id, &criteria, event_timeout)
             .await?;
         info!(
             "  → Trade executed: {} BTC @ {} (at best ask, below conservative ceiling)",
             buy_size, best_ask_price
         );
-    }
+        trade
+    };
 
     // Verify balances reflect trade + price improvement refund
     {
@@ -804,6 +805,11 @@ async fn test_market_buy_section(ctx: &mut TestContext) -> TestResult<()> {
             &final_usd_balance,
             -i128::from(actual_cost),
         )?;
+
+        // The trade reports both fees: the taker's in the BTC it bought, the maker's in the USD
+        // it sold for
+        let maker_fee_usd = (actual_cost * market_spec.maker_fee).div_ceil(10_000);
+        assert_fees(&trade, taker_fee_btc, maker_fee_usd)?;
 
         info!(
             "  → Price improvement: locked={}, spent={}, refund={}",
@@ -925,7 +931,7 @@ async fn test_market_sell_section(ctx: &mut TestContext) -> TestResult<()> {
     );
 
     // Verify trade execution
-    {
+    let trade = {
         let mut trade_verifier = TradeVerifier::new(&mut ctx.kafka);
 
         // Should execute against best bid (52,000)
@@ -936,14 +942,15 @@ async fn test_market_sell_section(ctx: &mut TestContext) -> TestResult<()> {
             .price(best_bid_price) // Should execute at best bid
             .size(sell_size);
 
-        trade_verifier
+        let trade = trade_verifier
             .wait_and_assert_trade(market_id, &criteria, event_timeout)
             .await?;
         info!(
             "  → Trade executed: {} BTC @ {} (at best bid)",
             sell_size, best_bid_price
         );
-    }
+        trade
+    };
 
     // Verify balances reflect trade
     {
@@ -989,6 +996,11 @@ async fn test_market_sell_section(ctx: &mut TestContext) -> TestResult<()> {
             &final_usd_balance,
             i128::from(expected_usd),
         )?;
+
+        // The trade reports both fees: the taker's in the USD it sold for, the maker's in the
+        // BTC it bought
+        let maker_fee_btc = (sell_size * market_spec.maker_fee).div_ceil(10_000);
+        assert_fees(&trade, taker_fee_usd, maker_fee_btc)?;
 
         info!(
             "  → Charlie final: {} USD (received {}, fee {}), {} BTC (sold {})",
@@ -1036,6 +1048,20 @@ fn assert_settled(
                 "{what}: total {} -> {} ({moved:+}), locked {} -> {}; expected {change:+}, \
                  locked unchanged",
                 before.total, after.total, before.locked, after.locked
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// The fees a trade reports, each in the asset that side received.
+fn assert_fees(trade: &TradeEvent, taker_fee: u64, maker_fee: u64) -> TestResult<()> {
+    if (trade.taker_fee, trade.maker_fee) != (taker_fee, maker_fee) {
+        return Err(TestError::Verification {
+            message: format!(
+                "trade {}:{} reports (taker, maker) fees ({}, {}), expected ({taker_fee}, \
+                 {maker_fee})",
+                trade.taker_order_id, trade.maker_order_id, trade.taker_fee, trade.maker_fee
             ),
         });
     }
