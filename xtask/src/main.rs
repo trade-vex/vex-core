@@ -15,7 +15,7 @@ use vex_config::GatewayNetworkingConfig;
 
 use xtask::kafka_topics::{self, KafkaTopics};
 use xtask::scenarios;
-use xtask::test_framework::types::{ScenarioResult, TestConfig, TestSuiteResult};
+use xtask::test_framework::types::{ScenarioResult, TestConfig, TestError, TestSuiteResult};
 use xtask::test_framework::{TestContext, stack};
 
 /// delay in network emulation in teste2e (high-latency scenario)
@@ -134,6 +134,9 @@ enum XTaskError {
 
     #[error("Integration test error: {0}")]
     IntegrationTest(String),
+
+    #[error(transparent)]
+    Stack(#[from] TestError),
 }
 
 #[derive(Error, Debug)]
@@ -157,7 +160,7 @@ async fn main() -> Result<(), XTaskError> {
                 all,
             } => {
                 if all {
-                    run_all_e2e_scenarios(project_root.into_boxed_path()).await
+                    run_all_e2e_scenarios(project_root.into_boxed_path(), clients).await
                 } else {
                     run_correctness_task(project_root.into_boxed_path(), &scenario, clients).await
                 }
@@ -201,7 +204,7 @@ async fn apply_topics(
 }
 
 /// Run all E2E test scenarios sequentially
-async fn run_all_e2e_scenarios(project_root: Box<Path>) -> Result<(), XTaskError> {
+async fn run_all_e2e_scenarios(project_root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
     let scenarios = ["basic-connectivity", "high-latency", "packet-loss"];
     let mut failed_scenarios = Vec::new();
 
@@ -210,7 +213,7 @@ async fn run_all_e2e_scenarios(project_root: Box<Path>) -> Result<(), XTaskError
         println!("Running E2E scenario: {}", scenario);
         println!("========================================\n");
 
-        if let Err(e) = run_correctness_task(project_root.clone(), scenario, 1).await {
+        if let Err(e) = run_correctness_task(project_root.clone(), scenario, clients).await {
             eprintln!("Scenario '{}' FAILED: {}", scenario, e);
             failed_scenarios.push(scenario.to_string());
         }
@@ -652,83 +655,45 @@ struct ComposeContainer {
     name: String,
 }
 
-// Helper function to apply network conditions
+/// Applies the scenario's netem rule to both directions: every client's egress, and the core's
+/// (its replies, and its traffic to Kafka).
 fn apply_scenario_conditions(root: &Path, scenario: &str, clients: u32) -> Result<(), XTaskError> {
-    if scenario == "basic-connectivity" {
-        return Ok(()); // No network conditions to apply for basic connectivity
-    }
-    for i in 1..=clients {
-        match scenario {
-            "high-latency" => {
-                println!("Applying {NETWORK_DELAY_MS}ms latency...");
-                // Apply latency to traffic leaving the client
-                cmd!(
-                    "docker",
-                    "compose",
-                    "exec",
-                    "--index",
-                    i.to_string(),
-                    "-T",
-                    "vex-client",
-                    "tc",
-                    "qdisc",
-                    "replace",
-                    "dev",
-                    "eth0",
-                    "root",
-                    "netem",
-                    "delay",
-                    format!("{NETWORK_DELAY_MS}ms")
-                )
-                .dir(root)
-                .run()?;
-                // Apply latency to traffic leaving the server
-                cmd!(
-                    "docker",
-                    "compose",
-                    "exec",
-                    "-T",
-                    "vex-server",
-                    "tc",
-                    "qdisc",
-                    "replace",
-                    "dev",
-                    "eth0",
-                    "root",
-                    "netem",
-                    "delay",
-                    format!("{NETWORK_DELAY_MS}ms")
-                )
-                .dir(root)
-                .run()?;
-            }
-            "packet-loss" => {
-                println!("Applying {PACKET_LOSS_PERCENT}% packet loss...");
-                cmd!(
-                    "docker",
-                    "compose",
-                    "exec",
-                    "--index",
-                    i.to_string(),
-                    "-T",
-                    "vex-client",
-                    "tc",
-                    "qdisc",
-                    "replace",
-                    "dev",
-                    "eth0",
-                    "root",
-                    "netem",
-                    "loss",
-                    format!("{PACKET_LOSS_PERCENT}%")
-                )
-                .dir(root)
-                .run()?;
-            }
-            _ => Err(XTaskError::Unexpected(format!(
+    let rule = match scenario {
+        "basic-connectivity" => return Ok(()),
+        "high-latency" => ["delay".to_string(), format!("{NETWORK_DELAY_MS}ms")],
+        "packet-loss" => ["loss".to_string(), format!("{PACKET_LOSS_PERCENT}%")],
+        _ => {
+            return Err(XTaskError::Unexpected(format!(
                 "Unknown scenario: {scenario}"
-            )))?,
+            )));
         }
+    };
+    println!("Applying netem {} {} both ways...", rule[0], rule[1]);
+    let netem = |service: &str, index: u32| {
+        cmd!(
+            "docker",
+            "compose",
+            "exec",
+            "--index",
+            index.to_string(),
+            "-T",
+            service,
+            "tc",
+            "qdisc",
+            "replace",
+            "dev",
+            "eth0",
+            "root",
+            "netem",
+            &rule[0],
+            &rule[1]
+        )
+        .dir(root)
+        .run()
+    };
+    netem("vex-server", 1)?;
+    for i in 1..=clients {
+        netem("vex-client", i)?;
     }
     Ok(())
 }
@@ -797,8 +762,6 @@ async fn run_correctness_task(
     }
     println!("All clients finished execution.");
 
-    println!("Client finished execution.");
-
     // --- Verify Results ---
     println!("Verifying results...");
 
@@ -819,10 +782,18 @@ async fn run_correctness_task(
         for i in 0..msg_count_per_client as u64 {
             if !received_ids.contains(&(id_offset + i)) {
                 return Err(XTaskError::Testing(TestingError::TestFailed(format!(
-                    "Missing message ID: {i}"
+                    "Missing message ID: {}",
+                    id_offset + i
                 ))));
             }
         }
+    }
+
+    // A core that aborted after its last reply answered everything.
+    if !stack::is_running(stack::CORE)? {
+        return Err(XTaskError::Testing(TestingError::TestFailed(
+            "the core exited during the run".to_string(),
+        )));
     }
 
     println!("Scenario '{scenario}' PASSED!");

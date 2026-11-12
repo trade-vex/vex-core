@@ -65,7 +65,7 @@ cargo xtask test
 
 #### E2E Tests
 
-Runs end-to-end tests to verify network communication and message integrity between the server and clients. Supports simulating different network conditions.
+Runs end-to-end tests to verify network communication and message integrity between the server and clients. Supports simulating different network conditions, applied with `tc netem` to both directions: each client's egress and the core's (its replies, and its traffic to Kafka). Every command must be answered exactly once, and the core must still be running at the end.
 
 **Usage:**
 ```sh
@@ -75,10 +75,10 @@ cargo xtask test e2e [OPTIONS]
 **Options:**
 * `--scenario <SCENARIO>`: Sets the network conditions for the test.
   * `basic-connectivity` (Default): No adverse network conditions.
-  * `high-latency`: Simulates a high-latency network (100ms RTT).
-  * `packet-loss`: Simulates a network with 10% packet loss.
+  * `high-latency`: 100 ms of delay each way (200 ms round trip).
+  * `packet-loss`: 10% packet loss each way.
 * `--clients <COUNT>`: Specifies the number of clients to run concurrently. Defaults to `1`.
-* `--all`: Run all scenarios sequentially.
+* `--all`: Run all scenarios sequentially, each with `--clients` clients.
 
 **Examples:**
 ```sh

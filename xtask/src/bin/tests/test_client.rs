@@ -54,9 +54,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = VexGateway::new(client_config)?;
     let (sx, mut rx) = mpsc::channel();
     let handler = OrderCommandHandler::new(client.gateway_id(), sx);
-    let publisher = client.start(handler).expect("Client should start");
-
-    // thread::sleep(Duration::from_secs(5)); // Give some time for the client to start
+    // A REJECT or UNAVAILABLE ends the run with the core's reason.
+    let publisher = client.start(handler)?;
 
     // The client's main loop to send commands
     match args.mode {
