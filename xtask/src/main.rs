@@ -797,7 +797,8 @@ fn gateway_crash(root: &Path, clients: u32) -> Result<Vec<(u32, usize)>, XTaskEr
         .collect();
     let ready = "action=\"gateway_ready\" gateway_id=0";
     stack::wait_logged(stack::CORE, &started, ready, Duration::from_secs(30))?;
-    // Into its flood: replies to it are in flight when it dies.
+    // shortcut: 0.5 s after READY is mid-flood here but can be mid-deposit on a slow runner, no
+    // reply in flight; wait for its first fill in the core log if CI must cover in-flight replies.
     std::thread::sleep(Duration::from_millis(500));
     let killed = stack::now();
     stack::signal(FIRST_CLIENT, "KILL")?;
