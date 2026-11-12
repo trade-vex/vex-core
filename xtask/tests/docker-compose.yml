@@ -50,6 +50,10 @@ services:
       dockerfile: archive.Dockerfile
     image: vex-aeron-archive
     container_name: vex-aeron-archive
+    # The journal in 2 MiB terms and segments, not the 64 and 128 MiB defaults every other stack
+    # keeps: the journal is purged by whole segments below a snapshot, which the outbox suite fills.
+    environment:
+      - JAVA_TOOL_OPTIONS=-Daeron.ipc.term.buffer.length=2m -Daeron.archive.segment.file.length=2m
     healthcheck:
       test: ["CMD-SHELL", "test -f /dev/shm/aeron-test-server/cnc.dat"]
       interval: 2s
