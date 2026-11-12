@@ -240,6 +240,8 @@ struct PendingHandshake {
     subscription: Option<AeronSubscription>,
     on_image_available_handler: Option<Handler<DuologueImageAvailable>>,
     on_image_unavailable_handler: Option<Handler<DuologueImageUnavailable>>,
+    /// The subscription failed; reported once the in-flight publication registration resolved.
+    setup_error: Option<ServerError>,
     session_attached: bool,
     /// ACCEPT is out; READY follows once the reply channel is connected.
     accepted: bool,
@@ -735,6 +737,7 @@ impl GatewayManager {
             subscription: None,
             on_image_available_handler: Some(on_image_available_handler),
             on_image_unavailable_handler: Some(on_image_unavailable_handler),
+            setup_error: None,
             session_attached: false,
             accepted: false,
             accept_attempts: 0,
@@ -815,20 +818,38 @@ impl GatewayManager {
         now: Instant,
     ) -> Result<PendingHandshakeStatus, ServerError> {
         if !pending.session_attached {
-            if pending.subscription.is_none() {
-                pending.subscription = pending
+            if pending.subscription.is_none() && pending.setup_error.is_none() {
+                match pending
                     .subscription_registration
                     .as_ref()
                     .expect("subscription registration missing before attachment")
                     .poll()
-                    .map_err(|e| {
-                        ServerError::ResourceAllocationError(format!(
+                {
+                    Ok(subscription) => pending.subscription = subscription,
+                    Err(e) => {
+                        pending.setup_error = Some(ServerError::ResourceAllocationError(format!(
                             "Failed to create subscription: {e}"
-                        ))
-                    })?;
+                        )));
+                    }
+                }
                 if pending.subscription.is_some() {
                     pending.subscription_registration = None;
                 }
+            }
+            // Aeron does not cancel a dropped registration: it would create the publication anyway
+            // and keep it, with its log buffer, until the client closes. So fail only once it has
+            // resolved; a publication created by then closes as it drops here.
+            if let Some(error) = pending.setup_error.take() {
+                let publication = pending
+                    .publication_registration
+                    .as_ref()
+                    .expect("publication registration missing before attachment")
+                    .poll();
+                if matches!(publication, Ok(None)) {
+                    pending.setup_error = Some(error);
+                    return Ok(PendingHandshakeStatus::Pending);
+                }
+                return Err(error);
             }
             // Poll the publication only once the subscription exists, so no error can abandon
             // an in-flight subscription registration that still references the image handlers.
@@ -1607,6 +1628,7 @@ mod tests {
             subscription: Some(orders),
             on_image_available_handler: Some(available),
             on_image_unavailable_handler: Some(unavailable),
+            setup_error: None,
             session_attached: false,
             accepted: false,
             accept_attempts: 0,
