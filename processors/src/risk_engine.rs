@@ -1591,6 +1591,48 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_settlement_aborts_the_process() {
+        const CHILD: &str = "VEX_FAILED_SETTLEMENT_TEST_CHILD";
+        const NAME: &str = "risk_engine::tests::a_failed_settlement_aborts_the_process";
+
+        if std::env::var_os(CHILD).is_some() {
+            // The taker's locked quote cannot pay for the fill, as in
+            // test_trade_settlement_subtract_failure_leaves_balances_unchanged.
+            let (base_asset_id, quote_asset_id) = (2u16, 1u16);
+            let market_id = ((quote_asset_id as u32) << 16) | base_asset_id as u32;
+            let engine = RiskEngine::new(HashMap::from([(market_id, get_spec(market_id))]), 0, 1);
+            engine.set_balance(102, quote_asset_id, UserBalance::new(3, 150));
+            let fill = TradeFill {
+                price: 100,
+                size: 10,
+                maker_user_id: 101,
+                ..Default::default()
+            };
+            engine.handle_trade_event(102, market_id, Side::Bid, fill, Some((1, 110)));
+            unreachable!("a failed settlement must abort the process");
+        }
+
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([NAME, "--exact", "--nocapture"])
+            .env(CHILD, "1")
+            .current_dir(std::env::temp_dir())
+            .output()
+            .unwrap();
+
+        assert!(!child.status.success(), "the child must not survive");
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(
+                child.status.signal(),
+                Some(6),
+                "killed by SIGABRT, not failed as a test: {}",
+                String::from_utf8_lossy(&child.stderr)
+            );
+        }
+    }
+
+    #[test]
     fn settle_trade_failure_leaves_the_store_and_collateral_untouched() {
         let base_asset_id = 2u16;
         let quote_asset_id = 1u16;
