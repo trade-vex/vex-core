@@ -1098,6 +1098,36 @@ pub(super) fn validate_authentication_config(
     Ok(())
 }
 
+/// The ports Linux gives a socket bound to port 0.
+pub(super) const EPHEMERAL_PORT_RANGE: &str = "/proc/sys/net/ipv4/ip_local_port_range";
+
+/// Any socket bound to port 0 (an archive response channel, a reply publication's sender, a DNS
+/// lookup) can take a port of the ephemeral range, so a gateway port inside it fails to bind now
+/// and then (`Address already in use`). `ephemeral_range` is `EPHEMERAL_PORT_RANGE`'s content.
+pub(super) fn check_gateway_ports_outside(
+    ephemeral_range: &str,
+    base_gateway_port: u16,
+) -> Result<(), ServerError> {
+    let mut bounds = ephemeral_range.split_whitespace().map(str::parse::<u32>);
+    let (Some(Ok(low)), Some(Ok(high))) = (bounds.next(), bounds.next()) else {
+        return Err(ServerError::ConfigurationError(format!(
+            "{EPHEMERAL_PORT_RANGE} reads {ephemeral_range:?}, not two ports"
+        )));
+    };
+    let (first, last) = (
+        u32::from(base_gateway_port),
+        u32::from(base_gateway_port) + PORT_POOL as u32 - 1,
+    );
+    if first <= high && low <= last {
+        return Err(ServerError::ConfigurationError(format!(
+            "gateway ports {first}-{last} (base_gateway_port) overlap the ephemeral port range \
+             {low}-{high} ({EPHEMERAL_PORT_RANGE}), so any socket bound to port 0 can take one: \
+             move them below {low}"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1665,6 +1695,29 @@ mod tests {
         .unwrap();
         assert_eq!(reply, "7 gateway-1 UNAVAILABLE 10");
         assert!(!manager.is_gateway_connected(1));
+    }
+
+    #[test]
+    fn gateway_ports_must_lie_outside_the_ephemeral_range() {
+        let linux_default = "32768\t60999\n";
+        for config in [
+            CoreNetworkingConfig::development_defaults(),
+            CoreNetworkingConfig::test_defaults(),
+            CoreNetworkingConfig::production_defaults(),
+        ] {
+            assert!(check_gateway_ports_outside(linux_default, config.base_gateway_port).is_ok());
+        }
+        // The pool is 64 ports: it may end just below the range or start just above it.
+        for base in [32_768 - 64, 61_000] {
+            assert!(check_gateway_ports_outside(linux_default, base).is_ok());
+        }
+        for base in [32_768 - 63, 50_000, 60_999] {
+            assert!(matches!(
+                check_gateway_ports_outside(linux_default, base),
+                Err(ServerError::ConfigurationError(_))
+            ));
+        }
+        assert!(check_gateway_ports_outside("32768", 20_000).is_err());
     }
 
     #[test]

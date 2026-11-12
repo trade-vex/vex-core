@@ -210,6 +210,10 @@ impl VexCoreServer {
             config.enable_authentication,
             &config.gateway_authentication_key,
         )?;
+        // Only where the kernel publishes the range (Linux).
+        if let Ok(range) = std::fs::read_to_string(gateway_manager::EPHEMERAL_PORT_RANGE) {
+            gateway_manager::check_gateway_ports_outside(&range, config.base_gateway_port)?;
+        }
 
         if !config.enable_authentication {
             warn!(

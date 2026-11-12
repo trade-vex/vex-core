@@ -193,7 +193,7 @@ fn test_every_gateway_receives_its_handshake_reply() {
     server_config.request_control_channel.clear(); // no archive
     server_config.initial_port = core_port;
     server_config.initial_control_port = core_port + 1;
-    server_config.base_gateway_port = find_unused_udp_port(51000).unwrap();
+    server_config.base_gateway_port = find_unused_udp_port(21000).unwrap();
     server_config.gateway_authentication_key = GATEWAY_AUTHENTICATION_KEY.into();
     let server_shutdown = Arc::new(AtomicBool::new(false));
     let server = thread::spawn({

@@ -63,7 +63,9 @@ pub struct CoreNetworkingConfig {
     pub initial_port: u16,
     /// The initial control port to use for gateway introduction
     pub initial_control_port: u16,
-    /// The base port to use for individual gateway connections
+    /// The first of the 64 UDP gateway ports, `base_gateway_port..base_gateway_port + 63`. They
+    /// must lie outside the host's ephemeral port range (Linux `ip_local_port_range`, 32768-60999
+    /// by default), which the core checks at startup.
     pub base_gateway_port: u16,
     /// Reserved session id lower bound
     pub reserved_session_id_low: i32,
@@ -107,7 +109,7 @@ impl CoreNetworkingConfig {
             local_address: "127.0.0.1".to_string(),
             initial_port: 40001,
             initial_control_port: 40002,
-            base_gateway_port: 50000,
+            base_gateway_port: 20000,
             reserved_session_id_low: 1,
             reserved_session_id_high: i32::MAX,
             enable_authentication: false,
@@ -128,7 +130,7 @@ impl CoreNetworkingConfig {
             local_address: "127.0.0.1".to_string(),
             initial_port: 40001,
             initial_control_port: 40002,
-            base_gateway_port: 50000,
+            base_gateway_port: 20000,
             reserved_session_id_low: 1,
             reserved_session_id_high: i32::MAX,
             enable_authentication: true,
@@ -149,7 +151,7 @@ impl CoreNetworkingConfig {
             local_address: "127.0.0.1".to_string(), // Bind to localhost only
             initial_port: 3521,
             initial_control_port: 3522,
-            base_gateway_port: 50000,
+            base_gateway_port: 20000,
             reserved_session_id_low: 1,
             reserved_session_id_high: i32::MAX,
             enable_authentication: true,

@@ -74,9 +74,9 @@ Every start replays the journal first; see [Restart Service](#restart-service).
 
 | Environment | Initial Port | Control Port | Gateway Base Port | Aeron Archive |
 |-------------|--------------|--------------|-------------------|---------------|
-| Development | 40001 | 40002 | 50000 | localhost:8010 |
-| Test | 40001 | 40002 | 50000 | localhost:8010 |
-| Production | 3521 | 3522 | 50000 | localhost:8010 |
+| Development | 40001 | 40002 | 20000 | localhost:8010 |
+| Test | 40001 | 40002 | 20000 | localhost:8010 |
+| Production | 3521 | 3522 | 20000 | localhost:8010 |
 
 **Network**: the core's UDP ports (initial port, control port, and the gateway ports
 `base_gateway_port..base_gateway_port+63`) must be reachable from gateway hosts only. Each gateway
@@ -84,6 +84,12 @@ gets a pair of ports in that range in ACCEPT: one the core listens on for its or
 gateway listens on for its replies, which the core sends unicast to the host that sent HELLO. So
 gateway hosts must accept UDP `base_gateway_port..base_gateway_port+63` from the core, and there
 must be no NAT between gateway and core.
+
+The gateway ports must lie outside the ephemeral port range (`sysctl net.ipv4.ip_local_port_range`,
+32768-60999 by default) of the core's host and of every gateway host: a socket bound to port 0 can
+take one of them, and the session's bind then fails. The default base, 20000, lies below it. The
+core refuses to start when its own host's range overlaps the gateway ports (`gateway ports ...
+overlap the ephemeral port range`); gateway hosts need the same check by hand.
 
 ### Kafka Topics
 
