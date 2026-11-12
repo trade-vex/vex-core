@@ -747,14 +747,13 @@ async fn run_correctness_task(
     println!("All clients finished execution.");
 
     println!("Verifying results...");
-    check_received_ids(&test_results_dir, &sent)?;
-
-    // A core that aborted after its last reply answered everything.
+    // Before the ids: a core that died mid-run would read as a lost reply, after it as a pass.
     if !stack::is_running(stack::CORE)? {
         return Err(XTaskError::Testing(TestingError::TestFailed(
             "the core exited during the run".to_string(),
         )));
     }
+    check_received_ids(&test_results_dir, &sent)?;
 
     println!("Scenario '{scenario}' PASSED!");
     Ok(())
