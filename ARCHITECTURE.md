@@ -1094,7 +1094,7 @@ aeron:udp?endpoint={address}:{port}|session-id={session}
 
 ### Port Allocation
 
-**PortAllocator**: Hands out the lowest free ports of `[base_gateway_port, base_gateway_port + 64)`: two per gateway for the 16 slots (`MAX_GATEWAYS`), and as many again for ports in their 10 s cooldown after a full turnover. The ports in use are read from the `Session` struct; when no pair is free, the core answers `UNAVAILABLE 10`. The range must lie outside the host's ephemeral port range (Linux `ip_local_port_range`, 32768-60999 by default), from which any socket bound to port 0 can take a port; the default base is 20000, and the core refuses to start when its host's range overlaps the pool.
+**PortAllocator**: Hands out the lowest free ports of `[base_gateway_port, base_gateway_port + 64)`: two per gateway for the 16 slots (`MAX_GATEWAYS`), and as many again for ports in their 10 s cooldown after a full turnover. The ports in use are read from the `Session` struct; when no pair is free, or the session's channels cannot be set up (a port another socket holds), the core answers `UNAVAILABLE 10`. The range must lie outside the host's ephemeral port range (Linux `ip_local_port_range`, 32768-60999 by default), from which any socket bound to port 0 can take a port; the default base is 20000, and the core refuses to start when its host's range overlaps the pool.
 
 **Two Ports Per Gateway**:
 - Data port: Gateway sends orders to core

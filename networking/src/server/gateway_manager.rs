@@ -762,6 +762,25 @@ impl GatewayManager {
                         gateway_id = pending.gateway_id,
                         error = %e
                     );
+                    // Before ACCEPT the gateway still waits on its HELLO: say when to retry, as a
+                    // failed allocation does, rather than leave it to time out. Its ports wait
+                    // out their cooldown, so the retry gets another pair.
+                    if !pending.accepted {
+                        let msg = format!(
+                            "{} gateway-{} UNAVAILABLE {PORT_COOLDOWN_SECONDS}",
+                            pending.handshake_session_id, pending.gateway_id
+                        );
+                        if let Err(send_error) =
+                            send_message(&pending.response_publication, msg.as_bytes())
+                        {
+                            warn!(
+                                target: "gateway_manager",
+                                action = "handshake_unavailable_send_failed",
+                                gateway_id = pending.gateway_id,
+                                error = %send_error
+                            );
+                        }
+                    }
                     if let Err(remove_error) = self.remove_gateway_session(pending.gateway_id) {
                         warn!(
                             target: "gateway_manager",
@@ -1695,6 +1714,73 @@ mod tests {
         .unwrap();
         assert_eq!(reply, "7 gateway-1 UNAVAILABLE 10");
         assert!(!manager.is_gateway_connected(1));
+    }
+
+    /// A session whose channels cannot be set up, here because its data port is already bound
+    /// (as by a socket that took it from the ephemeral range), answers UNAVAILABLE instead of
+    /// leaving the gateway to time out, and frees its slot; the retry gets the next ports.
+    ///
+    /// Runs an embedded media driver; the test binds one loopback port, the driver none but the
+    /// reply publication's sender.
+    #[test]
+    fn a_session_setup_failure_answers_unavailable() {
+        let driver = EmbeddedDriver::launch(format!(
+            "/dev/shm/vex-setup-failure-test-{}",
+            std::process::id()
+        ));
+        let taken = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let base = taken.local_addr().unwrap().port();
+        let mut config = CoreNetworkingConfig::test_defaults();
+        config.context_dir = driver.dir.clone();
+        config.base_gateway_port = base;
+        let aeron = VexCoreServer::initialize_aeron(&config).unwrap();
+        let producer = build_multi_producer(64, OrderCommand::default, BusySpin)
+            .handle_events_with(|_, _, _| {})
+            .build();
+        let manager = GatewayManager::new(
+            config,
+            aeron.clone(),
+            producer,
+            Arc::new(Publications::new()),
+        )
+        .unwrap();
+
+        let channel = "aeron:ipc".into_c_string();
+        let replies = aeron
+            .add_subscription(
+                &channel,
+                DUOLOGUE_STREAM_ID,
+                None::<&Handler<AeronAvailableImageLogger>>,
+                None::<&Handler<AeronUnavailableImageLogger>>,
+                DRAIN_TIMEOUT,
+            )
+            .unwrap();
+        let handshake = aeron
+            .add_publication(&channel, DUOLOGUE_STREAM_ID, DRAIN_TIMEOUT)
+            .unwrap();
+        wait_until(DRAIN_TIMEOUT, || Ok(handshake.is_connected())).unwrap();
+
+        let hello = b"HELLO gateway-1 - 3";
+        manager
+            .process_handshake_message(&handshake, 7, "127.0.0.1:40000", hello)
+            .unwrap();
+        let mut reply = String::new();
+        wait_until(DRAIN_TIMEOUT, || {
+            manager.poll()?;
+            replies.poll_once(
+                |message, _| reply = String::from_utf8_lossy(message).into_owned(),
+                1,
+            )?;
+            Ok(!reply.is_empty())
+        })
+        .unwrap();
+        assert_eq!(reply, "7 gateway-1 UNAVAILABLE 10");
+        assert!(!manager.is_gateway_connected(1));
+        assert!(manager.pending_handshakes.borrow()[1].is_none());
+        assert_eq!(
+            manager.port_allocator.allocate(2, &[]).unwrap(),
+            vec![base + 2, base + 3]
+        );
     }
 
     #[test]

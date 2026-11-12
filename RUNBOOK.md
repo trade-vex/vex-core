@@ -411,7 +411,9 @@ netstat -tuln | grep -E "40001|3521"
 - Verify the gateway's `[core]` `address`, `port` and `control_port` (`APP__CORE__ADDRESS`, `APP__CORE__PORT`, `APP__CORE__CONTROL_PORT`) match vex-core's address, `initial_port` and `initial_control_port`
 - At most 16 gateways (`gateway_id` 0-15) can be connected; the core opens UDP
   `base_gateway_port..base_gateway_port+63` for them. `Core unavailable, retry after 10 seconds` on
-  the gateway means no pair of ports was free (each freed port waits 10 s before reuse)
+  the gateway means no pair of ports was free (each freed port waits 10 s before reuse), or the
+  core could not set up the session's channels (`handshake_setup_failed` in its log, such as a
+  gateway port another socket holds); the next attempt gets other ports
 - `Waiting for the core's READY on the reply channel` on the gateway: ACCEPT arrived, but the
   core's replies to the gateway's reply port, or the gateway's status messages back to the core,
   do not get through (see **Network** under Port Reference)
