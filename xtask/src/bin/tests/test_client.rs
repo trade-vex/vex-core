@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use common::{OrderCommand, UserBalance};
-use common::{OrderCommandType, Side, TimeInForce};
+use common::{OrderCommandType, Side, Status, TimeInForce};
 use hdrhistogram::Histogram;
 use std::fs::File;
 use std::io::Write;
@@ -21,7 +21,8 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Mode {
-    /// Send a fixed number of messages for correctness testing.
+    /// Fund two traders, then send `count` orders that cross one another, and record the id of
+    /// every answer.
     Correctness {
         #[arg(short, long, default_value_t = 100)]
         count: u64,
@@ -84,8 +85,31 @@ fn run_correctness_test(
     // Market ID: base asset in lower 16 bits, quote in upper 16
     let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
 
+    // Twice what the orders lock: count/2 bids of 100 at 150 (unscaled notional, above the cost
+    // on any market) and count/2 asks of 100. The acks are taken here: a deposit's
+    // client_order_id is 0, as the first order's is.
+    for deposit in [
+        OrderCommand::deposit_funds(1, count * 150 * 100, quote_asset_id),
+        OrderCommand::deposit_funds(2, count * 100, base_asset_id),
+    ] {
+        loop {
+            client.send_order_command(&deposit)?;
+            match rx.recv_timeout(Duration::from_secs(5))?.status {
+                Status::Processed => break,
+                // Another client's orders filled the ring; nothing was executed.
+                Status::Busy => continue,
+                status => {
+                    return Err(
+                        format!("Client-{client_id}: a deposit was answered {status:?}").into(),
+                    );
+                }
+            }
+        }
+    }
+
     // Every response, duplicates included: xtask fails the run on an id answered twice.
     let mut received_ids = Vec::new();
+    let mut filled = 0;
 
     for i in 0..count {
         let order_command = OrderCommand {
@@ -117,6 +141,9 @@ fn run_correctness_test(
     while received_ids.len() < count as usize && start.elapsed() < timeout {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(response) => {
+                if matches!(response.status, Status::Filled | Status::PartiallyFilled) {
+                    filled += 1;
+                }
                 received_ids.push(response.client_order_id);
                 if received_ids.len() % 100 == 0 {
                     println!(
@@ -141,7 +168,11 @@ fn run_correctness_test(
 
     write_received_ids(client_id, received_ids)?;
 
-    println!("Client-{client_id} finished.");
+    // Orders that no longer match (all rejected, say) would pass the id check without a fill.
+    if filled == 0 {
+        return Err(format!("Client-{client_id}: no order was filled").into());
+    }
+    println!("Client-{client_id} finished, {filled} orders filled.");
     Ok(())
 }
 

@@ -65,7 +65,7 @@ cargo xtask test
 
 #### E2E Tests
 
-Runs end-to-end tests to verify network communication and message integrity between the server and clients. Supports simulating different network conditions, applied with `tc netem` to both directions: each client's egress and the core's (its replies, and its traffic to Kafka). Every command must be answered exactly once, and the core must still be running at the end.
+Runs end-to-end tests to verify network communication and message integrity between the server and clients. Supports simulating different network conditions, applied with `tc netem` to both directions: each client's egress and the core's (its replies, and its traffic to Kafka). Each client funds two traders and sends orders that cross one another, so matching, the events stage and Kafka run under the network conditions too: a fill is answered once, on the taker's gateway, and its maker (often another client's order) not at all. Every command must be answered exactly once, at least one order must fill, and the core must still be running at the end.
 
 **Usage:**
 ```sh
