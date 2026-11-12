@@ -1162,7 +1162,7 @@ pub(super) fn check_gateway_ports_outside(
         return Err(ServerError::ConfigurationError(format!(
             "gateway ports {first}-{last} (base_gateway_port) overlap the ephemeral port range \
              {low}-{high} ({EPHEMERAL_PORT_RANGE}), so any socket bound to port 0 can take one: \
-             move them below {low}"
+             move them out of it or narrow it"
         )));
     }
     Ok(())
