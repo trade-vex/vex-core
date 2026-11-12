@@ -76,6 +76,11 @@ cargo xtask test e2e [OPTIONS]
   * `basic-connectivity` (Default): No adverse network conditions.
   * `high-latency`: 100 ms of delay each way (200 ms round trip).
   * `packet-loss`: 10% packet loss each way.
+  * `gateway-crash`: every client sends 20,000 orders, and the first client's container (its
+    gateway and media driver) is killed in the middle. The others must be answered in full
+    meanwhile; the core must reap the dead session (Aeron's image liveness, about 10 s), and
+    gateway 0, restarted, must connect again and be answered in full. With one client, only the
+    reconnect is checked.
 * `--clients <COUNT>`: Specifies the number of clients to run concurrently. Defaults to `1`.
 * `--all`: Run all scenarios sequentially, each with `--clients` clients.
 
@@ -87,8 +92,8 @@ cargo xtask test e2e --scenario basic-connectivity --clients 1
 # Run a test with 5 clients under high latency conditions
 cargo xtask test e2e --scenario high-latency --clients 5
 
-# Run all scenarios
-cargo xtask test e2e --all
+# Run all scenarios with four gateways, as CI does
+cargo xtask test e2e --all --clients 4
 ```
 
 #### Integration Tests

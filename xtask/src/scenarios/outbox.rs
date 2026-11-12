@@ -550,15 +550,7 @@ impl Outbox {
         // journal, which gives the broker time to be paused again before the replay begins.
         let since = stack::now();
         stack::start(CORE)?;
-        let deadline = Instant::now() + START_TIMEOUT;
-        while !stack::logs_since(CORE, &since)?.contains("watermark_read") {
-            if Instant::now() > deadline {
-                return Err(TestError::Timeout {
-                    timeout: START_TIMEOUT,
-                });
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        stack::wait_logged(CORE, &since, "watermark_read", START_TIMEOUT)?;
         {
             let _paused = Paused::new(BROKER)?;
             if stack::logs_since(CORE, &since)?.contains("recording_selected") {

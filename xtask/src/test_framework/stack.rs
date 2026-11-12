@@ -90,6 +90,20 @@ pub fn logs_since(container: &str, since: &str) -> TestResult<String> {
     docker(&["logs", "--since", since, container])
 }
 
+/// Waits until the container's output since `since` holds `text`.
+pub fn wait_logged(container: &str, since: &str, text: &str, timeout: Duration) -> TestResult<()> {
+    let start = Instant::now();
+    while !logs_since(container, since)?.contains(text) {
+        if start.elapsed() > timeout {
+            return Err(TestError::Assertion {
+                message: format!("{container} did not log {text:?} within {timeout:?}"),
+            });
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    Ok(())
+}
+
 /// A paused container, unpaused when this is dropped, whichever way the scenario ends.
 pub struct Paused(&'static str);
 
