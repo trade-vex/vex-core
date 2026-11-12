@@ -76,6 +76,7 @@ fn run_correctness_test(
     // Twice what the orders lock: count/2 bids of 100 at 150 (unscaled notional, above the cost
     // on any market) and count/2 asks of 100. The acks are taken here: a deposit's
     // client_order_id is 0, as the first order's is.
+    let started = Instant::now();
     for deposit in [
         OrderCommand::deposit_funds(1, count * 150 * 100, quote_asset_id),
         OrderCommand::deposit_funds(2, count * 100, base_asset_id),
@@ -84,12 +85,14 @@ fn run_correctness_test(
             client.send_order_command(&deposit)?;
             match rx.recv_timeout(Duration::from_secs(5))?.status {
                 Status::Processed => break,
-                // Another client's orders filled the ring; nothing was executed.
-                Status::Busy => continue,
+                // Another client's orders filled the ring, nothing executed; 30 s of it is a wedge.
+                Status::Busy if started.elapsed() < Duration::from_secs(30) => continue,
                 status => {
-                    return Err(
-                        format!("Client-{client_id}: a deposit was answered {status:?}").into(),
-                    );
+                    return Err(format!(
+                        "Client-{client_id}: a deposit was answered {status:?} after {:?}",
+                        started.elapsed()
+                    )
+                    .into());
                 }
             }
         }
