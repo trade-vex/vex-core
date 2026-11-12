@@ -135,7 +135,10 @@ release the killed core's journal), a graceful shutdown that runs out of its del
 the broker paused, a start while the broker does not answer, a clean restart, starts that must
 refuse a missing or non-compacted `vex-core.delivered`, a restart whose replay cannot
 re-publish (the registry paused) that must fail within a minute and recover on the next start,
-and a `kill -9` after a snapshot, whose restart must replay only the two orders journaled since
+a flood with the broker paused (paced below the ring's size until the queues behind the broker
+are full and the answers stop; then more than the ring holds, which must be answered Busy at once,
+and none of which may be executed or published: Kafka must take exactly the placed orders'
+events), and a `kill -9` after a snapshot, whose restart must replay only the two orders journaled since
 and keep every resting order, each of which then cancels.
 Every graceful shutdown keeps the test gateway connected, as gateways are in production; the clean
 one must deliver everything and write the watermark of the last command, so that the restart

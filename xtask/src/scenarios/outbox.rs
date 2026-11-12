@@ -1,7 +1,8 @@
 //! The core's outbox, end to end: a journaled core re-publishes from its journal whatever a death
 //! or a shutdown left undelivered, waits for Kafka at start, refuses to start on a topic that
-//! no-loss cannot rest on, fails a start whose replay cannot re-publish instead of hanging, and
-//! starts from its last snapshot, replaying only the commands journaled after it.
+//! no-loss cannot rest on, fails a start whose replay cannot re-publish instead of hanging,
+//! answers Busy and executes nothing when a stalled broker has filled its queues, and starts from
+//! its last snapshot, replaying only the commands journaled after it.
 //!
 //! The scenarios share one continuous ledger, in order, on the stack of
 //! `xtask/tests/docker-compose.yml`: Redpanda with its Schema Registry, an Aeron
@@ -22,18 +23,34 @@ use crate::test_framework::kafka::KafkaVerifier;
 use crate::test_framework::scenario;
 use crate::test_framework::stack::{self, BROKER, CORE, Paused};
 use crate::test_framework::types::*;
-use common::{CoreMarketSpecification, OrderCommand, Side, Status, base_asset, quote_asset};
+use common::{
+    CoreMarketSpecification, OrderCommand, Side, Status, TimeInForce, base_asset, quote_asset,
+};
 use hashbrown::{HashMap, HashSet};
 use processors::events::DELIVERED_TOPIC;
 use rdkafka::admin::{AdminClient, AdminOptions};
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
+use std::ops::Range;
 use std::time::{Duration, Instant};
 use tracing::info;
 
 const BIDDER: u64 = 101;
 const ASKER: u64 = 102;
 const BUYER: u64 = 103;
+const FLOODER: u64 = 104;
+
+/// The flood's bids rest below every other order.
+const FLOOD_PRICE: u64 = 30_000;
+
+/// Orders flooded at once while their answers are awaited: fewer than the core's ring holds
+/// (1,024), so that none is answered Busy for want of a slot.
+const WINDOW: u64 = 1_000;
+
+/// Windows of orders placed with the broker paused before the scenario stops waiting for the
+/// answers to stop: librdkafka's queue (100,000 events) and the events stage's channel (8,192)
+/// fill at about 27,000 placements of four events each.
+const MAX_STALLED_WINDOWS: u64 = 40;
 
 /// Order pairs placed while the broker is paused: enough to leave events queued in the core, far
 /// fewer than the 108,000 it takes to fill its queues and answer `Busy`.
@@ -208,6 +225,15 @@ fn expect_status(response: &OrderCommand, status: Status) -> TestResult<()> {
     Ok(())
 }
 
+/// Orders sent without waiting for their answers, and what they were answered.
+#[derive(Default)]
+struct Flood {
+    /// The client order ids sent and not answered yet.
+    unanswered: HashSet<u64>,
+    placed: Vec<OrderCommand>,
+    busy: usize,
+}
+
 /// The scenarios' shared state.
 struct Outbox {
     config: TestConfig,
@@ -291,6 +317,61 @@ impl Outbox {
                 .build();
             let bought = self.execute(buy)?;
             self.ledger.filled(&bought, &placed_ask, &self.market)?;
+        }
+        Ok(())
+    }
+
+    /// Sends limit bids of size 1 of the flooder at [`FLOOD_PRICE`], `ids` their client order ids,
+    /// without waiting for the answers.
+    fn flood(&mut self, flood: &mut Flood, ids: Range<u64>) -> TestResult<()> {
+        let client = self
+            .client
+            .as_mut()
+            .expect("the core is running and connected");
+        for id in ids {
+            let bid = OrderCommand::place_order(
+                TimeInForce::Gtc,
+                FLOODER,
+                FLOOD_PRICE,
+                1,
+                Side::Bid,
+                self.config.market_id,
+                id,
+            );
+            client.send(&bid)?;
+            flood.unanswered.insert(id);
+        }
+        Ok(())
+    }
+
+    /// Takes the flood's next answer: one per order, Placed or Busy.
+    fn take_answer(&mut self, flood: &mut Flood) -> TestResult<()> {
+        let answer = self
+            .client
+            .as_mut()
+            .expect("the core is running and connected")
+            .recv()?;
+        let id = answer.client_order_id;
+        if !flood.unanswered.remove(&id) {
+            return Err(TestError::Assertion {
+                message: format!("flooded order {id} answered twice, or never sent"),
+            });
+        }
+        match answer.status {
+            Status::Placed => flood.placed.push(answer),
+            Status::Busy => flood.busy += 1,
+            status => {
+                return Err(TestError::Assertion {
+                    message: format!("flooded order {id} answered {status:?}"),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn take_answers(&mut self, flood: &mut Flood) -> TestResult<()> {
+        while !flood.unanswered.is_empty() {
+            self.take_answer(flood)?;
         }
         Ok(())
     }
@@ -571,6 +652,82 @@ impl Outbox {
         self.verify().await
     }
 
+    /// A broker that takes no events fills the core's queues behind it, and its answers stop; it
+    /// then answers Busy, at once, to whatever its ring cannot hold. A Busy order is neither
+    /// executed nor published, and once the broker is back every placed order is answered and
+    /// published. Most of them stay in the book, in every snapshot after.
+    async fn busy_when_the_broker_stalls(&mut self) -> TestResult<()> {
+        let cost = self
+            .market
+            .calculate_quote_cost(FLOOD_PRICE, 1)
+            .expect("scenario notional fits in u64");
+        let before: i64 = self.kafka.end_offsets()?.values().sum();
+        let quote = quote_asset(self.config.market_id);
+        self.deposit(FLOODER, quote, cost * WINDOW * (MAX_STALLED_WINDOWS + 2))?;
+        let mut flood = Flood::default();
+        let since = stack::now();
+        {
+            let _paused = Paused::new(BROKER)?;
+            let mut sent = 0;
+            loop {
+                if sent == WINDOW * MAX_STALLED_WINDOWS {
+                    return Err(TestError::Assertion {
+                        message: format!(
+                            "{} orders placed with the broker paused, and the answers never \
+                             stopped",
+                            flood.placed.len()
+                        ),
+                    });
+                }
+                self.flood(&mut flood, sent..sent + WINDOW)?;
+                sent += WINDOW;
+                match self.take_answers(&mut flood) {
+                    Ok(()) => {}
+                    // The events stage waits on the full queues: the window's answers stop.
+                    Err(TestError::Timeout { .. }) => break,
+                    Err(e) => return Err(e),
+                }
+            }
+            // Stopped by the stalled broker: the Kafka sender waits on a full librdkafka queue.
+            if !stack::logs_since(CORE, &since)?.contains("action=\"producer_send_waiting\"") {
+                return Err(TestError::Assertion {
+                    message: "the answers stopped, and the core's Kafka sender never waited on a \
+                              full queue"
+                        .to_string(),
+                });
+            }
+            // More than the ring holds: the rest is answered Busy, the broker still paused.
+            self.flood(&mut flood, sent..sent + 2 * WINDOW)?;
+            while flood.busy == 0 {
+                self.take_answer(&mut flood)?;
+            }
+        }
+        self.take_answers(&mut flood)?;
+        info!(
+            "  {} orders placed, {} answered Busy",
+            flood.placed.len(),
+            flood.busy
+        );
+        for placed in &flood.placed {
+            self.ledger.placed(placed, &self.market)?;
+        }
+        self.resting.push(flood.placed[0].clone());
+        self.verify().await?;
+        // Kafka holds the events of every placed order (`verify`), and nothing more: the deposit's
+        // two, and four for each placement.
+        let published = self.kafka.end_offsets()?.values().sum::<i64>() - before;
+        let expected = 2 + 4 * flood.placed.len() as i64;
+        if published != expected {
+            return Err(TestError::Assertion {
+                message: format!(
+                    "Kafka took {published} events, not the {expected} of the deposit and the \
+                     placed orders: a Busy order published"
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// A clean stop takes a snapshot, which the next start loads. After a `kill -9`, the start
     /// loads it again and replays only the two orders journaled since. Every order resting from
     /// before the snapshot and after it is in the book: each cancels.
@@ -715,6 +872,11 @@ pub async fn run_all(
         results,
         "restart_with_the_registry_unreachable_fails_within_a_minute",
         outbox.restart_with_the_registry_unreachable_fails_within_a_minute()
+    );
+    scenario!(
+        results,
+        "busy_when_the_broker_stalls",
+        outbox.busy_when_the_broker_stalls()
     );
     scenario!(
         results,
