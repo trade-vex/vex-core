@@ -703,7 +703,14 @@ impl Outbox {
                 self.take_answer(&mut flood)?;
             }
         }
-        self.take_answers(&mut flood)?;
+        // The first answer waits on the broker's reconnect, which can outlast one reply's timeout.
+        let deadline = Instant::now() + self.config.event_timeout;
+        while !flood.unanswered.is_empty() {
+            match self.take_answer(&mut flood) {
+                Err(TestError::Timeout { .. }) if Instant::now() < deadline => {}
+                answered => answered?,
+            }
+        }
         info!(
             "  {} orders placed, {} answered Busy",
             flood.placed.len(),
