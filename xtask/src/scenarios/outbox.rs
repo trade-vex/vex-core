@@ -662,9 +662,22 @@ impl Outbox {
             .market
             .calculate_quote_cost(FLOOD_PRICE, 1)
             .expect("scenario notional fits in u64");
-        let before: i64 = self.kafka.end_offsets()?.values().sum();
         let quote = quote_asset(self.config.market_id);
+        let replayed = self.ledger.last_timestamp();
         self.deposit(FLOODER, quote, cost * WINDOW * (MAX_STALLED_WINDOWS + 2))?;
+        // W passes the last command before the deposit (which closes it) only once every copy the
+        // last start re-published has landed: the event topics then hold still.
+        let deadline = Instant::now() + self.config.event_timeout;
+        while self.kafka.delivered_watermark()? < replayed {
+            if Instant::now() > deadline {
+                return Err(TestError::Assertion {
+                    message: format!("the delivered watermark never reached {replayed}"),
+                });
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        self.verify().await?;
+        let before: i64 = self.kafka.end_offsets()?.values().sum();
         let mut flood = Flood::default();
         let since = stack::now();
         {
@@ -721,15 +734,14 @@ impl Outbox {
         }
         self.resting.push(flood.placed[0].clone());
         self.verify().await?;
-        // Kafka holds the events of every placed order (`verify`), and nothing more: the deposit's
-        // two, and four for each placement.
+        // Kafka holds the events of every placed order (`verify`), and nothing more: four for each.
         let published = self.kafka.end_offsets()?.values().sum::<i64>() - before;
-        let expected = 2 + 4 * flood.placed.len() as i64;
+        let expected = 4 * flood.placed.len() as i64;
         if published != expected {
             return Err(TestError::Assertion {
                 message: format!(
-                    "Kafka took {published} events, not the {expected} of the deposit and the \
-                     placed orders: a Busy order published"
+                    "Kafka took {published} events, not the {expected} of the placed orders: a \
+                     Busy order published"
                 ),
             });
         }
