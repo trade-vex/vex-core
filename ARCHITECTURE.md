@@ -1435,7 +1435,7 @@ vex-core (workspace root)
 ├── networking      (Aeron transport layer)
 ├── server          (Disruptor pipeline and engine)
 ├── vex-config      (configuration management)
-└── xtask           (test and benchmark tools)
+└── xtask           (test tools)
 ```
 
 **Build Commands**:

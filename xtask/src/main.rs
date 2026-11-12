@@ -101,13 +101,6 @@ enum TestCommands {
     /// The core's outbox: re-publication after a kill or a shutdown past its grace, the wait
     /// for Kafka at start, and the startup topic check (Docker, with an Aeron archive)
     Outbox,
-
-    /// Performance benchmarks
-    Benchmark {
-        /// Number of clients (default: 1)
-        #[arg(short, long, default_value_t = 1)]
-        clients: u32,
-    },
 }
 
 #[derive(ValueEnum, Clone, Debug, Default)]
@@ -169,9 +162,6 @@ async fn main() -> Result<(), XTaskError> {
                 run_integration_tests(&project_root, suite, verbose).await
             }
             TestCommands::Outbox => run_outbox_tests(&project_root).await,
-            TestCommands::Benchmark { clients } => {
-                run_benchmark(project_root.into_boxed_path(), clients).await
-            }
         },
 
         Commands::Kafka {
@@ -800,104 +790,7 @@ async fn run_correctness_task(
     Ok(())
 }
 
-async fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
-    let test_results_dir = root.join("xtask/tests/test-results");
-    remove_received_ids(&test_results_dir)?;
-
-    // Wrap docker-compose commands in a struct with a Drop implementation for cleanup
-    let _env = DockerComposeEnv::new(&root, clients).await?;
-
-    // Fixed: Use actual message count, not hardcoded duration
-    let msg_count_per_client = 10000;
-    let total_expected_messages = msg_count_per_client * clients;
-
-    println!("Starting {clients} clients, each sending {msg_count_per_client} messages...");
-    println!("Total expected messages: {total_expected_messages}");
-
-    let mut threads = Vec::new();
-    for i in 1..=clients {
-        let project_root = root.clone();
-        threads.push(std::thread::spawn(move || {
-            let thread_start = Instant::now();
-            let result = cmd!(
-                "docker",
-                "compose",
-                "exec",
-                "--index",
-                (i).to_string(),
-                "-T",
-                "vex-client",
-                "sh",
-                "-c",
-                &format!("/usr/local/bin/test_client --client-id {} latency --samples {} | tee /proc/1/fd/1",
-                        i - 1, msg_count_per_client)
-            )
-            .dir(project_root.join("xtask/tests"))
-            .run();
-
-            (result, thread_start.elapsed())
-        }));
-    }
-
-    // Wait for all clients to complete and collect timing info
-    let mut client_durations = Vec::new();
-    let mut failed_clients = 0;
-
-    for (i, thread) in threads.into_iter().enumerate() {
-        match thread.join() {
-            Ok((result, duration)) => {
-                client_durations.push(duration);
-                if let Err(e) = result {
-                    eprintln!("Client {} failed: {}", i + 1, e);
-                    failed_clients += 1;
-                }
-            }
-            Err(_) => {
-                eprintln!("Client {} thread panicked", i + 1);
-                failed_clients += 1;
-            }
-        }
-    }
-
-    println!("All clients finished execution.");
-
-    // Read and analyze results.
-    let messages_received = read_received_ids(&test_results_dir, clients)?.len();
-
-    let success_rate = (messages_received as f64 / total_expected_messages as f64) * 100.0;
-
-    // Print comprehensive results
-    println!("\n╔════════════════════════════════════════════╗");
-    println!("║      THROUGHPUT BENCHMARK RESULTS          ║");
-    println!("╠════════════════════════════════════════════╣");
-    println!("║ Configuration:                             ║");
-    println!("║   Clients:              {clients:>18} ║");
-    println!("║   Messages per client:  {msg_count_per_client:>18} ║");
-    println!("║   Expected total:       {total_expected_messages:>18} ║");
-    println!("╠════════════════════════════════════════════╣");
-    println!("║ Results:                                   ║");
-    println!("║   Messages received:    {messages_received:>18} ║");
-    println!("║   Success rate:         {success_rate:>17.2}% ║");
-    println!("║   Failed clients:       {failed_clients:>18} ║");
-    println!("╠════════════════════════════════════════════╣");
-    println!("╚════════════════════════════════════════════╝");
-
-    // Determine test status
-    if messages_received == 0 {
-        println!("\nBenchmark FAILED: No messages received");
-        return Err(XTaskError::Unexpected("No messages received".to_string()));
-    } else if success_rate < 100.0 {
-        println!(
-            "\nBenchmark completed with message loss: {:.2}%",
-            100.0 - success_rate
-        );
-    } else {
-        println!("\n Benchmark completed successfully!");
-    }
-    Ok(())
-}
-
-/// Removes the ids a previous e2e or benchmark run's clients wrote, and keeps everything else
+/// Removes the ids a previous e2e run's clients wrote, and keeps everything else
 /// (the saved container logs).
 fn remove_received_ids(results_dir: &Path) -> std::io::Result<()> {
     fs::create_dir_all(results_dir)?;
@@ -913,7 +806,7 @@ fn remove_received_ids(results_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Read the ids each e2e or benchmark client wrote to `received_ids-<client id>.txt`
+/// Read the ids each e2e client wrote to `received_ids-<client id>.txt`
 /// (`write_received_ids` in `test_client`). An id written twice fails the run: the core answers
 /// each command once.
 fn read_received_ids(results_dir: &Path, clients: u32) -> Result<HashSet<u64>, XTaskError> {

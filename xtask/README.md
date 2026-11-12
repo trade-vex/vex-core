@@ -1,6 +1,6 @@
 # Vex-Core `xtask` Automation
 
-This document provides instructions on how to use the `cargo xtask` command-line tool to build, test, and benchmark the `vex-core` project. This tool automates common development tasks, particularly integration tests.
+This document provides instructions on how to use the `cargo xtask` command-line tool to build and test the `vex-core` project. This tool automates common development tasks, particularly integration tests.
 
 ## Prerequisites
 
@@ -59,8 +59,7 @@ All tests are now run through the unified `cargo xtask test` command with subcom
 cargo xtask test
   ├── e2e [OPTIONS]           # Docker-based network E2E tests
   ├── integration [SUITE]     # Integration tests
-  ├── outbox                  # Re-publication, startup wait and topic check (Docker)
-  └── benchmark               # Performance benchmarks
+  └── outbox                  # Re-publication, startup wait and topic check (Docker)
 ```
 
 #### E2E Tests
@@ -147,29 +146,11 @@ live run did.
 cargo xtask test outbox
 ```
 
-#### Benchmarks
-
-Runs performance benchmarks to measure message throughput and latency.
-
-**Usage:**
-```sh
-cargo xtask test benchmark [OPTIONS]
-```
-
-**Options:**
-* `--clients <COUNT>`: Specifies the number of clients to run concurrently. Defaults to `1`.
-
-**Example:**
-```sh
-# Run a benchmark with 5 clients
-cargo xtask test benchmark --clients 5
-```
-
 ## Test Artifacts and Logs
 
-After running tests or benchmarks, the following artifacts are generated:
+After running tests, the following artifacts are generated:
 
-* **Test Results:** Raw data from tests is stored in `xtask/tests/test-results/`. Each e2e or benchmark client writes the ids it got a response for to `received_ids-<client id>.txt`, which the run reads back to check completeness.
+* **Test Results:** Raw data from tests is stored in `xtask/tests/test-results/`. Each e2e client writes the ids it got a response for to `received_ids-<client id>.txt`, which the run reads back to check completeness.
 * **Docker Logs:** Every stack saves each container's log to `xtask/tests/test-results/logs/<container>-<start time>.log` before its teardown. Runs never delete them; remove the directory to reclaim the space. CI uploads the directory as the `docker-suite-logs` artifact when the end-to-end job fails.
 
 The environment is automatically torn down after each run, but the artifacts are preserved for inspection.

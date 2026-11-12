@@ -1,7 +1,6 @@
 use clap::{Parser, Subcommand};
 use common::{OrderCommand, UserBalance};
 use common::{OrderCommandType, Side, Status, TimeInForce};
-use hdrhistogram::Histogram;
 use std::fs::File;
 use std::io::Write;
 use std::sync::mpsc::{self, Receiver};
@@ -26,11 +25,6 @@ enum Mode {
     Correctness {
         #[arg(short, long, default_value_t = 100)]
         count: u64,
-    },
-    /// Measure round-trip latency for a number of samples.
-    Latency {
-        #[arg(short, long, default_value_t = 100)]
-        samples: u64,
     },
 }
 
@@ -62,12 +56,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match args.mode {
         Mode::Correctness { count } => {
             run_correctness_test(&publisher, &mut rx, count, args.client_id)?;
-        }
-        Mode::Latency { samples } => {
-            // For this to work, the client needs a way to receive acks.
-            // This is a conceptual implementation.
-            println!("NOTE: Latency test requires the client to be able to receive messages.");
-            run_latency_test(&publisher, &mut rx, samples, args.client_id)?;
         }
     }
     Ok(())
@@ -188,58 +176,4 @@ fn write_received_ids(
         writeln!(file, "{}", client_id * 1_000_000 + id)?;
     }
     Ok(())
-}
-
-fn run_latency_test(
-    client: &Publisher,
-    rx: &mut Receiver<OrderCommand>,
-    samples: u64,
-    client_id: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut histogram = Histogram::<u64>::new(3).unwrap();
-    let base_asset_id = 2;
-    let quote_asset_id = 1;
-    // Market ID: base asset in lower 16 bits, quote in upper 16
-    let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
-    let mut received_ids = Vec::new();
-
-    for i in 0..samples {
-        let user_id = i + 1000;
-        let client_order_id = client_id * 1_000_000 + i;
-        let price = 150;
-        let size = 100;
-        let amount = price * size; // Assuming quote asset is in smallest units
-        let deposit_funds = OrderCommand::deposit_funds(user_id, amount, quote_asset_id);
-        client.send_order_command(&deposit_funds)?;
-        rx.recv_timeout(Duration::from_secs(5))?; // Wait for ack of deposit
-        let command = OrderCommand::place_order(
-            TimeInForce::Gtc,
-            user_id,
-            150,
-            100,
-            Side::Bid,
-            market_id,
-            client_order_id,
-        );
-        let start_time = Instant::now();
-        client.send_order_command(&command)?;
-        let ack = rx.recv_timeout(Duration::from_secs(5))?;
-        if ack.client_order_id == client_order_id {
-            println!("Client-{client_id} received ack for order_id: {client_order_id}");
-            let rtt = start_time.elapsed().as_micros() as u64;
-            histogram.record(rtt).unwrap();
-            received_ids.push(i);
-        }
-    }
-
-    println!("\n--- Latency Benchmark Results ---");
-    println!("Total Samples: {}", histogram.len());
-    println!("p50 (Median):  {} µs", histogram.value_at_percentile(50.0));
-    println!("p90:           {} µs", histogram.value_at_percentile(90.0));
-    println!("p99:           {} µs", histogram.value_at_percentile(99.0));
-    println!("p99.9:         {} µs", histogram.value_at_percentile(99.9));
-    println!("Max:           {} µs", histogram.max());
-    println!("---------------------------------\n");
-
-    write_received_ids(client_id, received_ids)
 }
