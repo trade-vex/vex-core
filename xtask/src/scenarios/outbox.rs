@@ -1,8 +1,9 @@
 //! The core's outbox, end to end: a journaled core re-publishes from its journal whatever a death
 //! or a shutdown left undelivered, waits for Kafka at start, refuses to start on a topic that
 //! no-loss cannot rest on, fails a start whose replay cannot re-publish instead of hanging,
-//! answers Busy and executes nothing when a stalled broker has filled its queues, and starts from
-//! its last snapshot, replaying only the commands journaled after it.
+//! answers Busy and executes nothing when a stalled broker has filled its queues, purges its
+//! journal below the previous snapshot, and starts from its last snapshot, replaying only the
+//! commands journaled after it.
 //!
 //! The scenarios share one continuous ledger, in order, on the stack of
 //! `xtask/tests/docker-compose.yml`: Redpanda with its Schema Registry, an Aeron
@@ -21,7 +22,7 @@ use crate::kafka_topics::{self, KafkaTopics};
 use crate::test_framework::client::{START_TIMEOUT, TestClient};
 use crate::test_framework::kafka::KafkaVerifier;
 use crate::test_framework::scenario;
-use crate::test_framework::stack::{self, BROKER, CORE, Paused};
+use crate::test_framework::stack::{self, ARCHIVE, BROKER, CORE, Paused};
 use crate::test_framework::types::*;
 use common::{
     CoreMarketSpecification, OrderCommand, Side, Status, TimeInForce, base_asset, quote_asset,
@@ -577,7 +578,7 @@ impl Outbox {
         self.stop_core()?;
         delete_topic(&self.config.kafka_brokers, DELIVERED_TOPIC).await?;
         let logs = self.start_refused()?;
-        expect_logged(&logs, &format!("topic {DELIVERED_TOPIC} does not exist"))
+        expect_logged(&logs, &format!("topic {DELIVERED_TOPIC} does not exist")).map(drop)
     }
 
     /// A start refuses when `vex-core.delivered` is not compacted. Restoring the declared topics
@@ -728,6 +729,43 @@ impl Outbox {
         Ok(())
     }
 
+    /// A clean stop purges the journal below the previous snapshot once a whole segment lies below
+    /// it, which the flood has filled (2 MiB on the test archive), and the archive deletes that
+    /// segment's file. The start after loads its snapshot on the purged recording, and
+    /// kill_after_a_snapshot_replays_only_the_tail replays from it.
+    async fn journal_purged_below_the_previous_snapshot(&mut self) -> TestResult<()> {
+        // The previous snapshot is in the first segment: nothing below it to purge.
+        let since = stack::now();
+        self.stop_core()?;
+        let logs = stack::logs_since(CORE, &since)?;
+        info!("  {}", expect_logged(&logs, "action=\"written\"")?);
+        if logs.contains("journal_purged") {
+            return Err(TestError::Assertion {
+                message: format!("the journal was purged below the first segment:\n{logs}"),
+            });
+        }
+        let since = stack::now();
+        self.start_core()?;
+        let logs = stack::logs_since(CORE, &since)?;
+        expect_logged(&logs, "snapshot_loaded")?;
+        expect_logged(&logs, "commands=0 ")?;
+        // Commands since that snapshot, so that the next stop takes a newer one.
+        self.place_orders(1)?;
+        let since = stack::now();
+        self.stop_core()?;
+        expect_logged(
+            &stack::logs_since(CORE, &since)?,
+            "action=\"journal_purged\" new_start_position=2097152 segments=1",
+        )?;
+        let files = stack::docker(&["exec", ARCHIVE, "ls", "/var/lib/aeron-archive"])?;
+        if files.contains("-0.rec") || !files.contains("-2097152.rec") {
+            return Err(TestError::Assertion {
+                message: format!("the archive holds the purged segment, or not the next: {files}"),
+            });
+        }
+        self.start_core()
+    }
+
     /// A clean stop takes a snapshot, which the next start loads. After a `kill -9`, the start
     /// loads it again and replays only the two orders journaled since. Every order resting from
     /// before the snapshot and after it is in the book: each cancels.
@@ -769,13 +807,13 @@ impl Outbox {
     }
 }
 
-fn expect_logged(logs: &str, expected: &str) -> TestResult<()> {
-    if !logs.contains(expected) {
-        return Err(TestError::Assertion {
+/// The first line of `logs` that holds `expected`.
+fn expect_logged<'a>(logs: &'a str, expected: &str) -> TestResult<&'a str> {
+    logs.lines()
+        .find(|line| line.contains(expected))
+        .ok_or_else(|| TestError::Assertion {
             message: format!("the core did not say {expected:?}:\n{logs}"),
-        });
-    }
-    Ok(())
+        })
 }
 
 /// Deletes `topic`, and waits until the brokers no longer list it.
@@ -877,6 +915,11 @@ pub async fn run_all(
         results,
         "busy_when_the_broker_stalls",
         outbox.busy_when_the_broker_stalls()
+    );
+    scenario!(
+        results,
+        "journal_purged_below_the_previous_snapshot",
+        outbox.journal_purged_below_the_previous_snapshot()
     );
     scenario!(
         results,

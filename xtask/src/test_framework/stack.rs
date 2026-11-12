@@ -12,8 +12,11 @@ pub const BROKER: &str = "vex-redpanda";
 /// IPC namespaces of the Aeron archive's container, so the journal outlives it.
 pub const CORE: &str = "vex-server";
 
+/// The Aeron archive, which holds the journal's segment files in `/var/lib/aeron-archive`.
+pub const ARCHIVE: &str = "vex-aeron-archive";
+
 /// Runs `docker args`, returning its output (both streams), or an error that carries it.
-fn docker(args: &[&str]) -> TestResult<String> {
+pub(crate) fn docker(args: &[&str]) -> TestResult<String> {
     let output = cmd("docker", args)
         .stderr_to_stdout()
         .stdout_capture()

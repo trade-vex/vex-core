@@ -138,8 +138,11 @@ re-publish (the registry paused) that must fail within a minute and recover on t
 a flood with the broker paused (paced below the ring's size until the queues behind the broker
 are full and the answers stop; then more than the ring holds, which must be answered Busy at once,
 and none of which may be executed or published: Kafka must take exactly the placed orders'
-events), and a `kill -9` after a snapshot, whose restart must replay only the two orders journaled since
-and keep every resting order, each of which then cancels.
+events), clean stops that must purge the journal below the previous snapshot once the flood has
+filled a whole segment (the test archive journals in 2 MiB segments) and the start after, which
+loads its snapshot on the purged recording, and a `kill -9` after a snapshot, whose restart must
+replay only the two orders journaled since and keep every resting order, each of which then
+cancels.
 Every graceful shutdown keeps the test gateway connected, as gateways are in production; the clean
 one must deliver everything and write the watermark of the last command, so that the restart
 loads the shutdown's snapshot, replays nothing and re-publishes nothing. The oracle is the
