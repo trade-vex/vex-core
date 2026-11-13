@@ -101,49 +101,52 @@ fn run_correctness_test(
     // Every response, duplicates included: xtask fails the run on an id answered twice.
     let mut received_ids = Vec::new();
     let mut filled = 0;
+    let order = |i: u64| OrderCommand {
+        client_order_id: i,
+        command: OrderCommandType::PlaceOrder,
+        user_id: if i.is_multiple_of(2) { 1 } else { 2 },
+        size: 100,
+        time_in_force: TimeInForce::Gtc,
+        timestamp: 1,
+        side: if i.is_multiple_of(2) {
+            Side::Bid
+        } else {
+            Side::Ask
+        },
+        order_id: client_id * 1_000_000 + i,
+        market_id,
+        price: 150,
+        status: common::Status::Processing,
+        events: None,
+        balance: [UserBalance::default(); 2],
+        l2_data: None,
+        route_gateway_id: 0,
+        original_size: 0,
+    };
 
-    for i in 0..count {
-        let order_command = OrderCommand {
-            client_order_id: i,
-            command: OrderCommandType::PlaceOrder,
-            user_id: if (i % 2) == 0 { 1 } else { 2 },
-            size: 100,
-            time_in_force: TimeInForce::Gtc,
-            timestamp: 1,
-            side: if (i % 2) == 0 { Side::Bid } else { Side::Ask },
-            order_id: client_id * 1_000_000 + i,
-            market_id,
-            price: 150,
-            status: common::Status::Processing,
-            events: None,
-            balance: [UserBalance::default(); 2],
-            l2_data: None,
-            route_gateway_id: 0,
-            original_size: 0,
-        };
-        client.send_order_command(&order_command)?;
-    }
-    println!("Client-{client_id} finished sending, waiting for responses...");
-
-    // Wait for all responses with a timeout
-    let start = Instant::now();
-    let timeout = Duration::from_secs(30);
-
-    while received_ids.len() < count as usize && start.elapsed() < timeout {
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(response) => {
-                if matches!(response.status, Status::Filled | Status::PartiallyFilled) {
-                    filled += 1;
-                }
-                received_ids.push(response.client_order_id);
-                if received_ids.len() % 100 == 0 {
-                    println!(
-                        "Client-{client_id} received {}/{count} responses",
-                        received_ids.len()
-                    );
-                }
+    // At most WINDOW orders unanswered, as a gateway paces its users: the most gateways the core
+    // takes (16) stay well under its 1,024-slot ring, so no client's orders are all answered Busy.
+    const WINDOW: u64 = 32;
+    let mut sent = 0;
+    let mut last_answer = Instant::now();
+    while received_ids.len() < count as usize && last_answer.elapsed() < Duration::from_secs(30) {
+        if sent < count && sent.saturating_sub(received_ids.len() as u64) < WINDOW {
+            client.send_order_command(&order(sent))?;
+            sent += 1;
+            continue;
+        }
+        if let Ok(response) = rx.recv_timeout(Duration::from_millis(100)) {
+            last_answer = Instant::now();
+            if matches!(response.status, Status::Filled | Status::PartiallyFilled) {
+                filled += 1;
             }
-            Err(_) => continue,
+            received_ids.push(response.client_order_id);
+            if received_ids.len() % 100 == 0 {
+                println!(
+                    "Client-{client_id} received {}/{count} responses",
+                    received_ids.len()
+                );
+            }
         }
     }
 
