@@ -790,7 +790,8 @@ fn spawn_client(root: &Path, index: u32, count: usize) -> JoinHandle<std::io::Re
 /// again and is answered in full. Returns what each client's last run sent.
 fn gateway_crash(root: &Path, clients: u32) -> Result<Vec<(u32, usize)>, XTaskError> {
     let started = stack::now();
-    let doomed = spawn_client(root, 1, CRASH_FLOOD);
+    // More than it can send before the kill, so replies to it are in flight when it dies.
+    let doomed = spawn_client(root, 1, 100 * CRASH_FLOOD);
     let others: Vec<_> = (2..=clients)
         .map(|i| spawn_client(root, i, CRASH_FLOOD))
         .collect();

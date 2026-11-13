@@ -124,8 +124,8 @@ fn run_correctness_test(
         original_size: 0,
     };
 
-    // At most WINDOW orders unanswered, as a gateway paces its users: the most gateways the core
-    // takes (16) stay well under its 1,024-slot ring, so no client's orders are all answered Busy.
+    // At most WINDOW orders unanswered: the most gateways the core takes (16) stay well under its
+    // 1,024-slot ring, so no client's orders are all answered Busy.
     const WINDOW: u64 = 32;
     let mut sent = 0;
     let mut last_answer = Instant::now();
