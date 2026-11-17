@@ -65,7 +65,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip openjdk-21-jdk-headless protobuf-compiler
+          # ubuntu-latest (26.04) defaults to Java 25, too new for the Gradle in rusteron's Aeron build.
+          echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> "$GITHUB_ENV"
           # Install CMake 3.30+ (required by rusteron)
           pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
           cmake --version
@@ -130,7 +132,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip openjdk-21-jdk-headless protobuf-compiler
+          # ubuntu-latest (26.04) defaults to Java 25, too new for the Gradle in rusteron's Aeron build.
+          echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> "$GITHUB_ENV"
           # Install CMake 3.30+ (required by rusteron)
           pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
           cmake --version
@@ -183,7 +187,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip openjdk-21-jdk-headless protobuf-compiler
+          # ubuntu-latest (26.04) defaults to Java 25, too new for the Gradle in rusteron's Aeron build.
+          echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> "$GITHUB_ENV"
           # Install CMake 3.30+ (required by rusteron)
           pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
           cmake --version
@@ -236,7 +242,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip openjdk-21-jdk-headless protobuf-compiler
+          # ubuntu-latest (26.04) defaults to Java 25, too new for the Gradle in rusteron's Aeron build.
+          echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> "$GITHUB_ENV"
           # Install CMake 3.30+ (required by rusteron)
           pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
           cmake --version
@@ -327,7 +335,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip openjdk-21-jdk-headless protobuf-compiler
+          # ubuntu-latest (26.04) defaults to Java 25, too new for the Gradle in rusteron's Aeron build.
+          echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> "$GITHUB_ENV"
           # Install CMake 3.30+ (required by rusteron)
           pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
           cmake --version
