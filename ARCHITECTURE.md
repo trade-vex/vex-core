@@ -59,7 +59,7 @@ Validation occurs as early as possible in the pipeline:
 
 ### 4. Event Sourcing
 
-The system maintains an append-only journal via Aeron Archive. State reconstruction requires replaying all prior events in sequence. Snapshots are not currently implemented.
+The system maintains an append-only journal via Aeron Archive. State reconstruction loads the newest snapshot of the engine's state at or below the delivered watermark and replays the journal from its position (see Disaster Recovery).
 
 **Consistency Model**:
 - Linearizability within a single market (total order on all operations)
@@ -248,6 +248,8 @@ quote_cost(price, size) = price * size * quote_native_scale / (base_native_scale
 
 computed in `u128` and rounded down. An overflow, a result above `u64::MAX` or a zero denominator rejects the order. On the development market 65538 (`base_native_scale` 10^8, `quote_native_scale` 10^6, `quote_scale_k` 1) a bid of size 10 at 40,000 locks `quote_cost = 4,000`, not 400,000.
 
+A market's native scales must equal its assets' `native_scale` in the `symbols.assets` config, and every asset's `max_supply * native_scale` is at most `u64::MAX / 2`, so no sum of two balances of one asset can overflow (`vex-config/src/symbols.rs`). ETH is held in gwei (10^9).
+
 For a BID order (buying base asset with quote asset):
 ```
 locked_amount = quote_cost(price, size)   // rejected when it is 0
@@ -271,7 +273,7 @@ Market orders require special handling since the execution price is unknown at f
 let best_ask = price_cache.get_prices(market_id).map_or(0, |(_, best_ask)| best_ask);
 let slippage_adjustment = best_ask * spec.slippage / 10_000;  // in u128, rounded down
 let conservative_price = best_ask + slippage_adjustment;
-cmd.price = conservative_price;  // Mutate price field; the response returns it
+cmd.price = conservative_price;  // only once the lock holds; the response returns it
 locked_amount = spec.calculate_quote_cost(conservative_price, size);
 ```
 
@@ -358,6 +360,8 @@ The sides are generic, allowing flexibility in the underlying data structure imp
    a. Get best opposite price level
    b. Check price compatibility
    c. Match against orders in FIFO order (VecDeque front)
+      - An order of the taker's own user is cancelled, not traded against
+        (STP_CANCEL_MAKER, spec §8.2): it leaves the book with a size-0 MatcherTradeEvent
    d. Generate MatcherTradeEvent for each fill
    e. If maker order fully filled, remove from orderbook
    f. If price level empty, remove from tree
@@ -380,13 +384,15 @@ When an order matches multiple resting orders, events are stored as a linked lis
 ```rust
 pub struct MatcherTradeEvent {
     pub price: u64,
-    pub size: u64,
+    pub size: u64,  // 0: an STP cancel of the taker's own resting order, no trade
     pub maker_user_id: u64,
     pub matched_order_id: u64,
     pub active_order_completed: bool,
     pub matched_order_completed: bool,
     pub next_event: Option<Box<MatcherTradeEvent>>,
     pub maker_balance: [UserBalance; 2],
+    pub maker_fee: u64,  // set by R2
+    pub taker_fee: u64,  // set by R2
 }
 ```
 
@@ -412,7 +418,11 @@ Maker (ASK - selling base for quote):
 
 `quote_cost` is `CoreMarketSpecification::calculate_quote_cost`, as in R1 (`RiskEngine::settle_trade`).
 
+A size-0 event (an STP cancel) settles nothing: the taker's shard, which also owns the cancelled order, releases that order's lock as for any cancel (`handle_cancellation`).
+
 **Fee Structure**: Maker and taker fees configured per market in basis points. Each fee is rounded up per fill, so a fill pays its exact share plus less than one atomic unit: slicing an order into many fills can never pay less than one fill would, and over-pays by at most one unit per fill.
+
+The core keeps no fee account: R2 writes each side's fee on its `MatcherTradeEvent` (`maker_fee`, `taker_fee`), and the `trades` topic publishes both on `TradeEvent`, each in the asset that side received (base for a bid, quote for an ask).
 
 **Price Improvement Refund**:
 
@@ -423,11 +433,13 @@ execution_price < limit_price  =>  refund = quote_cost(limit_price - execution_p
 
 The refund is moved from locked back to available quote currency.
 
-**Locking**: R2 engines use `Mutex` locks on the balance store within each shard, acquired during settlement operations.
+**Failure**: each user's side (refund, fill, a completed bid's collateral residue, credit, fee) is checked on copies and committed at once. R1 has already proved every amount fits, so a failure means the ledger is wrong: the core logs `settlement_failed` and aborts rather than publish a trade settled on one side only.
+
+**Locking**: each shard keeps its balances and its bids' collateral in one ledger behind one `Mutex`, held for a settlement's check and commit.
 
 **Critical Invariant** (maintained across settlement):
 ```
-SUM(all user balances in asset X) = constant  (conservation of assets)
+SUM(all user balances in asset X) + SUM(fees in X on trades) = deposits of X - withdrawals of X
 ```
 
 **Shard Coordination**:
@@ -446,9 +458,9 @@ R2 engines process trade events for both maker and taker:
 | Topic | Message | Key | Emitted for |
 |---|---|---|---|
 | `balances` | `BalanceEvent` | `user_id:asset_id` | the taker after a placement, cancel or fills; each maker once per command; a deposit or withdrawal |
-| `orders` | `OrderEvent` | `order_id` | the taker; each maker per fill |
+| `orders` | `OrderEvent` | `order_id` | the taker; each maker per fill or STP cancel (status Cancelled) |
 | `orderbook` | `OrderbookEvent` (L2 snapshot) | `market_id` | a placement, cancel or fill |
-| `cancels` | `CancelOrderEvent` | `order_id` | a cancellation |
+| `cancels` | `CancelOrderEvent` | `order_id` | a cancellation, including a maker cancelled by STP |
 | `trades` | `TradeEvent` | `taker_order_id:maker_order_id` | each fill |
 | `deposits` | `DepositEvent` | `user_id` | a processed deposit |
 | `withdrawals` | `WithdrawEvent` | `user_id` | a processed withdrawal |
@@ -520,6 +532,8 @@ Seq: 0     1     2     3     4     5     6     7     8     9     ...
 **Barrier 4** (After Risk R2 → Before Events):
 - All settlement must complete before publishing
 - Guarantees external consumers see consistent state
+
+**R1 decides on the settled ledger.** Barrier 1 lets R1 handle sequence s before R2 has settled s-1, which may still owe the user proceeds or released collateral, and a replay publishes the journal back to back. So each `RiskEngine` records the highest sequence its R2 has settled (R1 and R2 of a shard share it), and R1 waits on it (`create_risk_handler!`): a market buy, deposit or withdrawal waits until R2 has settled s-1 before deciding; any other order decides at once and, only if rejected, waits and decides once more (R2 only raises `available` and lowers `locked`, so an early pass stands). Every decision is then a function of the ledger and book after s-1, which a replay reproduces. The wait needs each consumer cursor published per event, not per batch (trade-vex/disruptor-rs `per-event-cursor`): R2(s-1) needs Matching(s-1), which needs R1's cursor past s-1 while R1 is still inside its batch.
 
 ### Wait Strategy: BusySpin
 
@@ -649,14 +663,13 @@ The following examples trace order processing through all pipeline stages with c
   ```
 
 **Stage 5: Events Handler**
-- Extract gateway_id: `Snowflake::gateway_from_id(0x0001A2B3C4D50003) = 3`
 - Publish BalanceEvents to Kafka: topic `balances`, keys `100:<base asset>` and `100:<quote asset>`
 - Publish OrderEvent to Kafka: topic `orders`, key `0x0001A2B3C4D50003` (in decimal)
 - Publish L2 snapshot to Kafka: topic `orderbook`, key `1`
 - Gateway response via Aeron:
   ```rust
   publications.publish_response(&cmd)
-  // Sends to gateway 3's MDC control port
+  // Sends to gateway 3's reply port
   ```
 - Client receives confirmation: Order 0x0001A2B3C4D50003 placed successfully
 
@@ -856,7 +869,6 @@ maker_balance[1] = UserBalance { available: prev_usd + 50,174.9, locked: 0 }
 ```
 
 **Stage 5: Events Handler**
-- Extract gateway: `Snowflake::gateway_from_id(0x0001A2B3C4D60005) = 5`
 - Publish TradeEvents to Kafka (2 events, one per maker-taker pair)
 - Publish BalanceEvents (3 users: taker + 2 makers)
 - Publish L2 snapshot
@@ -1082,15 +1094,11 @@ aeron:udp?endpoint={address}:{port}|session-id={session}
 
 ### Port Allocation
 
-**PortAllocator**: Randomly selects ports from `[base_gateway_port, base_gateway_port + max_gateways)`.
-
-**Why Random**: Reduces effectiveness of sequential port scanning. Avoids predictable port assignment patterns.
-
-**Collision Detection**: Tracks allocated ports in `Session` struct. Allocation loops until finding unused port or reaching max attempts.
+**PortAllocator**: Hands out the lowest free ports of `[base_gateway_port, base_gateway_port + 64)`: two per gateway for the 16 slots (`MAX_GATEWAYS`), and as many again for ports in their 10 s cooldown after a full turnover. The ports in use are read from the `Session` struct; when no pair is free, or the session's channels cannot be set up (a port another socket holds), the core answers `UNAVAILABLE 10`. The range must lie outside the host's ephemeral port range (Linux `ip_local_port_range`, 32768-60999 by default), from which any socket bound to port 0 can take a port; the default base is 20000, and the core refuses to start when its host's range overlaps the pool.
 
 **Two Ports Per Gateway**:
 - Data port: Gateway sends orders to core
-- Control port: Core sends responses to gateway via MDC
+- Reply port: Core sends responses unicast to the host that sent HELLO
 
 ### Gateway Handshake Protocol
 
@@ -1102,21 +1110,25 @@ aeron:udp?endpoint={address}:{port}|session-id={session}
    publication and its MDC reply subscription are connected: the core answers once, and a reply
    sent before the subscription joins is lost
 2. Core authenticates the credential (when enabled) and validates gateway_id < MAX_GATEWAYS
-3. Core allocates session_id and two ports (data, control)
-4. Core responds `{hello_session} gateway-{id} ACCEPT {data_port} {control_port} {session_id XOR encryption_key}`
+3. Core allocates session_id and two ports (data, reply)
+4. Core responds `{hello_session} gateway-{id} ACCEPT {data_port} {reply_port} {session_id XOR encryption_key}`
    via MDC publication; the mask is never the credential, so ACCEPT cannot leak it
 
 **Phase 2 - Duologue Establishment**:
 
 5. Core creates:
    - Subscription for gateway orders: `aeron:udp?endpoint={core}:{data_port}|session-id={session}`
-   - MDC publication for responses: `aeron:udp?control={core}:{control_port}|control-mode=dynamic|session-id={session}`
+   - Publication for responses, unicast to the HELLO source host: `aeron:udp?endpoint={gateway host}:{reply_port}|session-id={session}`
 
 6. Gateway creates:
    - Publication for orders: `aeron:udp?endpoint={core}:{data_port}|session-id={session}`
-   - Subscription for responses: `aeron:udp?control={core}:{control_port}|control-mode=dynamic|session-id={session}`
+   - Subscription for responses: `aeron:udp?endpoint=0.0.0.0:{reply_port}|session-id={session}`
 
-7. Connection established
+7. Core sends `READY` on the reply publication once an offer on it succeeds, which it does only
+   when the gateway's reply subscription is connected to it. The gateway's `start()` returns only
+   after it has read `READY`, so it sends no order before the core can answer it: until the core's
+   publication has heard from the gateway's image, a reply is dropped even though the gateway sees
+   its reply channel up (Aeron Cluster opens a client session the same way)
 
 **Duologue**: Paired publication/subscription for bidirectional gateway-core communication.
 
@@ -1202,7 +1214,7 @@ Polls replay subscription, processing fragments and publishing to disruptor. Tra
 **Startup**: every start with an archive configured replays the journal; there is no start without replay.
 1. Waits until no process that died while journaling holds the journal: the archive lists no live recording of it, and the media driver holds no publication of it (its publisher limit counters). A killed core holds both until the driver's client liveness timeout passes; the driver then releases its publication, and the archive records what that publication still held and stops the recording at its final position. Stopping the recording sooner would lose the commands it had not recorded yet, and the extension's publication would meet the dead one ("existing publication has different 'term-offset'"). After a clean stop, the driver frees the closed publication within two timer checks (draining, then lingering; about 2 s). The wait logs `waiting_for_journal_release` every 5 s, and fails once the driver's client liveness timeout (read from its CnC file) and 5 s more have passed: another process is journaling, or the archive is still recording a large backlog the dead process left unrecorded. It then stops a recording subscription left without an image (a process killed between starting its recording and connecting its publication)
 2. Calls `list_recordings_for_uri()` to find the recordings, and reads the journal tail: the last command of the newest recording that holds any
-3. Calls `start_replay()` on the newest recording, unless it holds no command (an empty archive starts fresh)
+3. Calls `start_replay()` on the newest recording, unless it holds no command (an empty archive starts fresh), from the position of the snapshot the engine was restored from (`init_internal` loads the newest at or below the delivered watermark before the pipeline is built), or from the recording's start without one. A snapshot of another recording (by id and start timestamp: a wiped archive reuses ids), or a purged recording without a snapshot, fails the start
 4. Creates subscription to receive replayed messages
 5. Polls subscription, publishing each message to disruptor, then waits for the pipeline to drain: it fails only after 10 s without progress, since the events stage may be re-publishing to a slow Kafka
 6. Calls `extend_recording()` to append future messages to the replayed recording, or `start_recording()` for a fresh start
@@ -1217,6 +1229,7 @@ During the replay, journaling skips every command (they are journaled already), 
 3. Creates duologue with dedicated subscription/publication pair
 4. Stores publication in `Publications` array for response routing
 5. Adds to `Session` tracking
+6. Sends ACCEPT, then `READY` once the reply publication is connected
 
 **Disconnect**:
 1. `ImageUnavailableHandler` fires on connection loss
@@ -1225,10 +1238,11 @@ During the replay, journaling skips every command (they are journaled already), 
 4. Closes duologue, removes publication, releases resources
 
 **Shutdown** (on the server thread, once the shutdown flag is set):
-1. Closes every gateway duologue, connected or not, releasing its ring producer (see Asynchronous Close), then the handshake subscription and its handlers
-2. Drains the pipeline, then waits until the archive has recorded everything journaling offered
+1. Closes the handshake subscription and its handlers; the poll loop has stopped, so no command is read any more
+2. Drains the pipeline, which answers every accepted command through the still-open sessions, then waits until the archive has recorded everything journaling offered, then writes a snapshot (see Disaster Recovery)
 3. Stops archive recording via `stop_recording_subscription()` and closes the archive connection
-4. Drops the server, with its Aeron client, then the last ring producer: the pipeline joins its consumers, and the events stage delivers what it holds within its 20 s grace and writes the delivered watermark
+4. Closes every gateway duologue, connected or not, releasing its ring producer (see Asynchronous Close)
+5. Drops the server, with its Aeron client, then the last ring producer: the pipeline joins its consumers, and the events stage delivers what it holds within its 20 s grace and writes the delivered watermark
 
 ### Message Encoding
 
@@ -1248,7 +1262,7 @@ fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) 
     let cmd = decode_order_command(buffer)?;
     if self.producer.try_publish(|target| { *target = cmd.clone(); }).is_err() {
         // Ring full: nothing enqueued, so tell the gateway to retry.
-        self.publications.try_publish_response(&busy_response(cmd)); // one offer, never sleeps
+        self.publications.publish_response(&busy_response(cmd)); // one offer, never sleeps
     }
 }
 ```
@@ -1265,7 +1279,11 @@ fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], header: AeronHeader) 
 
 **Thread Safety**: `Publication` is thread-safe. `Subscription` is not (polled from single thread).
 
-**Back-Pressure**: `publication.offer()` returns negative codes when buffer full. VEX-CORE does not queue: a pipeline response is re-offered at most 10 times with 1 ms backoff (`Publications::publish_response`), while the ingress thread's ring-full `Busy` reply is offered once and never sleeps (`Publications::try_publish_response`).
+**Back-Pressure**: `publication.offer()` returns negative codes when buffer full. VEX-CORE does not queue: every reply (a pipeline response or the ingress thread's ring-full `Busy`) is offered once and never sleeps (`Publications::publish_response`); a gateway whose replies fail for `SLOW_GATEWAY_TIMEOUT` (1 s) loses its session and reconnects. The invariants:
+1. The events thread never sleeps for a gateway. It offers each reply once (`offer_once`: one immediate re-offer only on `ADMIN_ACTION`).
+2. A command's Kafka events are published before its reply, so a dropped reply is resolved from the read model.
+3. A reply is dropped only when its gateway's channel is full or gone, never because it has not connected yet (a gateway sends nothing before `READY`); a gateway undeliverable for 1 s loses its session (the events thread drops its reply publication, the server thread's next poll closes the session); once the gateway sees the close (Aeron's `publication.connection.timeout`, 5 s), its waiting requests fail (408), its new orders are refused (503), and it reconnects.
+4. At shutdown, sessions outlive the drain: every accepted command is answered before any session closes.
 
 **Gateway Send Outcomes**: `Publisher::try_send_order_command` never sleeps. `BACK_PRESSURED` returns `GatewayError::Busy`, as does an `ADMIN_ACTION` (log-buffer term rotation) that persists across one immediate re-offer; `NOT_CONNECTED` (no core subscribed) returns `GatewayError::NotConnected`; any other failure (`CLOSED`, `MAX_POSITION_EXCEEDED`, `ERROR`) is `GatewayError::SendError`. `GatewayError::Busy` and a `Status::Busy` reply are the same retryable outcome.
 
@@ -1327,7 +1345,7 @@ The PriceCache is essential to the market order execution protocol:
 
 2. **Fund Safety**: Conservative pricing (best price + slippage) locks MORE funds than minimally required. The price ceiling enforcement in matching (only matches at or below conservative price) guarantees no overspend. IOC/FOK semantics cancel unfilled portions.
 
-3. **Acceptable Staleness**: Stale reads don't violate safety (user locked enough funds). In worst case, order gets fewer fills than expected, never overspends.
+3. **No Staleness**: R1 prices a market buy only once R2 has settled every earlier sequence, so every Matching shard has handled them and the cache holds the book after s-1 (see Dependency Barriers). A replay therefore locks the same price.
 
 4. **Update Protocol**:
 ```rust
@@ -1484,7 +1502,7 @@ order_info!(
 
 **Log Levels**:
 - `ERROR`: Unrecoverable errors
-- `WARN`: Recoverable errors (order rejection)
+- `WARN`: Recoverable errors (a failed deposit). Order rejections and `Busy` refusals are `DEBUG`: the gateway counts them per outcome (`vex_gateway_orders_total`)
 - `INFO`: High-level lifecycle events
 - `DEBUG`: Detailed processing traces
 
@@ -1492,7 +1510,14 @@ order_info!(
 
 **Journal Replay**:
 
-Aeron Archive persists all ingested orders. State reconstruction requires replaying all prior events in sequence. Snapshots are not currently implemented.
+Aeron Archive persists all ingested orders. A start replays them from the newest usable snapshot.
+
+**Snapshots** (`networking/src/server/snapshot.rs`, `server/src/snapshot.rs`), the model Aeron Cluster uses for its log:
+- What: every stage's state between commands. Per risk shard its balances and its bids' collateral; per market its resting orders in priority order. Price-level totals, the order index and the price cache are derived on restore; markets come from the config, the id and timestamp counters from the journal tail.
+- When: every 5,000,000 commands and at every graceful shutdown, on the server thread with ingress paused. The pipeline drains first: R1 runs ahead of R2 on the same ledger, so a drained pipeline is the one consistent point. The state is serialized (borsh) during the pause, and the file (header, state, crc32) is written off the thread, crash-safely (temp file, fsync, rename). Two are kept: the new one and the newest below it; one above it is another journal's, and goes.
+- Which: a snapshot at journal position P with last command timestamp T holds every command up to T. A start may load it only if T is at or below the delivered watermark W: the commands up to T are not replayed, so their events are not re-published. The newest is unusable for the ~200 ms until W passes it, or after a shutdown that left events undelivered; the start then falls back to the previous one, or to a full replay.
+- Purge: after each snapshot, the journal's segments below the previous one are purged once that one is at or below W as the brokers have acknowledged it. Every later start can then load it (W never regresses), and both kept snapshots are above the purge point. A start that finds a purged journal and no usable snapshot (`vex-core.delivered` emptied or re-created) fails, see RUNBOOK "No usable snapshot".
+- Snapshot plus replay of the tail equals a full replay of the same pipeline, no more deterministic than that.
 
 **State Reconstruction**:
 - All balance changes are deterministic from order sequence

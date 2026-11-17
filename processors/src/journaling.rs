@@ -44,6 +44,7 @@ impl JournalingProcessor {
                 .unwrap();
         }
         self.publications.publish_to_archive(cmd);
+        self.publications.set_journal_tail(cmd.timestamp);
         order_debug!("command_ingested", cmd, stage = "journal");
     }
 
@@ -60,10 +61,10 @@ impl JournalingProcessor {
     }
 }
 
-/// Control structure to enable/disable replay mode
-/// when the vex-core runs in replay mode
-/// the switch sets the flag to true, untill the replay is done
-/// allowing to skip certain processors namely 1. Journalling 2. Events
+/// The replay flag. Starts set on every start and is cleared by `CoreEngine::run` once the replay
+/// has drained. While it is set, journaling passes commands through unstamped and unarchived, and
+/// the events stage answers no gateway and re-publishes only the events of commands above the
+/// delivered watermark.
 #[derive(Clone)]
 pub struct ReplayControl {
     flag: Arc<AtomicBool>,
@@ -81,21 +82,10 @@ impl ReplayControl {
             flag: Arc::new(AtomicBool::new(false)),
         }
     }
-    // we want to make sure that when enabling replay mode
-    // all subsequent reads of the flag see the updated value
-    // similarly when disabling replay mode
-    // we want to make sure that all prior writes are visible
-    // before the flag is set to false
-    pub fn enable(&self) {
-        self.flag.store(true, Ordering::SeqCst);
-    }
 
+    // Every write the replay made is visible before the flag reads false.
     pub fn disable(&self) {
         self.flag.store(false, Ordering::SeqCst);
-    }
-
-    pub fn set(&self, enabled: bool) {
-        self.flag.store(enabled, Ordering::SeqCst);
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -182,7 +172,8 @@ mod tests {
         let publications = Arc::new(Publications::new());
         // The previous run's last command was stamped an hour ahead of this host's wall clock.
         let recorded = recorded_tail(&publications, wall_clock_nanos() + HOUR_NANOS);
-        let mut journal = JournalingProcessor::new(publications, ReplayControl::disabled());
+        let mut journal =
+            JournalingProcessor::new(Arc::clone(&publications), ReplayControl::disabled());
 
         let mut live = order();
         journal.journal_command(&mut live);
@@ -192,6 +183,8 @@ mod tests {
             live.order_id > recorded.order_id,
             "the first live id must be above every recorded one"
         );
+        // A snapshot records it as the last command it holds.
+        assert_eq!(publications.journal_tail(), live.timestamp);
     }
 
     #[test]

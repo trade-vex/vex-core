@@ -105,20 +105,6 @@ impl ResponseVerifier {
         Ok(())
     }
 
-    /// Verify size is unchanged (no fill)
-    pub fn assert_size_unchanged(original_size: u64, response: &OrderCommand) -> TestResult<()> {
-        if response.size != original_size {
-            return Err(TestError::Assertion {
-                message: format!(
-                    "Size changed unexpectedly: original={}, response={}",
-                    original_size, response.size
-                ),
-            });
-        }
-        debug!("Size unchanged: {}", response.size);
-        Ok(())
-    }
-
     /// Verify price field matches expected value
     pub fn assert_price(response: &OrderCommand, expected: u64) -> TestResult<()> {
         if response.price != expected {
@@ -130,24 +116,6 @@ impl ResponseVerifier {
             });
         }
         debug!("Price verified: {}", response.price);
-        Ok(())
-    }
-
-    /// Verify that price was adjusted (for market orders)
-    ///
-    /// Market buy orders start with price=u64::MAX
-    /// Market sell orders start with price=0
-    /// Risk engine R1 adjusts these to actual limits
-    pub fn assert_price_adjusted_from_market(response: &OrderCommand) -> TestResult<()> {
-        if response.price == u64::MAX || response.price == 0 {
-            return Err(TestError::Assertion {
-                message: format!(
-                    "Market order price was not adjusted, still at boundary: {}",
-                    response.price
-                ),
-            });
-        }
-        debug!("Market order price adjusted to: {}", response.price);
         Ok(())
     }
 
@@ -176,20 +144,6 @@ impl ResponseVerifier {
             });
         }
         debug!("Market ID verified: {}", response.market_id);
-        Ok(())
-    }
-
-    /// Verify client_order_id matches expected
-    pub fn assert_client_order_id(response: &OrderCommand, expected: u64) -> TestResult<()> {
-        if response.client_order_id != expected {
-            return Err(TestError::Assertion {
-                message: format!(
-                    "Client order ID mismatch: expected {}, got {}",
-                    expected, response.client_order_id
-                ),
-            });
-        }
-        debug!("Client order ID verified: {}", response.client_order_id);
         Ok(())
     }
 
@@ -225,12 +179,6 @@ impl ResponseVerifier {
         Ok(())
     }
 
-    /// Verify order was rejected
-    pub fn assert_rejected(response: &OrderCommand) -> TestResult<()> {
-        Self::assert_status(response, Status::Rejected)?;
-        Ok(())
-    }
-
     /// Comprehensive verification for a successful GTC limit order placement (no match)
     pub fn assert_gtc_placed_no_match(
         response: &OrderCommand,
@@ -244,31 +192,6 @@ impl ResponseVerifier {
         Self::assert_market_id(response, expected_market)?;
         Self::assert_price(response, expected_price)?;
         Self::assert_size(response, expected_size)?;
-        Ok(())
-    }
-
-    /// Comprehensive verification for a successful full fill
-    pub fn assert_order_fully_filled(
-        response: &OrderCommand,
-        expected_user: u64,
-        expected_market: u32,
-    ) -> TestResult<()> {
-        Self::assert_filled(response)?;
-        Self::assert_user_id(response, expected_user)?;
-        Self::assert_market_id(response, expected_market)?;
-        Ok(())
-    }
-
-    /// Comprehensive verification for a partial fill
-    pub fn assert_order_partially_filled(
-        response: &OrderCommand,
-        original_size: u64,
-        expected_user: u64,
-        expected_market: u32,
-    ) -> TestResult<()> {
-        Self::assert_partially_filled(response, original_size)?;
-        Self::assert_user_id(response, expected_user)?;
-        Self::assert_market_id(response, expected_market)?;
         Ok(())
     }
 }

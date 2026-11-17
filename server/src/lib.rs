@@ -1,4 +1,5 @@
 pub mod engine;
+mod snapshot;
 mod utils;
 
 use common::CoreMarketSpecification;
@@ -9,11 +10,12 @@ use processors::{
     journaling::{JournalingProcessor, ReplayControl},
 };
 use std::{
+    path::Path,
     sync::{Arc, atomic::AtomicBool},
     thread::JoinHandle,
 };
 use vex_config::VexConfig;
-use vex_networking::server::Publications;
+use vex_networking::server::{Publications, SnapshotHeader};
 
 // Re-export for convenience
 pub use engine::EngineError;
@@ -21,27 +23,17 @@ pub use engine::EngineError;
 pub struct RunningEngine {
     thread: JoinHandle<Result<(), EngineError>>,
     shutdown_flag: Arc<AtomicBool>,
-    engine: CoreEngine,
 }
 
 impl RunningEngine {
     /// Returns on panic or error during server execution
-    ///
-    /// After a graceful stop the pipeline has drained, so this logs the final trading fees
-    /// accrued per asset across all risk shards; nothing else reports them yet.
     pub fn join(self) -> Result<(), EngineError> {
-        let result = self.thread.join().unwrap_or_else(|e| {
+        self.thread.join().unwrap_or_else(|e| {
             Err(EngineError::ServerRuntime(format!(
                 "Server thread panicked: {:?}",
                 e
             )))
-        });
-        if result.is_ok() {
-            for (asset_id, amount) in self.engine.accrued_fees() {
-                tracing::info!(target: "risk_engine", event = "accrued_fees", asset_id, amount);
-            }
-        }
-        result
+        })
     }
 
     /// Returns a clone of the shutdown flag for external signalling
@@ -62,8 +54,8 @@ impl RunningEngine {
 ///
 /// # Returns
 ///
-/// A `RunningEngine` handle that keeps the server running. When dropped,
-/// the server will shut down gracefully.
+/// A `RunningEngine` handle. To stop the server, set `shutdown_handle()` to true and call
+/// `join()`; dropping the handle detaches the server thread and stops nothing.
 ///
 /// # Errors
 ///
@@ -72,13 +64,15 @@ impl RunningEngine {
 /// # Example
 ///
 /// ```no_run
+/// use std::sync::atomic::Ordering;
 /// use vex_config::{VexConfig, Environment};
 /// use vex_server::start;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let config = VexConfig::new(Environment::Development);
-/// let _engine = start(config)?;
-/// // Server runs until _engine is dropped
+/// let engine = start(config)?;
+/// engine.shutdown_handle().store(true, Ordering::Release);
+/// engine.join()?;
 /// # Ok(())
 /// # }
 /// ```
@@ -98,18 +92,19 @@ pub fn start(mut config: VexConfig) -> Result<RunningEngine, EngineError> {
         }
     };
     #[allow(unused_mut)] // mut needed when balance-preload feature is enabled
-    let ((engine, mut producer), replay_control) = init_internal(
+    let ((engine, mut producer), replay_control, loaded) = init_internal(
         config.symbols.symbols.clone(),
         config.kafka_broker.clone(),
         config.schema_registry_url.clone(),
         journaling,
         config.core_networking.enable_core_pinning,
-        config.environment.clone(),
+        Path::new(&config.core_networking.snapshot_dir),
     )?;
 
-    // Balance preload for test/local environments
+    // Balance preload for test/local environments. A loaded snapshot holds the preloaded
+    // balances already; applying them again would double them.
     #[cfg(feature = "balance-preload")]
-    if config.balance_preload.enabled {
+    if config.balance_preload.enabled && loaded.is_none() {
         use tracing::info;
 
         info!(
@@ -131,25 +126,19 @@ pub fn start(mut config: VexConfig) -> Result<RunningEngine, EngineError> {
         info!("Balance preload complete");
     }
 
-    let gateway_authentication_key = config.gateway_networking.gateway_authentication_key.clone();
-    let (thread_handle, shutdown_flag) = engine.run(
-        producer,
-        replay_control,
-        config.core_networking,
-        gateway_authentication_key,
-    );
+    let (thread_handle, shutdown_flag) =
+        engine.run(producer, replay_control, config.core_networking, loaded);
 
     Ok(RunningEngine {
         thread: thread_handle,
         shutdown_flag,
-        engine,
     })
 }
 
 /// Publishes the configured deposits, then waits until every one has cleared the pipeline.
 ///
-/// Preload is re-applied on every start, so it must never be journaled: a journaled deposit
-/// would be credited twice on replay. It runs while the replay flag is set, as every start sets
+/// Preload is re-applied on every start that loads no snapshot (a snapshot holds it), so it must
+/// never be journaled: a journaled deposit would be credited twice on replay. It runs while the replay flag is set, as every start sets
 /// it until the journal is replayed, so journaling passes it through unstamped (timestamp 0) and
 /// the events stage, which re-publishes only replayed commands above the delivered watermark,
 /// never publishes it. Journaling also skips commands while no archive publication is installed,
@@ -207,11 +196,7 @@ fn report_disabled_journaling(config: &VexConfig) {
 /// choice explicitly: no key means no handshake authentication. `validate` has already refused
 /// that combination in production.
 fn resolve_gateway_authentication(config: &mut VexConfig) {
-    if config
-        .gateway_networking
-        .gateway_authentication_key
-        .is_empty()
-    {
+    if config.core_networking.gateway_authentication_key.is_empty() {
         config.core_networking.enable_authentication = false;
     }
     if !config.core_networking.enable_authentication {
@@ -232,14 +217,21 @@ fn resolve_gateway_authentication(config: &mut VexConfig) {
 ///
 /// The replay flag starts enabled: every start replays the journal (an empty or absent one
 /// replays nothing), and `CoreEngine::run` clears the flag once the replay has drained.
+///
+/// With journaling enabled, the engine starts from the newest snapshot in `snapshot_dir` at or
+/// below the delivered watermark, if any, whose header it returns: the replay starts there.
 pub fn init_internal(
     symbol_specs: HashMap<u32, CoreMarketSpecification>,
     kafka_broker: String,
     schema_registry_url: String,
     journaling: Journaling,
     enable_core_pinning: bool,
-    environment: vex_config::Environment,
-) -> EngineResult<((CoreEngine, OrderProducer), ReplayControl)> {
+    snapshot_dir: &Path,
+) -> EngineResult<(
+    (CoreEngine, OrderProducer),
+    ReplayControl,
+    Option<SnapshotHeader>,
+)> {
     let replay_control = ReplayControl::enabled();
     let publications = Arc::new(Publications::new());
     let journaling_processor =
@@ -253,12 +245,18 @@ pub fn init_internal(
         journaling,
     )
     .map_err(EngineError::ServerInitialization)?;
-
-    // Use no-pinning for Development environment to avoid CPU affinity issues
-    let core_pinning = if matches!(environment, vex_config::Environment::Development) {
-        None
-    } else {
-        Some(engine::CorePinning::default())
+    let loaded = match journaling {
+        Journaling::Enabled { .. } => {
+            vex_networking::server::snapshot::load(snapshot_dir, publications.delivered()).map_err(
+                |error| {
+                    EngineError::ServerInitialization(format!(
+                        "reading snapshots from {}: {error}",
+                        snapshot_dir.display()
+                    ))
+                },
+            )?
+        }
+        Journaling::Disabled => None,
     };
 
     let engine = CoreEngine::new(
@@ -266,11 +264,16 @@ pub fn init_internal(
         journaling_processor,
         events_handler,
         publications,
-        core_pinning.unwrap_or_default(),
+        engine::CorePinning::default(),
         enable_core_pinning,
+        loaded.as_ref().map(|snapshot| snapshot.state.as_slice()),
     )?;
 
-    Ok((engine, replay_control))
+    Ok((
+        engine,
+        replay_control,
+        loaded.map(|snapshot| snapshot.header),
+    ))
 }
 
 /// Test utilities for vex-server
@@ -282,9 +285,9 @@ pub fn init_internal(
 pub mod test {
     use super::*;
     use common::{OrderCommand, Status};
-    use engine::{RiskEngines, test::TestEngineBuilder};
+    use engine::RiskEngines;
     use processors::events::EventsHandler;
-    use std::{cell::UnsafeCell, sync::mpsc, time::Duration};
+    use std::{sync::mpsc, time::Duration};
 
     /// How long a test waits for the pipeline before it fails.
     ///
@@ -293,16 +296,23 @@ pub mod test {
     /// a result that takes microseconds on an idle host can take seconds.
     pub const PIPELINE_DEADLINE: Duration = Duration::from_secs(10);
 
-    /// The events stage for tests: answers each command's gateway and publishes nothing.
+    /// The events stage for tests: answers each command's gateway, sends each finished command to
+    /// [`TestEngine::receiver`], and publishes nothing.
     ///
     /// Tests run without Kafka or a Schema Registry. [`KafkaEventsHandler`] never drops an event,
     /// so without them it would hold its first event, block the pipeline once its queues fill, and
     /// make every teardown wait out its shutdown grace.
-    pub struct GatewayResponsesOnly(pub Arc<Publications>);
+    struct Capture {
+        publications: Arc<Publications>,
+        sender: mpsc::Sender<OrderCommand>,
+    }
 
-    impl EventsHandler for GatewayResponsesOnly {
+    impl EventsHandler for Capture {
         fn handle_processed_command(&self, cmd: &mut OrderCommand) {
-            self.0.publish_response(cmd);
+            self.publications.publish_response(cmd);
+            if cmd.status != Status::Processing {
+                let _ = self.sender.send(cmd.clone());
+            }
         }
     }
 
@@ -338,51 +348,53 @@ pub mod test {
     /// let result = test_env.receiver.recv_timeout(PIPELINE_DEADLINE).unwrap();
     /// ```
     pub fn setup(specs: HashMap<u32, CoreMarketSpecification>) -> TestEngine {
-        let (tx, rx) = mpsc::channel::<OrderCommand>();
-        let test_handler = move |cell: &UnsafeCell<OrderCommand>, _: i64, _: bool| {
-            // SAFETY: This test capture handler is alone after the events and_then()
-            // barrier, so creating this exclusive reference cannot alias another handler's
-            // reference.
-            let cmd = unsafe { &mut *cell.get() };
-            if cmd.status != Status::Processing {
-                let _ = tx.send(cmd.clone());
-            }
-        };
+        setup_with(specs, ReplayControl::disabled())
+    }
 
-        let publications = Arc::new(Publications::new());
-
-        // Create risk engines manually for test access
-        use processors::risk_engine::RiskEngine;
-        let risk_engines = Arc::new(
-            (0..4)
-                .map(|shard_id| RiskEngine::new(specs.clone(), shard_id as u32, 4))
-                .collect::<Vec<_>>(),
-        );
-
-        let (_engine, producer) = TestEngineBuilder::new()
-            .with_symbol_specs(specs)
-            .with_journaling_processor(JournalingProcessor::new(
-                Arc::clone(&publications),
-                ReplayControl::disabled(),
-            ))
-            .with_events_handler(GatewayResponsesOnly(Arc::clone(&publications)))
-            .with_publications(publications)
-            .with_risk_engines(Arc::clone(&risk_engines))
-            .with_test_handler(test_handler)
-            .build()
-            .expect("Failed to build test engine");
-
+    /// [`setup`] with the given replay control. `ReplayControl::enabled()` makes journaling pass
+    /// commands through unchanged, as during a replay, so the test assigns order ids itself.
+    pub fn setup_with(
+        specs: HashMap<u32, CoreMarketSpecification>,
+        replay: ReplayControl,
+    ) -> TestEngine {
+        let (engine, producer, receiver) = build(specs, replay, None);
         TestEngine {
             producer,
-            risk_engines,
-            receiver: rx,
+            risk_engines: engine.risk_engines,
+            receiver,
         }
+    }
+
+    /// Builds the pipeline with [`CoreEngine::new`], as `init_internal` does, from a snapshot's
+    /// `state` if given, with `Capture` as the events stage. The receiver gets each finished
+    /// command.
+    pub fn build(
+        specs: HashMap<u32, CoreMarketSpecification>,
+        replay: ReplayControl,
+        state: Option<&[u8]>,
+    ) -> (CoreEngine, OrderProducer, mpsc::Receiver<OrderCommand>) {
+        let (sender, receiver) = mpsc::channel();
+        let publications = Arc::new(Publications::new());
+        let (engine, producer) = CoreEngine::new(
+            specs,
+            JournalingProcessor::new(Arc::clone(&publications), replay),
+            Capture {
+                publications: Arc::clone(&publications),
+                sender,
+            },
+            publications,
+            engine::CorePinning::default(),
+            false,
+            state,
+        )
+        .expect("Failed to build test engine");
+        (engine, producer, receiver)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::test::{PIPELINE_DEADLINE, TestEngine, setup};
+    use super::test::{PIPELINE_DEADLINE, TestEngine, setup, setup_with};
     use super::*;
     use common::{
         MarketType, OrderCommand, PriceCache, Side, Status, TimeInForce, UserBalance, base_asset,
@@ -448,7 +460,7 @@ mod tests {
         assert!(!config.core_networking.enable_authentication);
 
         let mut keyed = VexConfig::new(vex_config::Environment::Test);
-        keyed.gateway_networking.gateway_authentication_key = "123456789".into();
+        keyed.core_networking.gateway_authentication_key = "123456789".into();
         resolve_gateway_authentication(&mut keyed);
         assert!(keyed.core_networking.enable_authentication);
     }
@@ -465,32 +477,14 @@ mod tests {
     #[cfg(feature = "balance-preload")]
     #[test]
     fn balance_preload_returns_only_after_every_deposit_is_applied() {
-        use engine::test::TestEngineBuilder;
-
         const DEPOSITS: u64 = 1_000;
         let user_id = 7;
         let asset_id = 1;
 
         let mut specs = HashMap::new();
         add_spec((1 << 16) | 2, &mut specs);
-        let publications = Arc::new(Publications::new());
-        let risk_engines = Arc::new(
-            (0..4)
-                .map(|shard_id| RiskEngine::new(specs.clone(), shard_id, 4))
-                .collect::<Vec<_>>(),
-        );
-        let (_engine, mut producer) = TestEngineBuilder::new()
-            .with_symbol_specs(specs)
-            // Preload runs while the replay flag is set, as `init_internal` sets it at every start.
-            .with_journaling_processor(JournalingProcessor::new(
-                Arc::clone(&publications),
-                ReplayControl::enabled(),
-            ))
-            .with_events_handler(test::GatewayResponsesOnly(Arc::clone(&publications)))
-            .with_publications(Arc::clone(&publications))
-            .with_risk_engines(Arc::clone(&risk_engines))
-            .build()
-            .unwrap();
+        // Preload runs while the replay flag is set, as `init_internal` sets it at every start.
+        let (engine, mut producer, _receiver) = test::build(specs, ReplayControl::enabled(), None);
 
         let mut preload = vex_config::BalancePreloadConfig::new();
         preload.enabled = true;
@@ -504,15 +498,19 @@ mod tests {
                 .collect(),
         );
 
-        preload_balances(&preload, &mut producer, &publications).unwrap();
+        preload_balances(&preload, &mut producer, engine.publications()).unwrap();
 
         // No waiting here: `start` hands over to `run`, which installs the archive publication,
         // as soon as the preload returns, so every deposit must already have been applied.
         let shard = (user_id & 3) as usize;
         assert_eq!(
-            risk_engines[shard].get_balance(user_id, asset_id),
+            engine.risk_engines[shard].get_balance(user_id, asset_id),
             UserBalance::new(DEPOSITS, 0)
         );
+    }
+
+    fn cancel(engine: &RiskEngine, cmd: &OrderCommand) {
+        engine.handle_cancellation(cmd.order_id, cmd.user_id, cmd.market_id, cmd.side, cmd.size);
     }
 
     /// Helper function to add a market specification to the specs map
@@ -555,8 +553,8 @@ mod tests {
         )
         .symbols[&market_id]
             .clone();
-        // The shipped dev/test fees are zero. These are the committed configuration's
-        // 10 bp maker / 20 bp taker rates, so the fee arithmetic is actually exercised.
+        // The shipped ETH market charges no fee: both markets get the 10 bp maker / 20 bp taker
+        // rates the shipped BTC market charges, so the fee arithmetic runs at both scales.
         spec.maker_fee = 10;
         spec.taker_fee = 20;
         spec.slippage = 5;
@@ -628,7 +626,7 @@ mod tests {
                 eth.quote_native_scale,
                 eth.quote_scale_k,
             ),
-            (1_000_000_000_000_000_000, 1_000_000, 10)
+            (1_000_000_000, 1_000_000, 10)
         );
         assert_eq!(
             (
@@ -640,23 +638,15 @@ mod tests {
         );
 
         let eth_price = 30_000; // $3,000 at the shipped quote_scale_k of 10.
-        let smallest_nonzero_eth_fill = 333_333_334;
+        // At gwei and micro-USDT one gwei costs exactly 3 units: cost(P, S) = P * S / 10_000.
+        assert_eq!(eth.calculate_quote_cost(eth_price, 0), Some(0));
+        assert_eq!(eth.calculate_quote_cost(eth_price, 1), Some(3));
         assert_eq!(
-            eth.calculate_quote_cost(eth_price, smallest_nonzero_eth_fill - 1),
-            Some(0)
-        );
-        assert_eq!(
-            eth.calculate_quote_cost(eth_price, smallest_nonzero_eth_fill),
-            Some(1)
-        );
-        assert_eq!(
-            eth.calculate_quote_cost(eth_price, 1_000_000_000_000_000_000),
+            eth.calculate_quote_cost(eth_price, 1_000_000_000),
             Some(3_000_000_000)
         );
-        assert_eq!(
-            eth.calculate_quote_cost(eth_price, u64::MAX),
-            Some(55_340_232_221)
-        );
+        // 3 * u64::MAX does not fit u64: rejected.
+        assert_eq!(eth.calculate_quote_cost(eth_price, u64::MAX), None);
 
         let btc_price = 60_000;
         assert_eq!(btc.calculate_quote_cost(btc_price, 1), Some(600));
@@ -686,39 +676,16 @@ mod tests {
     }
 
     #[test]
-    // Fixed in this stack by PR #146 (calculate_quote_cost saturates instead of wrapping).
-    fn test_shipped_btc_quote_cost_is_monotonic_past_largest_in_range() {
-        let mut specs = HashMap::new();
-        let market_id = add_shipped_spec(ShippedScaling::BtcUsdt, &mut specs);
-        let spec = &specs[&market_id];
-        let largest_fill_in_range = 30_744_573_456_182_586;
-        let largest_cost = spec.calculate_quote_cost(60_000, largest_fill_in_range);
-        let next_cost = spec.calculate_quote_cost(60_000, largest_fill_in_range + 1);
-
-        assert!(
-            largest_cost.is_some(),
-            "the largest in-range fill must still price"
-        );
-        // Stronger than the original "must not wrap": one unit past the representable range is
-        // now REJECTED rather than saturated. Saturating to u64::MAX was indistinguishable from
-        // a legitimate cost and let an order under-reserve collateral (finding C4-1).
-        assert_eq!(
-            next_cost, None,
-            "quote cost past the largest in-range fill must be rejected, not wrapped or saturated"
-        );
-    }
-
-    #[test]
     fn test_shipped_eth_collateral_lock_and_release_for_both_sides() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let base_asset_id = base_asset(market_id);
         let quote_asset_id = quote_asset(market_id);
         let price = 30_000;
         let size = 1_000_000_000;
-        let quote_cost = 3;
+        let quote_cost = 3_000_000_000;
 
         let bid_user_id = 10;
         engine.set_balance(bid_user_id, quote_asset_id, UserBalance::new(quote_cost, 0));
@@ -731,12 +698,12 @@ mod tests {
             market_id,
             1,
         );
-        engine.pre_process_command(&mut bid, Arc::clone(&price_cache));
+        engine.pre_process_command(&mut bid, &price_cache);
         assert_eq!(
             engine.get_balance(bid_user_id, quote_asset_id),
             UserBalance::new(0, quote_cost)
         );
-        engine.handle_cancellation(&mut bid);
+        cancel(&engine, &bid);
         assert_eq!(
             engine.get_balance(bid_user_id, quote_asset_id),
             UserBalance::new(quote_cost, 0)
@@ -753,12 +720,12 @@ mod tests {
             market_id,
             2,
         );
-        engine.pre_process_command(&mut ask, price_cache);
+        engine.pre_process_command(&mut ask, &price_cache);
         assert_eq!(
             engine.get_balance(ask_user_id, base_asset_id),
             UserBalance::new(0, size)
         );
-        engine.handle_cancellation(&mut ask);
+        cancel(&engine, &ask);
         assert_eq!(
             engine.get_balance(ask_user_id, base_asset_id),
             UserBalance::new(size, 0)
@@ -769,15 +736,15 @@ mod tests {
     fn test_shipped_eth_settlement_releases_both_sides_and_rounds_fees() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let base_asset_id = base_asset(market_id);
         let quote_asset_id = quote_asset(market_id);
         let buyer_id = 20;
         let seller_id = 21;
         let price = 30_000;
-        let size = 333_333_334; // Smallest fill with a non-zero quote cost at this price.
-        let quote_cost = 1;
+        let size = 333_333_334; // Both fees below have a remainder, so both round up.
+        let quote_cost = 1_000_000_002;
 
         engine.set_balance(buyer_id, quote_asset_id, UserBalance::new(quote_cost, 0));
         engine.set_balance(seller_id, base_asset_id, UserBalance::new(size, 0));
@@ -799,27 +766,26 @@ mod tests {
             market_id,
             2,
         );
-        engine.pre_process_command(&mut bid, Arc::clone(&price_cache));
-        engine.pre_process_command(&mut ask, price_cache);
+        engine.pre_process_command(&mut bid, &price_cache);
+        engine.pre_process_command(&mut ask, &price_cache);
 
-        // MatcherTradeEvent implements Drop (PR #179): the functional-update form
-        // would move out of a Drop type, so assign the fields instead.
-        let mut event = common::MatcherTradeEvent::default();
-        event.price = price;
-        event.size = size;
-        event.maker_user_id = seller_id;
-        event.matched_order_id = ask.order_id;
-        event.matched_order_completed = true;
-        event.active_order_completed = true;
-        event.maker_original_size = size;
+        let event = common::TradeFill {
+            price,
+            size,
+            maker_user_id: seller_id,
+            matched_order_id: ask.order_id,
+            matched_order_completed: true,
+            active_order_completed: true,
+            ..Default::default()
+        };
         engine.handle_trade_event(
             buyer_id,
             market_id,
             Side::Bid,
-            &mut event,
+            event,
             Some((bid.order_id, price)),
         );
-        engine.handle_trade_event(seller_id, market_id, Side::Ask, &mut event, None);
+        engine.handle_trade_event(seller_id, market_id, Side::Ask, event, None);
 
         // PR #163 rounds fees UP per fill (div_ceil), so the remainder below costs one more
         // atomic unit than the pre-#163 floor of 666_666.
@@ -837,13 +803,11 @@ mod tests {
             engine.get_balance(seller_id, base_asset_id),
             UserBalance::new(0, 0)
         );
-        // Gross quote here is one atomic unit. Pre-#163 the 10 bp maker fee floored to zero
-        // and the seller kept the unit; with #163's per-fill div_ceil the fee is a whole unit,
-        // so the maker nets nothing. Same ceil-per-fill overcharge as the ask round-trip test.
-        let maker_fee_in_quote = (quote_cost * 10).div_ceil(10_000);
+        // The 10 bp maker fee on 1_000_000_002 is 1_000_000.002, rounded up per fill (#163's
+        // div_ceil) to 1_000_001. Same ceil-per-fill rounding as the ask round-trip test.
         assert_eq!(
             engine.get_balance(seller_id, quote_asset_id),
-            UserBalance::new(quote_cost - maker_fee_in_quote, 0)
+            UserBalance::new(999_000_001, 0)
         );
     }
 
@@ -851,7 +815,7 @@ mod tests {
     fn test_shipped_eth_ask_partial_fill_cancel_round_trip() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let base_asset_id = base_asset(market_id);
         let quote_asset_id = quote_asset(market_id);
@@ -871,32 +835,29 @@ mod tests {
             market_id,
             1,
         );
-        engine.pre_process_command(&mut ask, price_cache);
+        engine.pre_process_command(&mut ask, &price_cache);
 
-        // MatcherTradeEvent implements Drop (PR #179): the functional-update form
-        // would move out of a Drop type, so assign the fields instead.
-        let mut event = common::MatcherTradeEvent::default();
-        event.price = price;
-        event.size = fill_size;
-        event.maker_user_id = user_id;
-        event.matched_order_id = ask.order_id;
-        event.maker_original_size = initial_base;
-        event.maker_remaining_size = remaining_size;
-        engine.handle_trade_event(user_id, market_id, Side::Ask, &mut event, None);
+        let event = common::TradeFill {
+            price,
+            size: fill_size,
+            maker_user_id: user_id,
+            matched_order_id: ask.order_id,
+            maker_remaining_size: remaining_size,
+            ..Default::default()
+        };
+        engine.handle_trade_event(user_id, market_id, Side::Ask, event, None);
         ask.set_size(remaining_size);
-        engine.handle_cancellation(&mut ask);
+        cancel(&engine, &ask);
 
         assert_eq!(
             engine.get_balance(user_id, base_asset_id),
             UserBalance::new(initial_base - fill_size, 0)
         );
-        // Gross quote is one atomic unit. Pre-#163 the 10 bp fee floored to zero and the
-        // seller kept the unit; with #163's per-fill div_ceil the fee is one unit, i.e. the
-        // whole proceeds. This is the ceil-per-fill overcharge tracked against #163 -- the
-        // stacked behaviour is asserted here so it cannot regress silently either way.
+        // Gross quote is 1_000_000_002. The 10 bp fee of 1_000_000.002 is rounded up per fill
+        // (#163's div_ceil) to 1_000_001, so the seller nets 999_000_001.
         assert_eq!(
             engine.get_balance(user_id, quote_asset_id),
-            UserBalance::new(0, 0)
+            UserBalance::new(999_000_001, 0)
         );
     }
 
@@ -905,20 +866,14 @@ mod tests {
     fn test_shipped_eth_bid_with_zero_quote_cost_is_rejected() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
-        let mut bid = OrderCommand::place_order(
-            TimeInForce::Gtc,
-            40,
-            30_000,
-            333_333_333,
-            Side::Bid,
-            market_id,
-            1,
-        );
+        // 9_999 gwei at price 1 costs 0.9999 micro-USDT, which floors to zero.
+        let mut bid =
+            OrderCommand::place_order(TimeInForce::Gtc, 40, 1, 9_999, Side::Bid, market_id, 1);
 
         // Before #111, locking zero succeeded and admitted an uncollateralized BID.
-        engine.pre_process_command(&mut bid, price_cache);
+        engine.pre_process_command(&mut bid, &price_cache);
 
         assert_eq!(bid.status, Status::Rejected);
     }
@@ -928,7 +883,7 @@ mod tests {
     fn test_shipped_eth_bid_partial_fill_cancel_has_no_collateral_residue() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let base_asset_id = base_asset(market_id);
         let quote_asset_id = quote_asset(market_id);
@@ -937,7 +892,7 @@ mod tests {
         let order_size = 1_000_000_000;
         let fill_size = 333_333_334;
         let remaining_size = order_size - fill_size;
-        let initial_quote = 10;
+        let initial_quote = 3_000_000_000;
 
         engine.set_balance(user_id, quote_asset_id, UserBalance::new(initial_quote, 0));
         let mut bid = OrderCommand::place_order(
@@ -949,25 +904,24 @@ mod tests {
             market_id,
             1,
         );
-        engine.pre_process_command(&mut bid, price_cache);
+        engine.pre_process_command(&mut bid, &price_cache);
 
-        // MatcherTradeEvent implements Drop (PR #179): the functional-update form
-        // would move out of a Drop type, so assign the fields instead.
-        let mut event = common::MatcherTradeEvent::default();
-        event.price = price;
-        event.size = fill_size;
-        event.maker_user_id = user_id + 1;
-        event.matched_order_id = 2;
-        event.maker_original_size = fill_size;
+        let event = common::TradeFill {
+            price,
+            size: fill_size,
+            maker_user_id: user_id + 1,
+            matched_order_id: 2,
+            ..Default::default()
+        };
         engine.handle_trade_event(
             user_id,
             market_id,
             Side::Bid,
-            &mut event,
+            event,
             Some((bid.order_id, price)),
         );
         bid.set_size(remaining_size);
-        engine.handle_cancellation(&mut bid);
+        cancel(&engine, &bid);
 
         // PR #163 rounds per-fill fees UP; this expectation predated it.
         let fee = (fill_size * 20).div_ceil(10_000);
@@ -977,7 +931,7 @@ mod tests {
         );
         assert_eq!(
             engine.get_balance(user_id, quote_asset_id),
-            UserBalance::new(initial_quote - 1, 0),
+            UserBalance::new(initial_quote - 1_000_000_002, 0),
             "lock(total) must equal spent(fill) + unlock(remainder)"
         );
     }
@@ -987,12 +941,12 @@ mod tests {
     fn test_shipped_eth_one_token_fee_arithmetic_does_not_overflow() {
         let mut specs = HashMap::new();
         let market_id = add_shipped_spec(ShippedScaling::EthUsdt, &mut specs);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let quote_asset_id = quote_asset(market_id);
         let user_id = 60;
         let price = 30_000;
-        let one_eth = 1_000_000_000_000_000_000;
+        let one_eth = 1_000_000_000;
 
         engine.set_balance(user_id, quote_asset_id, UserBalance::new(3_000_000_000, 0));
         let mut bid = OrderCommand::place_order(
@@ -1004,21 +958,20 @@ mod tests {
             market_id,
             1,
         );
-        engine.pre_process_command(&mut bid, price_cache);
+        engine.pre_process_command(&mut bid, &price_cache);
 
-        // MatcherTradeEvent implements Drop (PR #179): the functional-update form
-        // would move out of a Drop type, so assign the fields instead.
-        let mut event = common::MatcherTradeEvent::default();
-        event.price = price;
-        event.size = one_eth;
-        event.maker_user_id = user_id + 1;
-        event.matched_order_id = 2;
-        event.maker_original_size = one_eth;
+        let event = common::TradeFill {
+            price,
+            size: one_eth,
+            maker_user_id: user_id + 1,
+            matched_order_id: 2,
+            ..Default::default()
+        };
         engine.handle_trade_event(
             user_id,
             market_id,
             Side::Bid,
-            &mut event,
+            event,
             Some((bid.order_id, price)),
         );
 
@@ -1026,7 +979,7 @@ mod tests {
             engine
                 .get_balance(user_id, base_asset(market_id))
                 .available(),
-            998_000_000_000_000_000
+            998_000_000
         );
     }
 
@@ -1248,9 +1201,10 @@ mod tests {
         );
     }
 
-    /// R1(k) waits only on journaling(k), so R1 can apply a deposit before R2 has settled an
-    /// EARLIER trade of the same user. Drive the stages in exactly that legal interleaving: the
-    /// deposit's published balance must still include the trade.
+    /// R2 snapshots a deposit's balance in sequence order with its settlements. Drive the stages
+    /// by hand so that R1 applies a deposit before R2 has settled an EARLIER trade of the same
+    /// user (the pipeline's R1 waits for that settlement first): the published balance must still
+    /// include the trade.
     #[test]
     fn deposit_balance_includes_an_earlier_trade_settled_after_r1_applied_the_deposit() {
         let mut specs = HashMap::new();
@@ -1261,7 +1215,7 @@ mod tests {
         let spec = specs.get_mut(&market_id).unwrap();
         spec.quote_scale_k = 10;
 
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let risk_engines: Arc<Vec<RiskEngine>> = Arc::new(
             (0..4)
                 .map(|shard_id| RiskEngine::new(specs.clone(), shard_id, 4))
@@ -1274,7 +1228,7 @@ mod tests {
             .collect();
         let r1 = |cmd: &mut OrderCommand| {
             for engine in risk_engines.iter() {
-                engine.pre_process_command(cmd, Arc::clone(&price_cache));
+                engine.pre_process_command(cmd, &price_cache);
             }
         };
         let r2 = |cmd: OrderCommand| {
@@ -1303,7 +1257,7 @@ mod tests {
             1,
         );
         r1(&mut ask);
-        router.process_order(&mut ask, Arc::clone(&price_cache));
+        router.process_order(&mut ask, &price_cache);
         assert_eq!(r2(ask).status, Status::Placed);
 
         // Trade N: R1 and matching have run, R2 has not.
@@ -1317,10 +1271,10 @@ mod tests {
             2,
         );
         r1(&mut bid);
-        router.process_order(&mut bid, Arc::clone(&price_cache));
+        router.process_order(&mut bid, &price_cache);
         assert_eq!(bid.status, Status::Filled);
 
-        // Deposit D > N: its R1 runs ahead of N's R2.
+        // Deposit D > N: its R1 runs before N's R2.
         let deposit_amount = 1_000;
         let mut deposit = OrderCommand::deposit_funds(taker_id, deposit_amount, base_asset_id);
         r1(&mut deposit);
@@ -1343,6 +1297,86 @@ mod tests {
             0,
             "after N and D",
         );
+    }
+
+    /// The taker's and the maker's R2 shards settle one fill at the same time, as in the
+    /// pipeline. Under Miri this also checks that they never alias the command (audit core 11).
+    #[test]
+    fn cross_shard_fill_is_settled_by_both_shards_at_once() {
+        let mut specs = HashMap::new();
+        let (base_asset_id, quote_asset_id) = (1, 2);
+        let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
+        add_spec(market_id, &mut specs);
+        specs.get_mut(&market_id).unwrap().quote_scale_k = 10;
+        let price_cache = PriceCache::new(specs.keys());
+        let risk_engines: Arc<Vec<RiskEngine>> = Arc::new(
+            (0..4)
+                .map(|shard_id| RiskEngine::new(specs.clone(), shard_id, 4))
+                .collect(),
+        );
+        let mut router = MatchingEngineRouter::new(0, 1);
+        router.add_market(market_id);
+        let checker = BalanceChecker::new(&risk_engines);
+        let (maker_id, taker_id) = (101, 42); // shards 1 and 2
+        let (price, size) = (5000, 10_000);
+        checker.set_balance(maker_id, base_asset_id, size, 0);
+        checker.set_balance(taker_id, quote_asset_id, 5_000_000, 0);
+        let mut admit = |mut cmd: OrderCommand| {
+            for engine in risk_engines.iter() {
+                engine.pre_process_command(&mut cmd, &price_cache);
+            }
+            router.process_order(&mut cmd, &price_cache);
+            cmd
+        };
+        let ask = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            maker_id,
+            price,
+            size,
+            Side::Ask,
+            market_id,
+            1,
+        );
+        assert_eq!(admit(ask).status, Status::Placed);
+        let bid = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            taker_id,
+            price,
+            size,
+            Side::Bid,
+            market_id,
+            2,
+        );
+        let bid = admit(bid);
+        assert_eq!(bid.status, Status::Filled);
+
+        // The ring slot, which the four R2 handlers share.
+        struct Slot(UnsafeCell<OrderCommand>);
+        // SAFETY: as in the ring; each handler writes only what its shard settles.
+        unsafe impl Sync for Slot {}
+        let slot = Slot(UnsafeCell::new(bid));
+        let r2_handlers: Vec<_> = (0..4usize)
+            .map(|shard_id| crate::create_risk_r2_handler!(shard_id, &risk_engines))
+            .collect();
+        let shared = &slot;
+        std::thread::scope(|scope| {
+            for handler in &r2_handlers {
+                scope.spawn(move || handler(&shared.0, 0, false));
+            }
+        });
+        let bid = slot.0.into_inner();
+
+        // 20 bp taker fee on 10_000 base, 10 bp maker fee on 5_000_000 quote.
+        assert_eq!(
+            bid.balance,
+            [UserBalance::new(9_980, 0), UserBalance::new(0, 0)]
+        );
+        let fill = bid.events().expect("one fill");
+        assert_eq!(
+            fill.maker_balance,
+            [UserBalance::new(0, 0), UserBalance::new(4_995_000, 0)]
+        );
+        assert_eq!((fill.taker_fee, fill.maker_fee), (20, 5_000));
     }
 
     /// The events stage publishes one balance per maker, from that maker's LAST fill in the
@@ -1756,8 +1790,8 @@ mod tests {
         let response = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(response.status, Status::Placed);
         let l2 = response.l2_data.as_ref().unwrap();
-        assert_eq!(l2.bid_prices, [90]);
-        assert_eq!(l2.ask_prices, [100, 120]);
+        assert_eq!(l2.bids().0, [90]);
+        assert_eq!(l2.asks().0, [100, 120]);
     }
 
     #[test]
@@ -1772,9 +1806,7 @@ mod tests {
             mut producer,
             risk_engines,
             receiver: rx,
-        } = setup(specs.clone());
-
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        } = setup(specs);
 
         let maker_id = 101; // Shard 1
         let taker_id = 42; // Shard 2
@@ -1811,7 +1843,6 @@ mod tests {
         });
         let maker_placed = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
         assert_eq!(maker_placed.status, Status::Placed);
-        price_cache.update_prices(market_id, 0, maker_ask_price); // Manually update price cache
 
         // 4. Place Taker's IOC Market Buy order, larger than available liquidity
         let taker_order_size = 10_000;
@@ -1942,8 +1973,7 @@ mod tests {
         );
 
         let l2 = response.l2_data.as_ref().unwrap();
-        assert_eq!(l2.ask_prices, [110, 120]);
-        assert_eq!(l2.ask_volumes, [10, 10]);
+        assert_eq!(l2.asks(), (&[110, 120][..], &[10, 10][..]));
     }
 
     #[test]
@@ -2806,5 +2836,337 @@ mod tests {
         // Final state check could be added here for all users, but the intermediate checks
         // provide a more granular verification of the system's behavior under stress.
         println!("Multi-market stress test completed successfully.");
+    }
+
+    /// A client may cancel a bid and re-place it without waiting for the cancel's response. R1
+    /// then handles the re-place before R2 has released the cancelled bid's collateral; it must
+    /// still be placed, as it is when the client waits and when a replay re-decides it.
+    #[test]
+    fn cancel_then_replace_without_waiting_is_always_placed() {
+        let (base, quote) = (1u16, 2u16);
+        let market_id = (u32::from(quote) << 16) | u32::from(base);
+        let mut specs = HashMap::new();
+        add_spec(market_id, &mut specs);
+        let (price, size) = (5_000, 10_000);
+        let cost = specs[&market_id].calculate_quote_cost(price, size).unwrap();
+        let TestEngine {
+            mut producer,
+            risk_engines,
+            receiver: rx,
+        } = setup(specs);
+        let user_id = 42;
+        // Exactly one bid's worth: the re-place needs the cancelled bid's collateral back.
+        BalanceChecker::new(&risk_engines).set_balance(user_id, quote, cost, 0);
+        let bid = || {
+            OrderCommand::place_order(
+                TimeInForce::Gtc,
+                user_id,
+                price,
+                size,
+                Side::Bid,
+                market_id,
+                1,
+            )
+        };
+
+        producer.publish(|cmd| *cmd = bid());
+        let mut placed = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
+        assert_eq!(placed.status, Status::Placed);
+        for round in 0..1_000 {
+            let order_id = placed.order_id;
+            producer.publish(|cmd| {
+                *cmd = OrderCommand::cancel_order(order_id, user_id, Side::Bid, market_id);
+            });
+            producer.publish(|cmd| *cmd = bid());
+            let cancelled = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
+            assert_eq!(cancelled.status, Status::Cancelled, "round {round}");
+            placed = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
+            assert_eq!(placed.status, Status::Placed, "round {round}: re-place");
+        }
+    }
+
+    /// STP_CANCEL_MAKER: a bid that would cross its user's own ask cancels the ask, and R2
+    /// releases the ask's locked base.
+    #[test]
+    fn stp_cancel_releases_the_makers_lock() {
+        let (base, quote) = (1u16, 2u16);
+        let market_id = (u32::from(quote) << 16) | u32::from(base);
+        let mut specs = HashMap::new();
+        add_spec(market_id, &mut specs);
+        let cost = specs[&market_id].calculate_quote_cost(49_000, 3).unwrap();
+        let TestEngine {
+            mut producer,
+            risk_engines,
+            receiver: rx,
+        } = setup(specs);
+        let user_id = 101;
+        let checker = BalanceChecker::new(&risk_engines);
+        checker.set_balance(user_id, base, 1_000, 0);
+        checker.set_balance(user_id, quote, 1_000_000, 0);
+        let order = |price, size, side| {
+            OrderCommand::place_order(TimeInForce::Gtc, user_id, price, size, side, market_id, 1)
+        };
+
+        producer.publish(|cmd| *cmd = order(48_000, 5, Side::Ask));
+        assert_eq!(
+            rx.recv_timeout(PIPELINE_DEADLINE).unwrap().status,
+            Status::Placed
+        );
+        checker.check(user_id, base, 995, 5, "the ask locks its base");
+
+        producer.publish(|cmd| *cmd = order(49_000, 3, Side::Bid));
+        let bid = rx.recv_timeout(PIPELINE_DEADLINE).unwrap();
+        assert_eq!((bid.status, bid.size), (Status::Placed, 3));
+        let after = [
+            UserBalance::new(1_000, 0),
+            UserBalance::new(1_000_000 - cost, cost),
+        ];
+        assert_eq!(bid.balance, after, "the response includes the release");
+        checker.check(
+            user_id,
+            base,
+            1_000,
+            0,
+            "the cancelled ask's base is released",
+        );
+        checker.check(user_id, quote, 1_000_000 - cost, cost, "the bid rests");
+    }
+
+    /// Replay publishes the journal back to back, so R1 runs ahead of R2; a live client that
+    /// waits for each response never lets it. A burst must decide every command as a paced run
+    /// does. Each round pins one race: a re-place right after its cancel, withdrawals of
+    /// proceeds R2 has not credited yet, and a market buy priced right after the ask it lifts.
+    #[test]
+    fn a_burst_decides_like_a_paced_run() {
+        let (base, quote) = (1u16, 2u16);
+        let market_id = (u32::from(quote) << 16) | u32::from(base);
+        let mut specs = HashMap::new();
+        add_spec(market_id, &mut specs); // maker 10 bp, taker 20 bp, slippage 5 bp
+        let spec = specs[&market_id].clone();
+        let (a, b, c) = (42, 101, 7); // shards 2, 1 and 3
+        let (p, s) = (5_000, 10_000);
+        let cost = |price| spec.calculate_quote_cost(price, s).unwrap();
+        let fee = |amount: u64, bp: u64| (amount * bp).div_ceil(10_000);
+        const ROUNDS: u64 = 300;
+
+        // (command, expected status, expected response price)
+        let mut script = Vec::new();
+        for i in 0..ROUNDS {
+            let order = |user, price, side, tif, n| {
+                let mut cmd = OrderCommand::place_order(tif, user, price, s, side, market_id, 0);
+                cmd.order_id = 20 * i + n;
+                cmd
+            };
+            let ask_i = p + 1 + i;
+            let cap_i = ask_i + ask_i * 5 / 10_000;
+            let gtc = TimeInForce::Gtc;
+            script.extend([
+                (order(a, p, Side::Bid, gtc, 1), Status::Placed, None),
+                (
+                    OrderCommand::cancel_order(20 * i + 1, a, Side::Bid, market_id),
+                    Status::Cancelled,
+                    None,
+                ),
+                (order(a, p, Side::Bid, gtc, 3), Status::Placed, None),
+                (order(b, p, Side::Ask, gtc, 4), Status::Filled, None),
+                (
+                    OrderCommand::withdraw_funds(b, cost(p) - fee(cost(p), 20), quote),
+                    Status::Processed,
+                    None,
+                ),
+                (
+                    OrderCommand::withdraw_funds(a, s - fee(s, 10), base),
+                    Status::Processed,
+                    None,
+                ),
+                (
+                    OrderCommand::deposit_funds(a, cost(p), quote),
+                    Status::Processed,
+                    None,
+                ),
+                (
+                    OrderCommand::deposit_funds(b, s, base),
+                    Status::Processed,
+                    None,
+                ),
+                (order(b, ask_i, Side::Ask, gtc, 8), Status::Placed, None),
+                (
+                    order(c, u64::MAX, Side::Bid, TimeInForce::Ioc, 9),
+                    Status::Filled,
+                    Some(cap_i),
+                ),
+                (
+                    OrderCommand::withdraw_funds(b, cost(ask_i) - fee(cost(ask_i), 10), quote),
+                    Status::Processed,
+                    None,
+                ),
+                (
+                    OrderCommand::deposit_funds(b, s, base),
+                    Status::Processed,
+                    None,
+                ),
+            ]);
+        }
+
+        let run = |paced: bool| {
+            let TestEngine {
+                mut producer,
+                risk_engines,
+                receiver: rx,
+            } = setup_with(specs.clone(), ReplayControl::enabled());
+            let checker = BalanceChecker::new(&risk_engines);
+            checker.set_balance(a, quote, cost(p), 0);
+            checker.set_balance(b, base, s, 0);
+            checker.set_balance(c, quote, 10u64.pow(15), 0);
+            let mut responses = Vec::with_capacity(script.len());
+            for (cmd, _, _) in &script {
+                producer.publish(|slot| *slot = cmd.clone());
+                if paced {
+                    responses.push(rx.recv_timeout(PIPELINE_DEADLINE).unwrap());
+                }
+            }
+            while responses.len() < script.len() {
+                responses.push(rx.recv_timeout(PIPELINE_DEADLINE).unwrap());
+            }
+            for (k, (response, (cmd, status, price))) in responses.iter().zip(&script).enumerate() {
+                assert_eq!(
+                    response.status, *status,
+                    "paced={paced} command {k}: {:?} {}",
+                    cmd.command, cmd.order_id
+                );
+                if let Some(price) = price {
+                    assert_eq!(response.price, *price, "paced={paced} command {k}: cap");
+                }
+            }
+            // Balance snapshots may include a later command R1 already admitted (events.rs
+            // contract item 4), so the runs are compared on decisions and on the final ledger.
+            let decisions: Vec<_> = responses
+                .iter()
+                .map(|r| (r.command, r.order_id, r.status, r.price, r.size))
+                .collect();
+            let ledger: Vec<_> = [
+                (a, base),
+                (a, quote),
+                (b, base),
+                (b, quote),
+                (c, base),
+                (c, quote),
+            ]
+            .map(|(user, asset)| risk_engines[(user & 3) as usize].get_balance(user, asset))
+            .to_vec();
+            (decisions, ledger)
+        };
+
+        let burst = run(false);
+        let paced = run(true);
+        assert_eq!(
+            burst.0, paced.0,
+            "a burst decided differently from a paced run"
+        );
+        assert_eq!(burst.1, paced.1, "a burst left a different ledger");
+        let bought = (0..ROUNDS).map(|i| cost(p + 1 + i)).sum::<u64>();
+        assert_eq!(
+            paced.1,
+            [
+                UserBalance::new(0, 0),
+                UserBalance::new(cost(p), 0),
+                UserBalance::new(s, 0),
+                UserBalance::new(0, 0),
+                UserBalance::new(ROUNDS * (s - fee(s, 20)), 0),
+                UserBalance::new(10u64.pow(15) - bought, 0),
+            ]
+        );
+    }
+
+    /// Four R1 and four R2 shards move money at once under a back-to-back burst of crossing
+    /// GTC, IOC, FOK and market orders and cancels, between users on three shards. Per asset,
+    /// the users' balances plus the fees the fills report must add up to what they were given.
+    #[test]
+    fn burst_conserves_every_asset() {
+        let (base, quote) = (1u16, 2u16);
+        let market_id = (u32::from(quote) << 16) | u32::from(base);
+        let mut specs = HashMap::new();
+        add_spec(market_id, &mut specs); // maker 10 bp, taker 20 bp, slippage 5 bp
+        // Replay mode keeps the order ids the burst assigns, so it can cancel its own orders.
+        let TestEngine {
+            mut producer,
+            risk_engines,
+            receiver: rx,
+        } = setup_with(specs, ReplayControl::enabled());
+        let users = [101u64, 102, 103]; // shards 1, 2 and 3
+        let funded = [(base, 1_000_000_000u64), (quote, 1_000_000_000_000u64)];
+        let checker = BalanceChecker::new(&risk_engines);
+        for user in users {
+            for (asset, amount) in funded {
+                checker.set_balance(user, asset, amount, 0);
+            }
+        }
+
+        let mut burst = Vec::new();
+        for i in 0..25u64 {
+            let [u, v, w] = [0, 1, 2].map(|k| users[((i + k) % 3) as usize]);
+            let p = 5_000 + i % 7 * 10;
+            let order = |n, user, price, size, side, tif| {
+                let mut cmd = OrderCommand::place_order(tif, user, price, size, side, market_id, 0);
+                cmd.order_id = 10 * i + n;
+                cmd
+            };
+            let (gtc, ioc, fok) = (TimeInForce::Gtc, TimeInForce::Ioc, TimeInForce::Fok);
+            burst.extend([
+                order(1, u, p, 10_000, Side::Ask, gtc),
+                order(2, v, p - 10, 6_000, Side::Bid, gtc),
+                order(3, w, u64::MAX, 4_000, Side::Bid, ioc), // market buy
+                order(4, u, p - 20, 5_000, Side::Ask, fok),
+                order(5, w, 0, 3_000, Side::Ask, ioc), // market sell
+                order(6, u, p + 5, 2_000, Side::Bid, gtc), // meets u's own ask: STP
+                order(7, w, p, 1_000, Side::Ask, gtc),
+                OrderCommand::cancel_order(10 * i + 6, u, Side::Bid, market_id),
+                order(9, v, p - 30, 50_000, Side::Ask, fok), // more than the bids hold
+            ]);
+        }
+        for cmd in &burst {
+            producer.publish(|slot| *slot = cmd.clone());
+        }
+        let responses: Vec<OrderCommand> = burst
+            .iter()
+            .map(|_| rx.recv_timeout(PIPELINE_DEADLINE).unwrap())
+            .collect();
+
+        // Each fee is in the asset its side received: base for the bid, quote for the ask.
+        let mut fees = [0u128; 2];
+        for response in &responses {
+            let (taker, maker) = match response.side {
+                Side::Bid => (0, 1),
+                Side::Ask => (1, 0),
+            };
+            let mut fill = response.events();
+            while let Some(event) = fill {
+                fees[taker] += u128::from(event.taker_fee);
+                fees[maker] += u128::from(event.maker_fee);
+                fill = event.next_event.as_deref();
+            }
+        }
+        assert!(
+            fees.iter().all(|&fee| fee > 0),
+            "the burst traded: {fees:?}"
+        );
+
+        for (k, (asset, amount)) in funded.into_iter().enumerate() {
+            let held: u128 = users
+                .iter()
+                .map(|&user| {
+                    u128::from(
+                        risk_engines[(user & 3) as usize]
+                            .get_balance(user, asset)
+                            .total(),
+                    )
+                })
+                .sum();
+            assert_eq!(
+                held + fees[k],
+                3 * u128::from(amount),
+                "asset {asset}: balances plus fees after the burst"
+            );
+        }
     }
 }

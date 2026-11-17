@@ -10,18 +10,23 @@ use rusteron_archive::{
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use super::ServerError;
 use super::progress::{DRAIN_TIMEOUT, PipelineProgress};
+use crate::utils::offer_once;
 
 const ARCHIVE_OFFER_RETRY_LIMIT: usize = 5_000;
 const OFFER_RETRY_BACKOFF: Duration = Duration::from_millis(1);
-const RESPONSE_OFFER_RETRY_LIMIT: usize = 10;
+/// How long a gateway's replies may keep failing (its channel full, or gone) before the core
+/// closes its session. Aeron's publication window is the per-gateway buffer, so a failed offer
+/// already means the gateway has not read for far longer than a healthy one takes; and the
+/// gateway gives a request 5 s, so a reply older than that answers nobody.
+pub(super) const SLOW_GATEWAY_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, PartialEq, Eq)]
 enum OfferResult {
@@ -43,34 +48,20 @@ fn classify_offer_result(result: i64) -> OfferResult {
     }
 }
 
-fn classify_response_offer_result(result: i64) -> OfferResult {
-    if result == i64::from(AERON_PUBLICATION_NOT_CONNECTED) {
-        OfferResult::Fatal
-    } else {
-        classify_offer_result(result)
-    }
-}
-
-/// Offers once, then re-offers a retryable result at most `retry_limit` times with
-/// `OFFER_RETRY_BACKOFF` between attempts. Returns the last offer result.
-fn offer_response(retry_limit: usize, mut offer: impl FnMut() -> i64) -> i64 {
-    let mut result = offer();
-    for _ in 0..retry_limit {
-        if classify_response_offer_result(result) != OfferResult::Retryable {
-            break;
-        }
-        std::thread::sleep(OFFER_RETRY_BACKOFF);
-        result = offer();
-    }
-    result
-}
-
 /// Manages Gateway Publications from gateway id 0 to MAX_GATEWAYS - 1
 /// Index MAX_GATEWAYS is reserved for archival publication
 pub struct Publications {
     gateways: [ArcSwapOption<AeronPublication>; MAX_GATEWAYS + 1],
+    /// Per gateway: the millisecond (`elapsed_ms`) of the first failed reply offer since the last
+    /// delivered one; 0 while replies are being delivered.
+    failing_since_ms: [AtomicU64; MAX_GATEWAYS],
+    /// Per gateway: set when its reply publication is dropped for `SLOW_GATEWAY_TIMEOUT` of
+    /// failed offers; the server thread then closes that session (`take_closing`).
+    closing: [AtomicBool; MAX_GATEWAYS],
+    started: Instant,
     progress: PipelineProgress,
     journal_tail: AtomicU64,
+    delivered: AtomicU64,
 }
 
 impl Publications {
@@ -78,12 +69,23 @@ impl Publications {
         Self {
             progress: PipelineProgress::new(),
             journal_tail: AtomicU64::new(0),
+            delivered: AtomicU64::new(0),
             gateways: core::array::from_fn::<
                 ArcSwapOption<AeronPublication>,
                 { MAX_GATEWAYS + 1 },
                 _,
             >(|_| ArcSwapOption::const_empty()),
+            failing_since_ms: core::array::from_fn(|_| AtomicU64::new(0)),
+            closing: core::array::from_fn(|_| AtomicBool::new(false)),
+            started: Instant::now(),
         }
+    }
+
+    /// Milliseconds since this process's publications were created, never 0.
+    fn elapsed_ms(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_millis())
+            .unwrap_or(u64::MAX)
+            .saturating_add(1)
     }
 
     /// Call after a successful ingress publication, before polling more ingress.
@@ -97,7 +99,17 @@ impl Publications {
     }
 
     pub fn drain_pipeline(&self) -> Result<(), ServerError> {
-        self.progress.drain(DRAIN_TIMEOUT)
+        self.drain_pipeline_within(DRAIN_TIMEOUT)
+    }
+
+    /// [`Self::drain_pipeline`], failing once `stall` passes without progress.
+    pub fn drain_pipeline_within(&self, stall: Duration) -> Result<(), ServerError> {
+        self.progress.drain(stall)
+    }
+
+    /// The last sequence submitted to the pipeline; -1 before the first.
+    pub fn submitted_sequence(&self) -> i64 {
+        self.progress.submitted_sequence()
     }
 
     pub(super) fn archive_publication(&self) -> Option<Arc<AeronPublication>> {
@@ -108,8 +120,9 @@ impl Publications {
         self.gateways[MAX_GATEWAYS].store(Some(Arc::new(publication)));
     }
 
-    /// Timestamp of the last command in the journal when this process started, which journaling
-    /// stamps every live command above. The server sets it before it accepts any command.
+    /// Timestamp of the last command journaled so far: the journal's last command when this
+    /// process started, which the server sets before it accepts any command, then each command
+    /// journaling stamps (above it). A snapshot records it as the last command it holds.
     ///
     /// 0 while there is none: an empty archive, or journaling disabled (no archive control
     /// channel). Timestamps, and the order ids derived from them, then follow the wall clock
@@ -122,12 +135,27 @@ impl Publications {
         self.journal_tail.store(timestamp, Ordering::Release);
     }
 
+    /// The delivered watermark W as the brokers last acknowledged its record (the value read at
+    /// start until then), so a restart reads at least this: every event of every command up to
+    /// this timestamp is acknowledged.
+    pub fn delivered(&self) -> u64 {
+        self.delivered.load(Ordering::Acquire)
+    }
+
+    /// Raises W to `timestamp`; a lower value (a late report) leaves it.
+    pub fn set_delivered(&self, timestamp: u64) {
+        self.delivered.fetch_max(timestamp, Ordering::AcqRel);
+    }
+
     pub fn set(
         &self,
         gateway_id: u8,
         publication: Arc<AeronPublication>,
     ) -> Result<(), ServerError> {
         let index = Self::gateway_index(gateway_id)?;
+        // A new session starts healthy, whatever the one before it did.
+        self.failing_since_ms[index].store(0, Ordering::Relaxed);
+        self.closing[index].store(false, Ordering::Release);
         self.gateways[index].store(Some(publication));
         Ok(())
     }
@@ -154,65 +182,97 @@ impl Publications {
         Ok(index)
     }
 
-    /// Sends `cmd` back to the gateway that submitted it, retrying a back-pressured offer up to
-    /// `RESPONSE_OFFER_RETRY_LIMIT` times.
-    // Publisher (event handler thread)
+    /// Records a reply offer's result for `index`. True when the gateway has been undeliverable
+    /// for `SLOW_GATEWAY_TIMEOUT`, so its session must go.
+    fn record_reply(&self, index: usize, result: i64, now_ms: u64) -> bool {
+        if result >= 0 {
+            self.failing_since_ms[index].store(0, Ordering::Relaxed);
+            return false;
+        }
+        let since = match self.failing_since_ms[index].compare_exchange(
+            0,
+            now_ms,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => now_ms,
+            Err(since) => since,
+        };
+        now_ms.saturating_sub(since) >= SLOW_GATEWAY_TIMEOUT.as_millis() as u64
+    }
+
+    /// For the server thread's poll: whether this gateway's session must be closed because its
+    /// replies could not be delivered (`publish_response`).
+    pub fn take_closing(&self, gateway_id: u8) -> bool {
+        let index = usize::from(gateway_id);
+        index < MAX_GATEWAYS
+            && self.closing[index].load(Ordering::Acquire)
+            && self.closing[index].swap(false, Ordering::Acquire)
+    }
+
+    /// Sends `cmd` back to its gateway with one non-blocking offer (`offer_once`). The events
+    /// thread answers every gateway and the ingress thread reads every gateway's commands, so
+    /// this never sleeps. A reply the gateway's channel has no room for is dropped: its events
+    /// are already in Kafka, and the gateway answers 408 and resolves the outcome from the read
+    /// model. A gateway undeliverable for `SLOW_GATEWAY_TIMEOUT` loses its session, so it stops
+    /// sending orders the core could not answer, and reconnects.
     pub fn publish_response(&self, cmd: &OrderCommand) {
-        self.send_response(cmd, RESPONSE_OFFER_RETRY_LIMIT);
-    }
-
-    /// Sends `cmd` back to its gateway with a single offer that never sleeps. For the ingress poll
-    /// thread, where a retry backoff would stall every gateway's commands; a reply lost to
-    /// back-pressure surfaces at the gateway as its request timeout.
-    pub fn try_publish_response(&self, cmd: &OrderCommand) {
-        self.send_response(cmd, 0);
-    }
-
-    fn send_response(&self, cmd: &OrderCommand, retry_limit: usize) {
         let gateway_id = cmd.route_gateway_id;
-        let ptr = match self.get(gateway_id) {
-            Ok(ptr) => ptr,
+        let index = match Self::gateway_index(gateway_id) {
+            Ok(index) => index,
             Err(e) => {
                 error!("gateway-{gateway_id}: invalid gateway id to send response: {e}");
                 return;
             }
         };
-        let publication = ptr.as_ref();
-        if publication.is_none() {
-            error!(
-                "gateway-{}: No publication found to send response",
-                gateway_id
+        let Some(publication) = self.gateways[index].load_full() else {
+            debug!(
+                gateway_id,
+                client_order_id = cmd.client_order_id,
+                "no session to answer"
             );
             return;
+        };
+        let mut buffer = [0; ORDERCOMMANDSIZE];
+        if let Err(e) = encode_order_command(cmd, &mut buffer) {
+            error!("gateway-{gateway_id}: Failed to encode processed OrderCommand: {e:?}");
+            return;
         }
-        let publication = publication.unwrap();
-        let mut response_buffer = [0; ORDERCOMMANDSIZE];
-        match encode_order_command(cmd, &mut response_buffer) {
-            Ok(_) => {
-                // Send the processed command back
-                let result = offer_response(retry_limit, || {
-                    publication.offer::<AeronReservedValueSupplierLogger>(&response_buffer, None)
-                });
-                if result >= 0 {
-                    debug!(
-                        "gateway-{}: Successfully sent processed OrderCommand",
-                        gateway_id
-                    );
-                } else {
-                    error!(
-                        gateway_id,
-                        client_order_id = cmd.client_order_id,
-                        order_id = cmd.order_id,
-                        final_status = ?cmd.status,
-                        last_result_code = result,
-                        "Failed to send processed OrderCommand"
-                    );
-                }
-            }
-            Err(e) => {
-                error!(
-                    "gateway-{}: Failed to encode processed OrderCommand: {:?}",
-                    gateway_id, e
+        let result =
+            offer_once(|| publication.offer::<AeronReservedValueSupplierLogger>(&buffer, None));
+        let was_failing = self.failing_since_ms[index].load(Ordering::Relaxed) != 0;
+        let close = self.record_reply(index, result, self.elapsed_ms());
+        if result >= 0 {
+            return;
+        }
+        if !was_failing {
+            warn!(
+                gateway_id,
+                result,
+                "gateway stopped reading replies; dropping replies until it reads or its session closes"
+            );
+        }
+        debug!(
+            gateway_id,
+            client_order_id = cmd.client_order_id,
+            order_id = cmd.order_id,
+            final_status = ?cmd.status,
+            result,
+            "reply dropped"
+        );
+        if close {
+            // Drop this session's publication only: a session that replaced it meanwhile keeps
+            // its own. The server thread finishes the close (`take_closing`).
+            let previous = self.gateways[index].compare_and_swap(&publication, None);
+            if previous
+                .as_ref()
+                .is_some_and(|previous| Arc::ptr_eq(previous, &publication))
+            {
+                self.closing[index].store(true, Ordering::Release);
+                warn!(
+                    gateway_id,
+                    timeout_ms = SLOW_GATEWAY_TIMEOUT.as_millis() as u64,
+                    "gateway undeliverable for the slow-gateway timeout; closing its session"
                 );
             }
         }
@@ -293,9 +353,7 @@ mod tests {
     }
 
     use rusteron_archive::bindings::{
-        AERON_PUBLICATION_ADMIN_ACTION, AERON_PUBLICATION_BACK_PRESSURED, AERON_PUBLICATION_CLOSED,
-        AERON_PUBLICATION_ERROR, AERON_PUBLICATION_MAX_POSITION_EXCEEDED,
-        AERON_PUBLICATION_NOT_CONNECTED,
+        AERON_PUBLICATION_CLOSED, AERON_PUBLICATION_ERROR, AERON_PUBLICATION_MAX_POSITION_EXCEEDED,
     };
 
     #[test]
@@ -319,44 +377,6 @@ mod tests {
     }
 
     #[test]
-    fn classifies_response_and_archive_offer_results() {
-        assert_eq!(
-            classify_response_offer_result(i64::from(AERON_PUBLICATION_NOT_CONNECTED)),
-            OfferResult::Fatal
-        );
-        assert_eq!(
-            classify_offer_result(i64::from(AERON_PUBLICATION_NOT_CONNECTED)),
-            OfferResult::Retryable
-        );
-
-        for result in [
-            AERON_PUBLICATION_BACK_PRESSURED,
-            AERON_PUBLICATION_ADMIN_ACTION,
-        ] {
-            assert_eq!(
-                classify_response_offer_result(i64::from(result)),
-                OfferResult::Retryable
-            );
-            assert_eq!(
-                classify_offer_result(i64::from(result)),
-                OfferResult::Retryable
-            );
-        }
-
-        for result in [
-            AERON_PUBLICATION_CLOSED,
-            AERON_PUBLICATION_MAX_POSITION_EXCEEDED,
-            AERON_PUBLICATION_ERROR,
-        ] {
-            assert_eq!(
-                classify_response_offer_result(i64::from(result)),
-                OfferResult::Fatal
-            );
-            assert_eq!(classify_offer_result(i64::from(result)), OfferResult::Fatal);
-        }
-    }
-
-    #[test]
     fn classifies_fatal_offer_results() {
         for result in [
             AERON_PUBLICATION_CLOSED,
@@ -369,40 +389,19 @@ mod tests {
     }
 
     #[test]
-    fn single_offer_response_never_retries_back_pressure() {
-        let back_pressured = i64::from(AERON_PUBLICATION_BACK_PRESSURED);
-        let mut offers = 0;
-
-        let result = offer_response(0, || {
-            offers += 1;
-            back_pressured
-        });
-
-        // One offer means no backoff sleep was taken on the caller's thread.
-        assert_eq!(offers, 1);
-        assert_eq!(result, back_pressured);
-    }
-
-    #[test]
-    fn response_offer_retries_only_retryable_results_and_is_bounded() {
-        let mut offers = 0;
-        offer_response(RESPONSE_OFFER_RETRY_LIMIT, || {
-            offers += 1;
-            i64::from(AERON_PUBLICATION_BACK_PRESSURED)
-        });
-        assert_eq!(offers, RESPONSE_OFFER_RETRY_LIMIT + 1);
-
-        let mut results = [i64::from(AERON_PUBLICATION_ADMIN_ACTION), 0].into_iter();
-        assert_eq!(
-            offer_response(RESPONSE_OFFER_RETRY_LIMIT, || results.next().unwrap()),
-            0
+    fn a_gateway_whose_replies_keep_failing_is_closed_after_the_timeout() {
+        let p = Publications::new();
+        let (bp, nc) = (
+            i64::from(AERON_PUBLICATION_BACK_PRESSURED),
+            i64::from(AERON_PUBLICATION_NOT_CONNECTED),
         );
-
-        let mut offers = 0;
-        offer_response(RESPONSE_OFFER_RETRY_LIMIT, || {
-            offers += 1;
-            i64::from(AERON_PUBLICATION_NOT_CONNECTED)
-        });
-        assert_eq!(offers, 1);
+        assert!(!p.record_reply(1, bp, 1)); // the first failure starts the clock
+        assert!(!p.record_reply(1, bp, 999)); // inside the budget: dropped, session kept
+        assert!(!p.record_reply(1, 0, 1_000)); // a delivered reply ends the incident
+        assert!(!p.record_reply(1, nc, 1_001));
+        assert!(!p.record_reply(1, nc, 2_000));
+        assert!(p.record_reply(1, nc, 2_001)); // 1 s of continuous failure: close
+        assert!(!p.record_reply(2, bp, 2_001)); // another gateway's clock is its own
+        assert!(!p.take_closing(1)); // only publish_response sets the flag
     }
 }

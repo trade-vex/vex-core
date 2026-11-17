@@ -19,30 +19,28 @@ Test Framework → VexCore → [Journaling, Risk, Orderbook] → Events Handler 
 
 ### Prerequisites
 
-1. VexCore server: `VEX_ENV=development cargo run --bin test_server` (`VEX_ENV` is required, as for the server)
-1. VexCore server: `cargo run --bin test_server`
-2. Kafka with a Schema Registry: the server publishes to its configured broker and registers its
-   schemas at `schema_registry_url` (default `http://localhost:8081`, override with `VEX__SCHEMA_REGISTRY_URL`); the suite reads the events
-   back from `TestConfig::kafka_brokers` (default `localhost:19092`, Redpanda's host listener in
-   `tests/docker-compose.yml`). The core's topics must exist: `cargo xtask kafka apply` creates
-   them from `deploy/kafka/topics.toml` (`--single-broker` for a broker of one)
+Docker, and the images `cargo xtask build-docker` builds. Each run starts its own stack
+(`tests/docker-compose.yml`: Redpanda with its Schema Registry, the Aeron archive and `vex-server`,
+which runs the `vex-core` binary), applies the core's Kafka topics to it, starts a host media driver
+(the archive image's `MediaDriver`) for the test client, and tears everything down at the end. The
+suite reads the events back from `TestConfig::kafka_brokers` (default `localhost:19092`, Redpanda's
+host listener).
 
 ### Execute
 
 ```bash
 # Comprehensive integration test (RECOMMENDED - all order types in single test)
-cargo run --bin run_test_suite all
+cargo xtask test integration             # or: make test
 
 # Individual test suites (state-aware, single continuous test per suite)
-cargo run --bin run_test_suite gtc          # GTC orders (3 sections)
-cargo run --bin run_test_suite ioc          # IOC orders (5 sections)
-cargo run --bin run_test_suite fok          # FOK orders (6 sections)
-cargo run --bin run_test_suite cancellation # Cancellations (8 sections)
-cargo run --bin run_test_suite balance      # Balance operations
+cargo xtask test integration gtc          # GTC orders (3 sections)
+cargo xtask test integration ioc          # IOC orders (5 sections)
+cargo xtask test integration fok          # FOK orders (6 sections)
+cargo xtask test integration cancellation # Cancellations (8 sections)
+cargo xtask test integration balance      # Balance operations
 
 # Options
-cargo run --bin run_test_suite all --verbose    # Detailed logging
-cargo run --bin run_test_suite all --fail-fast  # Stop on first failure
+cargo xtask test integration all --verbose    # Detailed logging
 ```
 
 ## Test Philosophy: State-Aware Continuous Testing
@@ -62,17 +60,16 @@ Example: Comprehensive test Section 3 uses orderbook from Section 2, Section 4 u
 
 **Single massive test combining all order types in realistic trading scenario.**
 
-**10 Sections:**
+**9 Sections:**
 1. Setup - Fund users (50M USD, 5000 BTC each)
 2. Build Orderbook - Multi-level GTC orders
 3. IOC vs Liquidity - Partial fills against existing book
 4. FOK Orders - All-or-nothing scenarios
 5. Active Cancellations - Cancel during trading
-6. Mixed Stress Test - Rapid GTC/IOC/FOK sequence
-7. Edge Cases - Self-match prevention
-8. Multi-Level Matching - Orders crossing multiple levels
-9. Partial + Cancel - Cancel partially filled orders
-10. Final Verification - Balance invariants
+6. Edge Cases - Self-match prevention
+7. Multi-Level Matching - Orders crossing multiple levels
+8. Partial + Cancel - Cancel partially filled orders
+9. Conservation - Per asset, the users' totals plus the trades' fees equal the deposits
 
 **Runtime**: ~10 seconds
 
@@ -148,16 +145,18 @@ keeps what a downstream reader keeps:
 | `orderbook` | `{market_id}` | `OrderbookEvent` (levels as JSON) | Latest per key: the greatest timestamp |
 
 Every read first takes in all the events the broker holds at that moment. The core publishes
-asynchronously, after it has answered the command, so assertions made right after a command
-either wait first or use a wait-based API.
+asynchronously, and the response can arrive before the events, so an assertion about a command
+first waits for that command's event. Every event a command publishes carries the command's
+timestamp, which its response carries too.
 
 ### Wait-Based APIs
 
 Wait-based APIs handle eventual consistency:
+- `wait_for_balance_after()` / `wait_for_orderbook_after()` - Wait for the key's state as of the
+  command stamped `after` (its response's `timestamp`)
 - `wait_for_trade()` - Poll until trade matching criteria appears
-- `wait_for_orderbook_update()` - Wait for orderbook publication
 - `wait_and_assert_level()` - Wait for specific price level
-- `wait_and_assert_depth()` - Wait for orderbook depth
+- `wait_and_assert_depth()` - Wait for the orderbook as of a command, then check its depth
 
 ## System Invariants
 
@@ -174,7 +173,7 @@ The suites use market 65538 as `config.dev.yaml` specifies it, loaded by `TestCo
 - **Market ID**: 65538 (0x00010002)
 - **Base Asset**: 2 (BTC), native scale 10^8
 - **Quote Asset**: 1 (USD), native scale 10^6, `quote_scale_k` 1
-- **Maker Fee**: 0bp, **Taker Fee**: 0bp
+- **Maker Fee**: 10bp, **Taker Fee**: 20bp, each on the asset that side receives
 - **Slippage**: 150bp (the market-buy price cap above the best ask)
 
 Locked and settled quote amounts are `calculate_quote_cost(price, size)`, not `price * size`: a bid of
@@ -208,6 +207,8 @@ async fn test_example() -> TestResult<()> {
 
     // Phase 2: Kafka verification: the bid locks its quote cost (5,000 on market 65538)
     let locked = ctx.market_spec().calculate_quote_cost(50_000, 10).expect("fits in u64");
+    let timeout = ctx.config().event_timeout;
+    ctx.kafka.wait_for_balance_after(1, 1, response.timestamp, timeout).await?;
     let mut verifier = BalanceVerifier::new(&mut ctx.kafka);
     verifier.assert_locked_eq(1, 1, locked).await?;
 
@@ -222,7 +223,7 @@ When adding tests:
 2. Use wait-based APIs for Kafka verification
 3. Handle leftover state from previous sections
 4. Document expected state transitions
-5. Add proper sleep delays between operations, perfomance optmization is not the goal for the test suite, they must be handled separately
+5. Wait for a command's events by its response's `timestamp`, never with a fixed sleep
 
 ## Security
 This test suite is the **security backbone** of VEX-CORE. All changes must maintain type safety, test isolation principles, and comprehensive error handling.

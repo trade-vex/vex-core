@@ -46,31 +46,8 @@ use common::{
 };
 use std::{
     collections::{HashMap, VecDeque},
-    sync::Arc,
+    iter,
 };
-
-macro_rules! error {
-    (
-        event = $event:literal,
-        price_level = $price_level:expr,
-        existing_total = $existing_total:expr,
-        $operand:ident = $amount:expr,
-        $message:literal
-    ) => {
-        eprintln!(
-            concat!(
-                "level=error event=",
-                $event,
-                " price_level={} existing_total={} ",
-                stringify!($operand),
-                "={} message=\"",
-                $message,
-                "\""
-            ),
-            $price_level, $existing_total, $amount
-        );
-    };
-}
 
 pub mod tree;
 mod unit_tests;
@@ -120,17 +97,7 @@ impl PriceLevel {
             }
 
             if let Some(removed_order) = self.orders.remove(pos) {
-                let existing_total = self.total_volume;
-                self.total_volume = existing_total.saturating_sub(removed_order.size as u128);
-                if existing_total < removed_order.size as u128 {
-                    error!(
-                        event = "price_level_volume_underflow",
-                        price_level = removed_order.price,
-                        existing_total = existing_total,
-                        subtrahend = removed_order.size,
-                        "price level total volume underflowed; saturated at zero"
-                    );
-                }
+                self.total_volume -= u128::from(removed_order.size); // add_order added it
                 cmd.set_price(removed_order.price);
                 cmd.set_size(removed_order.size);
                 cmd.set_user_id(removed_order.user_id);
@@ -217,6 +184,26 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 }
 
                 if maker_order.user_id == cmd.user_id {
+                    // STP_CANCEL_MAKER (spec §8.2): the taker's own resting order is cancelled,
+                    // not traded against. Size 0 marks the cancel for R2 (unlock) and the events
+                    // stage (Cancelled row).
+                    level.total_volume -= u128::from(maker_order.size); // add_order added it
+                    cmd.attach_event(Box::new(MatcherTradeEvent {
+                        active_order_completed: false,
+                        matched_order_id: maker_order.order_id,
+                        maker_user_id: maker_order.user_id,
+                        matched_order_completed: true,
+                        price,
+                        size: 0,
+                        next_event: None,
+                        maker_balance: [UserBalance::default(); 2],
+                        maker_remaining_size: maker_order.size,
+                        maker_original_size: maker_order.original_size,
+                        maker_fee: 0,
+                        taker_fee: 0,
+                    }));
+                    orders_to_remove.push(idx);
+                    self.orders.remove(&maker_order.order_id);
                     continue;
                 }
 
@@ -225,17 +212,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 // Update sizes
                 remaining_size -= trade_size;
                 maker_order.size -= trade_size;
-                let existing_total = level.total_volume;
-                level.total_volume = existing_total.saturating_sub(trade_size as u128);
-                if existing_total < trade_size as u128 {
-                    error!(
-                        event = "price_level_volume_underflow",
-                        price_level = price,
-                        existing_total = existing_total,
-                        subtrahend = trade_size,
-                        "price level total volume underflowed; saturated at zero"
-                    );
-                }
+                level.total_volume -= u128::from(trade_size); // maker_order.size fell by as much
 
                 let maker_order_completed = maker_order.size == 0;
 
@@ -251,6 +228,8 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                     maker_balance: [UserBalance::default(); 2],
                     maker_remaining_size: maker_order.size,
                     maker_original_size: maker_order.original_size,
+                    maker_fee: 0,
+                    taker_fee: 0,
                 };
                 cmd.attach_event(Box::new(event));
 
@@ -260,9 +239,11 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
                 }
             }
 
-            // Remove filled orders from the queue.
-            for idx in orders_to_remove.iter().rev() {
-                level.orders.remove(*idx).unwrap();
+            // Remove filled orders from the queue, front first: each index is shifted by the
+            // orders already removed, so a filled prefix pops from the front instead of
+            // shifting the rest of the level once per order.
+            for (removed, idx) in orders_to_remove.iter().enumerate() {
+                level.orders.remove(idx - removed).unwrap();
             }
 
             if level.orders.is_empty() {
@@ -300,7 +281,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     /// 5. The command must be PlaceOrder
     ///    All the contraints are NOT checked in the ORDERBOOK, must be guaranteed by upstream systems
     ///    They are not included here to avoid redundant checks that are already made
-    pub fn place_order(&mut self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) {
+    pub fn place_order(&mut self, cmd: &mut OrderCommand, price_cache: &PriceCache) {
         // Skip processing if the order is already rejected
         if cmd.status == Status::Rejected {
             return;
@@ -310,10 +291,8 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             TimeInForce::Gtc => {
                 // Handle GTC (Good 'Til Canceled) orders
                 let remaining = self.match_order(cmd);
-                if remaining == 0 && cmd.size != 0 {
+                if remaining == 0 {
                     cmd.set_status(Status::Filled);
-                } else if cmd.is_market_order() {
-                    cmd.set_status(Status::Cancelled);
                 } else if self.add_to_book(cmd, remaining) {
                     cmd.set_status(if remaining == cmd.size {
                         Status::Placed
@@ -349,12 +328,16 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             }
         }
 
-        // For market sell orders, update cmd.price to actual execution price
+        // A market sell reports its worst execution price: the last fill's (an STP cancel, size
+        // 0, is not a fill).
         if cmd.side == Side::Ask
             && cmd.is_market_order()
-            && let Some(event) = cmd.events()
+            && let Some(price) = iter::successors(cmd.events(), |e| e.next_event.as_deref())
+                .filter(|e| e.size > 0)
+                .map(|e| e.price)
+                .last()
         {
-            cmd.set_price(event.price);
+            cmd.set_price(price);
         }
 
         self.record_snapshot(cmd);
@@ -383,7 +366,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
     ///
     /// Note: This function does not check for the validity of the cancel order command.
     /// All the contraints are NOT checked in the ORDERBOOK, must be guaranteed by upstream systems
-    pub fn cancel_order(&mut self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) {
+    pub fn cancel_order(&mut self, cmd: &mut OrderCommand, price_cache: &PriceCache) {
         // Similar to place_order, if the command is already rejected, in case the user is not found
         if cmd.status == Status::Rejected {
             return;
@@ -416,7 +399,7 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
         self.update_price_cache(price_cache);
     }
 
-    fn update_price_cache(&self, price_cache: Arc<PriceCache>) {
+    fn update_price_cache(&self, price_cache: &PriceCache) {
         price_cache.update_prices(
             self.market_id,
             self.bids.best_price(),
@@ -426,11 +409,13 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
 
     /// Add order to the book
     fn add_to_book(&mut self, cmd: &OrderCommand, remaining_size: u64) -> bool {
+        // A market order's remainder never rests, and R1 accepts a GTC ask at u64::MAX, which
+        // would rest at the PriceCache's no-asks value.
         if cmd.price == 0 || cmd.price == u64::MAX {
             return false;
         }
 
-        let order = Order {
+        self.rest(Order {
             order_id: cmd.order_id,
             user_id: cmd.user_id,
             price: cmd.price,
@@ -440,14 +425,37 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
             time_in_force: cmd.time_in_force,
             status: cmd.status,
             timestamp: cmd.timestamp,
-        };
-        let level = match cmd.side {
-            Side::Bid => self.bids.get_or_create_level(cmd.price),
-            Side::Ask => self.asks.get_or_create_level(cmd.price),
+        });
+        true
+    }
+
+    fn rest(&mut self, order: Order) {
+        let level = match order.side {
+            Side::Bid => self.bids.get_or_create_level(order.price),
+            Side::Ask => self.asks.get_or_create_level(order.price),
         };
         level.add_order(order);
-        self.orders.insert(cmd.order_id, (cmd.price, cmd.side));
-        true
+        self.orders
+            .insert(order.order_id, (order.price, order.side));
+    }
+
+    /// Resting orders in matching priority: bids high to low, then asks low to high, FIFO within
+    /// a level.
+    pub fn resting_orders(&self) -> impl Iterator<Item = &Order> + '_ {
+        self.bids
+            .iter()
+            .chain(self.asks.iter())
+            .flat_map(|(_, level)| level.orders.iter())
+    }
+
+    /// Rests `orders`, as [`Self::resting_orders`] yielded them, in this empty book, and
+    /// publishes its top of book.
+    pub fn restore(&mut self, orders: impl IntoIterator<Item = Order>, price_cache: &PriceCache) {
+        debug_assert!(self.orders.is_empty(), "restore into an empty book only");
+        for order in orders {
+            self.rest(order);
+        }
+        self.update_price_cache(price_cache);
     }
 
     /// Check if an order can be filled completely
@@ -518,19 +526,20 @@ impl<Ask: BookSide, Bid: BookSide> OrderBook<Ask, Bid> {
 
     /// Create a snapshot of the orderbook data with specified depth
     pub fn record_snapshot(&self, cmd: &mut OrderCommand) {
-        // `new` pre-sizes the price and volume vectors to the snapshot depth.
-        let mut l2_data = L2MarketData::new();
+        let mut l2_data = L2MarketData::default();
 
         // Fill bid levels (highest price first)
         for (price, level) in self.get_bids().take(L2SIZE) {
-            l2_data.bid_prices.push(price);
-            l2_data.bid_volumes.push(level.get_total_volume());
+            l2_data.bid_prices[l2_data.bid_depth] = price;
+            l2_data.bid_volumes[l2_data.bid_depth] = level.get_total_volume();
+            l2_data.bid_depth += 1;
         }
 
         // Fill ask levels (lowest price first)
         for (price, level) in self.get_asks().take(L2SIZE) {
-            l2_data.ask_prices.push(price);
-            l2_data.ask_volumes.push(level.get_total_volume());
+            l2_data.ask_prices[l2_data.ask_depth] = price;
+            l2_data.ask_volumes[l2_data.ask_depth] = level.get_total_volume();
+            l2_data.ask_depth += 1;
         }
 
         cmd.l2_data = Some(l2_data);

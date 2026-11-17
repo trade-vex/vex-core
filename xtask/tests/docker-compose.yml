@@ -35,27 +35,16 @@ services:
       timeout: 5s
       retries: 5
 
-  media-driver:
-    build:
-      context: .
-      dockerfile: media-driver.Dockerfile
-    container_name: media-driver
-    # Build-time only: exporting the driver must never be part of a runtime `up`,
-    # because it writes over the binary the host may already be executing.
-    profiles: ["build-tools"]
-    volumes:
-      - ./bin/:/output
-    # This service runs once to generate code, then exits
-    restart: "no"
-
   # The media driver vex-server uses, with the Aeron Archive that journals its commands
   # (archive.Dockerfile). vex-server joins its network and IPC namespaces, so the driver, the
   # archive and the journal outlive a vex-server that is killed and restarted, as they do in
-  # production.
+  # production. xtask also runs this image's MediaDriver on the host, for the test client of the
+  # integration and outbox suites.
   aeron-archive:
     build:
       context: .
       dockerfile: archive.Dockerfile
+    image: vex-aeron-archive
     container_name: vex-aeron-archive
     healthcheck:
       test: ["CMD-SHELL", "test -f /dev/shm/aeron-test-server/cnc.dat"]
@@ -71,7 +60,8 @@ services:
   vex-server:
     build:
       context: ../../
-      dockerfile: xtask/tests/server.Dockerfile
+      dockerfile: xtask/tests/Dockerfile
+      target: server
     container_name: vex-server
     depends_on:
       redpanda:
@@ -80,15 +70,21 @@ services:
         condition: service_healthy
     environment:
       - VEX_ENV=development
-      - VEX_SERVER_HOST=vex-server
-      - VEX_SERVER_PORT=3521
+      - VEX__CORE_NETWORKING__LOCAL_ADDRESS=0.0.0.0
+      - VEX__CORE_NETWORKING__INITIAL_PORT=3521
+      - VEX__CORE_NETWORKING__INITIAL_CONTROL_PORT=3522
       - VEX__KAFKA_BROKER=redpanda:9092
       # Redpanda's built-in Schema Registry (enabled on port 8081 by the image's default config).
       - VEX__SCHEMA_REGISTRY_URL=http://redpanda:8081
+      # In the archive container's /dev/shm (shared through `ipc:`), like the journal: both
+      # outlive a vex-server restart, and go with the stack.
+      - VEX__CORE_NETWORKING__SNAPSHOT_DIR=/dev/shm/vex-snapshots
       - LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
       - RUST_LOG=debug
+      # Plain logs: the suites match `field=value` in them.
+      - NO_COLOR=1
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -x test_server && test -f /dev/shm/aeron-test-server/cnc.dat"]
+      test: ["CMD-SHELL", "pgrep -x vex-core && test -f /dev/shm/aeron-test-server/cnc.dat"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -104,13 +100,13 @@ services:
   vex-client:
     build:
       context: ../../
-      dockerfile: ./xtask/tests/client.Dockerfile
+      dockerfile: xtask/tests/Dockerfile
+      target: client
     # container_name: vex-client
     environment:
-      # Config for the client to find the server (use static IP; Aeron C driver can't resolve Docker DNS names)
+      # Config for the client to find the server: aeron-archive's address, whose network vex-server shares
       - VEX_SERVER_HOST=172.28.1.10
       - VEX_SERVER_PORT=3521
-      - AERON_DIR=/dev/shm/aeron-test-client
       - LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
       - RUST_LOG=debug
     ipc: shareable

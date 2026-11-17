@@ -4,8 +4,8 @@
 
 use crate::builders::OrderBuilder;
 use crate::fixtures::{assets, users};
-use crate::test_framework::TestContext;
 use crate::test_framework::types::*;
+use crate::test_framework::{TestContext, scenario};
 use crate::verifiers::{BalanceVerifier, ResponseVerifier};
 use common::Status;
 use tracing::info;
@@ -37,11 +37,10 @@ pub async fn test_single_deposit(ctx: &mut TestContext) -> TestResult<()> {
 
     // Phase 2: Verify Kafka events
     let event_timeout = ctx.config().event_timeout;
-    let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
-
-    let _balance = balance_verifier
-        .wait_for_balance_update(user_id, asset_id, event_timeout)
+    ctx.kafka
+        .wait_for_balance_after(user_id, asset_id, response.timestamp, event_timeout)
         .await?;
+    let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
 
     // Verify balance values
     balance_verifier
@@ -97,6 +96,7 @@ pub async fn test_multiple_deposits_same_asset(ctx: &mut TestContext) -> TestRes
                 user_id,
                 asset_id,
                 Balance::from_total(deposit1),
+                response1.timestamp,
                 event_timeout,
             )
             .await?;
@@ -112,8 +112,6 @@ pub async fn test_multiple_deposits_same_asset(ctx: &mut TestContext) -> TestRes
     let response2 = ctx.execute_command(cmd2)?;
     ResponseVerifier::assert_status(&response2, Status::Processed)?;
 
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
     // Third deposit
     let cmd3 = OrderBuilder::deposit()
         .user(user_id)
@@ -125,7 +123,9 @@ pub async fn test_multiple_deposits_same_asset(ctx: &mut TestContext) -> TestRes
     ResponseVerifier::assert_status(&response3, Status::Processed)?;
 
     // Wait and verify final total
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    ctx.kafka
+        .wait_for_balance_after(user_id, asset_id, response3.timestamp, event_timeout)
+        .await?;
     {
         let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
         balance_verifier
@@ -162,8 +162,6 @@ pub async fn test_deposits_different_assets(ctx: &mut TestContext) -> TestResult
     let usd_response = ctx.execute_command(usd_cmd)?;
     ResponseVerifier::assert_status(&usd_response, Status::Processed)?;
 
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
     // Deposit BTC
     let btc_cmd = OrderBuilder::deposit()
         .user(user_id)
@@ -175,10 +173,13 @@ pub async fn test_deposits_different_assets(ctx: &mut TestContext) -> TestResult
     ResponseVerifier::assert_status(&btc_response, Status::Processed)?;
 
     // Verify both balances
-    let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
-    let _balance = balance_verifier
-        .wait_for_balance_update(user_id, assets::BTC, timeout)
+    ctx.kafka
+        .wait_for_balance_after(user_id, assets::USD, usd_response.timestamp, timeout)
         .await?;
+    ctx.kafka
+        .wait_for_balance_after(user_id, assets::BTC, btc_response.timestamp, timeout)
+        .await?;
+    let mut balance_verifier = BalanceVerifier::new(&mut ctx.kafka);
     balance_verifier
         .assert_total_eq(user_id, assets::USD, usd_amount)
         .await?;
@@ -201,60 +202,16 @@ pub async fn test_deposits_different_assets(ctx: &mut TestContext) -> TestResult
 /// Run all balance test scenarios
 pub async fn run_all(ctx: &mut TestContext) -> TestResult<Vec<ScenarioResult>> {
     let mut results = Vec::new();
-
-    // Test 1: Single deposit
-    let start = std::time::Instant::now();
-    match test_single_deposit(ctx).await {
-        Ok(_) => {
-            results.push(ScenarioResult::success(
-                "single_deposit".to_string(),
-                start.elapsed(),
-            ));
-        }
-        Err(e) => {
-            results.push(ScenarioResult::failure(
-                "single_deposit".to_string(),
-                start.elapsed(),
-                e,
-            ));
-        }
-    }
-
-    // Test 2: Multiple deposits same asset
-    let start = std::time::Instant::now();
-    match test_multiple_deposits_same_asset(ctx).await {
-        Ok(_) => {
-            results.push(ScenarioResult::success(
-                "multiple_deposits_same_asset".to_string(),
-                start.elapsed(),
-            ));
-        }
-        Err(e) => {
-            results.push(ScenarioResult::failure(
-                "multiple_deposits_same_asset".to_string(),
-                start.elapsed(),
-                e,
-            ));
-        }
-    }
-
-    // Test 3: Deposits different assets
-    let start = std::time::Instant::now();
-    match test_deposits_different_assets(ctx).await {
-        Ok(_) => {
-            results.push(ScenarioResult::success(
-                "deposits_different_assets".to_string(),
-                start.elapsed(),
-            ));
-        }
-        Err(e) => {
-            results.push(ScenarioResult::failure(
-                "deposits_different_assets".to_string(),
-                start.elapsed(),
-                e,
-            ));
-        }
-    }
-
+    scenario!(results, "single_deposit", test_single_deposit(ctx));
+    scenario!(
+        results,
+        "multiple_deposits_same_asset",
+        test_multiple_deposits_same_asset(ctx)
+    );
+    scenario!(
+        results,
+        "deposits_different_assets",
+        test_deposits_different_assets(ctx)
+    );
     Ok(results)
 }

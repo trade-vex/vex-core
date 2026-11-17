@@ -9,12 +9,12 @@ use std::str::FromStr;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Environment {
-    /// Development environment - relaxed security, verbose logging, local defaults
+    /// Development environment - relaxed security, local defaults
     #[default]
     Development,
-    /// Test environment - moderate security, structured logging, test-friendly defaults
+    /// Test environment - moderate security, test-friendly defaults
     Test,
-    /// Production environment - strict security, optimized logging, production defaults
+    /// Production environment - strict security, production defaults
     Production,
 }
 
@@ -84,15 +84,6 @@ impl Environment {
             format!("/etc/vex/{}.yml", base_name),
             format!("/etc/vex/{}.json", base_name),
         ]
-    }
-
-    /// Get environment-specific configuration prefix for environment variables
-    pub fn env_prefix(&self) -> String {
-        match self {
-            Environment::Development => "VEX_DEV".to_string(),
-            Environment::Test => "VEX_TEST".to_string(),
-            Environment::Production => "VEX_PROD".to_string(),
-        }
     }
 }
 

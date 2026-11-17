@@ -8,7 +8,7 @@
 //! The test suite is organized into several modules:
 //!
 //! - `test_framework`: Core test infrastructure (TestContext, TestClient, KafkaVerifier)
-//! - `builders`: Fluent APIs for creating test data (OrderBuilder, ScenarioBuilder)
+//! - `builders`: Fluent APIs for creating test data (OrderBuilder)
 //! - `verifiers`: Assertion utilities for validating system state
 //! - `scenarios`: Pre-built test scenarios organized by functionality
 //! - `fixtures`: Reusable test data and configurations
@@ -73,7 +73,7 @@
 //! - Market ID: 65538 (0x00010002)
 //! - Base Asset: 2 (BTC), native scale 10^8
 //! - Quote Asset: 1 (USD), native scale 10^6, `quote_scale_k` 1
-//! - Maker Fee: 0bp, Taker Fee: 0bp
+//! - Maker Fee: 10bp, Taker Fee: 20bp, each on the asset that side receives
 //! - Slippage: 150bp (the market-buy price cap above the best ask)
 
 pub mod builders;
@@ -82,8 +82,3 @@ pub mod kafka_topics;
 pub mod scenarios;
 pub mod test_framework;
 pub mod verifiers;
-
-// Re-export commonly used types
-pub use builders::OrderBuilder;
-pub use test_framework::{TestContext, types::*};
-pub use verifiers::{BalanceVerifier, OrderbookVerifier, ResponseVerifier, TradeVerifier};

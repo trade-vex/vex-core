@@ -3,7 +3,9 @@
 # waits for it to initialize, and then waits indefinitely.
 
 echo "Starting Aeron Media Driver for Client..."
-/usr/local/bin/aeronmd &
+java --add-opens java.base/sun.nio.ch=ALL-UNNAMED --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
+  -Daeron.dir=/dev/shm/aeron-test-client -Daeron.dir.delete.on.start=true \
+  -cp /opt/aeron/aeron-all.jar io.aeron.driver.MediaDriver &
 
 # Wait for CnC file to be created by the media driver
 CNC_FILE="/dev/shm/aeron-test-client/cnc.dat"

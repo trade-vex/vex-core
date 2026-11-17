@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, info};
 
-use crate::server::{RECORDING_CHANNEL, RECORDING_STREAM_ID, ServerError};
+use crate::server::{RECORDING_CHANNEL, RECORDING_STREAM_ID, ServerError, SnapshotHeader};
 
 /// How often a start that waits for the journal's release asks what still holds it.
 const JOURNAL_RELEASE_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -42,24 +42,18 @@ impl ExtendedRecordingDescriptor {
 }
 
 #[derive(Debug)]
-#[allow(unused)]
 pub struct RecordingInfo {
-    pub control_session_id: i64,
-    pub correlation_id: i64,
     pub recording_id: i64,
-    pub start_timestamp: i64,
-    pub stop_timestamp: i64,
     pub start_position: i64,
     pub stop_position: i64,
     pub initial_term_id: i32,
-    pub segment_file_length: i32,
     pub term_buffer_length: i32,
-    pub mtu_length: i32,
+    /// Where the journal may be purged below a snapshot.
+    pub segment_file_length: i32,
     pub session_id: i32,
-    pub stream_id: i32,
-    pub stripped_channel_length: usize,
-    pub original_channel_length: usize,
-    pub source_identity_length: usize,
+    /// When the archive started the recording (epoch ms), which with its id tells it from a
+    /// recording of a wiped archive that reused the id.
+    pub start_timestamp: i64,
 }
 
 #[derive(Debug, Default)]
@@ -67,23 +61,6 @@ pub struct RecorderDescriptorReader {
     /// Recordings with valid positions, oldest first: live, empty or holding commands.
     pub recordings: Vec<RecordingInfo>,
     pub skipped_invalid: usize,
-}
-
-#[derive(Debug)]
-pub struct RecordingCounter;
-
-impl AeronArchiveRecordingDescriptorConsumerFuncCallback for RecordingCounter {
-    fn handle_aeron_archive_recording_descriptor_consumer_func(
-        &mut self,
-        _recording_descriptor: AeronArchiveRecordingDescriptor,
-    ) {
-    }
-}
-
-impl RecorderDescriptorReader {
-    pub fn new() -> Self {
-        Self::default()
-    }
 }
 
 /// What holds the journal while a start waits for it (see [`await_journal_release`]).
@@ -254,6 +231,48 @@ pub fn replay_lineage(recordings: &[RecordingInfo]) -> Option<&RecordingInfo> {
     recordings.last().filter(|record| holds_commands(record))
 }
 
+/// Where a start's replay of `record` begins: at the loaded snapshot, which must be of this
+/// recording, or at the recording's start, which must not have been purged.
+pub(super) fn replay_start(
+    record: &RecordingInfo,
+    loaded: Option<SnapshotHeader>,
+) -> Result<i64, ServerError> {
+    match loaded {
+        Some(snapshot)
+            if snapshot.recording_id != record.recording_id
+                || snapshot.recording_started != record.start_timestamp
+                || !(record.start_position..=record.stop_position).contains(&snapshot.position) =>
+        {
+            Err(foreign_snapshot(
+                snapshot,
+                &format!(
+                    "recording {} [{}, {}] started at {}",
+                    record.recording_id,
+                    record.start_position,
+                    record.stop_position,
+                    record.start_timestamp
+                ),
+            ))
+        }
+        Some(snapshot) => Ok(snapshot.position),
+        None if record.start_position > 0 => Err(ServerError::ReplayError(format!(
+            "the journal was purged below position {} and no snapshot is at or below the \
+             delivered watermark; see RUNBOOK: No usable snapshot",
+            record.start_position
+        ))),
+        None => Ok(record.start_position),
+    }
+}
+
+/// A loaded snapshot that `journal` does not hold.
+pub(super) fn foreign_snapshot(snapshot: SnapshotHeader, journal: &str) -> ServerError {
+    ServerError::ReplayError(format!(
+        "the snapshot at position {} of recording {} started at {} does not belong to the journal \
+         ({journal}); a ledger reset must delete the snapshots too (RUNBOOK: Resetting the ledger)",
+        snapshot.position, snapshot.recording_id, snapshot.recording_started
+    ))
+}
+
 /// The recording that holds the last command in the journal: the newest one holding any. A newer
 /// empty recording discards an older lineage's state, not the ids and timestamps it issued.
 /// Takes stopped recordings, oldest first.
@@ -333,22 +352,14 @@ impl AeronArchiveRecordingDescriptorConsumerFuncCallback for RecorderDescriptorR
             // Performing a deep copy here is essential;
             // the descriptor lifetime ends after the callback.
             self.recordings.push(RecordingInfo {
-                control_session_id: recording_descriptor.control_session_id,
-                correlation_id: recording_descriptor.correlation_id,
                 recording_id: recording_descriptor.recording_id,
-                start_timestamp: recording_descriptor.start_timestamp,
-                stop_timestamp: recording_descriptor.stop_timestamp,
                 start_position: recording_descriptor.start_position,
                 stop_position: recording_descriptor.stop_position,
                 initial_term_id: recording_descriptor.initial_term_id,
-                segment_file_length: recording_descriptor.segment_file_length,
                 term_buffer_length: recording_descriptor.term_buffer_length,
-                mtu_length: recording_descriptor.mtu_length,
+                segment_file_length: recording_descriptor.segment_file_length,
                 session_id: recording_descriptor.session_id,
-                stream_id: recording_descriptor.stream_id,
-                stripped_channel_length: recording_descriptor.stripped_channel_length,
-                original_channel_length: recording_descriptor.original_channel_length,
-                source_identity_length: recording_descriptor.source_identity_length,
+                start_timestamp: recording_descriptor.start_timestamp,
             });
         } else {
             self.skipped_invalid += 1;
@@ -372,22 +383,14 @@ mod tests {
 
     fn recording(start_position: i64, stop_position: i64) -> RecordingInfo {
         RecordingInfo {
-            control_session_id: 0,
-            correlation_id: 0,
             recording_id: 7,
-            start_timestamp: 0,
-            stop_timestamp: 0,
             start_position,
             stop_position,
             initial_term_id: 1,
-            segment_file_length: TERM_LENGTH as i32,
             term_buffer_length: TERM_LENGTH as i32,
-            mtu_length: 1408,
+            segment_file_length: TERM_LENGTH as i32,
             session_id: 17,
-            stream_id: 2001,
-            stripped_channel_length: 0,
-            original_channel_length: 0,
-            source_identity_length: 0,
+            start_timestamp: 1_000,
         }
     }
 
@@ -611,7 +614,7 @@ mod tests {
     /// The archive's `(recording_id, start, stop)` descriptors, oldest first, as the reader keeps
     /// them.
     fn listed(descriptors: &[(i64, i64, i64)]) -> RecorderDescriptorReader {
-        let mut reader = RecorderDescriptorReader::new();
+        let mut reader = RecorderDescriptorReader::default();
         for &(recording_id, start, stop) in descriptors {
             reader.handle_aeron_archive_recording_descriptor_consumer_func(descriptor(
                 recording_id,
@@ -666,6 +669,57 @@ mod tests {
         assert_eq!(window(0, 2 * TERM_LENGTH + 5 * FRAMESIZE), 2 * TERM_LENGTH);
         // Never before the recording's own start.
         assert_eq!(window(10 * FRAMESIZE, 12 * FRAMESIZE), 10 * FRAMESIZE);
+    }
+
+    #[test]
+    fn a_start_replays_from_its_snapshot_of_this_journal_or_from_an_unpurged_start() {
+        let snapshot = |recording_id, position| {
+            Some(SnapshotHeader {
+                recording_id,
+                position,
+                last_timestamp: 3,
+                recording_started: 1_000,
+            })
+        };
+        let record = recording(0, 5 * FRAMESIZE);
+        assert_eq!(replay_start(&record, None).unwrap(), 0);
+        assert_eq!(
+            replay_start(&record, snapshot(7, 3 * FRAMESIZE)).unwrap(),
+            3 * FRAMESIZE
+        );
+        // At the recording's stop: nothing to replay.
+        assert_eq!(
+            replay_start(&record, snapshot(7, 5 * FRAMESIZE)).unwrap(),
+            5 * FRAMESIZE
+        );
+        // Another recording, one past this one's stop, or this id in a wiped archive.
+        let wiped = snapshot(7, 3 * FRAMESIZE).map(|s| SnapshotHeader {
+            recording_started: 2_000,
+            ..s
+        });
+        for loaded in [
+            snapshot(8, 3 * FRAMESIZE),
+            snapshot(7, 6 * FRAMESIZE),
+            wiped,
+        ] {
+            let error = replay_start(&record, loaded).unwrap_err().to_string();
+            assert!(
+                error.contains(
+                    "does not belong to the journal (recording 7 [0, 480] started at 1000)"
+                ),
+                "{error}"
+            );
+        }
+
+        // Purged below 2 frames: only a snapshot at or above them can start.
+        let purged = recording(2 * FRAMESIZE, 5 * FRAMESIZE);
+        let error = replay_start(&purged, None).unwrap_err().to_string();
+        assert!(error.contains("No usable snapshot"), "{error}");
+        assert!(replay_start(&purged, snapshot(7, FRAMESIZE)).is_err());
+        assert_eq!(
+            replay_start(&purged, snapshot(7, 2 * FRAMESIZE)).unwrap(),
+            2 * FRAMESIZE
+        );
     }
 
     #[test]

@@ -28,6 +28,10 @@ impl PipelineProgress {
         self.completed.store(sequence, Ordering::Release);
     }
 
+    pub(crate) fn submitted_sequence(&self) -> i64 {
+        self.submitted.load(Ordering::Acquire)
+    }
+
     /// Waits until the terminal handler has completed every sequence submitted so far. Fails only
     /// once `stall` passes without `completed` advancing, as `replay::drain_replay` does:
     /// a drain that re-publishes a replay waits for Kafka, which can take as long as Kafka needs,
@@ -69,22 +73,11 @@ pub(crate) fn wait_until(
     }
 }
 
-/// Ingress must already be closed. A failure leaves recording resources alive.
-pub(crate) fn finish_shutdown(
-    drain: impl FnOnce() -> Result<(), ServerError>,
-    flush: impl FnOnce() -> Result<(), ServerError>,
-    close: impl FnOnce() -> Result<(), ServerError>,
-) -> Result<(), ServerError> {
-    drain()?;
-    flush()?;
-    close()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use disruptor::{BusySpin, Producer, build_multi_producer};
-    use std::sync::{Arc, Mutex, mpsc};
+    use std::sync::{Arc, mpsc};
 
     #[test]
     fn c8_2_terminal_ack_blocks_replay_completion() {
@@ -136,72 +129,5 @@ mod tests {
         let error = progress.drain(STALL).unwrap_err();
         assert!(started.elapsed() >= STALL);
         assert!(error.to_string().contains("stalled at 3"), "{error}");
-    }
-
-    #[test]
-    fn c7_1_queued_commands_and_lagging_archive_drain_before_close() {
-        let progress = Arc::new(PipelineProgress::new());
-        let pending = Arc::new(Mutex::new(Vec::new()));
-        let journal = Arc::new(Mutex::new(Vec::new()));
-        let ack = Arc::clone(&progress);
-        let offered = Arc::clone(&pending);
-        let (release, held) = mpsc::channel();
-        let mut producer = build_multi_producer(64, || 0, BusySpin)
-            .handle_events_with(move |cell, sequence, _| {
-                held.recv().unwrap();
-                // SAFETY: This test has a single consumer and reads only its current slot.
-                offered.lock().unwrap().push(unsafe { *cell.get() });
-                ack.completed(sequence);
-            })
-            .build();
-        for value in 0..3 {
-            progress.submitted(producer.try_publish(|v| *v = value).unwrap());
-        }
-        let worker = std::thread::spawn(move || {
-            finish_shutdown(
-                || progress.drain(Duration::from_secs(1)),
-                || {
-                    // The archive deliberately lags publication until this flush step.
-                    assert!(journal.lock().unwrap().is_empty());
-                    let target = pending.lock().unwrap().len();
-                    assert_eq!(target, 3);
-                    wait_until(Duration::from_secs(1), || {
-                        if let Some(value) = pending.lock().unwrap().pop() {
-                            journal.lock().unwrap().push(value);
-                        }
-                        Ok(journal.lock().unwrap().len() == target)
-                    })
-                },
-                || {
-                    let mut recovered = journal.lock().unwrap().clone();
-                    recovered.sort();
-                    assert_eq!(recovered, [0, 1, 2]);
-                    Ok(())
-                },
-            )
-            .unwrap();
-        });
-        for _ in 0..3 {
-            release.send(()).unwrap();
-        }
-        worker.join().unwrap();
-    }
-
-    #[test]
-    fn c7_1_drain_or_archive_failure_does_not_close_recording() {
-        for fail_drain in [true, false] {
-            let result = finish_shutdown(
-                || {
-                    if fail_drain {
-                        Err(ServerError::DrainError("consumer stalled".into()))
-                    } else {
-                        Ok(())
-                    }
-                },
-                || wait_until(Duration::ZERO, || Ok(false)),
-                || panic!("recording must stay open on failure"),
-            );
-            assert!(result.is_err());
-        }
     }
 }

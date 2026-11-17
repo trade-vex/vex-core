@@ -14,6 +14,7 @@ rusteron-archive = { workspace = true}
 # features = ["extra-logging", "log-c-bindings"] 
 rand = "0.8"
 arc-swap = "1.7.1"
+crc32fast = "1.5"
 
 [dev-dependencies]
 test-log = { version = "0.2.15", features = ["trace"] }

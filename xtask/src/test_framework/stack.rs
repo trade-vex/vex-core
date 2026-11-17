@@ -8,15 +8,28 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// Redpanda: the Kafka broker, with its Schema Registry.
 pub const BROKER: &str = "vex-redpanda";
 
-/// The core (`test_server`), its own container's only process. It shares the network and IPC
-/// namespaces of the Aeron archive's container, so the journal outlives it.
+/// The core (the `vex-core` binary), its own container's only process. It shares the network and
+/// IPC namespaces of the Aeron archive's container, so the journal outlives it.
 pub const CORE: &str = "vex-server";
 
+/// Runs `docker args`, returning its output (both streams), or an error that carries it.
 fn docker(args: &[&str]) -> TestResult<String> {
-    cmd("docker", args)
+    let output = cmd("docker", args)
         .stderr_to_stdout()
-        .read()
-        .map_err(TestError::from)
+        .stdout_capture()
+        .unchecked()
+        .run()?;
+    let text = String::from_utf8_lossy(&output.stdout)
+        .trim_end()
+        .to_string();
+    if !output.status.success() {
+        return Err(TestError::Io(std::io::Error::other(format!(
+            "docker {} ({}): {text}",
+            args.join(" "),
+            output.status
+        ))));
+    }
+    Ok(text)
 }
 
 /// The current time, as `docker logs --since` takes it.
@@ -92,5 +105,19 @@ impl Drop for Paused {
         if let Err(e) = docker(&["unpause", self.0]) {
             eprintln!("Failed to unpause {}: {e}", self.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Needs the Docker daemon, as every xtask stack does.
+    #[test]
+    fn a_failed_docker_command_reports_what_docker_said() {
+        let error = docker(&["inspect", "vex-no-such-container"])
+            .unwrap_err()
+            .to_string();
+        assert!(error.to_lowercase().contains("no such object"), "{error}");
     }
 }

@@ -6,25 +6,15 @@
 //!
 //! ## Key Features
 //! - High-performance gateway connection management
-//! - Concurrent session handling with lock-free data structures
+//! - Session handling on one thread, without locks
 //! - Automatic resource cleanup and connection lifecycle management
-//! - Configurable connection limits and authentication
+//! - Up to `MAX_GATEWAYS` gateways, with handshake authentication
 //!
-//! ## Rchitecture
+//! ## Architecture
 //! The server is built around three main components:
 //! - `VexCoreServer`: Main server orchestrating connections and cleanup
 //! - `GatewayManager`: Handles individual gateway sessions and handshakes
 //! - Message handlers: Process Aeron image and fragment events
-//!
-//! ## Usage
-//! ```ignore, rust,no_run
-//! use networking::server::{VexCoreServer};
-//! use vex_config::CoreNetworkingConfig;
-//!
-//! let config = CoreNetworkingConfig::test_defaults();
-//! let mut server = VexCoreServer::new(config).unwrap();
-//! server.start().unwrap(); // Runs indefinitely
-//! ```
 
 mod cmd_handler;
 mod duologue;
@@ -35,39 +25,42 @@ mod progress;
 #[cfg(test)]
 mod recovery_tests;
 mod replay;
+pub mod snapshot;
 
 use crate::server::cmd_handler::ReplayFragmentHandler;
-use crate::server::gateway_handler::{
-    GatewayImageAvailableHandler, GatewayImageUnavailableHandler, HandshakeMessageHandler,
-};
+use crate::server::gateway_handler::HandshakeMessageHandler;
 use crate::server::gateway_manager::GatewayManager;
 use crate::server::replay::{
-    ExtendedRecordingDescriptor, JournalHolders, RecorderDescriptorReader, RecordingCounter,
-    RecordingInfo, assert_replay_complete, await_journal_release, drain_replay,
-    ensure_replayable_recording, ensure_stopped_recordings, fail_on_replay_error,
-    is_live_recording, journal_publication, replay_lineage, tail_recording, tail_window_start,
+    ExtendedRecordingDescriptor, JournalHolders, RecorderDescriptorReader, RecordingInfo,
+    assert_replay_complete, await_journal_release, drain_replay, ensure_replayable_recording,
+    ensure_stopped_recordings, fail_on_replay_error, foreign_snapshot, is_live_recording,
+    journal_publication, replay_lineage, replay_start, tail_recording, tail_window_start,
 };
 use crate::utils::{new_publication_with_mdc, new_subscription_with_handlers};
 use common::{OrderCommand, decode_order_command};
 use disruptor::{MultiProducer, SingleConsumerBarrier};
-use progress::{DRAIN_TIMEOUT, finish_shutdown, wait_until};
+use progress::{DRAIN_TIMEOUT, wait_until};
 use rusteron_archive::bindings::AERON_NULL_COUNTER_ID;
 use rusteron_archive::{
-    Aeron, AeronArchiveAsyncConnect, AeronArchiveReplayParams, AeronAvailableImageLogger,
-    AeronCError, AeronCnc, AeronContext, AeronImage, AeronNotificationLogger, AeronSubscription,
-    AeronUnavailableImageLogger, Handler, IntoCString, SourceLocation,
+    Aeron, AeronArchiveAsyncConnect, AeronArchiveRecordingDescriptorConsumerFuncCallback,
+    AeronArchiveReplayParams, AeronAvailableImageLogger, AeronCError, AeronCnc, AeronContext,
+    AeronImage, AeronNotificationLogger, AeronSubscription, AeronUnavailableImageLogger, Handler,
+    IntoCString, SourceLocation,
 };
 use rusteron_archive::{AeronArchive, AeronArchiveContext};
 use rusteron_media_driver::AeronIdleStrategy;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{debug, error, info, warn};
-use vex_config::{CoreNetworkingConfig, GatewayAuthenticationKey};
+use vex_config::CoreNetworkingConfig;
 
 pub use gateway_publications::Publications;
+pub use snapshot::{Snapshot, SnapshotHeader, StateCapture};
 
 /// Stream ID for gateway communication
 const ALL_GATEWAYS_STREAM_ID: i32 = 1001;
@@ -84,6 +77,13 @@ const STARTUP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 /// publication within two more (draining, then lingering; `aeron.timer.interval`, 1 s by default)
 /// once the archive has recorded what it held; the archive then stops the recording.
 const JOURNAL_RELEASE_MARGIN: Duration = Duration::from_secs(5);
+/// Commands between two snapshots. Bounds a start's replay to about this many (tens of seconds
+/// through the pipeline) and keeps the pause rare: one a minute at 100k/s, one per 1.4 h at 1k/s.
+const SNAPSHOT_EVERY: i64 = 5_000_000;
+/// How long a snapshot waits for the pipeline to stop advancing before it gives up on this round:
+/// a healthy ring (1,024 slots) drains well within it; a stalled one (Kafka down) answers Busy
+/// anyway.
+const SNAPSHOT_DRAIN_STALL: Duration = Duration::from_millis(100);
 
 /// Error types for VEX Core server operations
 #[derive(Error, Debug)]
@@ -158,6 +158,20 @@ impl<F: FnOnce()> Drop for UndoOnError<F> {
     }
 }
 
+/// Snapshots of the engine's state, taken on the server thread with ingress paused.
+struct Snapshotting {
+    dir: PathBuf,
+    /// The recording this run journals to; its start moves up as the journal is purged.
+    recording: RecordingInfo,
+    capture: StateCapture,
+    /// The submitted sequence at the last snapshot taken or attempted; -1 at start.
+    taken_at: i64,
+    /// The newest snapshot this run knows: the one it loaded, then the last it took.
+    previous: Option<SnapshotHeader>,
+    /// The last snapshot's write, off the server thread: whether it succeeded.
+    writer: Option<JoinHandle<bool>>,
+}
+
 /// Enhanced VEX Core server for handling gateway connections
 pub struct VexCoreServer {
     /// Core configuration
@@ -166,10 +180,6 @@ pub struct VexCoreServer {
     gateways: Rc<GatewayManager>,
     /// Shared shutdown flag
     shutdown: Arc<AtomicBool>,
-    /// Image available handler
-    image_available_handler: Handler<GatewayImageAvailableHandler>,
-    /// Image unavailable handler
-    image_unavailable_handler: Handler<GatewayImageUnavailableHandler>,
     /// Handshake message handler
     handshake_handler: Handler<HandshakeMessageHandler>,
     /// Subscription for handshake messages
@@ -180,23 +190,30 @@ pub struct VexCoreServer {
     recording_id: Option<i64>,
     /// Subscription ID for recording (optional, only when archiving is enabled)
     subscription_id: Option<i64>,
+    /// Only when archiving is enabled.
+    snapshots: Option<Snapshotting>,
 }
 
 impl VexCoreServer {
-    /// Creates a new VEX Core instance
+    /// Creates a new VEX Core instance. With an archive, it replays the journal from `loaded`, the
+    /// snapshot the engine's state was restored from, or from the start without one, and takes
+    /// snapshots with `capture` from then on.
     pub fn new(
         config: CoreNetworkingConfig,
-        authentication_key: GatewayAuthenticationKey,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
         publications: Arc<Publications>,
         shutdown: Arc<AtomicBool>,
+        capture: StateCapture,
+        loaded: Option<SnapshotHeader>,
     ) -> Result<Self, ServerError> {
-        // Validate configuration
-        Self::validate_config(&config)?;
         gateway_manager::validate_authentication_config(
             config.enable_authentication,
-            &authentication_key,
+            &config.gateway_authentication_key,
         )?;
+        // Only where the kernel publishes the range (Linux).
+        if let Ok(range) = std::fs::read_to_string(gateway_manager::EPHEMERAL_PORT_RANGE) {
+            gateway_manager::check_gateway_ports_outside(&range, config.base_gateway_port)?;
+        }
 
         if !config.enable_authentication {
             warn!(
@@ -212,7 +229,9 @@ impl VexCoreServer {
         let mut stop_recording_on_error = None;
 
         // Initialize Aeron Archive (only if archive channels are configured)
-        let (archive, subscription_id, recording_id) = if !config.request_control_channel.is_empty()
+        let (archive, subscription_id, recording_id, snapshots) = if !config
+            .request_control_channel
+            .is_empty()
         {
             let archive = Self::initialize_archive(&config, &aeron)?;
             let release_timeout = Self::journal_release_timeout(&config.context_dir)?;
@@ -226,10 +245,13 @@ impl VexCoreServer {
             };
             publications.set_journal_tail(journal_tail);
 
-            // Every start replays the journal, and extends the recording it replayed. An empty
-            // archive holds nothing to replay, so the start is fresh.
+            // Every start replays the journal from its snapshot, and extends the recording it
+            // replayed. An empty archive holds nothing to replay, so the start is fresh.
             let recording = match replay_lineage(&recordings) {
                 None => {
+                    if let Some(loaded) = loaded {
+                        return Err(foreign_snapshot(loaded, "no recording holds commands"));
+                    }
                     info!(target: "replay", action = "no_recording_available");
                     None
                 }
@@ -237,6 +259,7 @@ impl VexCoreServer {
                     &aeron,
                     &archive,
                     record,
+                    loaded,
                     producer.clone(),
                     Arc::clone(&shutdown),
                     Arc::clone(&publications),
@@ -285,6 +308,17 @@ impl VexCoreServer {
                 }
                 Ok(recording_id.is_some())
             })?;
+            let snapshots = Snapshotting {
+                dir: PathBuf::from(&config.snapshot_dir),
+                recording: Self::describe_recording(
+                    &archive,
+                    recording_id.expect("wait_until returned once it was found"),
+                )?,
+                capture,
+                taken_at: -1,
+                previous: loaded,
+                writer: None,
+            };
             publications.set_archive_publication(archive_publication);
 
             info!(
@@ -294,7 +328,12 @@ impl VexCoreServer {
                 core_id = %config.core_id
             );
 
-            (Some(archive), Some(subscription_id), recording_id)
+            (
+                Some(archive),
+                Some(subscription_id),
+                recording_id,
+                Some(snapshots),
+            )
         } else {
             // No journal, so no tail to continue from: timestamps, and the order ids derived from
             // them, follow the wall clock alone (see `Publications::journal_tail`).
@@ -304,11 +343,8 @@ impl VexCoreServer {
                 archive_recording = false,
                 core_id = %config.core_id
             );
-            (None, None, None)
+            (None, None, None, None)
         };
-
-        let image_available_handler = Handler::leak(GatewayImageAvailableHandler);
-        let image_unavailable_handler = Handler::leak(GatewayImageUnavailableHandler);
 
         let publication = new_publication_with_mdc(
             &aeron,
@@ -323,13 +359,12 @@ impl VexCoreServer {
             &config.local_address,
             config.initial_port,
             ALL_GATEWAYS_STREAM_ID,
-            Some(&image_available_handler),
-            Some(&image_unavailable_handler),
+            None::<&Handler<AeronAvailableImageLogger>>,
+            None::<&Handler<AeronUnavailableImageLogger>>,
         )?;
 
         let gateways = Rc::new(GatewayManager::new(
             config.clone(),
-            authentication_key,
             aeron,
             producer,
             Arc::clone(&publications),
@@ -347,12 +382,11 @@ impl VexCoreServer {
             subscription,
             handshake_handler: Handler::leak(handshake_handler),
             shutdown,
-            image_available_handler,
-            image_unavailable_handler,
             subscription_id,
             archive,
             publications,
             recording_id,
+            snapshots,
         })
     }
 
@@ -402,13 +436,20 @@ impl VexCoreServer {
                 }
             }
 
+            if self.snapshots.as_ref().is_some_and(|snapshots| {
+                self.publications.submitted_sequence() - snapshots.taken_at >= SNAPSHOT_EVERY
+            }) {
+                self.take_snapshot();
+            }
+
             AeronIdleStrategy::busy_spinning_idle(std::ptr::null_mut(), 0);
         }
     }
 
     /// Gracefully shuts down the core server
     ///
-    /// Closes all active gateway connections and cleans up resources.
+    /// Drains the pipeline, waits for the archive, writes a snapshot, then closes every gateway
+    /// session.
     /// This method should only be called when the shutdown flag is already set.
     ///
     /// # Returns
@@ -420,50 +461,51 @@ impl VexCoreServer {
             core_id = %self.config.core_id
         );
 
-        self.gateways.shutdown_all_gateways()?;
+        // The poll loop has returned, so no command is read any more. Sessions stay open: the
+        // drain answers every accepted command through them.
+        // shortcut: a gateway's orders offered after this point, before it sees its session close
+        // (<= publication.connection.timeout, 5 s), are never read and end as 408 at the gateway;
+        // upgrade to a CLOSING notice on the reply stream when deploys under load show it.
         self.subscription.close::<AeronNotificationLogger>(None)?;
-        self.image_available_handler.release();
-        self.image_unavailable_handler.release();
         self.handshake_handler.release();
-        // Ingress is closed. Keep the recording subscription and client alive until
-        // accepted commands finish journaling and the archive catches the publication.
-        finish_shutdown(
-            || self.publications.drain_pipeline(),
-            || {
-                if let (Some(archive), Some(recording_id), Some(publication)) = (
-                    self.archive.as_ref(),
-                    self.recording_id,
-                    self.publications.archive_publication(),
-                ) {
-                    let target = publication.position();
-                    if target < 0 {
-                        return Err(ServerError::DrainError(format!(
-                            "archive publication position: {target}"
-                        )));
-                    }
-                    wait_until(DRAIN_TIMEOUT, || {
-                        Ok(archive.get_max_recorded_position(recording_id)? >= target)
-                    })
-                    .map_err(|error| {
-                        ServerError::DrainError(format!(
-                            "recording {recording_id} did not reach publication position {target}: {error}"
-                        ))
-                    })?;
-                }
-                Ok(())
-            },
-            || {
-                if let Some(sub_id) = self.subscription_id
-                    && let Some(ref archive) = self.archive
-                {
-                    archive.stop_recording_subscription(sub_id)?;
-                }
-                if let Some(ref archive) = self.archive {
-                    archive.close()?;
-                }
-                Ok(())
-            },
-        )?;
+        // A failure below leaves the recording open on purpose: the next start needs it.
+        self.publications.drain_pipeline()?;
+        if let (Some(archive), Some(recording_id), Some(publication)) = (
+            self.archive.as_ref(),
+            self.recording_id,
+            self.publications.archive_publication(),
+        ) {
+            let target = publication.position();
+            if target < 0 {
+                return Err(ServerError::DrainError(format!(
+                    "archive publication position: {target}"
+                )));
+            }
+            wait_until(DRAIN_TIMEOUT, || {
+                Ok(archive.get_max_recorded_position(recording_id)? >= target)
+            })
+            .map_err(|error| {
+                ServerError::DrainError(format!(
+                    "recording {recording_id} did not reach publication position {target}: {error}"
+                ))
+            })?;
+        }
+        // The next start loads it and replays nothing, once the events stage has written the
+        // watermark of the last command (it does as the process exits).
+        self.take_snapshot();
+        if let Some(writer) = self.snapshots.as_mut().and_then(|s| s.writer.take()) {
+            let _ = writer.join();
+        }
+        if let Some(sub_id) = self.subscription_id
+            && let Some(ref archive) = self.archive
+        {
+            archive.stop_recording_subscription(sub_id)?;
+        }
+        if let Some(ref archive) = self.archive {
+            archive.close()?;
+        }
+        // Every reply went out during the drain; only now drop the gateway sessions.
+        self.gateways.shutdown_all_gateways()?;
 
         info!(
             target: "core_server",
@@ -473,19 +515,111 @@ impl VexCoreServer {
         Ok(())
     }
 
-    /// Validates the core configuration
-    fn validate_config(config: &CoreNetworkingConfig) -> Result<(), ServerError> {
-        if config.max_gateways == 0 {
-            return Err(ServerError::ConfigurationError(
-                "Max gateways must be greater than 0".to_string(),
-            ));
+    /// Snapshots the engine at the journal's current position, with ingress paused: a drained
+    /// pipeline is the one point where every stage's state reflects the same commands (R1 runs
+    /// ahead of R2 on the same ledger). The file is written off this thread. Then purges the
+    /// journal below the previous snapshot once every later start can do without it. Never fails
+    /// the server: a stalled drain or a failed write is logged, and a later round tries again.
+    fn take_snapshot(&mut self) {
+        let (Some(s), Some(publication)) = (
+            self.snapshots.as_mut(),
+            self.publications.archive_publication(),
+        ) else {
+            return;
+        };
+        // Whether the previous snapshot is on disk: the loaded one is.
+        let written = s
+            .writer
+            .take()
+            .is_none_or(|writer| writer.join().unwrap_or(false));
+        let paused = Instant::now();
+        let drained = self
+            .publications
+            .drain_pipeline_within(SNAPSHOT_DRAIN_STALL);
+        s.taken_at = self.publications.submitted_sequence();
+        if let Err(error) = drained {
+            warn!(target: "snapshot", action = "skipped_pipeline_stalled", error = %error);
+            return;
         }
-        if config.core_id.is_empty() {
-            return Err(ServerError::ConfigurationError(
-                "Core ID cannot be empty".to_string(),
-            ));
+        let header = SnapshotHeader {
+            recording_id: s.recording.recording_id,
+            position: publication.position(),
+            last_timestamp: self.publications.journal_tail(),
+            recording_started: s.recording.start_timestamp,
+        };
+        // Nothing journaled since the previous snapshot, or on this recording at all.
+        if written
+            && header.position
+                == s.previous
+                    .map_or(s.recording.start_position, |previous| previous.position)
+        {
+            return;
         }
-        Ok(())
+        let snapshot = Snapshot {
+            header,
+            state: (s.capture)(),
+        };
+        let pause_ms = paused.elapsed().as_millis() as u64;
+        // Ingress resumes once this returns.
+        let dir = s.dir.clone();
+        let spawned = thread::Builder::new()
+            .name("vex-snapshot".into())
+            .spawn(move || match snapshot::write(&dir, &snapshot) {
+                Ok(bytes) => {
+                    info!(
+                        target: "snapshot",
+                        action = "written",
+                        position = header.position,
+                        last_timestamp = header.last_timestamp,
+                        bytes,
+                        pause_ms
+                    );
+                    true
+                }
+                Err(error) => {
+                    error!(
+                        target: "snapshot",
+                        action = "write_failed",
+                        position = header.position,
+                        error = %error
+                    );
+                    false
+                }
+            });
+        match spawned {
+            Ok(writer) => s.writer = Some(writer),
+            Err(error) => {
+                error!(target: "snapshot", action = "write_failed", error = %error);
+                // Whether the previous one is on disk is unknown now: purge nothing below it.
+                s.previous = None;
+                return;
+            }
+        }
+        // A start may load the previous snapshot until the watermark passes this one.
+        if let Some(previous) = s.previous.replace(header)
+            && written
+            && let Some(base) =
+                snapshot::purge_target(&s.recording, previous, self.publications.delivered())
+            && let Some(archive) = &self.archive
+        {
+            match archive.purge_segments(s.recording.recording_id, base) {
+                Ok(segments) => {
+                    s.recording.start_position = base;
+                    info!(
+                        target: "snapshot",
+                        action = "journal_purged",
+                        new_start_position = base,
+                        segments
+                    );
+                }
+                Err(error) => warn!(
+                    target: "snapshot",
+                    action = "journal_purge_failed",
+                    new_start_position = base,
+                    error = %error
+                ),
+            }
+        }
     }
 
     /// Initializes the Aeron messaging system
@@ -627,12 +761,7 @@ impl VexCoreServer {
             &RECORDING_CHANNEL.into_c_string(),
             RECORDING_STREAM_ID,
         )?;
-        let mut recording_counter = Handler::leak(RecordingCounter);
-        let archive_recording_count =
-            archive.list_recordings(0, i32::MAX, Some(&recording_counter));
-        recording_counter.release();
-        let archive_recording_count = archive_recording_count?;
-        let mut reader = Handler::leak(RecorderDescriptorReader::new());
+        let mut reader = Handler::leak(RecorderDescriptorReader::default());
         let matching_recording_count = archive.list_recordings_for_uri(
             0,
             i32::MAX,
@@ -648,13 +777,26 @@ impl VexCoreServer {
         info!(
             target: "replay",
             action = "recordings_listed",
-            archive_recording_count,
             matching_recording_count,
             skipped_invalid
         );
         ensure_replayable_recording(skipped_invalid)?;
         ensure_stopped_recordings(&recordings)?;
         Ok(recordings)
+    }
+
+    /// The archive's descriptor of `recording_id`, the recording this run journals to.
+    fn describe_recording(
+        archive: &AeronArchive,
+        recording_id: i64,
+    ) -> Result<RecordingInfo, ServerError> {
+        let mut reader = RecorderDescriptorReader::default();
+        archive.list_recording_once(&mut 0, recording_id, |descriptor| {
+            reader.handle_aeron_archive_recording_descriptor_consumer_func(descriptor);
+        })?;
+        reader.recordings.pop().ok_or_else(|| {
+            ServerError::ReplayError(format!("the archive lists no recording {recording_id}"))
+        })
     }
 
     /// Timestamp of the last command in `record`, which must hold one. Replays only the term
@@ -703,16 +845,19 @@ impl VexCoreServer {
         Ok(tail)
     }
 
-    /// Replays `record` into the pipeline and returns the descriptor that extends it.
+    /// Replays `record` into the pipeline, from the snapshot the engine was restored from if any,
+    /// and returns the descriptor that extends it.
     fn start_replay(
         aeron: &Aeron,
         archive: &AeronArchive,
         record: &RecordingInfo,
+        loaded: Option<SnapshotHeader>,
         producer: MultiProducer<OrderCommand, SingleConsumerBarrier>,
         shutdown: Arc<AtomicBool>,
         publications: Arc<Publications>,
     ) -> Result<ExtendedRecordingDescriptor, ServerError> {
         let (recording_id, session_id) = (record.recording_id, record.session_id);
+        let start = replay_start(record, loaded)?;
         info!(
             target: "replay",
             action = "recording_selected",
@@ -723,29 +868,35 @@ impl VexCoreServer {
         );
         let mut message_handler = Handler::leak(ReplayFragmentHandler {
             producer,
-            gateway_id: 0,
             commands_published: 0,
             replay_error: None,
             publications: Arc::clone(&publications),
             shutdown: Arc::clone(&shutdown),
         });
-        let replay_result = Self::replay_range(
-            aeron,
-            archive,
-            recording_id,
-            record.start_position,
-            record.stop_position,
-            &shutdown,
-            |image| {
-                let before = message_handler.commands_published;
-                let fragments = image.poll(Some(&message_handler), 1)?;
-                fail_on_replay_error(message_handler.replay_error.as_deref())?;
-                assert_replay_complete(
-                    i64::from(fragments),
-                    message_handler.commands_published - before,
-                )
-            },
-        );
+        let started = Instant::now();
+        // A zero-length replay never connects its image.
+        let replay_result = if start == record.stop_position {
+            Ok(())
+        } else {
+            Self::replay_range(
+                aeron,
+                archive,
+                recording_id,
+                start,
+                record.stop_position,
+                &shutdown,
+                |image| {
+                    let before = message_handler.commands_published;
+                    let fragments = image.poll(Some(&message_handler), 1)?;
+                    fail_on_replay_error(message_handler.replay_error.as_deref())?;
+                    assert_replay_complete(
+                        i64::from(fragments),
+                        message_handler.commands_published - before,
+                    )
+                },
+            )
+        };
+        let commands = message_handler.commands_published;
         // Release the producer whatever the outcome: a stranded clone would keep the disruptor
         // from shutting down after a failed start. Callbacks are no longer polled.
         message_handler.release();
@@ -757,7 +908,11 @@ impl VexCoreServer {
             target: "replay",
             action = "completed",
             recording_id,
-            session_id
+            session_id,
+            start_position = start,
+            stop_position = record.stop_position,
+            commands,
+            elapsed_ms = started.elapsed().as_millis()
         );
         ExtendedRecordingDescriptor::new(
             record.initial_term_id,

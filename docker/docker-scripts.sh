@@ -8,7 +8,6 @@ function show_help() {
     echo "Usage: $0 <command>"
     echo
     echo "Commands:"
-    echo "  test-media-driver     - Test media driver independently"
     echo "  generate-sbe          - Generate SBE Rust code from ordercmd.xml"
     echo "  start-full            - Start full application (media driver + vex-core)"
     echo "  stop-all              - Stop all containers"
@@ -17,11 +16,6 @@ function show_help() {
     echo "  logs-sbe              - Show SBE generator logs"
     echo "  help                  - Show this help message"
     echo
-}
-
-function test_media_driver() {
-    echo "🚀 Testing Media Driver independently..."
-    docker compose -f docker-compose.media-driver.yml up --build
 }
 
 function generate_sbe() {
@@ -39,21 +33,19 @@ function start_full() {
 
 function stop_all() {
     echo "🛑 Stopping all containers..."
-    docker compose down || true
-    docker compose -f docker-compose.media-driver.yml down || true
+    docker compose --profile tools down || true
 }
 
 function clean_all() {
     echo "🧹 Cleaning up all containers and volumes..."
     stop_all
-    docker compose down -v || true
-    docker compose -f docker-compose.media-driver.yml down -v || true
+    docker compose --profile tools down -v || true
     docker system prune -f
 }
 
 function logs_media_driver() {
     echo "📋 Media Driver logs:"
-    docker compose -f docker-compose.media-driver.yml logs -f media-driver
+    docker compose logs -f media-driver
 }
 
 function logs_sbe() {
@@ -62,9 +54,6 @@ function logs_sbe() {
 }
 
 case "$1" in
-    test-media-driver)
-        test_media_driver
-        ;;
     generate-sbe)
         generate_sbe
         ;;

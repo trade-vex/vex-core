@@ -1,3 +1,4 @@
+use crate::snapshot::EngineState;
 use crate::{create_risk_handler, create_risk_r2_handler};
 use common::{
     CoreMarketSpecification, OrderCommand, OrderCommandType, PriceCache, Status, TimeInForce,
@@ -7,6 +8,7 @@ use disruptor::{
     BusySpin, MultiProducer, ProcessorSettings, SingleConsumerBarrier, build_multi_producer,
 };
 use hashbrown::HashMap;
+use parking_lot::Mutex;
 use processors::{
     events::EventsHandler,
     journaling::{JournalingProcessor, ReplayControl},
@@ -21,10 +23,11 @@ use std::{
     thread::{self, JoinHandle},
 };
 use tracing::{error, info};
-use vex_config::{CoreNetworkingConfig, GatewayAuthenticationKey};
+use vex_config::CoreNetworkingConfig;
 use vex_networking::server::Publications;
 use vex_networking::server::ServerError;
 use vex_networking::server::VexCoreServer;
+use vex_networking::server::{SnapshotHeader, StateCapture};
 
 fn finish_replay(publications: &Publications, control: &ReplayControl) -> EngineResult<()> {
     publications.drain_pipeline().map_err(|error| {
@@ -37,14 +40,12 @@ fn finish_replay(publications: &Publications, control: &ReplayControl) -> Engine
 /// Type alias for the order command producer
 pub type OrderProducer = MultiProducer<OrderCommand, SingleConsumerBarrier>;
 
-#[derive(Clone)]
-pub struct ReplayContext {
-    pub producer: OrderProducer,
-    pub control: ReplayControl,
-}
-
 /// Type alias for a shared reference to the risk engines
 pub type RiskEngines = Arc<Vec<RiskEngine>>;
+
+/// The matching shards, each locked by its own pipeline thread for every command it owns, and by
+/// the server thread for a snapshot, which it takes only while the pipeline is drained.
+pub type Routers = Vec<Arc<Mutex<MatchingEngineRouter>>>;
 
 /// Result type for engine operations
 pub type EngineResult<T> = Result<T, EngineError>;
@@ -91,7 +92,6 @@ pub enum EngineError {
 }
 
 /// Configuration constants for the core engine
-#[cfg(not(feature = "test-config"))]
 mod config {
     /// Number of risk engine shards for parallel processing
     pub const NUM_RISK_ENGINES: usize = 4;
@@ -101,19 +101,10 @@ mod config {
     pub const BUFFER_SIZE: usize = 1024;
 }
 
-/// Test configuration with smaller values for faster testing
-#[cfg(feature = "test-config")]
-mod config {
-    pub const NUM_RISK_ENGINES: usize = 4;
-    pub const NUM_MATCHING_ENGINES: usize = 4;
-    pub const BUFFER_SIZE: usize = 256;
-}
-
 use config::*;
 
 /// Core pinning configuration for processor threads
 #[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "test-config", allow(dead_code))]
 pub struct CorePinning {
     journaling: usize,
     risk_engines: [usize; NUM_RISK_ENGINES],
@@ -167,7 +158,7 @@ impl CorePinning {
         }
 
         Err(EngineError::Configuration(format!(
-            "Core pinning requires CPU cores {required_cores:?}, but the process CPU affinity mask allows {available_cores:?}; missing required cores {missing_cores:?}. Adjust the process cpuset or set ENABLE_CORE_PINNING=false to start without pinning"
+            "Core pinning requires CPU cores {required_cores:?}, but the process CPU affinity mask allows {available_cores:?}; missing required cores {missing_cores:?}. Adjust the process cpuset or set VEX__CORE_NETWORKING__ENABLE_CORE_PINNING=false to start without pinning"
         )))
     }
 
@@ -176,7 +167,7 @@ impl CorePinning {
         let available_cores = core_affinity::get_core_ids()
             .ok_or_else(|| {
                 EngineError::Configuration(format!(
-                    "Core pinning requires CPU cores {required_cores:?}, but the process CPU affinity mask could not be read. Set ENABLE_CORE_PINNING=false to start without pinning"
+                    "Core pinning requires CPU cores {required_cores:?}, but the process CPU affinity mask could not be read. Set VEX__CORE_NETWORKING__ENABLE_CORE_PINNING=false to start without pinning"
                 ))
             })?
             .into_iter()
@@ -215,14 +206,17 @@ impl CorePinning {
 pub struct CoreEngine {
     /// Gateway Publications for sending responses back to gateways
     publications: Arc<Publications>,
-    /// The risk shards the pipeline settles on, kept so their fee totals can be read
-    risk_engines: RiskEngines,
+    /// The risk shards the pipeline settles on, which a snapshot captures
+    pub(crate) risk_engines: RiskEngines,
+    /// The order books, which a snapshot captures
+    pub(crate) routers: Routers,
 }
 
 impl CoreEngine {
     /// Internal constructor that builds the disruptor pipeline
     ///
-    /// This method creates the complete processing pipeline with all stages.
+    /// This method creates the complete processing pipeline with all stages, after restoring the
+    /// risk shards and order books from `state`, a snapshot's, if given.
     ///
     /// # Errors
     ///
@@ -235,6 +229,7 @@ impl CoreEngine {
         publications: Arc<Publications>,
         core_pinning: CorePinning,
         enable_pinning: bool,
+        state: Option<&[u8]>,
     ) -> EngineResult<(Self, OrderProducer)> {
         if enable_pinning {
             core_pinning.validate_process_affinity()?;
@@ -247,6 +242,7 @@ impl CoreEngine {
             publications,
             core_pinning,
             enable_pinning,
+            state,
         )?;
         Ok((engine, producer))
     }
@@ -258,6 +254,7 @@ impl CoreEngine {
         publications: Arc<Publications>,
         core_pinning: CorePinning,
         enable_pinning: bool,
+        state: Option<&[u8]>,
     ) -> EngineResult<(Self, OrderProducer)> {
         let price_cache = Arc::new(PriceCache::new(symbol_specs.keys()));
 
@@ -274,16 +271,35 @@ impl CoreEngine {
 
         let risk_engines_arc = Self::initialize_risk_engines(&symbol_specs, NUM_RISK_ENGINES);
 
-        let matching_engine_routers =
+        let mut matching_engine_routers =
             Self::initialize_matching_engines(&symbol_specs, NUM_MATCHING_ENGINES);
 
-        let router_handlers = matching_engine_routers.into_iter().map(|mut router| {
-            let price_cache_clone = Arc::clone(&price_cache);
+        // Before the pipeline exists, so nothing else touches the shards yet.
+        if let Some(state) = state {
+            EngineState::restore(
+                state,
+                &risk_engines_arc,
+                &mut matching_engine_routers,
+                &price_cache,
+            )?;
+        }
+        let routers: Routers = matching_engine_routers
+            .into_iter()
+            .map(|router| Arc::new(Mutex::new(router)))
+            .collect();
+
+        let router_handlers = routers.iter().map(|router| {
+            let (router, price_cache_clone) = (Arc::clone(router), Arc::clone(&price_cache));
+            // Markets are distributed across shards by `market_id & shard_mask`.
+            let (shard_id, shard_mask) = {
+                let router = router.lock();
+                (u64::from(router.shard_id), router.shard_mask)
+            };
             move |cell: &UnsafeCell<OrderCommand>, _sequence: i64, _end_of_batch: bool| {
                 // SAFETY: This is a shared scalar read; peer matching handlers may read
                 // market_id concurrently, and none of them mutates it.
                 let market_id = unsafe { (*cell.get()).market_id };
-                if !router.market_for_this_handler(market_id as u64) {
+                if u64::from(market_id) & shard_mask != shard_id {
                     return;
                 }
                 // SAFETY: The market predicate above is exclusive, so this router alone in
@@ -295,7 +311,7 @@ impl CoreEngine {
                 {
                     return;
                 }
-                router.process_order(cmd, Arc::clone(&price_cache_clone));
+                router.lock().process_order(cmd, &price_cache_clone);
             }
         });
 
@@ -325,6 +341,7 @@ impl CoreEngine {
         let engine = Self {
             publications,
             risk_engines: risk_engines_arc,
+            routers,
         };
         Ok((engine, producer))
     }
@@ -559,6 +576,7 @@ impl CoreEngine {
     ///
     /// * `producer` - The disruptor producer for publishing orders
     /// * `networking_config` - Network configuration including ports and limits
+    /// * `loaded` - The snapshot the engine was restored from, which the replay starts at
     ///
     /// # Returns
     ///
@@ -572,11 +590,13 @@ impl CoreEngine {
         producer: OrderProducer,
         replay_control: ReplayControl,
         networking_config: CoreNetworkingConfig,
-        gateway_authentication_key: GatewayAuthenticationKey,
+        loaded: Option<SnapshotHeader>,
     ) -> (JoinHandle<Result<(), EngineError>>, Arc<AtomicBool>) {
         let publications = Arc::clone(&self.publications);
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let shutdown_for_thread = Arc::clone(&shutdown_flag);
+        let (risk, routers) = (Arc::clone(&self.risk_engines), self.routers.clone());
+        let capture: StateCapture = Box::new(move || EngineState::capture(&risk, &routers));
 
         let handle = thread::Builder::new()
             .name("vex-core-server".into())
@@ -587,10 +607,11 @@ impl CoreEngine {
                 let producer_guard = producer.clone();
                 let server_result = VexCoreServer::new(
                     networking_config,
-                    gateway_authentication_key,
                     producer,
                     Arc::clone(&publications),
                     shutdown_for_thread,
+                    capture,
+                    loaded,
                 )
                 .map_err(|e| {
                     EngineError::ServerInitialization(format!(
@@ -601,12 +622,11 @@ impl CoreEngine {
                 let mut core_server = match server_result {
                     Ok(server) => server,
                     Err(error) => {
-                        // The pipeline never started doing anything: it is idle and healthy, so
-                        // drop the producer normally. Leaking it here would prevent the
-                        // disruptor's last-producer shutdown and strand the worker threads and
-                        // ring for any caller that survives the error, such as a library caller
-                        // retrying startup.
-                        drop(producer_guard);
+                        // new() ran the replay. If it failed because the terminal consumer is
+                        // stuck (Kafka or the registry down), the last producer's Drop would join
+                        // it with no timeout and the error would never surface. The process exits
+                        // on this error, so leak the handle as below.
+                        std::mem::forget(producer_guard);
                         return Err(error);
                     }
                 };
@@ -648,21 +668,6 @@ impl CoreEngine {
     pub fn publications(&self) -> &Arc<Publications> {
         &self.publications
     }
-
-    /// Trading fees accrued per asset, summed across every risk shard.
-    ///
-    /// Nothing drains the accumulators yet, so this is how the fees are audited. Read it once the
-    /// pipeline is quiescent for a final figure; each shard's total is read under its own lock.
-    #[must_use]
-    pub fn accrued_fees(&self) -> std::collections::BTreeMap<u16, u128> {
-        let mut totals = std::collections::BTreeMap::new();
-        for (asset_id, amount) in self.risk_engines.iter().flat_map(RiskEngine::accrued_fees) {
-            let total: &mut u128 = totals.entry(asset_id).or_default();
-            // Each shard's total is checked against u128::MAX, so this cannot saturate in practice.
-            *total = total.saturating_add(amount);
-        }
-        totals
-    }
 }
 
 #[cfg(test)]
@@ -692,7 +697,7 @@ mod core_pinning_tests {
         );
         assert!(message.contains("affinity mask allows [1, 2, 3, 4, 5, 6, 7, 9"));
         assert!(message.contains("missing required cores [8]"));
-        assert!(message.contains("ENABLE_CORE_PINNING=false"));
+        assert!(message.contains("VEX__CORE_NETWORKING__ENABLE_CORE_PINNING=false"));
     }
 
     #[test]
@@ -784,308 +789,8 @@ mod recovery_tests {
 }
 
 #[cfg(test)]
-pub mod test {
+mod tests {
     use super::*;
-
-    /// Type alias for test handler that intercepts order commands during testing
-    pub type TestHandler = Box<dyn FnMut(&UnsafeCell<OrderCommand>, i64, bool) + Send + 'static>;
-
-    /// Test-specific core pinning configuration
-    /// Uses higher core numbers to avoid conflicts with system processes
-    #[derive(Debug, Clone, Copy)]
-    pub struct TestCorePinning {
-        journaling: usize,
-        risk_engines: [usize; NUM_RISK_ENGINES],
-        matching_engines: [usize; NUM_MATCHING_ENGINES],
-        risk_r2_engines: [usize; NUM_RISK_ENGINES],
-        events: usize,
-    }
-
-    impl Default for TestCorePinning {
-        fn default() -> Self {
-            Self {
-                journaling: 1,
-                risk_engines: [2, 3, 4, 5],
-                matching_engines: [6, 7, 8, 9],
-                risk_r2_engines: [10, 11, 12, 13],
-                events: 14,
-            }
-        }
-    }
-
-    impl From<TestCorePinning> for CorePinning {
-        fn from(pinning: TestCorePinning) -> Self {
-            Self {
-                journaling: pinning.journaling,
-                risk_engines: pinning.risk_engines,
-                matching_engines: pinning.matching_engines,
-                risk_r2_engines: pinning.risk_r2_engines,
-                events: pinning.events,
-            }
-        }
-    }
-
-    /// Test-specific builder that extends CoreEngineBuilder with test functionality
-    pub struct TestEngineBuilder {
-        symbol_specs: Option<HashMap<u32, CoreMarketSpecification>>,
-        journaling_processor: Option<JournalingProcessor>,
-        events_handler: Option<Box<dyn EventsHandler>>,
-        publications: Option<Arc<Publications>>,
-        core_pinning: Option<TestCorePinning>,
-        test_handler: Option<TestHandler>,
-        risk_engines: Option<RiskEngines>,
-    }
-
-    impl TestEngineBuilder {
-        /// Creates a new test builder with default configuration
-        pub const fn new() -> Self {
-            Self {
-                symbol_specs: None,
-                journaling_processor: None,
-                events_handler: None,
-                publications: None,
-                core_pinning: None,
-                test_handler: None,
-                risk_engines: None,
-            }
-        }
-
-        /// Enables CPU pinning for this test
-        #[must_use]
-        pub fn with_cpu_pinning(mut self, pinning: TestCorePinning) -> Self {
-            self.core_pinning = Some(pinning);
-            self
-        }
-
-        /// Sets the symbol specifications for markets
-        #[must_use]
-        pub fn with_symbol_specs(mut self, specs: HashMap<u32, CoreMarketSpecification>) -> Self {
-            self.symbol_specs = Some(specs);
-            self
-        }
-
-        /// Sets the journaling processor for audit trail
-        #[must_use]
-        pub fn with_journaling_processor(mut self, processor: JournalingProcessor) -> Self {
-            self.journaling_processor = Some(processor);
-            self
-        }
-
-        /// Sets the events handler for trade events
-        #[must_use]
-        pub fn with_events_handler(mut self, handler: impl EventsHandler) -> Self {
-            self.events_handler = Some(Box::new(handler));
-            self
-        }
-
-        /// Sets the gateway publications for client communication
-        #[must_use]
-        pub fn with_publications(mut self, publications: Arc<Publications>) -> Self {
-            self.publications = Some(publications);
-            self
-        }
-
-        /// Sets a test handler for capturing processed commands
-        #[must_use]
-        pub fn with_test_handler<F>(mut self, handler: F) -> Self
-        where
-            F: FnMut(&UnsafeCell<OrderCommand>, i64, bool) + Send + 'static,
-        {
-            self.test_handler = Some(Box::new(handler));
-            self
-        }
-
-        /// Sets pre-created risk engines for test access
-        #[must_use]
-        pub fn with_risk_engines(mut self, risk_engines: RiskEngines) -> Self {
-            self.risk_engines = Some(risk_engines);
-            self
-        }
-
-        /// Builds the test engine with all configured parameters
-        ///
-        /// # Errors
-        ///
-        /// Returns `EngineError::Configuration` if any required field is missing
-        pub fn build(mut self) -> EngineResult<(CoreEngine, OrderProducer)> {
-            let symbol_specs = self
-                .symbol_specs
-                .take()
-                .ok_or_else(|| EngineError::Configuration("Symbol specs are required".into()))?;
-            let journaling_processor = self.journaling_processor.take().ok_or_else(|| {
-                EngineError::Configuration("Journaling processor is required".into())
-            })?;
-            let events_handler = self
-                .events_handler
-                .take()
-                .ok_or_else(|| EngineError::Configuration("Events handler is required".into()))?;
-            let publications = self
-                .publications
-                .take()
-                .ok_or_else(|| EngineError::Configuration("Publications are required".into()))?;
-
-            let test_handler = self.test_handler.take();
-            let risk_engines = self.risk_engines.take();
-            let core_pinning = self.core_pinning;
-
-            self.build_internal(
-                symbol_specs,
-                journaling_processor,
-                events_handler,
-                publications,
-                test_handler,
-                risk_engines,
-                core_pinning,
-            )
-        }
-
-        /// Internal build method that constructs the test engine
-        #[allow(clippy::too_many_arguments)]
-        fn build_internal(
-            self,
-            symbol_specs: HashMap<u32, CoreMarketSpecification>,
-            mut journaling_processor: JournalingProcessor,
-            events_handler: Box<dyn EventsHandler>,
-            publications: Arc<Publications>,
-            test_handler: Option<TestHandler>,
-            risk_engines: Option<RiskEngines>,
-            core_pinning: Option<TestCorePinning>,
-        ) -> EngineResult<(CoreEngine, OrderProducer)> {
-            let price_cache = Arc::new(PriceCache::new(symbol_specs.keys()));
-            let order_factory = OrderCommand::default;
-
-            let journaling_handler =
-                move |cell: &UnsafeCell<OrderCommand>, _sequence: i64, _end_of_batch: bool| {
-                    // SAFETY: Test journaling is the sole handler in this barrier group, so
-                    // creating an exclusive reference to the command cannot alias another
-                    // handler's reference.
-                    let cmd = unsafe { &mut *cell.get() };
-                    journaling_processor.journal_command(cmd);
-                };
-
-            // Use provided risk engines or create new ones
-            let risk_engines_arc = risk_engines.unwrap_or_else(|| {
-                CoreEngine::initialize_risk_engines(&symbol_specs, NUM_RISK_ENGINES)
-            });
-
-            let matching_engine_routers =
-                CoreEngine::initialize_matching_engines(&symbol_specs, NUM_MATCHING_ENGINES);
-
-            let router_handlers = matching_engine_routers.into_iter().map(|mut router| {
-                let price_cache_clone = Arc::clone(&price_cache);
-                move |cell: &UnsafeCell<OrderCommand>, _sequence: i64, _end_of_batch: bool| {
-                    // SAFETY: This is a shared scalar read; peer matching handlers may read
-                    // market_id concurrently, and none of them mutates it.
-                    let market_id = unsafe { (*cell.get()).market_id };
-                    if !router.market_for_this_handler(market_id as u64) {
-                        return;
-                    }
-                    // SAFETY: The market predicate above is exclusive, so this test router
-                    // alone creates a mutable reference for this sequence.
-                    let cmd = unsafe { &mut *cell.get() };
-                    if cmd.command == OrderCommandType::DepositFunds
-                        || cmd.command == OrderCommandType::WithdrawFunds
-                        || cmd.status == Status::Rejected
-                    {
-                        return;
-                    }
-                    router.process_order(cmd, Arc::clone(&price_cache_clone));
-                }
-            });
-
-            let mut router_handlers_iter = router_handlers.into_iter();
-
-            let mut test_handler = test_handler;
-            let events_handler =
-                move |cell: &UnsafeCell<OrderCommand>, sequence: i64, end_of_batch: bool| {
-                    {
-                        // SAFETY: The test events handler is the sole handler in this barrier
-                        // group, so creating this exclusive reference cannot alias another
-                        // handler's reference.
-                        let cmd = unsafe { &mut *cell.get() };
-                        events_handler.handle_processed_command(cmd);
-                    }
-                    // PR #181 runs the test handler inline; PR #184 gives it the cell ABI.
-                    if let Some(handler) = test_handler.as_mut() {
-                        handler(cell, sequence, end_of_batch);
-                    }
-                };
-
-            let (core_pinning, enable_pinning) = match core_pinning {
-                Some(pinning) => (pinning.into(), true),
-                None => (CorePinning::default(), false),
-            };
-
-            let producer = CoreEngine::build_disruptor_pipeline(
-                BUFFER_SIZE,
-                order_factory,
-                journaling_handler,
-                &risk_engines_arc,
-                &price_cache,
-                &mut router_handlers_iter,
-                events_handler,
-                Arc::clone(&publications),
-                core_pinning,
-                enable_pinning,
-            );
-
-            let engine = CoreEngine {
-                publications,
-                risk_engines: risk_engines_arc,
-            };
-            Ok((engine, producer))
-        }
-    }
-
-    impl Default for TestEngineBuilder {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
-    #[test]
-    fn accrued_fees_sum_every_risk_shard() {
-        use common::{MarketType, MatcherTradeEvent, Side, UserBalance};
-
-        let market_id = (1_u32 << 16) | 3_u32;
-        let mut specs = HashMap::new();
-        specs.insert(
-            market_id,
-            CoreMarketSpecification::builder()
-                .market_id(market_id)
-                .market_type(MarketType::Spot)
-                .taker_fee(20)
-                .build()
-                .unwrap(),
-        );
-        let engine = CoreEngine {
-            publications: Arc::new(Publications::new()),
-            risk_engines: CoreEngine::initialize_risk_engines(&specs, NUM_RISK_ENGINES),
-        };
-
-        // One 20 bp taker buy of 10_000 base units (a fee of 20) on each of shards 0 and 1.
-        for user_id in [4_u64, 5] {
-            let shard = &engine.risk_engines[(user_id % NUM_RISK_ENGINES as u64) as usize];
-            shard.set_balance(user_id, quote_asset(market_id), UserBalance::new(0, 10_000));
-            let mut fill = MatcherTradeEvent::default();
-            fill.price = 1;
-            fill.size = 10_000;
-            fill.maker_user_id = 99;
-            shard.handle_trade_event(user_id, market_id, Side::Bid, &mut fill, None);
-        }
-
-        let base = base_asset(market_id);
-        let per_shard: Vec<u128> = engine
-            .risk_engines
-            .iter()
-            .map(|shard| shard.get_accrued_fee(base))
-            .collect();
-        assert_eq!(per_shard, [20, 20, 0, 0]);
-        assert_eq!(
-            engine.accrued_fees(),
-            std::collections::BTreeMap::from([(base, 40)])
-        );
-    }
 
     #[test]
     fn panicking_handler_aborts_process() {
@@ -1130,10 +835,5 @@ pub mod test {
             String::from_utf8_lossy(&child.stderr).contains("test_stage"),
             "panic log must identify the failed stage"
         );
-    }
-
-    #[test]
-    fn test_engine_builder_does_not_pin_by_default() {
-        assert!(TestEngineBuilder::new().core_pinning.is_none());
     }
 }

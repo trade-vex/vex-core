@@ -1,31 +1,54 @@
 use crate::error::{Result, RiskEngineError};
+use borsh::{BorshDeserialize, BorshSerialize};
 use common::BalanceError;
+use common::BalanceKey;
 use common::BalanceStore;
 use common::CoreMarketSpecification;
-use common::MatcherTradeEvent;
 use common::OrderCommand;
 use common::OrderCommandType;
 use common::PriceCache;
 use common::Side;
 use common::Status;
+use common::TradeFill;
 use common::UserBalance;
 use common::{base_asset, order_debug, order_warn, quote_asset};
 use hashbrown::HashMap;
 use parking_lot::Mutex;
-use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use std::sync::atomic::{AtomicI64, Ordering};
+use tracing::{debug, error, warn};
+
+/// One shard's funds, changed together under one lock.
+struct Ledger {
+    balances: BalanceStore,
+    /// Quote each open bid has locked and not yet spent, by order id.
+    bid_collateral: HashMap<u64, u64>,
+}
+
+/// One shard's ledger in a snapshot (`RiskEngine::export`).
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
+pub struct RiskShardState {
+    pub balances: Vec<(BalanceKey, UserBalance)>,
+    pub bid_collateral: Vec<(u64, u64)>,
+}
+
+/// What settling one side of a fill did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Settled {
+    /// The maker's balances `[base, quote]` after the fill, when the settled side is the maker.
+    pub maker_balance: Option<[UserBalance; 2]>,
+    /// The fee taken, in the asset the settled side received: base for a bid, quote for an ask.
+    pub fee: u64,
+}
 
 /// Manages all user profiles and performs risk checks as well as settlements
 pub struct RiskEngine {
-    balances: Arc<Mutex<BalanceStore>>,
-    /// Fees credited per asset by this shard. `u128` so the running total can never overflow
-    /// in practice: a `u64` ran out after ~9,223 ETH of 20 bp taker buys at 18 decimals, and
-    /// every later fee-bearing fill on that asset then failed to settle after it had matched.
-    accrued_fees: Mutex<HashMap<u16, u128>>,
-    bid_collateral: Mutex<HashMap<u64, u64>>,
+    ledger: Mutex<Ledger>,
     pub symbol_specs: HashMap<u32, CoreMarketSpecification>,
     shard_id: u32,
     shard_mask: u64,
+    /// Highest pipeline sequence this shard's R2 has settled; -1 before the first. R1 of the same
+    /// shard waits on it when its decision depends on credits R2 still owes the user.
+    settled_up_to: AtomicI64,
 }
 
 impl RiskEngine {
@@ -38,12 +61,26 @@ impl RiskEngine {
             panic!("Number of shards must be a power of 2");
         }
         Self {
-            balances: Arc::new(Mutex::new(BalanceStore::new())),
-            accrued_fees: Mutex::new(HashMap::new()),
-            bid_collateral: Mutex::new(HashMap::new()),
+            ledger: Mutex::new(Ledger {
+                balances: BalanceStore::new(),
+                bid_collateral: HashMap::new(),
+            }),
             symbol_specs,
             shard_id,
             shard_mask: (num_shards - 1) as u64,
+            settled_up_to: AtomicI64::new(-1),
+        }
+    }
+
+    /// Called by this shard's R2 after every sequence, settled or skipped.
+    pub fn mark_settled(&self, sequence: i64) {
+        self.settled_up_to.store(sequence, Ordering::Release);
+    }
+
+    /// Spins until this shard's R2 has settled every sequence up to `sequence`.
+    pub fn await_settled(&self, sequence: i64) {
+        while self.settled_up_to.load(Ordering::Acquire) < sequence {
+            std::hint::spin_loop();
         }
     }
 
@@ -54,7 +91,7 @@ impl RiskEngine {
     }
 
     /// Pre-processes a command to validate it and hold funds
-    pub fn pre_process_command(&self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) {
+    pub fn pre_process_command(&self, cmd: &mut OrderCommand, price_cache: &PriceCache) {
         // Process only if the command is for a user managed by this shard
         if !self.user_id_for_this_handler(cmd.user_id) {
             return; // Not for this shard, skip
@@ -68,9 +105,21 @@ impl RiskEngine {
             shard_id = self.shard_id
         );
         match cmd.command {
+            OrderCommandType::DepositFunds | OrderCommandType::WithdrawFunds
+                if u16::try_from(cmd.market_id).is_err() || cmd.size == 0 =>
+            {
+                // market_id carries the asset id for these commands; `as u16` below would wrap it.
+                order_debug!(
+                    "risk_invalid_asset_or_amount",
+                    cmd,
+                    stage = "risk_r1",
+                    shard_id = self.shard_id
+                );
+                cmd.set_status(Status::Rejected);
+            }
             OrderCommandType::PlaceOrder => {
                 if self.symbol_specs.get(&cmd.market_id).is_none() {
-                    order_warn!(
+                    order_debug!(
                         "risk_missing_market_spec",
                         cmd,
                         stage = "risk_r1",
@@ -81,10 +130,10 @@ impl RiskEngine {
                 }
 
                 // A market order can never rest. Reject Market + GTC here, before any funds are
-                // locked and before bid_amount() rewrites a market buy's sentinel to its slippage
-                // cap, after which the book can no longer tell it from a limit order.
+                // locked and before reserve_funds_for_order() rewrites a market buy's sentinel to
+                // its slippage cap, after which the book can no longer tell it from a limit order.
                 if cmd.time_in_force == common::TimeInForce::Gtc && cmd.is_market_order() {
-                    order_warn!(
+                    order_debug!(
                         "risk_market_gtc_rejected",
                         cmd,
                         stage = "risk_r1",
@@ -96,7 +145,10 @@ impl RiskEngine {
 
                 // Note: Fees are always in the receiving asset, hence are cut on post-processing (settlement)
                 if let Err(err) = self.reserve_funds_for_order(cmd, price_cache) {
-                    order_warn!(
+                    // Often transient: R1 retries a failed order once R2 has settled the
+                    // earlier sequences (`create_risk_handler!`). The final `Rejected` is in the
+                    // response.
+                    order_debug!(
                         "risk_reserve_failed",
                         cmd,
                         stage = "risk_r1",
@@ -140,7 +192,7 @@ impl RiskEngine {
                     );
                 }
                 Err(err) => {
-                    order_warn!(
+                    order_debug!(
                         "risk_withdrawal_failed",
                         cmd,
                         stage = "risk_r1",
@@ -163,25 +215,26 @@ impl RiskEngine {
         }
     }
 
-    /// Handles a single trade event from the matching engine to settle funds
-    /// This is called by the R2 handler for each individual event in the linked list
+    /// Settles `user_id`'s side of one fill. This is called by the R2 handler for each event in
+    /// the linked list. A settlement that fails aborts the process: R1 admitted both orders, so
+    /// it cannot happen unless the ledger is already wrong.
     pub fn handle_trade_event(
         &self,
         user_id: u64,
         market_id: u32,
         user_side: Side,
-        event: &mut MatcherTradeEvent,
+        fill: TradeFill,
         taker_order: Option<(u64, u64)>,
-    ) {
+    ) -> Settled {
         debug!(
             target: "risk_engine",
             event = "settlement_start",
             shard_id = self.shard_id,
             user_id,
             market_id,
-            maker_user_id = event.maker_user_id,
-            price = event.price,
-            size = event.size
+            maker_user_id = fill.maker_user_id,
+            price = fill.price,
+            size = fill.size
         );
 
         // Get market specification for fee calculations
@@ -194,42 +247,42 @@ impl RiskEngine {
                     shard_id = self.shard_id,
                     market_id
                 );
-                return;
+                return Settled::default();
             }
         };
 
-        if let Err(err) = self.settle_trade(user_id, market_id, user_side, event, spec, taker_order)
-        {
-            error!(
-                target: "risk_engine",
-                event = "settlement_failed",
-                shard_id = self.shard_id,
-                user_id,
-                market_id,
-                user_side = ?user_side,
-                maker_user_id = event.maker_user_id,
-                price = event.price,
-                size = event.size,
-                taker_order = ?taker_order,
-                error = ?err
-            );
-            // The zeroed snapshot would otherwise become the maker's latest row. Publish what the
-            // store actually holds: unchanged if settlement failed before its commit, or the
-            // committed state if a later step (bid-collateral release) failed after it.
-            if user_id == event.maker_user_id {
-                event.maker_balance = [
-                    self.get_balance(user_id, base_asset(market_id)),
-                    self.get_balance(user_id, quote_asset(market_id)),
-                ];
+        match self.settle_trade(user_id, market_id, user_side, fill, spec, taker_order) {
+            Err(err) => {
+                error!(
+                    target: "risk_engine",
+                    event = "settlement_failed",
+                    shard_id = self.shard_id,
+                    user_id,
+                    market_id,
+                    user_side = ?user_side,
+                    maker_user_id = fill.maker_user_id,
+                    price = fill.price,
+                    size = fill.size,
+                    taker_order = ?taker_order,
+                    error = ?err,
+                    "R1 admitted both orders, so this is a ledger invariant violation; aborting the exchange rather than settle one side"
+                );
+                // The counterparty may already be settled on another shard. Stopping here keeps
+                // the events stage from publishing a one-sided trade; the journal replays to this
+                // command, so this is a page, not a restart.
+                std::process::abort();
             }
-        } else {
-            debug!(
-                target: "risk_engine",
-                event = "settlement_complete",
-                shard_id = self.shard_id,
-                user_id,
-                market_id
-            );
+            Ok(settled) => {
+                debug!(
+                    target: "risk_engine",
+                    event = "settlement_complete",
+                    shard_id = self.shard_id,
+                    user_id,
+                    market_id,
+                    fee = settled.fee
+                );
+                settled
+            }
         }
     }
 
@@ -238,17 +291,17 @@ impl RiskEngine {
         user_id: u64,
         market_id: u32,
         user_side: Side,
-        event: &mut MatcherTradeEvent,
+        fill: TradeFill,
         spec: &CoreMarketSpecification,
         taker_order: Option<(u64, u64)>,
-    ) -> Result<()> {
-        let is_maker = user_id == event.maker_user_id;
+    ) -> Result<Settled> {
+        let is_maker = user_id == fill.maker_user_id;
         let (order_id, order_completed) = if is_maker {
-            (event.matched_order_id, event.matched_order_completed)
+            (fill.matched_order_id, fill.matched_order_completed)
         } else if let Some((order_id, _)) = taker_order {
-            (order_id, event.active_order_completed)
+            (order_id, fill.active_order_completed)
         } else {
-            (0, event.active_order_completed)
+            (0, fill.active_order_completed)
         };
         let fee = if is_maker {
             spec.maker_fee
@@ -263,10 +316,10 @@ impl RiskEngine {
             && user_side == Side::Bid
         // Price improvement only applies to BID orders where QUOTE currency was locked.
         {
-            let execution_price = event.price;
+            let execution_price = fill.price;
             if execution_price < limit_price {
                 let price_diff = limit_price - execution_price;
-                spec.calculate_quote_cost(price_diff, event.size)
+                spec.calculate_quote_cost(price_diff, fill.size)
                     .ok_or(BalanceError::Overflow)?
             } else {
                 0
@@ -275,164 +328,130 @@ impl RiskEngine {
             0
         };
 
-        let (
-            asset_to_subtract,
-            amount_to_subtract,
-            asset_to_add,
-            amount_to_add,
-            fee_asset,
-            fee_amount,
-        ) = match user_side {
-            // User is BUYING base asset with quote asset.
-            // Spends quote, receives base. Fee is on base asset received.
-            Side::Bid => {
-                let quote_spent = spec
-                    .calculate_quote_cost(event.price, event.size)
-                    .ok_or(BalanceError::Overflow)?;
-                // Fee is on the base asset received, in basis points (20 bp = 0.2%). It is rounded
-                // UP per fill: each fill pays its exact share plus less than one atomic unit, so
-                // splitting an order into many fills can never pay less than a single fill would
-                // (floor rounding made sub-10_000/fee-unit fills free). The cost of that is a
-                // bounded overcharge: at most one unit per fill, i.e. N fills of one order pay at
-                // most N - 1 units more than one fill of the same total.
-                let fee_in_base = u64::try_from((event.size as u128 * fee as u128).div_ceil(10000))
-                    .unwrap_or(u64::MAX);
-                let base_received_net = event.size.saturating_sub(fee_in_base);
-                (
-                    quote_asset(market_id),
-                    quote_spent,
-                    base_asset(market_id),
-                    base_received_net,
-                    base_asset(market_id),
-                    fee_in_base,
-                )
-            }
-            // User is SELLING base asset for quote asset.
-            // Spends base, receives quote. Fee is on quote asset received.
-            Side::Ask => {
-                let base_spent = event.size;
-                let quote_received_gross = spec
-                    .calculate_quote_cost(event.price, event.size)
-                    .ok_or(BalanceError::Overflow)?;
-                // Fee is on the quote asset received, rounded up per fill with the same bound as
-                // the bid fee above.
-                let fee_in_quote =
-                    u64::try_from((quote_received_gross as u128 * fee as u128).div_ceil(10000))
-                        .unwrap_or(u64::MAX);
-                let quote_received_net = quote_received_gross.saturating_sub(fee_in_quote);
-                (
-                    base_asset(market_id),
-                    base_spent,
-                    quote_asset(market_id),
-                    quote_received_net,
-                    quote_asset(market_id),
-                    fee_in_quote,
-                )
-            }
-        };
+        let (asset_to_subtract, amount_to_subtract, asset_to_add, amount_to_add, fee_amount) =
+            match user_side {
+                // User is BUYING base asset with quote asset.
+                // Spends quote, receives base. Fee is on base asset received.
+                Side::Bid => {
+                    let quote_spent = spec
+                        .calculate_quote_cost(fill.price, fill.size)
+                        .ok_or(BalanceError::Overflow)?;
+                    // Fee is on the base asset received, in basis points (20 bp = 0.2%). It is
+                    // rounded UP per fill: each fill pays its exact share plus less than one
+                    // atomic unit, so splitting an order into many fills can never pay less than
+                    // a single fill would (floor rounding made sub-10_000/fee-unit fills free).
+                    // The cost of that is a bounded overcharge: at most one unit per fill, i.e. N
+                    // fills of one order pay at most N - 1 units more than one fill of the same
+                    // total.
+                    let fee_in_base =
+                        u64::try_from((fill.size as u128 * fee as u128).div_ceil(10000))
+                            .unwrap_or(u64::MAX);
+                    let base_received_net = fill.size.saturating_sub(fee_in_base);
+                    (
+                        quote_asset(market_id),
+                        quote_spent,
+                        base_asset(market_id),
+                        base_received_net,
+                        fee_in_base,
+                    )
+                }
+                // User is SELLING base asset for quote asset.
+                // Spends base, receives quote. Fee is on quote asset received.
+                Side::Ask => {
+                    let base_spent = fill.size;
+                    let quote_received_gross = spec
+                        .calculate_quote_cost(fill.price, fill.size)
+                        .ok_or(BalanceError::Overflow)?;
+                    // Fee is on the quote asset received, rounded up per fill with the same bound
+                    // as the bid fee above.
+                    let fee_in_quote =
+                        u64::try_from((quote_received_gross as u128 * fee as u128).div_ceil(10000))
+                            .unwrap_or(u64::MAX);
+                    let quote_received_net = quote_received_gross.saturating_sub(fee_in_quote);
+                    (
+                        base_asset(market_id),
+                        base_spent,
+                        quote_asset(market_id),
+                        quote_received_net,
+                        fee_in_quote,
+                    )
+                }
+            };
 
         // Compute and validate every mutation against copies before changing the store.
-        let mut store = self.balances.lock();
+        let mut ledger = self.ledger.lock();
+        let Ledger {
+            balances: store,
+            bid_collateral,
+        } = &mut *ledger;
 
-        // Fee accrual is computed and overflow-checked BEFORE any balance mutation, so a
-        // saturated accumulator can never leave a half-settled trade (PR #173 accounting
-        // inside PR #153's copy-then-commit). Lock order stays balances -> accrued_fees.
-        let mut accrued_fees = if fee_amount == 0 {
-            None
+        // A bid's collateral record decides what this fill consumes and, when the order completes,
+        // the rounding residue R1 locked beyond its fills. Decided here so the residue's unlock is
+        // part of the one commit below.
+        let is_bid = user_side == Side::Bid;
+        let consumed = refund_amount
+            .checked_add(amount_to_subtract)
+            .ok_or(BalanceError::Overflow)?;
+        let residue = if !(is_bid && order_completed) {
+            0
+        } else if let Some(locked) = bid_collateral.get(&order_id) {
+            locked.saturating_sub(consumed)
         } else {
-            Some(self.accrued_fees.lock())
+            warn!(
+                target: "risk_engine",
+                event = "missing_bid_collateral",
+                shard_id = self.shard_id,
+                order_id,
+                user_id
+            );
+            0
         };
-        let accrued_fee_total = accrued_fees
-            .as_ref()
-            .map(|fees| {
-                fees.get(&fee_asset)
-                    .copied()
-                    .unwrap_or_default()
-                    .checked_add(u128::from(fee_amount))
-                    .ok_or(BalanceError::Overflow)
-            })
-            .transpose()?;
-
-        let mut balance_sub = store.get_balance(user_id, asset_to_subtract);
-
-        if balance_sub.locked < refund_amount {
-            return Err(BalanceError::InsufficientLockedFunds {
-                locked: balance_sub.locked,
-                needed: refund_amount,
-            }
-            .into());
-        }
-        balance_sub.locked -= refund_amount;
-        balance_sub.available = balance_sub
-            .available
-            .checked_add(refund_amount)
+        let locked_needed = consumed
+            .checked_add(residue)
+            .ok_or(BalanceError::Overflow)?;
+        let back_to_available = refund_amount
+            .checked_add(residue)
             .ok_or(BalanceError::Overflow)?;
 
-        if balance_sub.locked < amount_to_subtract {
+        let mut balance_sub = store.get_balance(user_id, asset_to_subtract);
+        if balance_sub.locked < locked_needed {
             return Err(BalanceError::InsufficientLockedFunds {
                 locked: balance_sub.locked,
-                needed: amount_to_subtract,
+                needed: locked_needed,
             }
             .into());
         }
-        balance_sub.locked -= amount_to_subtract;
-
-        let mut balance_add = if asset_to_add == asset_to_subtract {
-            balance_sub
-        } else {
-            store.get_balance(user_id, asset_to_add)
-        };
+        balance_sub.locked -= locked_needed;
+        balance_sub.available = balance_sub
+            .available
+            .checked_add(back_to_available)
+            .ok_or(BalanceError::Overflow)?;
+        // A separate copy: the config rejects a market whose base and quote are one asset.
+        let mut balance_add = store.get_balance(user_id, asset_to_add);
         balance_add.available = balance_add
             .available
             .checked_add(amount_to_add)
             .ok_or(BalanceError::Overflow)?;
 
-        // PR #178 made get_balance_mut fallible so a REJECTED operation can no longer insert
-        // an empty row. This is the commit point: every validation above has passed, so the
-        // write must succeed even for an asset the user is receiving for the first time.
-        // set_balance inserts-or-updates, which keeps #153's all-or-nothing commit intact.
-        if asset_to_add == asset_to_subtract {
-            store.set_balance(user_id, asset_to_add, balance_add);
-        } else {
-            store.set_balance(user_id, asset_to_subtract, balance_sub);
-            store.set_balance(user_id, asset_to_add, balance_add);
-        }
-
-        if let (Some(fees), Some(total)) = (accrued_fees.as_mut(), accrued_fee_total) {
-            fees.insert(fee_asset, total);
-        }
-
-        // PR #171 collateral bookkeeping runs AFTER the balances commit, so a
-        // failed settlement cannot desynchronise the tracked reservation.
-        if refund_amount > 0 {
-            self.subtract_bid_collateral(order_id, refund_amount);
-        }
-        if user_side == Side::Bid {
-            self.subtract_bid_collateral(order_id, amount_to_subtract);
-        }
-
-        if user_side == Side::Bid && order_completed {
-            self.release_remaining_bid_collateral(
-                &mut store,
-                order_id,
-                user_id,
-                quote_asset(market_id),
-            )?;
-            balance_sub = store.get_balance(user_id, asset_to_subtract);
-        }
-
-        if is_maker {
-            if asset_to_subtract == base_asset(market_id) {
-                // Maker was on ASK side, selling base for quote.
-                event.maker_balance[0] = balance_sub;
-                event.maker_balance[1] = balance_add;
-            } else {
-                // Maker was on BID side, buying base with quote.
-                event.maker_balance[0] = balance_add;
-                event.maker_balance[1] = balance_sub;
+        // Commit. Nothing below can fail. set_balance inserts-or-updates, so an asset the user
+        // receives for the first time gets its row here.
+        store.set_balance(user_id, asset_to_subtract, balance_sub);
+        store.set_balance(user_id, asset_to_add, balance_add);
+        if is_bid {
+            if order_completed {
+                bid_collateral.remove(&order_id);
+            } else if let Some(locked) = bid_collateral.get_mut(&order_id) {
+                *locked = locked.saturating_sub(consumed);
             }
         }
-        Ok(())
+
+        Ok(Settled {
+            maker_balance: is_maker.then_some(match user_side {
+                Side::Ask => [balance_sub, balance_add],
+                Side::Bid => [balance_add, balance_sub],
+            }),
+            fee: fee_amount,
+        })
     }
 
     /// handle cancellations -> release funds
@@ -442,25 +461,33 @@ impl RiskEngine {
     /// status must stand even when the release fails: `Rejected` would publish nothing and hide a
     /// real cancel and real trades (user decision 3). Such a failure is a ledger inconsistency and
     /// is logged for an operator.
-    pub fn handle_cancellation(&self, cmd: &mut OrderCommand) {
-        if let Err(err) = self.release_funds_for_order(
-            cmd.order_id,
-            cmd.user_id,
-            cmd.market_id,
-            cmd.side,
-            cmd.size,
-        ) {
-            common::order_error!(
-                "risk_cancel_release_failed",
-                cmd,
+    pub fn handle_cancellation(
+        &self,
+        order_id: u64,
+        user_id: u64,
+        market_id: u32,
+        side: Side,
+        size: u64,
+    ) {
+        if let Err(err) = self.release_funds_for_order(order_id, user_id, market_id, side, size) {
+            error!(
+                target: "order_pipeline",
+                event = "risk_cancel_release_failed",
                 stage = "risk_r2",
                 shard_id = self.shard_id,
+                order_id,
+                user_id,
+                market_id,
+                side = ?side,
+                size,
                 error = ?err
             );
         } else {
-            info!(
-                "[RiskEngine_{}] Successfully released funds for cancelled order {}",
-                self.shard_id, cmd.order_id
+            debug!(
+                target: "risk_engine",
+                event = "cancel_released",
+                shard_id = self.shard_id,
+                order_id
             );
         }
     }
@@ -470,7 +497,7 @@ impl RiskEngine {
     fn reserve_funds_for_order(
         &self,
         cmd: &mut OrderCommand,
-        price_cache: Arc<PriceCache>,
+        price_cache: &PriceCache,
     ) -> Result<()> {
         if cmd.size == 0 {
             return Err(RiskEngineError::InvalidArguments {
@@ -479,17 +506,17 @@ impl RiskEngine {
             });
         }
 
-        let (asset_to_lock, amount_to_lock) = match cmd.side {
+        let (asset_to_lock, amount_to_lock, price) = match cmd.side {
             // For a Bid (buy), we lock the quote currency. Amount = price * size.
             Side::Bid => {
-                let amount = self.bid_amount(cmd, price_cache)?;
+                let (amount, price) = self.bid_amount(cmd, price_cache)?;
                 if amount == 0 {
                     return Err(RiskEngineError::InvalidArguments {
                         price: cmd.price,
                         size: cmd.size,
                     });
                 }
-                (quote_asset(cmd.market_id), amount)
+                (quote_asset(cmd.market_id), amount, price)
             }
             // For an Ask (sell), we lock the base currency. Amount = size.
             Side::Ask => {
@@ -502,31 +529,36 @@ impl RiskEngine {
                         size: cmd.size,
                     });
                 }
-                (base_asset(cmd.market_id), cmd.size)
+                (base_asset(cmd.market_id), cmd.size, cmd.price)
             }
         };
 
         // Acquire a lock on the store and perform the operation
-        let mut store = self.balances.lock();
-        store.lock_funds(cmd.user_id, asset_to_lock, amount_to_lock)?;
+        let mut ledger = self.ledger.lock();
+        ledger
+            .balances
+            .lock_funds(cmd.user_id, asset_to_lock, amount_to_lock)?;
+        // Only a locked order carries its lock price (so a cancel releases exactly what was
+        // locked); a rejected market buy keeps its sentinel.
+        cmd.price = price;
         if cmd.side == Side::Bid {
-            self.bid_collateral
-                .lock()
-                .insert(cmd.order_id, amount_to_lock);
+            ledger.bid_collateral.insert(cmd.order_id, amount_to_lock);
         }
         Ok(())
     }
 
-    /// Applies the R1 funding bound to market BUY orders.
+    /// Returns (quote to lock, effective price) for a bid: the R1 funding bound for a market BUY,
+    /// `cmd.price` otherwise.
     ///
-    /// Market BUY orders are capped, not swept: the `u64::MAX` market sentinel is replaced with
-    /// `best_ask + floor(best_ask * slippage_bps / 10_000)`. The matching engine then uses that
-    /// effective price as a limit, so liquidity above the cap remains unfilled. The response
-    /// carries the ordinary status for its time-in-force (IOC: `Filled`, `PartiallyFilled` or
-    /// `Cancelled`; FOK: `Filled` or `Cancelled`) and returns the effective cap in `price`.
-    /// Market + GTC never reaches this point: `pre_process_command` rejects it first.
+    /// Market BUY orders are capped, not swept: once its funds are locked, the `u64::MAX` market
+    /// sentinel is replaced with `best_ask + floor(best_ask * slippage_bps / 10_000)`. The
+    /// matching engine then uses that effective price as a limit, so liquidity above the cap
+    /// remains unfilled. The response carries the ordinary status for its time-in-force (IOC:
+    /// `Filled`, `PartiallyFilled` or `Cancelled`; FOK: `Filled` or `Cancelled`) and returns the
+    /// effective cap in `price`. Market + GTC never reaches this point: `pre_process_command`
+    /// rejects it first.
     #[inline]
-    fn bid_amount(&self, cmd: &mut OrderCommand, price_cache: Arc<PriceCache>) -> Result<u64> {
+    fn bid_amount(&self, cmd: &OrderCommand, price_cache: &PriceCache) -> Result<(u64, u64)> {
         // Get spec early
         let spec =
             self.symbol_specs
@@ -560,16 +592,16 @@ impl RiskEngine {
                 .checked_add(slippage_adjustment)
                 .ok_or(BalanceError::Overflow)?;
 
-            // Persist the price used for locking on the command itself.
-            // To ensure that if the order is cancelled (fully or partially),
-            // the correct amount of funds can be released.
-            cmd.price = conservative_price;
-            spec.calculate_quote_cost(conservative_price, cmd.size)
-                .ok_or(BalanceError::Overflow.into())
+            let amount = spec
+                .calculate_quote_cost(conservative_price, cmd.size)
+                .ok_or(BalanceError::Overflow)?;
+            Ok((amount, conservative_price))
         } else {
             // Limit order
-            spec.calculate_quote_cost(cmd.price, cmd.size)
-                .ok_or(BalanceError::Overflow.into())
+            let amount = spec
+                .calculate_quote_cost(cmd.price, cmd.size)
+                .ok_or(BalanceError::Overflow)?;
+            Ok((amount, cmd.price))
         }
     }
 
@@ -597,36 +629,29 @@ impl RiskEngine {
         side: Side,
         size: u64,
     ) -> Result<()> {
-        let mut store = self.balances.lock();
+        let mut ledger = self.ledger.lock();
         match side {
             Side::Bid => self.release_remaining_bid_collateral(
-                &mut store,
+                &mut ledger,
                 order_id,
                 user_id,
                 quote_asset(market_id),
             ),
-            Side::Ask => store
+            Side::Ask => ledger
+                .balances
                 .unlock_funds(user_id, base_asset(market_id), size)
                 .map_err(RiskEngineError::BalanceError),
         }
     }
 
-    fn subtract_bid_collateral(&self, order_id: u64, amount: u64) {
-        let mut collateral = self.bid_collateral.lock();
-        if let Some(remaining) = collateral.get_mut(&order_id) {
-            *remaining = remaining.saturating_sub(amount);
-        }
-    }
-
     fn release_remaining_bid_collateral(
         &self,
-        store: &mut BalanceStore,
+        ledger: &mut Ledger,
         order_id: u64,
         user_id: u64,
         asset_id: u16,
     ) -> Result<()> {
-        let mut collateral = self.bid_collateral.lock();
-        let Some(amount) = collateral.get(&order_id).copied() else {
+        let Some(amount) = ledger.bid_collateral.get(&order_id).copied() else {
             warn!(
                 target: "risk_engine",
                 event = "missing_bid_collateral",
@@ -638,43 +663,43 @@ impl RiskEngine {
         };
 
         if amount != 0 {
-            store.unlock_funds(user_id, asset_id, amount)?;
+            ledger.balances.unlock_funds(user_id, asset_id, amount)?;
         }
-        collateral.remove(&order_id);
+        ledger.bid_collateral.remove(&order_id);
         Ok(())
     }
 
+    /// This shard's ledger, for a snapshot. Call only while the pipeline is drained.
+    pub fn export(&self) -> RiskShardState {
+        let ledger = self.ledger.lock();
+        RiskShardState {
+            balances: ledger.balances.entries().collect(),
+            bid_collateral: ledger
+                .bid_collateral
+                .iter()
+                .map(|(order_id, collateral)| (*order_id, *collateral))
+                .collect(),
+        }
+    }
+
+    /// Loads a snapshot's ledger into this shard, which has processed nothing yet.
+    pub fn import(&self, state: RiskShardState) {
+        let mut ledger = self.ledger.lock();
+        for (key, balance) in state.balances {
+            ledger.balances.insert(key, balance);
+        }
+        ledger.bid_collateral.extend(state.bid_collateral);
+    }
+
     pub fn get_balance(&self, user_id: u64, asset_id: u16) -> UserBalance {
-        let store = self.balances.lock();
-        store.get_balance(user_id, asset_id)
-    }
-
-    pub fn try_get_balance(&self, user_id: u64, asset_id: u16) -> Result<UserBalance> {
-        let store = self.balances.lock();
-        Ok(store.try_get_balance(user_id, asset_id)?)
-    }
-
-    /// Returns fees accrued for an asset by this risk-engine shard.
-    pub fn get_accrued_fee(&self, asset_id: u16) -> u128 {
-        self.accrued_fees
-            .lock()
-            .get(&asset_id)
-            .copied()
-            .unwrap_or_default()
-    }
-
-    /// Returns every asset's accrued fee total on this risk-engine shard.
-    pub fn accrued_fees(&self) -> Vec<(u16, u128)> {
-        self.accrued_fees
-            .lock()
-            .iter()
-            .map(|(&asset_id, &amount)| (asset_id, amount))
-            .collect()
+        self.ledger.lock().balances.get_balance(user_id, asset_id)
     }
 
     pub fn set_balance(&self, user_id: u64, asset_id: u16, balance: UserBalance) {
-        let mut store = self.balances.lock();
-        store.set_balance(user_id, asset_id, balance);
+        self.ledger
+            .lock()
+            .balances
+            .set_balance(user_id, asset_id, balance);
     }
 
     /// Handles deposit funds command
@@ -683,18 +708,10 @@ impl RiskEngine {
         let asset_id = cmd.market_id as u16;
         let amount = cmd.size;
 
-        info!(
-            "[RiskEngine] Processing deposit: user={}, asset={}, amount={}",
-            cmd.user_id, asset_id, amount
-        );
-
-        let mut store = self.balances.lock();
-        store.add_funds(cmd.user_id, asset_id, amount)?;
-
-        info!(
-            "[RiskEngine] Successfully deposited {} units of asset {} for user {}",
-            amount, asset_id, cmd.user_id
-        );
+        self.ledger
+            .lock()
+            .balances
+            .add_funds(cmd.user_id, asset_id, amount)?;
 
         Ok(())
     }
@@ -705,26 +722,12 @@ impl RiskEngine {
         let asset_id = cmd.market_id as u16;
         let amount = cmd.size;
 
-        info!(
-            "[RiskEngine] Processing withdrawal: user={}, asset={}, amount={}",
-            cmd.user_id, asset_id, amount
-        );
-
-        let mut store = self.balances.lock();
-        store.subtract_funds(cmd.user_id, asset_id, amount)?;
-
-        info!(
-            "[RiskEngine] Successfully withdrew {} units of asset {} for user {}",
-            amount, asset_id, cmd.user_id
-        );
+        self.ledger
+            .lock()
+            .balances
+            .subtract_funds(cmd.user_id, asset_id, amount)?;
 
         Ok(())
-    }
-}
-
-impl Default for RiskEngine {
-    fn default() -> Self {
-        Self::new(HashMap::new(), 0, 1)
     }
 }
 
@@ -732,6 +735,10 @@ impl Default for RiskEngine {
 mod tests {
     use super::*;
     use common::{MarketType, TimeInForce};
+
+    fn cancel(engine: &RiskEngine, cmd: &OrderCommand) {
+        engine.handle_cancellation(cmd.order_id, cmd.user_id, cmd.market_id, cmd.side, cmd.size);
+    }
 
     fn get_spec(market_id: u32) -> CoreMarketSpecification {
         CoreMarketSpecification::builder()
@@ -773,24 +780,21 @@ mod tests {
         let fees = fill_sizes
             .iter()
             .map(|&size| {
-                let mut trade_event = MatcherTradeEvent {
+                let trade_event = TradeFill {
                     price: 1,
                     size,
                     maker_user_id: if is_maker { user_id } else { user_id - 1 },
                     active_order_completed: false,
                     matched_order_id: 1,
                     matched_order_completed: true,
-                    next_event: None,
-                    maker_balance: [UserBalance::default(); 2],
                     maker_remaining_size: 0,
-                    maker_original_size: size,
                 };
 
                 engine.handle_trade_event(
                     user_id,
                     market_id,
                     Side::Bid,
-                    &mut trade_event,
+                    trade_event,
                     (!is_maker).then_some((1, 1)),
                 );
 
@@ -809,28 +813,26 @@ mod tests {
         users
             .iter()
             .map(|&user_id| engine.get_balance(user_id, asset_id).total() as u128)
-            .sum::<u128>()
-            + engine.get_accrued_fee(asset_id)
+            .sum()
     }
 
-    fn settle_trade_and_assert_conservation(
-        spec: CoreMarketSpecification,
-        price: u64,
-        size: u64,
-    ) -> RiskEngine {
+    /// Settles one taker bid against one maker ask: every unit either side gave up is in the
+    /// other's balance or in the fee reported for the side that paid it.
+    fn settle_trade_and_assert_conservation(spec: CoreMarketSpecification, price: u64, size: u64) {
         let market_id = spec.market_id;
         let base_asset_id = base_asset(market_id);
         let quote_asset_id = quote_asset(market_id);
         let gross_quote = spec
             .calculate_quote_cost(price, size)
             .expect("test notional fits");
-        let taker_fee = u64::try_from((size as u128 * spec.taker_fee as u128) / 10000).unwrap();
+        let taker_fee =
+            u64::try_from((size as u128 * spec.taker_fee as u128).div_ceil(10000)).unwrap();
         let maker_fee =
-            u64::try_from((gross_quote as u128 * spec.maker_fee as u128) / 10000).unwrap();
+            u64::try_from((gross_quote as u128 * spec.maker_fee as u128).div_ceil(10000)).unwrap();
 
         let mut specs = HashMap::new();
         specs.insert(market_id, spec);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let maker_id = 101;
         let taker_id = 102;
@@ -852,7 +854,7 @@ mod tests {
             1,
         );
         engine
-            .reserve_funds_for_order(&mut taker_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut taker_cmd, &price_cache)
             .unwrap();
 
         let mut maker_cmd = OrderCommand::place_order(
@@ -865,46 +867,46 @@ mod tests {
             2,
         );
         engine
-            .reserve_funds_for_order(&mut maker_cmd, price_cache)
+            .reserve_funds_for_order(&mut maker_cmd, &price_cache)
             .unwrap();
 
-        let mut trade_event = MatcherTradeEvent {
+        let trade_event = TradeFill {
             price,
             size,
             maker_user_id: maker_id,
             active_order_completed: false,
             matched_order_id: 2,
             matched_order_completed: true,
-            next_event: None,
-            maker_balance: [UserBalance::default(); 2],
             maker_remaining_size: 0,
-            maker_original_size: size,
         };
 
-        engine.handle_trade_event(
+        let taker = engine.handle_trade_event(
             taker_id,
             market_id,
             Side::Bid,
-            &mut trade_event,
+            trade_event,
             Some((1, price)),
         );
-        engine.handle_trade_event(maker_id, market_id, Side::Ask, &mut trade_event, None);
+        let maker = engine.handle_trade_event(maker_id, market_id, Side::Ask, trade_event, None);
 
+        // The taker bought base and pays its fee in base; the maker sold it and pays in quote.
+        assert_eq!((taker.fee, maker.fee), (taker_fee, maker_fee));
         assert_eq!(
-            system_asset_total(&engine, &users, base_asset_id),
+            system_asset_total(&engine, &users, base_asset_id) + u128::from(taker.fee),
             base_total_before
         );
         assert_eq!(
-            system_asset_total(&engine, &users, quote_asset_id),
+            system_asset_total(&engine, &users, quote_asset_id) + u128::from(maker.fee),
             quote_total_before
         );
-        assert_eq!(engine.get_accrued_fee(base_asset_id), u128::from(taker_fee));
+        assert_eq!(taker.maker_balance, None);
         assert_eq!(
-            engine.get_accrued_fee(quote_asset_id),
-            u128::from(maker_fee)
+            maker.maker_balance,
+            Some([
+                engine.get_balance(maker_id, base_asset_id),
+                engine.get_balance(maker_id, quote_asset_id)
+            ])
         );
-
-        engine
     }
 
     #[test]
@@ -920,7 +922,7 @@ mod tests {
             .market_id(market_id)
             .market_type(MarketType::Spot)
             .quote_scale_k(10)
-            .base_native_scale(1_000_000_000_000_000_000)
+            .base_native_scale(1_000_000_000)
             .quote_native_scale(1_000_000)
             .maker_fee(10)
             .taker_fee(20)
@@ -928,55 +930,7 @@ mod tests {
             .build()
             .unwrap();
 
-        settle_trade_and_assert_conservation(spec, 20_000, 1_000_000_000_000_000_000);
-    }
-
-    #[test]
-    fn test_zero_fees_do_not_create_accumulator_entries() {
-        let market_id = (1_u32 << 16) | 3_u32;
-        let mut spec = get_spec(market_id);
-        spec.maker_fee = 0;
-        spec.taker_fee = 0;
-
-        let engine = settle_trade_and_assert_conservation(spec, 1_000, 10_000);
-        assert!(engine.accrued_fees.lock().is_empty());
-    }
-
-    #[test]
-    fn fee_accrual_past_u64_max_still_settles() {
-        let market_id = (1_u32 << 16) | 3_u32;
-        let base_asset_id = base_asset(market_id);
-        let quote_asset_id = quote_asset(market_id);
-        let mut specs = HashMap::new();
-        specs.insert(market_id, get_spec(market_id));
-        let engine = RiskEngine::new(specs, 0, 1);
-        let taker_id = 102;
-        engine.set_balance(taker_id, quote_asset_id, UserBalance::new(0, 10_000));
-        // Where a u64 accumulator saturated: ~9,223 ETH of 20 bp taker buys at 18 decimals.
-        engine
-            .accrued_fees
-            .lock()
-            .insert(base_asset_id, u128::from(u64::MAX));
-
-        let mut trade_event = MatcherTradeEvent::default();
-        trade_event.price = 1;
-        trade_event.size = 10_000;
-        trade_event.maker_user_id = 101;
-        engine.handle_trade_event(taker_id, market_id, Side::Bid, &mut trade_event, None);
-
-        // 20 bp of 10_000 base units: a fee of 20.
-        assert_eq!(
-            engine.get_balance(taker_id, quote_asset_id),
-            UserBalance::new(0, 0)
-        );
-        assert_eq!(
-            engine.get_balance(taker_id, base_asset_id),
-            UserBalance::new(10_000 - 20, 0)
-        );
-        assert_eq!(
-            engine.get_accrued_fee(base_asset_id),
-            u128::from(u64::MAX) + 20
-        );
+        settle_trade_and_assert_conservation(spec, 20_000, 1_000_000_000);
     }
 
     #[test]
@@ -998,16 +952,16 @@ mod tests {
         assert!(engine_shard1.user_id_for_this_handler(5));
         assert!(!engine_shard1.user_id_for_this_handler(0));
         let symbol_spec = HashMap::new();
-        let price_cache = Arc::new(PriceCache::new(symbol_spec.keys()));
+        let price_cache = PriceCache::new(symbol_spec.keys());
         let mut cmd = OrderCommand::place_order(TimeInForce::Gtc, 1, 100, 10, Side::Bid, 1, 1);
 
         // shard 0 should not process user 1's command, will be skipped
-        engine_shard0.pre_process_command(&mut cmd, price_cache.clone());
+        engine_shard0.pre_process_command(&mut cmd, &price_cache);
         assert_eq!(cmd.status, Status::Processing);
 
         // shard 1 should process user 1's command
         // it will be rejected because no market spec
-        engine_shard1.pre_process_command(&mut cmd, price_cache);
+        engine_shard1.pre_process_command(&mut cmd, &price_cache);
         assert_eq!(cmd.status, Status::Rejected);
     }
 
@@ -1017,7 +971,7 @@ mod tests {
         let market_id = (2_u32 << 16) | 1_u32;
         let mut specs = HashMap::new();
         specs.insert(market_id, get_spec(market_id));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         // A best ask exists, so without the GTC check the buy would be capped and funded.
         price_cache.update_prices(market_id, 90, 100);
         let engine = RiskEngine::new(specs, 0, 1);
@@ -1035,7 +989,7 @@ mod tests {
                 market_id,
                 1,
             );
-            engine.pre_process_command(&mut cmd, Arc::clone(&price_cache));
+            engine.pre_process_command(&mut cmd, &price_cache);
 
             assert_eq!(cmd.status, Status::Rejected, "{side:?} market GTC");
             assert_eq!(cmd.price, sentinel, "the sentinel must not be rewritten");
@@ -1053,14 +1007,76 @@ mod tests {
             market_id,
             1,
         );
-        engine.pre_process_command(&mut ioc, price_cache);
+        engine.pre_process_command(&mut ioc, &price_cache);
         assert_ne!(ioc.status, Status::Rejected);
         assert_eq!(ioc.price, 100);
     }
 
     #[test]
+    fn deposit_with_asset_id_above_u16_is_rejected() {
+        let engine = RiskEngine::new(HashMap::new(), 0, 1);
+        let price_cache = PriceCache::new(HashMap::new().keys());
+        engine.set_balance(1, 1, UserBalance::new(100, 0));
+
+        // 65537 would wrap to asset 1.
+        for mut cmd in [
+            OrderCommand::deposit_funds(1, 100, 1),
+            OrderCommand::withdraw_funds(1, 100, 1),
+        ] {
+            cmd.market_id = 65537;
+            engine.pre_process_command(&mut cmd, &price_cache);
+            assert_eq!(cmd.status, Status::Rejected, "{:?}", cmd.command);
+            assert_eq!(engine.get_balance(1, 1), UserBalance::new(100, 0));
+        }
+    }
+
+    #[test]
+    fn zero_amount_deposit_and_withdrawal_are_rejected() {
+        let engine = RiskEngine::new(HashMap::new(), 0, 1);
+        let price_cache = PriceCache::new(HashMap::new().keys());
+
+        for mut cmd in [
+            OrderCommand::deposit_funds(1, 0, 1),
+            OrderCommand::withdraw_funds(1, 0, 1),
+        ] {
+            engine.pre_process_command(&mut cmd, &price_cache);
+            assert_eq!(cmd.status, Status::Rejected, "{:?}", cmd.command);
+        }
+        assert_eq!(engine.get_balance(1, 1), UserBalance::default());
+    }
+
+    #[test]
+    fn withdrawal_takes_only_available_funds() {
+        let market_id = (1_u32 << 16) | 2; // quote 1, base 2
+        let mut specs = HashMap::new();
+        specs.insert(market_id, get_spec(market_id));
+        let price_cache = PriceCache::new(specs.keys());
+        let engine = RiskEngine::new(specs, 0, 1);
+        let (user, quote) = (1, quote_asset(market_id));
+
+        let mut deposit = OrderCommand::deposit_funds(user, 100, quote);
+        engine.pre_process_command(&mut deposit, &price_cache);
+        assert_eq!(deposit.status, Status::Processed);
+        // A bid locking 60 quote (price * size at get_spec's unit scales).
+        let mut bid =
+            OrderCommand::place_order(TimeInForce::Gtc, user, 60, 1, Side::Bid, market_id, 1);
+        engine.pre_process_command(&mut bid, &price_cache);
+        assert_eq!(engine.get_balance(user, quote), UserBalance::new(40, 60));
+
+        let mut withdrawal = OrderCommand::withdraw_funds(user, 50, quote);
+        engine.pre_process_command(&mut withdrawal, &price_cache);
+        assert_eq!(withdrawal.status, Status::Rejected);
+        assert_eq!(engine.get_balance(user, quote), UserBalance::new(40, 60));
+
+        let mut withdrawal = OrderCommand::withdraw_funds(user, 40, quote);
+        engine.pre_process_command(&mut withdrawal, &price_cache);
+        assert_eq!(withdrawal.status, Status::Processed);
+        assert_eq!(engine.get_balance(user, quote), UserBalance::new(0, 60));
+    }
+
+    #[test]
     fn test_balance_management() {
-        let engine = RiskEngine::default();
+        let engine = RiskEngine::new(HashMap::new(), 0, 1);
         let user_id = 1;
         let asset_id = 1;
         let initial_balance = UserBalance::new(1000, 0);
@@ -1072,15 +1088,7 @@ mod tests {
         assert_eq!(balance.locked(), 0);
         assert_eq!(balance.total(), 1000);
 
-        let balance_res = engine.try_get_balance(user_id, asset_id).unwrap();
-        assert_eq!(balance_res, initial_balance);
-
-        let res = engine.try_get_balance(user_id, 2); // unknown asset
-        assert!(res.is_err());
-        assert_eq!(
-            res.unwrap_err(),
-            RiskEngineError::from(BalanceError::UserAssetNotFound(user_id, 2))
-        );
+        assert_eq!(engine.get_balance(user_id, 2), UserBalance::default()); // unknown asset
     }
 
     #[test]
@@ -1109,16 +1117,16 @@ mod tests {
             1,
         );
 
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         engine
-            .reserve_funds_for_order(&mut cmd, price_cache)
+            .reserve_funds_for_order(&mut cmd, &price_cache)
             .unwrap();
 
         let balance = engine.get_balance(user_id, quote_asset);
         assert_eq!(balance.available(), 0);
         assert_eq!(balance.locked(), required_quote);
         // Cancel the order and check if funds are released
-        engine.handle_cancellation(&mut cmd);
+        cancel(&engine, &cmd);
 
         let balance = engine.get_balance(user_id, quote_asset);
         assert_eq!(balance.available(), required_quote);
@@ -1138,12 +1146,12 @@ mod tests {
             .unwrap();
         let mut specs = HashMap::new();
         specs.insert(market_id, spec);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let mut cmd =
             OrderCommand::place_order(TimeInForce::Gtc, user_id, 1, 1, Side::Bid, market_id, 1);
 
-        engine.pre_process_command(&mut cmd, price_cache);
+        engine.pre_process_command(&mut cmd, &price_cache);
 
         assert_eq!(cmd.status, Status::Rejected);
     }
@@ -1161,14 +1169,14 @@ mod tests {
             .unwrap();
         let mut specs = HashMap::new();
         specs.insert(market_id, spec);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         engine.set_balance(user_id, base_asset(market_id), UserBalance::new(1, 0));
         let mut cmd =
             OrderCommand::place_order(TimeInForce::Gtc, user_id, 1, 1, Side::Ask, market_id, 1);
 
         let error = engine
-            .reserve_funds_for_order(&mut cmd, price_cache)
+            .reserve_funds_for_order(&mut cmd, &price_cache)
             .unwrap_err();
 
         assert!(matches!(error, RiskEngineError::InvalidArguments { .. }));
@@ -1183,7 +1191,7 @@ mod tests {
         spec.slippage = 40_000;
         let mut specs = HashMap::new();
         specs.insert(market_id, spec);
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         price_cache.update_prices(market_id, 0, 1 << 62);
         let engine = RiskEngine::new(specs, 0, 1);
         let funded = UserBalance::new(u64::MAX, 0);
@@ -1199,7 +1207,7 @@ mod tests {
         );
 
         assert_eq!(
-            engine.reserve_funds_for_order(&mut cmd, price_cache),
+            engine.reserve_funds_for_order(&mut cmd, &price_cache),
             Err(RiskEngineError::BalanceError(BalanceError::Overflow))
         );
         assert_eq!(engine.get_balance(user_id, quote_asset(market_id)), funded);
@@ -1216,7 +1224,7 @@ mod tests {
         let size = 10;
         let mut specs = HashMap::new();
         specs.insert(market_id, get_spec(market_id));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         engine.set_balance(user_id, base_asset(market_id), UserBalance::new(size, 0));
         // price == 0 is the market-SELL sentinel.
@@ -1224,7 +1232,7 @@ mod tests {
             OrderCommand::place_order(TimeInForce::Ioc, user_id, 0, size, Side::Ask, market_id, 1);
 
         engine
-            .reserve_funds_for_order(&mut cmd, price_cache)
+            .reserve_funds_for_order(&mut cmd, &price_cache)
             .expect("a market sell must be able to reserve collateral");
 
         let balance = engine.get_balance(user_id, base_asset(market_id));
@@ -1239,7 +1247,7 @@ mod tests {
         let size = 10;
         let mut specs = HashMap::new();
         specs.insert(market_id, get_spec(market_id));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let base_asset = base_asset(market_id);
         engine.set_balance(user_id, base_asset, UserBalance::new(size, 0));
@@ -1254,7 +1262,7 @@ mod tests {
         );
 
         engine
-            .reserve_funds_for_order(&mut cmd, price_cache)
+            .reserve_funds_for_order(&mut cmd, &price_cache)
             .unwrap();
 
         assert_eq!(
@@ -1269,12 +1277,12 @@ mod tests {
         let market_id = (2_u32 << 16) | 1_u32;
         let mut specs = HashMap::new();
         specs.insert(market_id, get_spec(market_id));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let mut cmd =
             OrderCommand::place_order(TimeInForce::Gtc, user_id, 100, 0, Side::Ask, market_id, 1);
 
-        engine.pre_process_command(&mut cmd, price_cache);
+        engine.pre_process_command(&mut cmd, &price_cache);
 
         assert_eq!(cmd.status, Status::Rejected);
     }
@@ -1288,7 +1296,7 @@ mod tests {
         let required_quote = price * size;
         let mut specs = HashMap::new();
         specs.insert(market_id, get_spec(market_id));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
         let quote_asset = quote_asset(market_id);
         engine.set_balance(user_id, quote_asset, UserBalance::new(required_quote, 0));
@@ -1302,7 +1310,7 @@ mod tests {
             1,
         );
 
-        engine.pre_process_command(&mut cmd, price_cache);
+        engine.pre_process_command(&mut cmd, &price_cache);
 
         assert_ne!(cmd.status, Status::Rejected);
         assert_eq!(
@@ -1336,16 +1344,16 @@ mod tests {
             1,
         );
 
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         engine
-            .reserve_funds_for_order(&mut cmd, price_cache)
+            .reserve_funds_for_order(&mut cmd, &price_cache)
             .unwrap();
 
         let balance = engine.get_balance(user_id, base_asset);
         assert_eq!(balance.available(), 0);
         assert_eq!(balance.locked(), size);
         // Cancel the order and check if funds are released
-        engine.handle_cancellation(&mut cmd);
+        cancel(&engine, &cmd);
 
         let balance = engine.get_balance(user_id, base_asset);
         assert_eq!(balance.available(), size);
@@ -1353,7 +1361,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_cancellation_release_keeps_matching_status() {
+    fn failed_cancellation_release_changes_nothing() {
         let user_id = 1;
         let market_id = (2_u32 << 16) | 1_u32;
         let mut specs = HashMap::new();
@@ -1366,21 +1374,9 @@ mod tests {
         let balance = UserBalance::new(5, 3);
         engine.set_balance(user_id, base_asset(market_id), balance);
 
-        // By the time R2 releases, the book has already removed the order (Cancelled) or traded
-        // part of it (IOC PartiallyFilled); neither may be reported as Rejected.
-        for (time_in_force, status) in [
-            (TimeInForce::Gtc, Status::Cancelled),
-            (TimeInForce::Ioc, Status::PartiallyFilled),
-        ] {
-            let mut cmd =
-                OrderCommand::place_order(time_in_force, user_id, 100, 10, Side::Ask, market_id, 1);
-            cmd.set_status(status);
+        engine.handle_cancellation(1, user_id, market_id, Side::Ask, 10);
 
-            engine.handle_cancellation(&mut cmd);
-
-            assert_eq!(cmd.status, status);
-            assert_eq!(engine.get_balance(user_id, base_asset(market_id)), balance);
-        }
+        assert_eq!(engine.get_balance(user_id, base_asset(market_id)), balance);
     }
 
     #[test]
@@ -1413,8 +1409,8 @@ mod tests {
             1,
         );
 
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
-        let res = engine.reserve_funds_for_order(&mut cmd, price_cache);
+        let price_cache = PriceCache::new(specs.keys());
+        let res = engine.reserve_funds_for_order(&mut cmd, &price_cache);
         assert!(res.is_err());
         match res.unwrap_err() {
             RiskEngineError::BalanceError(BalanceError::InsufficientAvailableFunds { .. }) => (),
@@ -1431,7 +1427,7 @@ mod tests {
 
         let mut specs = HashMap::new();
         specs.insert(market_id, get_spec(market_id));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
 
         let engine = RiskEngine::new(specs, 0, 1);
 
@@ -1447,18 +1443,16 @@ mod tests {
         // Maker (seller) needs BTC (base) to sell for USD (quote).
         let maker_initial_base = size;
 
-        let mut balances = engine.balances.lock();
-        balances.set_balance(
+        engine.set_balance(
             taker_id,
             usd_asset_id,
             UserBalance::new(taker_initial_quote, 0),
         );
-        balances.set_balance(
+        engine.set_balance(
             maker_id,
             btc_asset_id,
             UserBalance::new(maker_initial_base, 0),
         );
-        drop(balances);
 
         // --- Reserve funds ---
         // Taker places BID order to buy BTC
@@ -1472,7 +1466,7 @@ mod tests {
             1,
         );
         engine
-            .reserve_funds_for_order(&mut taker_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut taker_cmd, &price_cache)
             .unwrap();
 
         // Maker places ASK order to sell BTC
@@ -1486,21 +1480,18 @@ mod tests {
             2,
         );
         engine
-            .reserve_funds_for_order(&mut maker_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut maker_cmd, &price_cache)
             .unwrap();
 
         // --- A trade occurs ---
-        let mut trade_event = MatcherTradeEvent {
+        let trade_event = TradeFill {
             price,
             size,
             maker_user_id: maker_id,
             active_order_completed: false,
             matched_order_id: 2,
             matched_order_completed: true,
-            next_event: None,
-            maker_balance: [UserBalance::default(); 2],
             maker_remaining_size: 0,
-            maker_original_size: size,
         };
 
         // Settle for Taker (Buyer, Bid side) - buys base (BTC) with quote (USD)
@@ -1508,12 +1499,12 @@ mod tests {
             taker_id,
             market_id,
             Side::Bid,
-            &mut trade_event,
+            trade_event,
             Some((taker_cmd.order_id, price)),
         );
 
         // Settle for Maker (Seller, Ask side) - sells base (BTC) for quote (USD)
-        engine.handle_trade_event(maker_id, market_id, Side::Ask, &mut trade_event, None);
+        engine.handle_trade_event(maker_id, market_id, Side::Ask, trade_event, None);
 
         // --- Final Balances ---
         // Taker (buyer): Spends `price * size` of USD (quote). Receives `size` of BTC (base), minus taker fee (20bp on base).
@@ -1534,33 +1525,6 @@ mod tests {
             net_quote_received
         );
         assert_eq!(engine.get_balance(maker_id, btc_asset_id).total(), 0);
-    }
-
-    #[test]
-    fn failed_maker_settlement_publishes_the_unchanged_balance_not_zeros() {
-        let base_asset_id = 2u16;
-        let quote_asset_id = 1u16;
-        let market_id = ((quote_asset_id as u32) << 16) | base_asset_id as u32;
-        let mut specs = HashMap::new();
-        specs.insert(market_id, get_spec(market_id));
-        let engine = RiskEngine::new(specs, 0, 1);
-        let maker_id = 101;
-        let size = 10;
-
-        // The maker's locked base cannot cover the fill, so settlement fails.
-        engine.set_balance(maker_id, base_asset_id, UserBalance::new(5, size - 1));
-        engine.set_balance(maker_id, quote_asset_id, UserBalance::new(11, 0));
-
-        let mut trade_event = MatcherTradeEvent::default();
-        trade_event.price = 100;
-        trade_event.size = size;
-        trade_event.maker_user_id = maker_id;
-        engine.handle_trade_event(maker_id, market_id, Side::Ask, &mut trade_event, None);
-
-        assert_eq!(
-            trade_event.maker_balance,
-            [UserBalance::new(5, size - 1), UserBalance::new(11, 0)]
-        );
     }
 
     #[test]
@@ -1590,18 +1554,18 @@ mod tests {
             engine.get_balance(maker_id, base_asset_id),
             engine.get_balance(maker_id, quote_asset_id),
         ];
-        // MatcherTradeEvent implements Drop (iterative chain teardown, PR #179), so the
-        // functional-update form would move out of a Drop type. Assign the fields instead.
-        let mut trade_event = MatcherTradeEvent::default();
-        trade_event.price = execution_price;
-        trade_event.size = size;
-        trade_event.maker_user_id = maker_id;
+        let trade_event = TradeFill {
+            price: execution_price,
+            size,
+            maker_user_id: maker_id,
+            ..Default::default()
+        };
 
         let result = engine.settle_trade(
             taker_id,
             market_id,
             Side::Bid,
-            &mut trade_event,
+            trade_event,
             &spec,
             Some((1, limit_price)),
         );
@@ -1610,8 +1574,8 @@ mod tests {
             result,
             Err(RiskEngineError::BalanceError(
                 BalanceError::InsufficientLockedFunds {
-                    locked: 50,
-                    needed: 1_000,
+                    locked: 150,
+                    needed: 1_100,
                 }
             ))
         );
@@ -1627,7 +1591,63 @@ mod tests {
     }
 
     #[test]
-    fn test_trade_settlement_fee_at_18_decimal_scale() {
+    fn settle_trade_failure_leaves_the_store_and_collateral_untouched() {
+        let base_asset_id = 2u16;
+        let quote_asset_id = 1u16;
+        let market_id = ((quote_asset_id as u32) << 16) | base_asset_id as u32;
+        let spec = get_spec(market_id);
+        let mut specs = HashMap::new();
+        specs.insert(market_id, spec.clone());
+        let engine = RiskEngine::new(specs, 0, 1);
+        let user_id = 102;
+        let order_id = 7;
+
+        // The order's record says 100 is locked, the store only 60: this completing fill of 50
+        // also releases the 50 residue, which the store cannot cover.
+        engine.ledger.lock().bid_collateral.insert(order_id, 100);
+        engine.set_balance(user_id, quote_asset_id, UserBalance::new(0, 60));
+        let trade_event = TradeFill {
+            price: 1,
+            size: 50,
+            maker_user_id: 101,
+            active_order_completed: true,
+            ..Default::default()
+        };
+
+        let result = engine.settle_trade(
+            user_id,
+            market_id,
+            Side::Bid,
+            trade_event,
+            &spec,
+            Some((order_id, 1)),
+        );
+
+        assert_eq!(
+            result,
+            Err(RiskEngineError::BalanceError(
+                BalanceError::InsufficientLockedFunds {
+                    locked: 60,
+                    needed: 100,
+                }
+            ))
+        );
+        assert_eq!(
+            engine.get_balance(user_id, quote_asset_id),
+            UserBalance::new(0, 60)
+        );
+        assert_eq!(
+            engine.get_balance(user_id, base_asset_id),
+            UserBalance::default()
+        );
+        assert_eq!(
+            engine.ledger.lock().bid_collateral.get(&order_id),
+            Some(&100)
+        );
+    }
+
+    #[test]
+    fn test_trade_settlement_fee_at_1e18_units() {
         let base_asset_id = 2u16;
         let quote_asset_id = 1u16;
         let market_id = ((quote_asset_id as u32) << 16) | base_asset_id as u32;
@@ -1640,26 +1660,17 @@ mod tests {
         let engine = RiskEngine::new(specs, 0, 1);
         engine.set_balance(user_id, quote_asset_id, UserBalance::new(0, size));
 
-        let mut trade_event = MatcherTradeEvent {
+        let trade_event = TradeFill {
             price,
             size,
             maker_user_id: 101,
             active_order_completed: false,
             matched_order_id: 1,
             matched_order_completed: true,
-            next_event: None,
-            maker_balance: [UserBalance::default(); 2],
             maker_remaining_size: 0,
-            maker_original_size: size,
         };
 
-        engine.handle_trade_event(
-            user_id,
-            market_id,
-            Side::Bid,
-            &mut trade_event,
-            Some((1, price)),
-        );
+        engine.handle_trade_event(user_id, market_id, Side::Bid, trade_event, Some((1, price)));
 
         let expected_fee = 2_000_000_000_000_000;
         assert_eq!(
@@ -1734,7 +1745,7 @@ mod tests {
             market_id,
             get_spec(market_id), // slippage is 5bp
         );
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
 
         let user_id = 1;
@@ -1751,7 +1762,7 @@ mod tests {
             1,
         );
 
-        let res = engine.reserve_funds_for_order(&mut market_buy_cmd, price_cache.clone());
+        let res = engine.reserve_funds_for_order(&mut market_buy_cmd, &price_cache);
         assert!(res.is_err());
         match res.unwrap_err() {
             RiskEngineError::InvalidArguments { .. } => (),
@@ -1768,25 +1779,44 @@ mod tests {
         engine.set_balance(user_id, usd_asset_id, UserBalance::new(required_quote, 0));
 
         engine
-            .reserve_funds_for_order(&mut market_buy_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut market_buy_cmd, &price_cache)
             .unwrap();
 
         let balance = engine.get_balance(user_id, usd_asset_id);
         assert_eq!(balance.available(), 0);
         assert_eq!(balance.locked(), required_quote);
+        assert_eq!(
+            market_buy_cmd.price, conservative_price,
+            "a locked market buy carries its cap"
+        );
 
         // --- Test 3: Market Buy with insufficient funds ---
+        // Step 2 locked and so re-priced its command; a market buy must start from the sentinel.
+        let mut market_buy_cmd = OrderCommand::place_order(
+            TimeInForce::Gtc,
+            user_id,
+            u64::MAX,
+            size,
+            Side::Bid,
+            market_id,
+            1,
+        );
         engine.set_balance(
             user_id,
             usd_asset_id,
             UserBalance::new(required_quote - 1, 0),
         );
-        let res = engine.reserve_funds_for_order(&mut market_buy_cmd, price_cache.clone());
+        let res = engine.reserve_funds_for_order(&mut market_buy_cmd, &price_cache);
         assert!(res.is_err());
         match res.unwrap_err() {
             RiskEngineError::BalanceError(BalanceError::InsufficientAvailableFunds { .. }) => (),
             e => panic!("Expected InsufficientAvailableFunds, got {e:?}"),
         }
+        assert_eq!(
+            market_buy_cmd.price,
+            u64::MAX,
+            "a rejected market buy keeps the market sentinel"
+        );
 
         // --- Test 4: Market Sell ---
         // A market SELL carries price 0; u64::MAX is the market BUY sentinel. This previously
@@ -1797,7 +1827,7 @@ mod tests {
             OrderCommand::place_order(TimeInForce::Gtc, user_id, 0, size, Side::Ask, market_id, 1);
 
         engine
-            .reserve_funds_for_order(&mut market_sell_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut market_sell_cmd, &price_cache)
             .unwrap();
         let balance = engine.get_balance(user_id, btc_asset_id);
         assert_eq!(balance.available(), 0);
@@ -1815,7 +1845,7 @@ mod tests {
         );
         assert!(
             engine
-                .reserve_funds_for_order(&mut unrepresentable_ask, price_cache)
+                .reserve_funds_for_order(&mut unrepresentable_ask, &price_cache)
                 .is_err()
         );
     }
@@ -1828,7 +1858,7 @@ mod tests {
         let market_id = ((usd_asset_id as u32) << 16) | btc_asset_id as u32;
         let mut specs = HashMap::new();
         specs.insert(market_id, get_spec(market_id));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         price_cache.update_prices(market_id, 0, 0);
         let engine = RiskEngine::new(specs, 0, 1);
         engine.set_balance(user_id, usd_asset_id, UserBalance::new(1_000, 0));
@@ -1843,7 +1873,7 @@ mod tests {
         );
 
         assert!(matches!(
-            engine.reserve_funds_for_order(&mut cmd, price_cache),
+            engine.reserve_funds_for_order(&mut cmd, &price_cache),
             Err(RiskEngineError::InvalidArguments { .. })
         ));
         assert_eq!(
@@ -1868,18 +1898,16 @@ mod tests {
         let mut specs = HashMap::new();
         specs.insert(market_id_btc_usd, get_spec(market_id_btc_usd));
         specs.insert(market_id_eth_usd, get_spec(market_id_eth_usd));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 0, 1);
 
         let user_id = 100;
 
         // --- Initial Balances ---
         // User has 100,000,000 USD, 10,000 BTC, 50,000 ETH
-        let mut balances = engine.balances.lock();
-        balances.set_balance(user_id, usd_asset_id, UserBalance::new(100_000_000, 0));
-        balances.set_balance(user_id, btc_asset_id, UserBalance::new(10_000, 0));
-        balances.set_balance(user_id, eth_asset_id, UserBalance::new(50_000, 0));
-        drop(balances);
+        engine.set_balance(user_id, usd_asset_id, UserBalance::new(100_000_000, 0));
+        engine.set_balance(user_id, btc_asset_id, UserBalance::new(10_000, 0));
+        engine.set_balance(user_id, eth_asset_id, UserBalance::new(50_000, 0));
 
         // --- Action 1: User places a BID order on BTC/USD market ---
         // Buy 1,000 BTC (base) for 50,000 USD (quote) each. Total cost: 50,000,000 USD
@@ -1895,7 +1923,7 @@ mod tests {
             1,
         );
         engine
-            .reserve_funds_for_order(&mut btc_buy_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut btc_buy_cmd, &price_cache)
             .unwrap();
 
         // --- Check balances after BTC order reservation ---
@@ -1924,7 +1952,7 @@ mod tests {
             2,
         );
         engine
-            .reserve_funds_for_order(&mut eth_sell_cmd, price_cache.clone())
+            .reserve_funds_for_order(&mut eth_sell_cmd, &price_cache)
             .unwrap();
 
         // --- Check balances after both reservations ---
@@ -1944,23 +1972,20 @@ mod tests {
         assert_eq!(engine.get_balance(user_id, eth_asset_id).locked(), 2_000);
 
         // --- Action 3: The BTC buy order is filled (as taker) ---
-        let mut btc_trade_event = MatcherTradeEvent {
+        let btc_trade_event = TradeFill {
             price: btc_price,
             size: btc_size,
             maker_user_id: 200,
             active_order_completed: true,
             matched_order_id: 99,
             matched_order_completed: true,
-            next_event: None,
-            maker_balance: [UserBalance::default(); 2],
             maker_remaining_size: 0,
-            maker_original_size: btc_size,
         };
         engine.handle_trade_event(
             user_id,
             market_id_btc_usd,
             Side::Bid,
-            &mut btc_trade_event,
+            btc_trade_event,
             Some((btc_buy_cmd.order_id, btc_price)),
         );
 
@@ -1982,7 +2007,7 @@ mod tests {
         assert_eq!(engine.get_balance(user_id, eth_asset_id).locked(), 2_000); // ETH lock is untouched
 
         // --- Action 4: The ETH sell order is cancelled ---
-        engine.handle_cancellation(&mut eth_sell_cmd);
+        cancel(&engine, &eth_sell_cmd);
 
         // --- Final Balances ---
         assert_eq!(
@@ -2003,7 +2028,7 @@ mod tests {
             .market_id(market_id)
             .market_type(MarketType::Spot)
             .quote_scale_k(10)
-            .base_native_scale(1_000_000_000_000_000_000)
+            .base_native_scale(1_000_000_000)
             .quote_native_scale(1_000_000)
             .maker_fee(0)
             .taker_fee(0)
@@ -2012,18 +2037,18 @@ mod tests {
             .unwrap()
     }
 
-    fn assert_shipped_eth_bid_accounting(fill_sizes: &[u64], fully_filled: bool) {
+    fn assert_shipped_eth_bid_accounting(price: u64, fill_sizes: &[u64], fully_filled: bool) {
         let user_id = 50;
         let market_id = (2_u32 << 16) | 1_u32;
-        let price = 30_000;
         let order_size = 1_000_000_000;
-        let initial_quote = 10;
+        // Covers the 1 ETH lock at 30_000 (3_000_000_000) and at 30_001 (3_000_100_000).
+        let initial_quote = 3_000_100_000;
         let order_id = 42;
 
         let spec = get_shipped_eth_spec(market_id);
         let mut specs = HashMap::new();
         specs.insert(market_id, spec.clone());
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 2, 4);
         engine.set_balance(
             user_id,
@@ -2042,25 +2067,22 @@ mod tests {
         );
         cmd.order_id = order_id;
         engine
-            .reserve_funds_for_order(&mut cmd, price_cache)
+            .reserve_funds_for_order(&mut cmd, &price_cache)
             .unwrap();
 
         let mut spent = 0;
         for (index, &fill_size) in fill_sizes.iter().enumerate() {
             let completed = fully_filled && index + 1 == fill_sizes.len();
-            let mut event = MatcherTradeEvent {
+            let event = TradeFill {
                 active_order_completed: false,
                 matched_order_id: order_id,
                 maker_user_id: user_id,
                 matched_order_completed: completed,
                 price,
                 size: fill_size,
-                next_event: None,
-                maker_balance: [UserBalance::default(); 2],
                 maker_remaining_size: 0,
-                maker_original_size: fill_size,
             };
-            engine.handle_trade_event(user_id, market_id, Side::Bid, &mut event, None);
+            engine.handle_trade_event(user_id, market_id, Side::Bid, event, None);
             cmd.size -= fill_size;
             spent += spec
                 .calculate_quote_cost(price, fill_size)
@@ -2068,34 +2090,41 @@ mod tests {
         }
 
         if !fully_filled {
-            engine.handle_cancellation(&mut cmd);
+            cancel(&engine, &cmd);
         }
 
         let balance = engine.get_balance(user_id, quote_asset(market_id));
         assert_eq!(balance.available(), initial_quote - spent);
         assert_eq!(balance.locked(), 0);
         assert_eq!(balance.total() + spent, initial_quote);
-        assert!(!engine.bid_collateral.lock().contains_key(&order_id));
+        assert!(!engine.ledger.lock().bid_collateral.contains_key(&order_id));
     }
 
     #[test]
     fn test_shipped_eth_bid_full_fill_has_no_collateral_residue() {
-        assert_shipped_eth_bid_accounting(&[333_333_334, 666_666_666], true);
+        assert_shipped_eth_bid_accounting(30_000, &[333_333_334, 666_666_666], true);
+    }
+
+    #[test]
+    fn test_shipped_eth_bid_full_fill_releases_rounding_residue() {
+        // At 30_001 the lock is 3_000_100_000 and the fills cost 1_000_033_335 + 2_000_066_664:
+        // the last fill releases the 1 unit residue along with its own settlement.
+        assert_shipped_eth_bid_accounting(30_001, &[333_333_334, 666_666_666], true);
     }
 
     #[test]
     fn test_shipped_eth_bid_partial_fill_cancel_has_no_collateral_residue() {
-        assert_shipped_eth_bid_accounting(&[333_333_334], false);
+        assert_shipped_eth_bid_accounting(30_000, &[333_333_334], false);
     }
 
     #[test]
     fn test_shipped_eth_bid_cancel_without_fill_has_no_collateral_residue() {
-        assert_shipped_eth_bid_accounting(&[], false);
+        assert_shipped_eth_bid_accounting(30_000, &[], false);
     }
 
     #[test]
     fn test_shipped_eth_bid_multiple_partial_fills_cancel_has_no_collateral_residue() {
-        assert_shipped_eth_bid_accounting(&[333_333_334, 333_333_334], false);
+        assert_shipped_eth_bid_accounting(30_000, &[333_333_334, 333_333_334], false);
     }
 
     #[test]
@@ -2106,9 +2135,9 @@ mod tests {
         specs.insert(market_id, get_shipped_eth_spec(market_id));
         let engine = RiskEngine::new(specs, 2, 4);
         engine.set_balance(user_id, quote_asset(market_id), UserBalance::new(10, 0));
-        let mut cmd = OrderCommand::cancel_order(404, user_id, Side::Bid, market_id);
+        let cmd = OrderCommand::cancel_order(404, user_id, Side::Bid, market_id);
 
-        engine.handle_cancellation(&mut cmd);
+        cancel(&engine, &cmd);
 
         assert_eq!(
             engine.get_balance(user_id, quote_asset(market_id)),
@@ -2125,7 +2154,7 @@ mod tests {
         let fill_size = 333_333_334;
         let mut specs = HashMap::new();
         specs.insert(market_id, get_shipped_eth_spec(market_id));
-        let price_cache = Arc::new(PriceCache::new(specs.keys()));
+        let price_cache = PriceCache::new(specs.keys());
         let engine = RiskEngine::new(specs, 2, 4);
         engine.set_balance(
             user_id,
@@ -2143,24 +2172,21 @@ mod tests {
         );
         cmd.order_id = 42;
         engine
-            .reserve_funds_for_order(&mut cmd, price_cache)
+            .reserve_funds_for_order(&mut cmd, &price_cache)
             .unwrap();
-        let mut event = MatcherTradeEvent {
+        let event = TradeFill {
             active_order_completed: false,
             matched_order_id: cmd.order_id,
             maker_user_id: user_id,
             matched_order_completed: false,
             price,
             size: fill_size,
-            next_event: None,
-            maker_balance: [UserBalance::default(); 2],
             maker_remaining_size: 0,
-            maker_original_size: fill_size,
         };
-        engine.handle_trade_event(user_id, market_id, Side::Ask, &mut event, None);
+        engine.handle_trade_event(user_id, market_id, Side::Ask, event, None);
         cmd.size -= fill_size;
 
-        engine.handle_cancellation(&mut cmd);
+        cancel(&engine, &cmd);
 
         let balance = engine.get_balance(user_id, base_asset(market_id));
         assert_eq!(balance.available(), order_size - fill_size);

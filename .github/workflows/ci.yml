@@ -45,26 +45,29 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install mold linker
         run: |
           wget https://github.com/rui314/mold/releases/download/v2.35.1/mold-2.35.1-x86_64-linux.tar.gz
+          echo "e58ff420ba4b034222a3519227a142a1aef4915f6feea1ecc42006d1e0b85111  mold-2.35.1-x86_64-linux.tar.gz" | sha256sum -c
           sudo tar -xzf mold-2.35.1-x86_64-linux.tar.gz -C /usr/local --strip-components=1
           rm mold-2.35.1-x86_64-linux.tar.gz
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: "ci-build"
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip openjdk-21-jdk-headless protobuf-compiler
+          # ubuntu-latest (26.04) defaults to Java 25, too new for the Gradle in rusteron's Aeron build.
+          echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> "$GITHUB_ENV"
           # Install CMake 3.30+ (required by rusteron)
           pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
           cmake --version
@@ -96,9 +99,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt
       - name: Enforce formatting
@@ -109,32 +112,35 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install mold linker
         run: |
           wget https://github.com/rui314/mold/releases/download/v2.35.1/mold-2.35.1-x86_64-linux.tar.gz
+          echo "e58ff420ba4b034222a3519227a142a1aef4915f6feea1ecc42006d1e0b85111  mold-2.35.1-x86_64-linux.tar.gz" | sha256sum -c
           sudo tar -xzf mold-2.35.1-x86_64-linux.tar.gz -C /usr/local --strip-components=1
           rm mold-2.35.1-x86_64-linux.tar.gz
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: "ci-build"
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip openjdk-21-jdk-headless protobuf-compiler
+          # ubuntu-latest (26.04) defaults to Java 25, too new for the Gradle in rusteron's Aeron build.
+          echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> "$GITHUB_ENV"
           # Install CMake 3.30+ (required by rusteron)
           pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
           cmake --version
 
       - name: Linting
-        run: cargo clippy --workspace --all-features --all-targets -- -D warnings -A clippy::missing_errors_doc -A clippy::missing_panics_doc -A clippy::must_use_candidate -A clippy::default_trait_access -A clippy::ignored_unit_patterns -A clippy::module_name_repetitions -A clippy::cast_possible_truncation
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
         env:
           RUSTFLAGS: "-D warnings -C link-arg=-fuse-ld=mold"
 
@@ -144,8 +150,9 @@ jobs:
       # gateway only at its next re-pin. Keep this version in step with the gateway's.
       # rustfmt is required, not cosmetic: rusteron's build script pipes the generated Aeron
       # bindings through rustfmt and panics (broken pipe) when the toolchain lacks it.
-      - uses: dtolnay/rust-toolchain@1.89.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: 1.89.0
           components: rustfmt
 
       - name: Check gateway-facing crates with the gateway toolchain
@@ -172,15 +179,17 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt, llvm-tools-preview
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip openjdk-21-jdk-headless protobuf-compiler
+          # ubuntu-latest (26.04) defaults to Java 25, too new for the Gradle in rusteron's Aeron build.
+          echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> "$GITHUB_ENV"
           # Install CMake 3.30+ (required by rusteron)
           pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
           cmake --version
@@ -194,7 +203,7 @@ jobs:
           fallback: none
       - name: Generate code coverage
         run: |
-          cargo llvm-cov --workspace --all-features --all-targets --exclude rusteron_client --text
+          cargo llvm-cov --workspace --all-features --all-targets --text
         env:
           VEX_ENV: development
 
@@ -203,9 +212,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install cargo-audit
         uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
         with:
@@ -218,37 +227,30 @@ jobs:
   xtask-tests:
     name: End-to-end tests
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     if: >-
       github.event_name != 'pull_request' ||
       github.base_ref == 'develop' ||
       github.base_ref == 'main'
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip openjdk-21-jdk-headless protobuf-compiler
+          # ubuntu-latest (26.04) defaults to Java 25, too new for the Gradle in rusteron's Aeron build.
+          echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> "$GITHUB_ENV"
           # Install CMake 3.30+ (required by rusteron)
           pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
           cmake --version
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # Cache Docker layers for faster rebuilds
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Verify Docker is available
         run: |
@@ -258,16 +260,6 @@ jobs:
 
       - name: Build Aeron and Docker images
         run: |
-          # Use buildx cache for faster builds
-          export DOCKER_BUILDKIT=1
-          export BUILDX_CACHE_FROM="type=local,src=/tmp/.buildx-cache"
-          export BUILDX_CACHE_TO="type=local,dest=/tmp/.buildx-cache-new,mode=max"
-
-          # Export the media driver BEFORE anything runs it. The exporter mounts ./bin
-          # and copies aeronmd into it, which is the same file the integration run
-          # executes; doing this afterwards fails with ETXTBSY and takes vex-server down
-          # with it through service_completed_successfully.
-          docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml run --rm --build --no-deps media-driver
           # Build with plain progress to see full compilation output. aeron-archive is the
           # ArchivingMediaDriver that journals vex-server's commands; xtask applies the Kafka
           # topics from deploy/kafka/ itself, since the broker creates none.
@@ -280,26 +272,43 @@ jobs:
         run: cargo xtask test e2e --all
 
       - name: Run integration tests
-        run: cargo xtask test integration --fail-fast
+        run: cargo xtask test integration
+        env:
+          VEX_ENV: development
+
+      # Each suite starts its own stack; the first that fails ends the step (bash -e).
+      - name: Run the per-order-type integration suites
+        run: for suite in gtc ioc fok balance cancellation; do cargo xtask test integration "$suite"; done
         env:
           VEX_ENV: development
 
       - name: Run outbox tests
         run: cargo xtask test outbox
 
-      - name: Show failed test infrastructure
+      - name: Keep the Docker suites' container logs
         if: failure()
-        # Best-effort `ps`: the step runs under `bash -e`, so a failing `ps` would otherwise
-        # end it before `logs`, the output this step exists for.
-        run: |
-          docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml ps -a || true
-          docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml logs --no-color
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: docker-suite-logs
+          path: xtask/tests/test-results/logs
+          overwrite: true
 
-      # Temp fix for cache growth - https://github.com/docker/build-push-action/issues/252
-      - name: Move cache
-        run: |
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache || true
+  # The image that ships (the root Dockerfile), which no other job builds. Its release build has no
+  # dependency layer to cache, so it runs only where coverage and the e2e suites do.
+  production-image:
+    name: Production image
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.base_ref == 'develop' ||
+      github.base_ref == 'main'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Build the production image
+        run: docker build --file Dockerfile --tag vex-core:ci .
+      - name: Check the binary resolves every shared library
+        run: docker run --rm --entrypoint sh vex-core:ci -c 'ldd /usr/local/bin/vex-core | (! grep -q "not found")'
 
   # The live recovery tests (#[ignore]d in networking/src/server/recovery_tests.rs): journaling,
   # replay and restarts after a crash, against a real Java media driver and a separate archive
@@ -326,7 +335,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip default-jdk protobuf-compiler
+          sudo apt-get install -y curl pkg-config libssl-dev uuid-dev ca-certificates make gcc g++ clang zlib1g-dev libbsd-dev python3-pip openjdk-21-jdk-headless protobuf-compiler
+          # ubuntu-latest (26.04) defaults to Java 25, too new for the Gradle in rusteron's Aeron build.
+          echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> "$GITHUB_ENV"
           # Install CMake 3.30+ (required by rusteron)
           pip3 install cmake --upgrade --break-system-packages || pip3 install cmake --upgrade
           cmake --version
@@ -370,6 +381,10 @@ jobs:
             | tee "$RUNNER_TEMP/recovery-tests.out"
           # A filter that matches no test (a renamed module) passes; fail instead.
           grep -Eq '^test result: ok\. [1-9][0-9]* passed' "$RUNNER_TEMP/recovery-tests.out"
+          # The handshake end to end (authentication, rejection limit), on an embedded driver.
+          cargo test --package vex-networking --test client_server_tests -- --ignored --exact \
+            test_every_gateway_receives_its_handshake_reply | tee "$RUNNER_TEMP/handshake-test.out"
+          grep -q '^test result: ok\. 1 passed' "$RUNNER_TEMP/handshake-test.out"
 
       - name: Show the media driver's and archive's output
         if: failure()
@@ -384,7 +399,7 @@ jobs:
   ci-required:
     name: CI required
     if: ${{ always() }}
-    needs: [test, fmt, clippy, audit, recovery-tests, coverage, xtask-tests]
+    needs: [test, fmt, clippy, audit, recovery-tests, coverage, xtask-tests, production-image]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -398,7 +413,7 @@ jobs:
           results = json.loads(os.environ["RESULTS"])
           required = ["test", "fmt", "clippy", "audit", "recovery-tests"]
           if os.environ["FULL"] == "true":
-              required += ["coverage", "xtask-tests"]
+              required += ["coverage", "xtask-tests", "production-image"]
           failed = [name for name in required if results[name]["result"] != "success"]
           if failed:
               print("Required jobs did not succeed:", ", ".join(failed))

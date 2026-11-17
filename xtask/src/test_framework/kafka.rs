@@ -132,15 +132,21 @@ impl KafkaVerifier {
             }))
     }
 
-    /// Wait for a balance to be published for a user and asset (with timeout)
-    pub async fn wait_for_balance_update(
+    /// Wait for the balance of a user and asset as of the command stamped `after`, or later
+    ///
+    /// `after` is the timestamp of a command that publishes this balance, from its response.
+    pub async fn wait_for_balance_after(
         &mut self,
         user_id: u64,
         asset_id: u16,
+        after: u64,
         wait_timeout: Duration,
     ) -> TestResult<BalanceEvent> {
         self.wait_for(wait_timeout, |events| {
-            events.balance(user_id, asset_id).cloned()
+            events
+                .balance(user_id, asset_id)
+                .filter(|balance| balance.timestamp >= after)
+                .cloned()
         })
         .await
     }
@@ -162,14 +168,23 @@ impl KafkaVerifier {
         .await
     }
 
-    /// Wait for an orderbook snapshot to be published for a market (with timeout)
-    pub async fn wait_for_orderbook_update(
+    /// Wait for the orderbook of a market as of the command stamped `after`, or later
+    ///
+    /// `after` is the timestamp of a command that reaches the book, from its response.
+    pub async fn wait_for_orderbook_after(
         &mut self,
         market_id: u32,
+        after: u64,
         wait_timeout: Duration,
     ) -> TestResult<OrderbookSnapshot> {
-        self.wait_for(wait_timeout, |events| events.orderbook(market_id).cloned())
-            .await
+        self.wait_for(wait_timeout, |events| {
+            events
+                .orderbooks
+                .get(&market_id.to_string())
+                .filter(|(timestamp, _)| *timestamp >= after)
+                .map(|(_, snapshot)| snapshot.clone())
+        })
+        .await
     }
 
     /// Wait until every event in `expected` has been published, at least once (with timeout)
@@ -211,14 +226,34 @@ impl KafkaVerifier {
 
     /// The end offset of every partition of every event topic, as the broker reports it now
     pub fn end_offsets(&self) -> TestResult<BTreeMap<(String, i32), i64>> {
-        self.events
-            .positions
-            .keys()
-            .map(|(topic, partition)| {
-                let (_, end) = self
-                    .consumer
-                    .fetch_watermarks(topic, *partition, BROKER_TIMEOUT)?;
-                Ok(((topic.clone(), *partition), end))
+        Ok(self.ends()?.into_iter().collect())
+    }
+
+    /// The end offset of every assigned partition, in one ListOffsets request per broker: a
+    /// `fetch_watermarks` per partition is a round trip each, queued behind the fetch in flight.
+    fn ends(&self) -> TestResult<Vec<((String, i32), i64)>> {
+        // Looked up as a timestamp, `Offset::End` (-1) is Kafka's "latest": the end offset.
+        let mut partitions = TopicPartitionList::new();
+        for (topic, partition) in self.events.positions.keys() {
+            partitions.add_partition_offset(topic, *partition, Offset::End)?;
+        }
+        let ends = self
+            .consumer
+            .offsets_for_times(partitions, BROKER_TIMEOUT)?;
+        ends.elements()
+            .iter()
+            .map(|partition| match partition.offset() {
+                Offset::Offset(end) => {
+                    Ok(((partition.topic().to_string(), partition.partition()), end))
+                }
+                offset => Err(TestError::Parse {
+                    message: format!(
+                        "no end offset for {} partition {}: {offset:?} ({:?})",
+                        partition.topic(),
+                        partition.partition(),
+                        partition.error()
+                    ),
+                }),
             })
             .collect()
     }
@@ -280,14 +315,7 @@ impl KafkaVerifier {
 
     /// Take in every event the broker holds at this moment
     fn catch_up(&mut self) -> TestResult<()> {
-        let mut ends = Vec::with_capacity(self.events.positions.len());
-        for (topic, partition) in self.events.positions.keys() {
-            let (_, end) = self
-                .consumer
-                .fetch_watermarks(topic, *partition, BROKER_TIMEOUT)?;
-            ends.push(((topic.clone(), *partition), end));
-        }
-
+        let ends = self.ends()?;
         let deadline = Instant::now() + BROKER_TIMEOUT;
         for (partition, end) in ends {
             while self.events.positions[&partition] < end {

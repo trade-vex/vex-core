@@ -105,12 +105,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
 
 [[package]]
-name = "arrayvec"
-version = "0.7.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
-
-[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -344,7 +338,6 @@ dependencies = [
  "ahash",
  "borsh",
  "hashbrown 0.15.5",
- "parking_lot",
  "sbe_order",
  "serde",
  "thiserror 2.0.17",
@@ -535,7 +528,7 @@ dependencies = [
 [[package]]
 name = "disruptor"
 version = "3.6.0"
-source = "git+https://github.com/trade-vex/disruptor-rs.git?rev=7e07a8b0218d767d021925e58c5ff20fd5c30d70#7e07a8b0218d767d021925e58c5ff20fd5c30d70"
+source = "git+https://github.com/trade-vex/disruptor-rs.git?rev=f75663bb5b911409656ef07b7cbea43e74ecef01#f75663bb5b911409656ef07b7cbea43e74ecef01"
 dependencies = [
  "core_affinity",
  "crossbeam-utils",
@@ -618,7 +611,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1254,9 +1247,9 @@ dependencies = [
 
 [[package]]
 name = "libz-sys"
-version = "1.1.32"
+version = "1.1.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69965d2409bff8c8cea3829009fff66a86f05a0570656552ef70f616e8e4bd85"
+checksum = "fee3f59f4321dab0c78d828942e7aa09d0bd8ad6e78a501977e6bf3d02938045"
 dependencies = [
  "cc",
  "libc",
@@ -1266,9 +1259,9 @@ dependencies = [
 
 [[package]]
 name = "linux-raw-sys"
-version = "0.11.0"
+version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df1d3c3b53da64cf5760482273a98e575c651a67eec7f77df96b5b642de8f039"
+checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "litemap"
@@ -1428,16 +1421,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "num-format"
-version = "0.4.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a652d9771a63711fd3c3deb670acfbe5c30a4072e664d7a3bf5a9e1056ac72c3"
-dependencies = [
- "arrayvec",
- "itoa",
-]
-
-[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1565,7 +1548,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1718,20 +1701,19 @@ dependencies = [
 name = "processors"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "common",
  "hashbrown 0.15.5",
  "parking_lot",
  "prost",
  "prost-build",
  "rdkafka",
- "rusteron-archive",
  "schema_registry_converter",
  "serde",
  "serde_json",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "vex-networking",
  "vex-orderbook",
 ]
@@ -2016,29 +1998,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rusteron-client"
-version = "0.1.157"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be24d2e7341fce9453bd0c4f446dd2f6517b1a2e03d3247f122d1bfa23ec5c72"
-dependencies = [
- "bindgen",
- "cmake",
- "ctrlc",
- "dunce",
- "flate2",
- "hdrhistogram",
- "log",
- "num-format",
- "pkg-config",
- "proc-macro2",
- "regex",
- "reqwest",
- "rusteron-code-gen",
- "tar",
- "walkdir",
-]
-
-[[package]]
 name = "rusteron-code-gen"
 version = "0.1.157"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2075,15 +2034,15 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.2"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd15f8a2c5551a84d56efdc1cd049089e409ac19a3072d5037a17fd70719ff3e"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags",
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2167,7 +2126,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -2476,7 +2434,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2916,9 +2874,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.17",
- "toml",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -2939,6 +2895,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "common",
+ "crc32fast",
  "disruptor",
  "rand",
  "rusteron-archive",
@@ -2961,22 +2918,19 @@ dependencies = [
 name = "vex-server"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "common",
  "core_affinity",
  "disruptor",
  "hashbrown 0.15.5",
  "parking_lot",
  "processors",
- "rusteron-client",
  "test-log",
  "thiserror 2.0.17",
- "tikv-jemallocator",
- "tokio",
  "tracing",
  "tracing-subscriber",
  "vex-config",
  "vex-networking",
- "vex-orderbook",
 ]
 
 [[package]]
@@ -3103,7 +3057,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3344,11 +3298,8 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "clap",
  "common",
- "ctrlc",
- "disruptor",
  "duct",
  "hashbrown 0.15.5",
  "hdrhistogram",
@@ -3356,19 +3307,16 @@ dependencies = [
  "prost",
  "rdkafka",
  "reqwest",
- "rusteron-client",
  "schema_registry_converter",
  "serde",
  "serde_json",
  "thiserror 2.0.17",
- "tikv-jemallocator",
  "tokio",
  "toml",
  "tracing",
  "tracing-subscriber",
  "vex-config",
  "vex-networking",
- "vex-server",
 ]
 
 [[package]]

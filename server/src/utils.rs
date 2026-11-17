@@ -28,7 +28,7 @@ macro_rules! create_risk_handler {
         let shard_mask = risk_engines.len() as u64 - 1;
 
         move |cell: &::std::cell::UnsafeCell<$crate::engine::OrderCommand>,
-              _sequence: i64,
+              sequence: i64,
               _end_of_batch: bool| {
             // SAFETY: This is a shared scalar read; peer R1 handlers may read user_id
             // concurrently, and none of them mutates it.
@@ -40,7 +40,35 @@ macro_rules! create_risk_handler {
             // exclusive, so only this R1 handler creates a mutable reference for this sequence.
             let cmd = unsafe { &mut *cell.get() };
             let risk_engine = &risk_engines[$shard_id];
-            risk_engine.pre_process_command(cmd, ::std::clone::Clone::clone(&price_cache));
+
+            // R2 of earlier sequences may still owe this user credits (proceeds, released
+            // collateral), and R2 only ever raises `available` and lowers `locked`. So an order
+            // that passes now also passes on the settled ledger, and one that fails is decided
+            // again once this shard's R2 has settled every earlier sequence. A market buy reads
+            // the book, and a deposit's or withdrawal's balance is published as final: those
+            // decide on the settled ledger from the start. A replay, which publishes commands
+            // back to back, then reproduces every decision made live.
+            let on_settled_ledger = match cmd.command {
+                ::common::OrderCommandType::DepositFunds
+                | ::common::OrderCommandType::WithdrawFunds => true,
+                ::common::OrderCommandType::PlaceOrder => {
+                    cmd.side == ::common::Side::Bid && cmd.is_market_order()
+                }
+                _ => false,
+            };
+            if on_settled_ledger {
+                risk_engine.await_settled(sequence - 1);
+            }
+            risk_engine.pre_process_command(cmd, &price_cache);
+            if cmd.status == ::common::Status::Rejected
+                && !on_settled_ledger
+                && cmd.command == ::common::OrderCommandType::PlaceOrder
+            {
+                // A rejected command is unchanged but for its status.
+                risk_engine.await_settled(sequence - 1);
+                cmd.status = ::common::Status::Processing;
+                risk_engine.pre_process_command(cmd, &price_cache);
+            }
         }
     }};
 }
@@ -59,9 +87,12 @@ macro_rules! create_risk_handler {
 ///
 /// 1. Skips rejected orders
 /// 2. Snapshots the balance of a deposit or withdrawal (applied in R1) and stops there
-/// 3. Processes trade events for both maker and taker based on shard ownership
+/// 3. Processes trade events for both maker and taker based on shard ownership; a size-0 event
+///    (an STP cancel of the taker's own resting order) only unlocks that order
 /// 4. Handles order cancellations for partially filled IOC/FOK orders
 /// 5. Updates balance snapshots in the command
+/// 6. Marks the sequence settled on its shard's `RiskEngine`, for every sequence, which R1 of the
+///    same shard waits on (`create_risk_handler!`)
 ///
 /// # Example
 ///
@@ -73,83 +104,118 @@ macro_rules! create_risk_r2_handler {
     ($shard_id:expr, $risk_engines:expr) => {{
         let risk_engines = $risk_engines.clone();
         let shard_mask = $risk_engines.len() as u64 - 1;
-        move |cell: &::std::cell::UnsafeCell<OrderCommand>, _sequence: i64, _end_of_batch: bool| {
-            // SAFETY: R2 is the one handler group where taker and maker may be settled by
-            // different shards concurrently, so two handlers can hold `&mut` to the same
-            // command. This access is not sound. Making it sound requires
-            // `handle_trade_event` to take projected fields rather than `&mut OrderCommand`,
-            // which is a change in `processors/` and is tracked in issue #128.
-            let cmd = unsafe { &mut *cell.get() };
-            if cmd.status == Status::Rejected {
-                return;
-            }
-
+        move |cell: &::std::cell::UnsafeCell<OrderCommand>, sequence: i64, _end_of_batch: bool| {
+            // SAFETY (every `unsafe` below): R2 is the one handler group where two shards work on
+            // the same command at once, the taker's and a maker's. So no shard forms a reference
+            // to the command or to an event: each reads the fields no R2 writes, and writes only
+            // its own (the taker shard `balance` and `taker_fee`, the maker shard `maker_balance`
+            // and `maker_fee`), through raw pointers.
+            let cmd: *mut OrderCommand = cell.get();
             let risk_engine = &risk_engines[$shard_id];
-            let taker_id = cmd.user_id();
-            let market_id = cmd.market_id();
-            let taker_side = cmd.side();
-            let taker_price = cmd.price();
-            let taker_order_id = cmd.order_id();
+            'settle: {
+                let status = unsafe { (*cmd).status };
+                if status == Status::Rejected {
+                    break 'settle;
+                }
 
-            // Determine shard ownership for taker
-            let is_taker_shard = ((taker_id & shard_mask) as usize) == $shard_id;
+                let taker_id = unsafe { (*cmd).user_id };
+                let market_id = unsafe { (*cmd).market_id };
+                let taker_side = unsafe { (*cmd).side };
 
-            // A deposit or withdrawal (`Processed`) was applied in R1. R1 runs ahead of R2 for
-            // earlier sequences, so snapshot it here, where this shard has settled every earlier
-            // trade of the user: the published balance must not miss one of them.
-            if cmd.status == Status::Processed {
+                // Determine shard ownership for taker
+                let is_taker_shard = ((taker_id & shard_mask) as usize) == $shard_id;
+
+                // A deposit or withdrawal (`Processed`) was applied in R1. Snapshot it here, in
+                // sequence order with this shard's settlements, so the published balance includes
+                // every earlier trade of the user.
+                if status == Status::Processed {
+                    if is_taker_shard {
+                        // For deposits and withdrawals `market_id` carries the asset id.
+                        let balance = risk_engine.get_balance(taker_id, market_id as u16);
+                        unsafe { (&raw mut (*cmd).balance[0]).write(balance) };
+                    }
+                    break 'settle;
+                }
+
+                let taker_order = unsafe { ((*cmd).order_id, (*cmd).price) };
+
+                // Process all trade events in the chain
+                let mut event = unsafe { OrderCommand::events_ptr(cmd) };
+                while !event.is_null() {
+                    let fill = unsafe { ::common::MatcherTradeEvent::fill(event) };
+
+                    if fill.size == 0 {
+                        // STP cancel of the taker's own resting order: maker == taker, so one
+                        // shard owns both. Unlock its remainder; nothing trades.
+                        if is_taker_shard {
+                            risk_engine.handle_cancellation(
+                                fill.matched_order_id,
+                                taker_id,
+                                market_id,
+                                taker_side.op_side(),
+                                fill.maker_remaining_size,
+                            );
+                        }
+                    } else {
+                        // Settle maker if this shard owns the maker's user ID
+                        if ((fill.maker_user_id & shard_mask) as usize) == $shard_id {
+                            let settled = risk_engine.handle_trade_event(
+                                fill.maker_user_id,
+                                market_id,
+                                taker_side.op_side(),
+                                fill,
+                                None, // Maker order ID is carried by the trade event
+                            );
+                            if let Some(balance) = settled.maker_balance {
+                                unsafe { (&raw mut (*event).maker_balance).write(balance) };
+                            }
+                            unsafe { (&raw mut (*event).maker_fee).write(settled.fee) };
+                        }
+
+                        // Settle taker if this shard owns the taker's user ID
+                        if is_taker_shard {
+                            let settled = risk_engine.handle_trade_event(
+                                taker_id,
+                                market_id,
+                                taker_side,
+                                fill,
+                                Some(taker_order),
+                            );
+                            unsafe { (&raw mut (*event).taker_fee).write(settled.fee) };
+                        }
+                    }
+
+                    event = unsafe { ::common::MatcherTradeEvent::next_ptr(event) };
+                }
+
+                // Handle cancellations for taker (IOC/FOK partial fills or explicit cancels)
                 if is_taker_shard {
-                    // For deposits and withdrawals `market_id` carries the asset id.
-                    cmd.balance[0] = risk_engine.get_balance(taker_id, market_id as u16);
-                }
-                return;
-            }
-
-            // Process all trade events in the chain
-            let mut current_event = cmd.events_mut();
-            while let Some(event) = current_event {
-                let maker_id = event.maker_user_id;
-                let is_maker_shard = ((maker_id & shard_mask) as usize) == $shard_id;
-
-                // Settle maker if this shard owns the maker's user ID
-                if is_maker_shard {
-                    let maker_side = taker_side.op_side();
-                    risk_engine.handle_trade_event(
-                        maker_id, market_id, maker_side, event,
-                        None, // Maker order ID is carried by the trade event
+                    let should_handle_cancellation = matches!(
+                        (status, unsafe { (*cmd).time_in_force }),
+                        (Status::PartiallyFilled, TimeInForce::Ioc | TimeInForce::Fok)
+                            | (Status::Cancelled, _)
                     );
-                }
 
-                // Settle taker if this shard owns the taker's user ID
-                if is_taker_shard {
-                    risk_engine.handle_trade_event(
-                        taker_id,
-                        market_id,
-                        taker_side,
-                        event,
-                        Some((taker_order_id, taker_price)),
-                    );
-                }
+                    if should_handle_cancellation {
+                        risk_engine.handle_cancellation(
+                            taker_order.0,
+                            taker_id,
+                            market_id,
+                            taker_side,
+                            unsafe { (*cmd).size },
+                        );
+                    }
 
-                current_event = event.next_event.as_deref_mut();
+                    // Update balance snapshot in command for response
+                    let balance = [
+                        risk_engine.get_balance(taker_id, base_asset(market_id)),
+                        risk_engine.get_balance(taker_id, quote_asset(market_id)),
+                    ];
+                    unsafe { (&raw mut (*cmd).balance).write(balance) };
+                }
             }
-
-            // Handle cancellations for taker (IOC/FOK partial fills or explicit cancels)
-            if is_taker_shard {
-                let should_handle_cancellation = matches!(
-                    (cmd.status, cmd.time_in_force),
-                    (Status::PartiallyFilled, TimeInForce::Ioc | TimeInForce::Fok)
-                        | (Status::Cancelled, _)
-                );
-
-                if should_handle_cancellation {
-                    risk_engine.handle_cancellation(cmd);
-                }
-
-                // Update balance snapshot in command for response
-                cmd.balance[0] = risk_engine.get_balance(taker_id, base_asset(market_id));
-                cmd.balance[1] = risk_engine.get_balance(taker_id, quote_asset(market_id));
-            }
+            // Every sequence, settled or skipped, moves the cursor R1 waits on.
+            risk_engine.mark_settled(sequence);
         }
     }};
 }

@@ -20,10 +20,11 @@ cargo xtask --help
 ### Build Docker Images
 
 Builds the necessary Docker images for the `aeron-archive`, `vex-server` and `vex-client` services, which are used in all testing scenarios.
+`vex-server` and `vex-client` are two targets of `xtask/tests/Dockerfile`; the client's media driver,
+and the host-side one the integration and outbox suites start, are Aeron's Java `MediaDriver`.
 
 **Usage:**
 ```sh
-docker compose --project-directory ./xtask/tests --file ./xtask/tests/docker-compose.yml up media-driver --build
 cargo xtask build-docker
 ```
 
@@ -59,8 +60,7 @@ cargo xtask test
   ├── e2e [OPTIONS]           # Docker-based network E2E tests
   ├── integration [SUITE]     # Integration tests
   ├── outbox                  # Re-publication, startup wait and topic check (Docker)
-  ├── benchmark               # Performance benchmarks
-  └── unit                    # Run cargo test for xtask
+  └── benchmark               # Performance benchmarks
 ```
 
 #### E2E Tests
@@ -111,7 +111,8 @@ cargo xtask test integration [SUITE] [OPTIONS]
 
 **Options:**
 * `--verbose` / `-v`: Enable debug logging
-* `--fail-fast` / `-f`: Stop on first failure
+
+The command exits non-zero when a scenario fails or the suite stops before its end.
 
 **Examples:**
 ```sh
@@ -120,9 +121,6 @@ cargo xtask test integration
 
 # Run only GTC tests with verbose output
 cargo xtask test integration gtc --verbose
-
-# Run balance tests and stop on first failure
-cargo xtask test integration balance --fail-fast
 ```
 
 #### Outbox Tests
@@ -130,13 +128,19 @@ cargo xtask test integration balance --fail-fast
 Runs the core's outbox scenarios, in order, on one continuous ledger: a `kill -9` with events
 queued behind a paused broker, restarted at once (the start must wait for the media driver to
 release the killed core's journal), a graceful shutdown that runs out of its delivery grace with
-the broker paused, a start while the broker does not answer, a clean restart, and starts that must
-refuse a missing or non-compacted `vex-core.delivered`. Every graceful shutdown keeps the test
-gateway connected, as gateways are in production; the clean one must deliver everything and write
-the watermark of the last command, so that the restart re-publishes nothing. The oracle is the
+the broker paused, a start while the broker does not answer, a clean restart, starts that must
+refuse a missing or non-compacted `vex-core.delivered`, a restart whose replay cannot
+re-publish (the registry paused) that must fail within a minute and recover on the next start,
+and a `kill -9` after a snapshot, whose restart must replay only the two orders journaled since
+and keep every resting order, each of which then cancels.
+Every graceful shutdown keeps the test gateway connected, as gateways are in production; the clean
+one must deliver everything and write the watermark of the last command, so that the restart
+loads the shutdown's snapshot, replays nothing and re-publishes nothing. The oracle is the
 test client's own ledger, built from the core's responses: Kafka must hold every event it expects,
-by `(topic, key, timestamp)`, and its latest balance per key must equal the ledger's. The orders
-are limit orders only, because replay does not regenerate a market buy's events exactly (#140).
+by `(topic, key, timestamp)`, and its latest balance per key must equal the ledger's. Each round
+rests a bid and an ask, cancels the bid and re-places it without waiting for the cancel's
+response, and lifts the ask with a market buy, all of which every replay must re-decide as the
+live run did.
 
 **Usage:**
 ```sh
@@ -161,32 +165,11 @@ cargo xtask test benchmark [OPTIONS]
 cargo xtask test benchmark --clients 5
 ```
 
-#### Unit Tests
-
-Runs the xtask crate unit tests.
-
-**Usage:**
-```sh
-cargo xtask test unit [OPTIONS]
-```
-
-**Options:**
-* `--filter <PATTERN>`: Filter tests by pattern
-
-**Example:**
-```sh
-# Run all xtask unit tests
-cargo xtask test unit
-
-# Run only tests matching "parse"
-cargo xtask test unit --filter parse
-```
-
 ## Test Artifacts and Logs
 
 After running tests or benchmarks, the following artifacts are generated:
 
 * **Test Results:** Raw data from tests is stored in `xtask/tests/test-results/`. Each e2e or benchmark client writes the ids it got a response for to `received_ids-<client id>.txt`, which the run reads back to check completeness.
-* **Docker Logs:** Logs for each container (`vex-server`, `vex-client`) are saved in `xtask/tests/test-results/logs/`.
+* **Docker Logs:** Every stack saves each container's log to `xtask/tests/test-results/logs/<container>-<start time>.log` before its teardown. Runs never delete them; remove the directory to reclaim the space. CI uploads the directory as the `docker-suite-logs` artifact when the end-to-end job fails.
 
 The environment is automatically torn down after each run, but the artifacts are preserved for inspection.

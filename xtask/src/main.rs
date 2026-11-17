@@ -15,8 +15,8 @@ use vex_config::GatewayNetworkingConfig;
 
 use xtask::kafka_topics::{self, KafkaTopics};
 use xtask::scenarios;
-use xtask::test_framework::TestContext;
 use xtask::test_framework::types::{ScenarioResult, TestConfig, TestSuiteResult};
+use xtask::test_framework::{TestContext, stack};
 
 /// delay in network emulation in teste2e (high-latency scenario)
 const NETWORK_DELAY_MS: u64 = 100;
@@ -96,10 +96,6 @@ enum TestCommands {
         /// Verbose logging (debug level)
         #[arg(short, long)]
         verbose: bool,
-
-        /// Stop on first failure
-        #[arg(short, long)]
-        fail_fast: bool,
     },
 
     /// The core's outbox: re-publication after a kill or a shutdown past its grace, the wait
@@ -111,13 +107,6 @@ enum TestCommands {
         /// Number of clients (default: 1)
         #[arg(short, long, default_value_t = 1)]
         clients: u32,
-    },
-
-    /// Run cargo test for xtask unit tests
-    Unit {
-        /// Filter pattern for tests
-        #[arg(short, long)]
-        filter: Option<String>,
     },
 }
 
@@ -137,17 +126,11 @@ enum XTaskError {
     #[error("Failed to execute command: {0}")]
     CommandExecution(#[from] std::io::Error),
 
-    #[error("Environment error: {0}")]
-    Environment(#[from] std::env::VarError),
-
     #[error("An unexpected error occurred: {0}")]
     Unexpected(String),
 
     #[error("Test Failed: {0}")]
     Testing(#[from] TestingError),
-
-    #[error("JSON parsing error: {0}")]
-    JsonParse(#[from] serde_json::Error),
 
     #[error("Integration test error: {0}")]
     IntegrationTest(String),
@@ -179,16 +162,13 @@ async fn main() -> Result<(), XTaskError> {
                     run_correctness_task(project_root.into_boxed_path(), &scenario, clients).await
                 }
             }
-            TestCommands::Integration {
-                suite,
-                verbose,
-                fail_fast,
-            } => run_integration_tests(&project_root, suite, verbose, fail_fast).await,
+            TestCommands::Integration { suite, verbose } => {
+                run_integration_tests(&project_root, suite, verbose).await
+            }
             TestCommands::Outbox => run_outbox_tests(&project_root).await,
             TestCommands::Benchmark { clients } => {
                 run_benchmark(project_root.into_boxed_path(), clients).await
             }
-            TestCommands::Unit { filter } => run_unit_tests(&project_root, filter),
         },
 
         Commands::Kafka {
@@ -257,54 +237,72 @@ const DOCKER_SERVER_IP: &str = "172.28.1.10";
 const STACK_BROKERS: &str = "localhost:19092";
 const STACK_SCHEMA_REGISTRY: &str = "http://localhost:18081";
 
-/// The host-side Aeron media driver the integration test client connects through
+/// The host-side Aeron media driver the integration test client connects through: the
+/// `MediaDriver` of the stack's archive image (`vex-aeron-archive`, which `cargo xtask build-docker`
+/// builds), in a container on the host's network and shared memory, run as the calling user so
+/// that the client can map the driver's files.
 ///
 /// It runs in the Aeron directory the test client uses, which it owns for the length of one run.
 /// Dropping it stops the driver and deletes that directory whenever xtask returns or unwinds. A
-/// signal that ends xtask (Ctrl-C, SIGKILL) skips Drop and can leave the directory behind, which is
-/// why starting empties it first. A killed driver leaves its CnC file there with a recent
-/// heartbeat: reusing the directory makes the next driver exit at once ("active driver detected")
-/// while the client maps the stale file and fails with "no driver heartbeat".
+/// signal that ends xtask (Ctrl-C, SIGKILL) skips Drop and can leave the container and the directory
+/// behind, which is why starting removes both first. A killed driver leaves its CnC file there with
+/// a recent heartbeat: reusing the directory makes the next driver exit at once ("active driver
+/// detected") while the client maps the stale file and fails with "no driver heartbeat".
 struct HostMediaDriver {
     process: Child,
     dir: PathBuf,
 }
 
+/// The container of [`HostMediaDriver`].
+const HOST_MEDIA_DRIVER: &str = "vex-host-media-driver";
+
 impl HostMediaDriver {
-    fn start(root: &Path, timeout: std::time::Duration) -> Result<Self, XTaskError> {
-        let aeronmd_path = root.join("xtask/tests/bin/aeronmd");
-        let lib_path = root.join("xtask/tests/bin/lib");
-
-        if !aeronmd_path.exists() {
-            return Err(XTaskError::Unexpected(format!(
-                "aeronmd binary not found at {:?}. Run 'cargo xtask build-docker' first.",
-                aeronmd_path
-            )));
-        }
-
+    fn start(timeout: std::time::Duration) -> Result<Self, XTaskError> {
         let dir = PathBuf::from(GatewayNetworkingConfig::test_defaults().context_dir);
+        // Exits 0 when there is no such container, with an error message that would mislead.
+        cmd!("docker", "rm", "--force", HOST_MEDIA_DRIVER)
+            .stdout_null()
+            .stderr_null()
+            .run()?;
         remove_dir_if_present(&dir).map_err(|e| {
             XTaskError::Unexpected(format!("Failed to clear {}: {e}", dir.display()))
         })?;
+        // The directory's parent: the driver deletes and recreates its directory, which a mount
+        // point cannot be.
+        let shared = dir
+            .parent()
+            .expect("the Aeron directory has a parent")
+            .display();
+        let user = format!("{}:{}", cmd!("id", "-u").read()?, cmd!("id", "-g").read()?);
 
         println!(
             "Starting host-side Aeron media driver in {}...",
             dir.display()
         );
-        let process = std::process::Command::new(&aeronmd_path)
-            .env("AERON_DIR", &dir)
-            .env(
-                "LD_LIBRARY_PATH",
-                format!(
-                    "{}:{}",
-                    lib_path.display(),
-                    env::var("LD_LIBRARY_PATH").unwrap_or_default()
-                ),
-            )
+        let process = std::process::Command::new("docker")
+            .args([
+                "run",
+                "--rm",
+                "--name",
+                HOST_MEDIA_DRIVER,
+                "--network",
+                "host",
+            ])
+            .args(["--user", &user, "--volume", &format!("{shared}:{shared}")])
+            .args(["--entrypoint", "java", "vex-aeron-archive"])
+            .args(["--add-opens", "java.base/sun.nio.ch=ALL-UNNAMED"])
+            .args(["--add-opens", "java.base/jdk.internal.misc=ALL-UNNAMED"])
+            .arg(format!("-Daeron.dir={}", dir.display()))
+            .args([
+                "-cp",
+                "/opt/aeron/aeron-all.jar",
+                "io.aeron.driver.MediaDriver",
+            ])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
             .spawn()
-            .map_err(|e| XTaskError::Unexpected(format!("Failed to start aeronmd: {}", e)))?;
+            .map_err(|e| {
+                XTaskError::Unexpected(format!("Failed to start the media driver: {e}"))
+            })?;
 
         // From here on, dropping the driver on an error stops it and removes its directory.
         let mut driver = Self { process, dir };
@@ -320,7 +318,8 @@ impl HostMediaDriver {
         while !cnc_path.exists() {
             if let Some(status) = self.process.try_wait()? {
                 return Err(XTaskError::Unexpected(format!(
-                    "aeronmd exited ({status}) before creating {}",
+                    "The media driver exited ({status}) before creating {} (is the \
+                     vex-aeron-archive image built? `cargo xtask build-docker`)",
                     cnc_path.display()
                 )));
             }
@@ -341,8 +340,13 @@ impl HostMediaDriver {
 impl Drop for HostMediaDriver {
     fn drop(&mut self) {
         println!("Stopping host-side Aeron media driver...");
-        if let Err(e) = self.process.kill().and_then(|()| self.process.wait()) {
-            eprintln!("Warning: Failed to stop aeronmd: {e}");
+        // Removing the container ends the `docker run` attached to it.
+        if let Err(e) = cmd!("docker", "rm", "--force", HOST_MEDIA_DRIVER)
+            .stdout_null()
+            .run()
+            .and_then(|_| self.process.wait())
+        {
+            eprintln!("Warning: Failed to stop the media driver: {e}");
         }
         if let Err(e) = remove_dir_if_present(&self.dir) {
             eprintln!("Warning: Failed to remove {}: {e}", self.dir.display());
@@ -362,7 +366,6 @@ async fn run_integration_tests(
     root: &Path,
     suite: IntegrationSuite,
     verbose: bool,
-    fail_fast: bool,
 ) -> Result<(), XTaskError> {
     // Initialize logging
     let subscriber = if verbose {
@@ -384,15 +387,12 @@ async fn run_integration_tests(
     // Start the host-side Aeron media driver for the test client. It is stopped and its directory
     // removed when this function returns, whichever way it returns; after a signal that skips
     // that, the next start empties the directory instead.
-    let _media_driver = HostMediaDriver::start(root, std::time::Duration::from_secs(10))?;
+    let _media_driver = HostMediaDriver::start(std::time::Duration::from_secs(10))?;
 
     // Start redpanda, its topics, the archive and vex-server. The stack is torn down when this
     // function returns, a failed start included.
     println!("Starting infrastructure services...");
     let compose = DockerComposeEnv::start(root, &["vex-server"]).await?;
-
-    println!("Waiting for services to stabilize...");
-    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
 
     // Create test context with Docker server address
     let config = TestConfig {
@@ -424,10 +424,8 @@ async fn run_integration_tests(
         }
         Err(e) => {
             error!("Test suite failed: {}", e);
-            if fail_fast {
-                ctx.cleanup();
-                return Err(XTaskError::IntegrationTest(e));
-            }
+            ctx.cleanup();
+            return Err(XTaskError::IntegrationTest(e));
         }
     }
 
@@ -448,7 +446,7 @@ async fn run_outbox_tests(root: &Path) -> Result<(), XTaskError> {
             .with_max_level(tracing::Level::INFO)
             .finish(),
     );
-    let _media_driver = HostMediaDriver::start(root, std::time::Duration::from_secs(10))?;
+    let _media_driver = HostMediaDriver::start(std::time::Duration::from_secs(10))?;
     println!("Starting infrastructure services...");
     let compose = DockerComposeEnv::start(root, &["vex-server"]).await?;
 
@@ -557,29 +555,14 @@ async fn run_suite_tests(
     }
 }
 
-/// Run xtask unit tests
-fn run_unit_tests(root: &Path, filter: Option<String>) -> Result<(), XTaskError> {
-    println!("Running xtask unit tests...");
-
-    let mut args = vec!["test", "--package", "xtask"];
-
-    if let Some(ref f) = filter {
-        args.push("--");
-        args.push(f);
-    }
-
-    cmd("cargo", &args).dir(root).run()?;
-
-    println!("Unit tests completed successfully.");
-    Ok(())
-}
-
 /// A docker-compose stack in `root`, torn down (`docker compose down -v`) when dropped
 ///
 /// Every constructor creates the guard before `docker compose up` runs, so a start that fails part
-/// of the way through is torn down too. The logs of every container are saved before the teardown.
+/// of the way through is torn down too. The logs of every container are saved before the teardown,
+/// named after the time the stack started, so that later stacks do not overwrite them.
 struct DockerComposeEnv {
     root: Box<Path>,
+    started: String,
 }
 impl DockerComposeEnv {
     /// Brings up the broker, applies deploy/kafka/topics.toml to it as to any environment (the
@@ -588,11 +571,12 @@ impl DockerComposeEnv {
     async fn start(project_root: &Path, args: &[&str]) -> Result<Self, XTaskError> {
         let env = Self {
             root: project_root.join("xtask/tests").into_boxed_path(),
+            started: stack::now(),
         };
         // Created here, or the containers' bind mount creates it owned by root, and the logs
         // cannot be saved into it.
         fs::create_dir_all(env.root.join("test-results/logs"))?;
-        env.compose_up(&["--wait", "redpanda"])?;
+        env.compose_up(&["redpanda"])?;
         // The Schema Registry can answer a moment after the broker reports healthy.
         let mut attempts = 0;
         while let Err(e) = apply_topics(STACK_BROKERS, STACK_SCHEMA_REGISTRY, true).await {
@@ -607,75 +591,19 @@ impl DockerComposeEnv {
         Ok(env)
     }
 
-    /// Run `docker compose up -d` with `args`
+    /// Run `docker compose up --wait` with `args`: it returns once every service it started is
+    /// running, and healthy if it has a health check
     fn compose_up(&self, args: &[&str]) -> Result<(), XTaskError> {
-        cmd("docker", ["compose", "up", "-d"].iter().chain(args))
+        cmd("docker", ["compose", "up", "--wait"].iter().chain(args))
             .dir(self.root.as_ref())
             .run()?;
         Ok(())
     }
 
-    /// Start the e2e stack with `clients` client containers and wait for vex-server to be healthy
+    /// Start the e2e stack with `clients` client containers
     async fn new(project_root: &Path, clients: u32) -> Result<Self, XTaskError> {
-        let root = project_root.join("xtask/tests");
-
         println!("Bringing up docker-compose environment...");
-        let env = Self::start(project_root, &["--scale", &format!("vex-client={clients}")]).await?;
-
-        // Wait for vex-server to be healthy (has healthcheck in docker-compose.yml)
-        println!("Waiting for vex-server to be healthy...");
-        let start = Instant::now();
-        let timeout = std::time::Duration::from_secs(120);
-        loop {
-            if start.elapsed() > timeout {
-                // Print server logs for debugging before failing
-                eprintln!("=== vex-server logs ===");
-                if let Ok(logs) = cmd!("docker", "logs", "vex-server")
-                    .dir(root.clone())
-                    .read()
-                {
-                    eprintln!("{}", logs);
-                }
-                return Err(XTaskError::Unexpected(
-                    "Timed out waiting for vex-server to become healthy".to_string(),
-                ));
-            }
-
-            if let Ok(output) = cmd!(
-                "docker",
-                "inspect",
-                "--format",
-                "{{.State.Health.Status}}",
-                "vex-server"
-            )
-            .dir(root.clone())
-            .read()
-            {
-                let status = output.trim();
-                if status == "healthy" {
-                    println!("vex-server is healthy.");
-                    break;
-                }
-                if status == "unhealthy" {
-                    eprintln!("=== vex-server logs ===");
-                    if let Ok(logs) = cmd!("docker", "logs", "vex-server")
-                        .dir(root.clone())
-                        .read()
-                    {
-                        eprintln!("{}", logs);
-                    }
-                    return Err(XTaskError::Unexpected(
-                        "vex-server became unhealthy".to_string(),
-                    ));
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_secs(2));
-        }
-
-        // Additional stabilization for Aeron subscriptions to be fully registered
-        println!("Waiting for Aeron subscriptions to stabilize...");
-        std::thread::sleep(std::time::Duration::from_secs(5));
-        Ok(env)
+        Self::start(project_root, &["--scale", &format!("vex-client={clients}")]).await
     }
 }
 
@@ -692,7 +620,7 @@ impl Drop for DockerComposeEnv {
             .lines()
             .filter_map(|line| serde_json::from_str::<ComposeContainer>(line).ok())
         {
-            let log_path = logs_dir.join(format!("{}.log", container.name));
+            let log_path = logs_dir.join(format!("{}-{}.log", container.name, self.started));
             match cmd!("docker", "logs", &container.name)
                 .stderr_to_stdout()
                 .read()
@@ -807,21 +735,6 @@ fn apply_scenario_conditions(root: &Path, scenario: &str, clients: u32) -> Resul
 
 fn build_docker(root: &Path) -> Result<(), XTaskError> {
     let dir = root.join("xtask/tests");
-    // Export the media driver first, while nothing is executing it. The exporter copies
-    // aeronmd into ./bin, which is the path `HostMediaDriver::start` later runs, so
-    // exporting afterwards fails with ETXTBSY.
-    println!("Exporting the Aeron media driver...");
-    cmd!(
-        "docker",
-        "compose",
-        "run",
-        "--rm",
-        "--build",
-        "--no-deps",
-        "media-driver"
-    )
-    .dir(&dir)
-    .run()?;
     println!("Building all Docker services...");
     cmd!(
         "docker",
@@ -843,12 +756,7 @@ async fn run_correctness_task(
     clients: u32,
 ) -> Result<(), XTaskError> {
     let test_results_dir = project_root.join("xtask/tests/test-results");
-    // Clear up/delete existing contents in the test-results directory
-    if test_results_dir.exists() {
-        println!("Cleaning up existing test results...");
-        fs::remove_dir_all(&test_results_dir)?;
-    }
-    fs::create_dir_all(&test_results_dir)?;
+    remove_received_ids(&test_results_dir)?;
 
     // Wrap docker-compose commands in a struct with a Drop implementation for cleanup
     let _env = DockerComposeEnv::new(&project_root, clients).await?;
@@ -894,9 +802,7 @@ async fn run_correctness_task(
     // --- Verify Results ---
     println!("Verifying results...");
 
-    let received_ids: HashSet<u64> = read_received_ids(&test_results_dir, clients)?
-        .into_iter()
-        .collect();
+    let received_ids = read_received_ids(&test_results_dir, clients)?;
 
     // Assertion 1: Check for completeness
     if received_ids.len() != total_msg_count {
@@ -907,7 +813,7 @@ async fn run_correctness_task(
         ))));
     }
 
-    // Assertion 2: Check for duplicates/gaps
+    // Assertion 2: Check for gaps (read_received_ids rejects duplicates)
     for c in 0..clients as u64 {
         let id_offset = c * 1_000_000;
         for i in 0..msg_count_per_client as u64 {
@@ -925,12 +831,7 @@ async fn run_correctness_task(
 
 async fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
     let test_results_dir = root.join("xtask/tests/test-results");
-    // Clear up/delete existing contents in the test-results directory
-    if test_results_dir.exists() {
-        println!("Cleaning up existing test results...");
-        fs::remove_dir_all(&test_results_dir)?;
-    }
-    fs::create_dir_all(&test_results_dir)?;
+    remove_received_ids(&test_results_dir)?;
 
     // Wrap docker-compose commands in a struct with a Drop implementation for cleanup
     let _env = DockerComposeEnv::new(&root, clients).await?;
@@ -989,7 +890,7 @@ async fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> 
 
     println!("All clients finished execution.");
 
-    // Read and analyze results. Each client writes every id at most once.
+    // Read and analyze results.
     let messages_received = read_received_ids(&test_results_dir, clients)?.len();
 
     let success_rate = (messages_received as f64 / total_expected_messages as f64) * 100.0;
@@ -1025,10 +926,27 @@ async fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> 
     Ok(())
 }
 
+/// Removes the ids a previous e2e or benchmark run's clients wrote, and keeps everything else
+/// (the saved container logs).
+fn remove_received_ids(results_dir: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(results_dir)?;
+    for entry in fs::read_dir(results_dir)? {
+        let path = entry?.path();
+        if path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("received_ids-"))
+        {
+            fs::remove_file(path)?;
+        }
+    }
+    Ok(())
+}
+
 /// Read the ids each e2e or benchmark client wrote to `received_ids-<client id>.txt`
-/// (`write_received_ids` in `test_client`)
-fn read_received_ids(results_dir: &Path, clients: u32) -> Result<Vec<u64>, XTaskError> {
-    let mut ids = Vec::new();
+/// (`write_received_ids` in `test_client`). An id written twice fails the run: the core answers
+/// each command once.
+fn read_received_ids(results_dir: &Path, clients: u32) -> Result<HashSet<u64>, XTaskError> {
+    let mut ids = HashSet::new();
     for client_id in 0..clients {
         let path = results_dir.join(format!("received_ids-{client_id}.txt"));
         let content = fs::read_to_string(&path).map_err(|e| {
@@ -1038,10 +956,51 @@ fn read_received_ids(results_dir: &Path, clients: u32) -> Result<Vec<u64>, XTask
             ))
         })?;
         for line in content.lines() {
-            ids.push(line.parse().map_err(|e| {
+            let id = line.parse().map_err(|e| {
                 XTaskError::Unexpected(format!("Invalid id {line:?} in {}: {e}", path.display()))
-            })?);
+            })?;
+            if !ids.insert(id) {
+                return Err(XTaskError::Testing(TestingError::TestFailed(format!(
+                    "duplicate response for id {id} in {}",
+                    path.display()
+                ))));
+            }
         }
     }
     Ok(ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_run_removes_only_the_received_ids() {
+        let dir = env::temp_dir().join(format!("xtask-test-results-{}", std::process::id()));
+        fs::create_dir_all(dir.join("logs")).unwrap();
+        fs::write(dir.join("received_ids-0.txt"), "1\n").unwrap();
+        fs::write(dir.join("logs/vex-server-1.log"), "log").unwrap();
+
+        remove_received_ids(&dir).unwrap();
+
+        assert!(!dir.join("received_ids-0.txt").exists());
+        assert!(dir.join("logs/vex-server-1.log").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_id_answered_twice_fails_the_run() {
+        let dir = env::temp_dir().join(format!("xtask-received-ids-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("received_ids-0.txt"), "1\n2\n").unwrap();
+        fs::write(dir.join("received_ids-1.txt"), "1000000\n1000000\n").unwrap();
+
+        assert_eq!(read_received_ids(&dir, 1).unwrap(), HashSet::from([1, 2]));
+        let error = read_received_ids(&dir, 2).unwrap_err().to_string();
+        assert!(
+            error.contains("duplicate response for id 1000000"),
+            "{error}"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

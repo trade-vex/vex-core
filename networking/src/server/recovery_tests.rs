@@ -28,6 +28,10 @@ impl Fixture {
         config.request_control_channel = std::env::var("VEX_RECOVERY_ARCHIVE_CHANNEL")
             .expect("set VEX_RECOVERY_ARCHIVE_CHANNEL to a disposable archive control channel");
         config.enable_authentication = false;
+        config.snapshot_dir = std::env::temp_dir()
+            .join("vex-recovery-snapshots")
+            .display()
+            .to_string();
         let aeron = VexCoreServer::initialize_aeron(&config).unwrap();
         let archive = VexCoreServer::initialize_archive(&config, &aeron).unwrap();
         let release_timeout = VexCoreServer::journal_release_timeout(&config.context_dir).unwrap();
@@ -100,19 +104,27 @@ impl Fixture {
 
     /// Starts a core on this journal, and returns it with the order ids its start replayed.
     fn start_core(&self) -> (VexCoreServer, Vec<u64>) {
+        self.start_core_from(None).unwrap()
+    }
+
+    /// [`Fixture::start_core`] with the engine restored from the snapshot `loaded`.
+    fn start_core_from(
+        &self,
+        loaded: Option<SnapshotHeader>,
+    ) -> Result<(VexCoreServer, Vec<u64>), ServerError> {
         let publications = Arc::new(Publications::new());
         let replayed = Arc::new(Mutex::new(Vec::new()));
         let producer = collector(Arc::clone(&publications), Arc::clone(&replayed));
         let server = VexCoreServer::new(
             self.config.clone(),
-            GatewayAuthenticationKey::default(),
             producer,
             publications,
             Arc::new(AtomicBool::new(false)),
-        )
-        .unwrap();
+            Box::new(Vec::new),
+            loaded,
+        )?;
         let replayed = replayed.lock().unwrap().clone();
-        (server, replayed)
+        Ok((server, replayed))
     }
 
     fn replay(
@@ -131,6 +143,7 @@ impl Fixture {
             &self.aeron,
             &self.archive,
             replay_lineage(&recordings).expect("a recording to replay"),
+            None,
             producer,
             Arc::new(AtomicBool::new(false)),
             publications,
@@ -293,10 +306,11 @@ fn live_every_start_replays_the_journal_and_reads_its_tail_from_the_last_term() 
         let producer = collector(Arc::clone(&publications), Arc::clone(&replayed));
         let mut server = VexCoreServer::new(
             fixture.config.clone(),
-            GatewayAuthenticationKey::default(),
             producer,
             Arc::clone(&publications),
             Arc::new(AtomicBool::new(false)),
+            Box::new(Vec::new),
+            None,
         )
         .unwrap();
         assert_eq!(server.recording_id, Some(id));
@@ -344,10 +358,11 @@ fn c8_2_live_held_terminal_second_recovery_has_no_duplicate_journal_entries() {
         let fixture = Fixture::new();
         let mut server = VexCoreServer::new(
             fixture.config.clone(),
-            GatewayAuthenticationKey::default(),
             producer,
             worker_publications,
             Arc::new(AtomicBool::new(false)),
+            Box::new(Vec::new),
+            None,
         )
         .unwrap();
         worker_mode.store(false, Ordering::Release);
@@ -500,10 +515,11 @@ fn c8_3_live_subscription_left_by_a_crash_before_the_publication_connected_is_st
     let producer = collector(Arc::clone(&publications), Arc::new(Mutex::new(Vec::new())));
     let mut server = VexCoreServer::new(
         fixture.config,
-        GatewayAuthenticationKey::default(),
         producer,
         publications,
         Arc::new(AtomicBool::new(false)),
+        Box::new(Vec::new),
+        None,
     )
     .expect("restart must not fail with \"recording exists\"");
     server.shutdown().unwrap();
@@ -537,10 +553,11 @@ fn c7_1_live_queued_shutdown_lagging_archive_survives_recovery() {
         .build();
     let mut server = VexCoreServer::new(
         fixture.config.clone(),
-        GatewayAuthenticationKey::default(),
         producer.clone(),
         Arc::clone(&publications),
         Arc::new(AtomicBool::new(false)),
+        Box::new(Vec::new),
+        None,
     )
     .unwrap();
     live.store(true, Ordering::Release);
@@ -599,4 +616,147 @@ fn c7_1_live_queued_shutdown_lagging_archive_survives_recovery() {
     let mut expected = replayed.lock().unwrap().clone();
     expected.extend([1, 2, 3]);
     assert_eq!(*recovered.lock().unwrap(), expected);
+}
+
+#[test]
+#[ignore = "needs dedicated live Aeron driver/archive; set VEX_RECOVERY_AERON_DIR and VEX_RECOVERY_ARCHIVE_CHANNEL"]
+fn shutdown_keeps_reply_publications_until_the_pipeline_drains() {
+    const REPLY_TEST_STREAM_ID: i32 = 3001;
+    let fixture = Fixture::new();
+    let publications = Arc::new(Publications::new());
+    let (answering, ack) = (Arc::clone(&publications), Arc::clone(&publications));
+    let (release, gate) = mpsc::channel();
+    // The start replays whatever the archive already holds; only the live command is held.
+    let live = Arc::new(AtomicBool::new(false));
+    let answerable = Arc::new(Mutex::new(None));
+    let (handler_live, handler_answerable) = (Arc::clone(&live), Arc::clone(&answerable));
+    let mut producer = build_multi_producer(64, OrderCommand::default, BusySpin)
+        .handle_events_with(move |_, sequence, _| {
+            if handler_live.load(Ordering::Acquire) {
+                gate.recv_timeout(DRAIN_TIMEOUT).unwrap();
+                *handler_answerable.lock().unwrap() = Some(answering.get(1).unwrap().is_some());
+            }
+            ack.completed(sequence);
+        })
+        .build();
+    let mut server = VexCoreServer::new(
+        fixture.config.clone(),
+        producer.clone(),
+        Arc::clone(&publications),
+        Arc::new(AtomicBool::new(false)),
+        Box::new(Vec::new),
+        None,
+    )
+    .unwrap();
+    live.store(true, Ordering::Release);
+    // Gateway 1's session, with its reply channel, holds one accepted command in the pipeline.
+    assert!(server.gateways.reserve_slot(1, 101));
+    let reply = fixture
+        .aeron
+        .add_publication(
+            &"aeron:ipc?term-length=65536".into_c_string(),
+            REPLY_TEST_STREAM_ID,
+            DRAIN_TIMEOUT,
+        )
+        .unwrap();
+    publications.set(1, Arc::new(reply)).unwrap();
+    publications.submitted(
+        producer
+            .try_publish(|cmd| {
+                *cmd = OrderCommand {
+                    route_gateway_id: 1,
+                    ..OrderCommand::default()
+                };
+            })
+            .unwrap(),
+    );
+    // The terminal stage answers only once shutdown has begun.
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        release.send(()).unwrap();
+    });
+    server.shutdown().unwrap();
+    releaser.join().unwrap();
+    assert_eq!(
+        *answerable.lock().unwrap(),
+        Some(true),
+        "shutdown closed gateway 1's session before the drain answered it"
+    );
+    assert!(
+        publications.get(1).unwrap().is_none(),
+        "shutdown left the session open"
+    );
+}
+
+#[test]
+#[ignore = "needs dedicated live Aeron driver/archive; set VEX_RECOVERY_AERON_DIR and VEX_RECOVERY_ARCHIVE_CHANNEL"]
+fn a_start_after_a_snapshot_replays_only_the_commands_after_it() {
+    let fixture = Fixture::new();
+    let dir = std::path::PathBuf::from(&fixture.config.snapshot_dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let (id, subscription_id, publication) = fixture.recording(3);
+    let header = SnapshotHeader {
+        recording_id: id,
+        position: publication.position(),
+        last_timestamp: 3,
+        recording_started: VexCoreServer::describe_recording(&fixture.archive, id)
+            .unwrap()
+            .start_timestamp,
+    };
+    snapshot::write(
+        &dir,
+        &Snapshot {
+            header,
+            state: Vec::new(),
+        },
+    )
+    .unwrap();
+    journal_command(&publication, 4);
+    journal_command(&publication, 5);
+    wait_until(DRAIN_TIMEOUT, || {
+        Ok(fixture.archive.get_recording_position(id)? >= publication.position())
+    })
+    .unwrap();
+    fixture.stop(subscription_id, publication);
+
+    let loaded = snapshot::load(&dir, 3)
+        .unwrap()
+        .expect("a snapshot at the watermark");
+    assert_eq!(loaded.header, header);
+    let (mut server, replayed) = fixture.start_core_from(Some(header)).unwrap();
+    assert_eq!(replayed, [4, 5]);
+    server.shutdown().unwrap();
+    // Release its journal publication, as its process's exit would.
+    drop(server);
+
+    // Above the watermark, the snapshot holds commands whose events Kafka may lack: the start
+    // replays the whole journal.
+    assert_eq!(snapshot::load(&dir, 2).unwrap(), None);
+    let (mut server, replayed) = fixture.start_core_from(None).unwrap();
+    assert_eq!(replayed, [1, 2, 3, 4, 5]);
+    server.shutdown().unwrap();
+}
+
+#[test]
+#[ignore = "needs dedicated live Aeron driver/archive; set VEX_RECOVERY_AERON_DIR and VEX_RECOVERY_ARCHIVE_CHANNEL"]
+fn a_snapshot_from_another_journal_fails_the_start() {
+    let fixture = Fixture::new();
+    let (id, subscription_id, publication) = fixture.recording(1);
+    let position = publication.position();
+    fixture.stop(subscription_id, publication);
+    let foreign = SnapshotHeader {
+        recording_id: id + 1,
+        position,
+        last_timestamp: 1,
+        recording_started: 0,
+    };
+    let Err(error) = fixture.start_core_from(Some(foreign)) else {
+        panic!("a start from another journal's snapshot must fail");
+    };
+    let error = error.to_string();
+    assert!(
+        error.contains(&format!("of recording {}", id + 1))
+            && error.contains(&format!("(recording {id} [")),
+        "{error}"
+    );
 }

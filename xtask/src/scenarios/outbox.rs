@@ -1,12 +1,14 @@
 //! The core's outbox, end to end: a journaled core re-publishes from its journal whatever a death
-//! or a shutdown left undelivered, waits for Kafka at start, and refuses to start on a topic that
-//! no-loss cannot rest on.
+//! or a shutdown left undelivered, waits for Kafka at start, refuses to start on a topic that
+//! no-loss cannot rest on, fails a start whose replay cannot re-publish instead of hanging, and
+//! starts from its last snapshot, replaying only the commands journaled after it.
 //!
 //! The scenarios share one continuous ledger, in order, on the stack of
 //! `xtask/tests/docker-compose.yml`: Redpanda with its Schema Registry, an Aeron
-//! ArchivingMediaDriver that journals the core's commands, and the core. Every order is a limit
-//! order that never crosses: replay regenerates its events exactly, which it does not for a
-//! market buy (#140).
+//! ArchivingMediaDriver that journals the core's commands, and the core. Each round rests a bid
+//! and an ask that never cross, cancels the bid and re-places it at once, and lifts the ask with
+//! a market buy: every start replays the journal back to back, and must re-decide each command
+//! as the live run did.
 //!
 //! The oracle is the client's own ledger, built from the core's responses: every event each
 //! answered command must have published, by `(topic, key, timestamp)`, and each balance's state
@@ -15,8 +17,9 @@
 
 use crate::builders::OrderBuilder;
 use crate::kafka_topics::{self, KafkaTopics};
-use crate::test_framework::client::TestClient;
+use crate::test_framework::client::{START_TIMEOUT, TestClient};
 use crate::test_framework::kafka::KafkaVerifier;
+use crate::test_framework::scenario;
 use crate::test_framework::stack::{self, BROKER, CORE, Paused};
 use crate::test_framework::types::*;
 use common::{CoreMarketSpecification, OrderCommand, Side, Status, base_asset, quote_asset};
@@ -26,19 +29,20 @@ use rdkafka::admin::{AdminClient, AdminOptions};
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::ClientConfig;
 use std::time::{Duration, Instant};
-use tracing::{error, info};
+use tracing::info;
 
 const BIDDER: u64 = 101;
 const ASKER: u64 = 102;
+const BUYER: u64 = 103;
 
 /// Order pairs placed while the broker is paused: enough to leave events queued in the core, far
 /// fewer than the 108,000 it takes to fill its queues and answer `Busy`.
 const QUEUED_ORDER_PAIRS: u64 = 25;
 
-/// How long the core gets to accept a gateway after a start: the topic check, after a `kill -9`
-/// the wait for the media driver to release the dead core's journal (up to its client liveness
-/// timeout, 10 s, and 5 s), the replay and its re-publication.
-const START_TIMEOUT: Duration = Duration::from_secs(120);
+/// Rounds placed while the broker is paused before a start that cannot re-publish them: 25 events
+/// each, 10,000 in all, more than the 8,192 the events stage's sender channel holds, so the replay
+/// stalls behind it.
+const UNDELIVERED_ROUNDS: u64 = 400;
 
 /// How long a stopping core gets to exit: a graceful shutdown with the broker paused spends the
 /// 20 s delivery grace, plus up to 5 s, after its pipeline drain.
@@ -63,14 +67,20 @@ impl Ledger {
         });
     }
 
-    /// Credits `credit` to `user`'s available `asset`, then locks `lock` of it, as of the command
-    /// stamped `timestamp`, which publishes that balance.
-    fn change(&mut self, user: u64, asset: u16, credit: u64, lock: u64, timestamp: u64) {
+    /// Applies `update` to `user`'s `asset` as of the command stamped `timestamp`, which
+    /// publishes that balance.
+    fn change(
+        &mut self,
+        user: u64,
+        asset: u16,
+        timestamp: u64,
+        update: impl FnOnce(Balance) -> Balance,
+    ) {
         let (balance, at) = self
             .balances
             .entry((user, asset))
             .or_insert((Balance::new(0, 0), 0));
-        *balance = Balance::new(balance.available + credit - lock, balance.locked + lock);
+        *balance = update(*balance);
         *at = timestamp;
         self.expect("balances", format!("{user}:{asset}"), timestamp);
     }
@@ -92,7 +102,9 @@ impl Ledger {
             response.timestamp,
         );
         self.expect("deposits", user.to_string(), timestamp);
-        self.change(user, asset, response.size, 0, timestamp);
+        self.change(user, asset, timestamp, |b| {
+            Balance::new(b.available + response.size, b.locked)
+        });
         Ok(())
     }
 
@@ -103,24 +115,84 @@ impl Ledger {
     ) -> TestResult<()> {
         expect_status(response, Status::Placed)?;
         let (user, timestamp) = (response.user_id, response.timestamp);
-        let (base, quote) = (
-            base_asset(response.market_id),
-            quote_asset(response.market_id),
-        );
-        let (locked_asset, other_asset, lock) = match response.side {
-            Side::Bid => {
-                let cost = market
-                    .calculate_quote_cost(response.price, response.size)
-                    .expect("scenario notional fits in u64");
-                (quote, base, cost)
-            }
-            Side::Ask => (base, quote, response.size),
-        };
-        self.change(user, locked_asset, 0, lock, timestamp);
-        self.change(user, other_asset, 0, 0, timestamp);
+        let (locked_asset, other_asset, lock) = resting_lock(response, market);
+        self.change(user, locked_asset, timestamp, |b| {
+            Balance::new(b.available - lock, b.locked + lock)
+        });
+        self.change(user, other_asset, timestamp, |b| b);
         self.expect("orders", response.order_id.to_string(), timestamp);
         self.expect("orderbook", response.market_id.to_string(), timestamp);
         Ok(())
+    }
+
+    /// `order`, resting, cancelled by `response`.
+    fn cancelled(
+        &mut self,
+        response: &OrderCommand,
+        order: &OrderCommand,
+        market: &CoreMarketSpecification,
+    ) -> TestResult<()> {
+        expect_status(response, Status::Cancelled)?;
+        let (user, timestamp) = (response.user_id, response.timestamp);
+        let (locked_asset, other_asset, lock) = resting_lock(order, market);
+        self.change(user, locked_asset, timestamp, |b| {
+            Balance::new(b.available + lock, b.locked - lock)
+        });
+        self.change(user, other_asset, timestamp, |b| b);
+        self.expect("orders", order.order_id.to_string(), timestamp);
+        self.expect("cancels", order.order_id.to_string(), timestamp);
+        self.expect("orderbook", response.market_id.to_string(), timestamp);
+        Ok(())
+    }
+
+    /// `response`, a market buy of `ask`'s size, filled entirely against `ask` at its price.
+    fn filled(
+        &mut self,
+        response: &OrderCommand,
+        ask: &OrderCommand,
+        market: &CoreMarketSpecification,
+    ) -> TestResult<()> {
+        expect_status(response, Status::Filled)?;
+        let (base, quote) = (base_asset(ask.market_id), quote_asset(ask.market_id));
+        let (taker, maker, timestamp) = (response.user_id, ask.user_id, response.timestamp);
+        let fee = |amount: u64, bp: u64| (amount * bp).div_ceil(10_000);
+        let notional = market
+            .calculate_quote_cost(ask.price, ask.size)
+            .expect("scenario notional fits in u64");
+        let bought = ask.size - fee(ask.size, market.taker_fee);
+        let proceeds = notional - fee(notional, market.maker_fee);
+        self.change(taker, base, timestamp, |b| {
+            Balance::new(b.available + bought, b.locked)
+        });
+        self.change(taker, quote, timestamp, |b| {
+            Balance::new(b.available - notional, b.locked)
+        });
+        self.change(maker, base, timestamp, |b| {
+            Balance::new(b.available, b.locked - ask.size)
+        });
+        self.change(maker, quote, timestamp, |b| {
+            Balance::new(b.available + proceeds, b.locked)
+        });
+        let trade = format!("{}:{}", response.order_id, ask.order_id);
+        self.expect("trades", trade, timestamp);
+        self.expect("orders", response.order_id.to_string(), timestamp);
+        self.expect("orders", ask.order_id.to_string(), timestamp);
+        self.expect("orderbook", ask.market_id.to_string(), timestamp);
+        Ok(())
+    }
+}
+
+/// What `order` locks while it rests: (that asset, the market's other asset, the amount).
+fn resting_lock(order: &OrderCommand, market: &CoreMarketSpecification) -> (u16, u16, u64) {
+    let (base, quote) = (base_asset(order.market_id), quote_asset(order.market_id));
+    match order.side {
+        Side::Bid => {
+            let cost = market
+                .calculate_quote_cost(order.price, order.size)
+                .expect("scenario notional fits in u64");
+            (quote, base, cost)
+        }
+        Side::Ask => (base, quote, order.size),
     }
 }
 
@@ -146,32 +218,21 @@ struct Outbox {
     kafka: KafkaVerifier,
     ledger: Ledger,
     order_pairs: u64,
+    /// Every order resting in the book, as its placement answered.
+    resting: Vec<OrderCommand>,
 }
 
 impl Outbox {
-    /// Connects a client to the core, retrying until the core accepts a gateway, which it does
-    /// once it has replayed its journal.
+    /// Connects a client to the core, once it accepts a gateway.
     fn connect(&mut self) -> TestResult<()> {
-        let start = Instant::now();
-        loop {
-            match TestClient::new(
-                0,
-                self.config.default_timeout,
-                &self.config.core_address,
-                self.config.core_port,
-                self.config.core_control_port,
-            ) {
-                Ok(client) => {
-                    self.client = Some(client);
-                    return Ok(());
-                }
-                Err(e) if start.elapsed() < START_TIMEOUT => {
-                    info!("  core not accepting gateways yet: {e}");
-                    std::thread::sleep(Duration::from_secs(1));
-                }
-                Err(e) => return Err(e),
-            }
-        }
+        self.client = Some(TestClient::connect(
+            0,
+            self.config.default_timeout,
+            &self.config.core_address,
+            self.config.core_port,
+            self.config.core_control_port,
+        )?);
+        Ok(())
     }
 
     fn execute(&mut self, command: OrderCommand) -> TestResult<OrderCommand> {
@@ -181,24 +242,55 @@ impl Outbox {
             .send_and_recv(command)
     }
 
-    /// Places `pairs` resting bids and asks that never cross: bids below 50,000, asks above.
+    /// Places `pairs` resting bids and asks that never cross: bids below 50,000, asks above. Each
+    /// bid is then cancelled and re-placed without waiting for the cancel's response, and each ask
+    /// is lifted by a market buy.
     fn place_orders(&mut self, pairs: u64) -> TestResult<()> {
         for _ in 0..pairs {
             self.order_pairs += 1;
-            for (user, side, price) in [
-                (BIDDER, Side::Bid, 40_000 - self.order_pairs),
-                (ASKER, Side::Ask, 60_000 + self.order_pairs),
-            ] {
-                let order = OrderBuilder::place_limit()
+            let limit = |user, side, price| {
+                OrderBuilder::place_limit()
                     .user(user)
                     .price(price)
                     .size(1)
                     .side(side)
                     .market_id(self.config.market_id)
-                    .build();
-                let response = self.execute(order)?;
-                self.ledger.placed(&response, &self.market)?;
-            }
+                    .build()
+            };
+            let bid = limit(BIDDER, Side::Bid, 40_000 - self.order_pairs);
+            let ask = limit(ASKER, Side::Ask, 60_000 + self.order_pairs);
+
+            let placed_bid = self.execute(bid.clone())?;
+            self.ledger.placed(&placed_bid, &self.market)?;
+            let placed_ask = self.execute(ask)?;
+            self.ledger.placed(&placed_ask, &self.market)?;
+
+            let cancel = OrderCommand::cancel_order(
+                placed_bid.order_id,
+                BIDDER,
+                Side::Bid,
+                self.config.market_id,
+            );
+            let client = self
+                .client
+                .as_mut()
+                .expect("the core is running and connected");
+            client.send(&cancel)?;
+            client.send(&bid)?;
+            let (cancelled, replaced) = (client.recv()?, client.recv()?);
+            self.ledger
+                .cancelled(&cancelled, &placed_bid, &self.market)?;
+            self.ledger.placed(&replaced, &self.market)?;
+            self.resting.push(replaced);
+
+            let buy = OrderBuilder::place_market()
+                .user(BUYER)
+                .size(1)
+                .side(Side::Bid)
+                .market_id(self.config.market_id)
+                .build();
+            let bought = self.execute(buy)?;
+            self.ledger.filled(&bought, &placed_ask, &self.market)?;
         }
         Ok(())
     }
@@ -281,7 +373,7 @@ impl Outbox {
         .map_err(|message| TestError::Configuration { message })
     }
 
-    /// Funds the two traders and rests a few orders, all delivered.
+    /// Funds the three traders and trades a few rounds, all delivered.
     async fn baseline(&mut self) -> TestResult<()> {
         let (base, quote) = (
             base_asset(self.config.market_id),
@@ -289,6 +381,7 @@ impl Outbox {
         );
         self.deposit(BIDDER, quote, 100_000_000)?;
         self.deposit(ASKER, base, 1_000_000)?;
+        self.deposit(BUYER, quote, 100_000_000)?;
         self.place_orders(5)?;
         self.verify().await
     }
@@ -311,6 +404,9 @@ impl Outbox {
                 message: format!("the restart began after the journal's release:\n{logs}"),
             });
         }
+        // Kafka can hold every event already (a paused broker's kernel still takes them into its
+        // socket buffers), so only the core's log shows that the restart re-published them.
+        expect_logged(&logs, "events_republish_replay")?;
         self.verify().await
     }
 
@@ -329,7 +425,9 @@ impl Outbox {
                 message: format!("the shutdown reported no undelivered events:\n{logs}"),
             });
         }
+        let since = stack::now();
         self.start_core()?;
+        expect_logged(&stack::logs_since(CORE, &since)?, "events_republish_replay")?;
         self.verify().await
     }
 
@@ -375,7 +473,12 @@ impl Outbox {
             });
         }
         let before = self.kafka.end_offsets()?;
+        let since = stack::now();
         self.start_core()?;
+        // The shutdown's snapshot holds every command: the start replays none.
+        let logs = stack::logs_since(CORE, &since)?;
+        expect_logged(&logs, "snapshot_loaded")?;
+        expect_logged(&logs, "commands=0 ")?;
         // The core accepts gateways once its replay has drained; give whatever it re-published
         // time to land.
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -427,6 +530,91 @@ impl Outbox {
                 });
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        self.verify().await
+    }
+
+    /// A start whose replay cannot re-publish, the Schema Registry (which Redpanda hosts) not
+    /// answering, fails within a minute instead of hanging; the next start recovers.
+    async fn restart_with_the_registry_unreachable_fails_within_a_minute(
+        &mut self,
+    ) -> TestResult<()> {
+        {
+            let _paused = Paused::new(BROKER)?;
+            self.place_orders(UNDELIVERED_ROUNDS)?;
+            self.client = None;
+            stack::signal(CORE, "KILL")?;
+            stack::wait_exited(CORE, STOP_TIMEOUT)?;
+        }
+        // The start needs the broker to read the watermark. It then waits for the killed core's
+        // journal, which gives the broker time to be paused again before the replay begins.
+        let since = stack::now();
+        stack::start(CORE)?;
+        let deadline = Instant::now() + START_TIMEOUT;
+        while !stack::logs_since(CORE, &since)?.contains("watermark_read") {
+            if Instant::now() > deadline {
+                return Err(TestError::Timeout {
+                    timeout: START_TIMEOUT,
+                });
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        {
+            let _paused = Paused::new(BROKER)?;
+            if stack::logs_since(CORE, &since)?.contains("recording_selected") {
+                return Err(TestError::Assertion {
+                    message: "the replay began before the broker was paused again".to_string(),
+                });
+            }
+            let code = stack::wait_exited(CORE, Duration::from_secs(60))?;
+            let logs = stack::logs_since(CORE, &since)?;
+            if code == 0 {
+                return Err(TestError::Assertion {
+                    message: format!("the failed replay exited cleanly:\n{logs}"),
+                });
+            }
+            expect_logged(&logs, "Failed to create VexCoreServer: Replay error")?;
+        }
+        self.start_core()?;
+        self.verify().await
+    }
+
+    /// A clean stop takes a snapshot, which the next start loads. After a `kill -9`, the start
+    /// loads it again and replays only the two orders journaled since. Every order resting from
+    /// before the snapshot and after it is in the book: each cancels.
+    async fn kill_after_a_snapshot_replays_only_the_tail(&mut self) -> TestResult<()> {
+        self.stop_core()?;
+        self.start_core()?;
+        for (user, side, price) in [(BIDDER, Side::Bid, 30_000), (ASKER, Side::Ask, 70_000)] {
+            let order = OrderBuilder::place_limit()
+                .user(user)
+                .price(price)
+                .size(1)
+                .side(side)
+                .market_id(self.config.market_id)
+                .build();
+            let placed = self.execute(order)?;
+            self.ledger.placed(&placed, &self.market)?;
+            self.resting.push(placed);
+        }
+        self.client = None;
+        stack::signal(CORE, "KILL")?;
+        stack::wait_exited(CORE, STOP_TIMEOUT)?;
+
+        let since = stack::now();
+        self.start_core()?;
+        let logs = stack::logs_since(CORE, &since)?;
+        expect_logged(&logs, "snapshot_loaded")?;
+        expect_logged(&logs, "commands=2 ")?;
+        for order in std::mem::take(&mut self.resting) {
+            let cancel = OrderCommand::cancel_order(
+                order.order_id,
+                order.user_id,
+                order.side,
+                order.market_id,
+            );
+            let cancelled = self.execute(cancel)?;
+            self.ledger.cancelled(&cancelled, &order, &self.market)?;
         }
         self.verify().await
     }
@@ -495,31 +683,51 @@ pub async fn run_all(
         kafka,
         ledger: Ledger::default(),
         order_pairs: 0,
+        resting: Vec::new(),
     };
     outbox.connect()?;
 
     let mut results = Vec::new();
-    macro_rules! scenario {
-        ($name:ident) => {
-            let name = stringify!($name).to_string();
-            info!("Scenario: {name}");
-            let started = Instant::now();
-            match outbox.$name().await {
-                Ok(()) => results.push(ScenarioResult::success(name, started.elapsed())),
-                Err(e) => {
-                    error!("Scenario {name} failed: {e}");
-                    results.push(ScenarioResult::failure(name, started.elapsed(), e));
-                    return Ok(results);
-                }
-            }
-        };
-    }
-    scenario!(baseline);
-    scenario!(kill_with_events_queued);
-    scenario!(shutdown_past_the_grace);
-    scenario!(broker_down_at_start);
-    scenario!(clean_restart_re_publishes_nothing);
-    scenario!(missing_delivered_topic_refuses);
-    scenario!(non_compacted_delivered_topic_refuses);
+    scenario!(results, "baseline", outbox.baseline());
+    scenario!(
+        results,
+        "kill_with_events_queued",
+        outbox.kill_with_events_queued()
+    );
+    scenario!(
+        results,
+        "shutdown_past_the_grace",
+        outbox.shutdown_past_the_grace()
+    );
+    scenario!(
+        results,
+        "broker_down_at_start",
+        outbox.broker_down_at_start()
+    );
+    scenario!(
+        results,
+        "clean_restart_re_publishes_nothing",
+        outbox.clean_restart_re_publishes_nothing()
+    );
+    scenario!(
+        results,
+        "missing_delivered_topic_refuses",
+        outbox.missing_delivered_topic_refuses()
+    );
+    scenario!(
+        results,
+        "non_compacted_delivered_topic_refuses",
+        outbox.non_compacted_delivered_topic_refuses()
+    );
+    scenario!(
+        results,
+        "restart_with_the_registry_unreachable_fails_within_a_minute",
+        outbox.restart_with_the_registry_unreachable_fails_within_a_minute()
+    );
+    scenario!(
+        results,
+        "kill_after_a_snapshot_replays_only_the_tail",
+        outbox.kill_after_a_snapshot_replays_only_the_tail()
+    );
     Ok(results)
 }

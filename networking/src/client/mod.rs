@@ -1,6 +1,6 @@
 use crate::utils::{
-    new_publication, new_publication_with_session, new_subscription_with_mdc,
-    new_subscription_with_mdc_and_session,
+    SESSION_READY, new_publication, new_publication_with_session,
+    new_subscription_with_handlers_and_session, new_subscription_with_mdc, offer_once,
 };
 use common::ORDERCOMMANDSIZE;
 use common::{OrderCommand, encode_order_command, order_debug};
@@ -10,14 +10,15 @@ use rusteron_archive::bindings::{
     AERON_PUBLICATION_NOT_CONNECTED,
 };
 use rusteron_archive::{
-    Aeron, AeronCError, AeronContext, AeronFragmentHandlerCallback, AeronHeader, AeronPublication,
-    AeronReservedValueSupplierLogger, AeronSubscription, Handler,
+    Aeron, AeronAvailableImageLogger, AeronCError, AeronContext, AeronFragmentHandlerCallback,
+    AeronHeader, AeronPublication, AeronReservedValueSupplierLogger, AeronSubscription,
+    AeronUnavailableImageLogger, Handler,
 };
 use rusteron_media_driver::AeronIdleStrategy;
 use std::ffi::CString;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -43,7 +44,8 @@ pub enum CoreResponse {
     /// Core accepted the gateway connection
     Accept {
         dedicated_port: u16,
-        dedicated_control_port: u16,
+        /// The port the core sends replies to, on this gateway's host
+        reply_port: u16,
         encrypted_session: i32,
         gateway_id: u8,
     },
@@ -55,21 +57,12 @@ pub enum CoreResponse {
     Ignore,
 }
 
-/// Gateway connection state
-#[derive(Debug, Clone, PartialEq)]
-pub enum GatewayState {
-    Disconnected,
-    Connecting,
-    Connected,
-    Error(String),
-}
-
 /// Builds the handshake request `HELLO gateway-<id> <credential> <encryption key>`.
 ///
 /// The core authenticates `credential`; `encryption_key` is a fresh random value per handshake
 /// that only masks the dedicated session id in the core's ACCEPT reply. Keeping the two apart
 /// means ACCEPT (published on a dynamic MDC channel) and its logs never reveal the credential.
-fn hello_message(gateway_id: u8, credential: i32, encryption_key: i32) -> String {
+fn hello_message(gateway_id: u8, credential: &str, encryption_key: i32) -> String {
     format!("HELLO gateway-{gateway_id} {credential} {encryption_key}")
 }
 
@@ -165,9 +158,9 @@ fn parse_core_response(
                 parts[4].parse::<u16>(),
                 parts[5].parse::<i32>(),
             ) {
-                (Ok(port), Ok(control_port), Ok(encrypted_session)) => CoreResponse::Accept {
+                (Ok(port), Ok(reply_port), Ok(encrypted_session)) => CoreResponse::Accept {
                     dedicated_port: port,
-                    dedicated_control_port: control_port,
+                    reply_port,
                     encrypted_session,
                     gateway_id,
                 },
@@ -263,10 +256,6 @@ pub enum GatewayError {
     /// is down or restarting. Nothing was sent; unlike `Busy`, there is no expected retry time.
     #[error("Gateway not connected to Server")]
     NotConnected,
-    #[error("Invalid gateway state: expected {expected}, got {actual}")]
-    InvalidState { expected: String, actual: String },
-    #[error("Vex Core Not Started")]
-    VexCoreNotStarted,
 }
 
 /// Enhanced VEX Gateway for connecting to VEX Core
@@ -275,12 +264,6 @@ pub struct VexGateway {
     aeron: Aeron,
     /// Gateway configuration
     config: GatewayNetworkingConfig,
-    /// Current gateway state
-    state: Arc<RwLock<GatewayState>>,
-    /// Dedicated session ID for this gateway
-    session_id: Option<i32>,
-    /// One-time encryption key for session establishment
-    encryption_key: Option<i32>,
     /// Publication for sending to core (stored after handshake)
     core_publication: Option<AeronPublication>,
     /// Shutdown flag
@@ -353,15 +336,9 @@ impl Publisher {
     }
 }
 
-/// Offers once and classifies the result. `ADMIN_ACTION` (e.g. a log-buffer term rotation) is not
-/// back-pressure; Aeron documents that the next attempt is likely to succeed, so it gets exactly
-/// one immediate re-offer. Never sleeps.
-fn offer_order(mut offer: impl FnMut() -> i64) -> Result<(), GatewayError> {
-    let mut result = offer();
-    if result == i64::from(AERON_PUBLICATION_ADMIN_ACTION) {
-        result = offer();
-    }
-    classify_order_offer_result(result)
+/// Offers once (`offer_once`) and classifies the result. Never sleeps.
+fn offer_order(offer: impl FnMut() -> i64) -> Result<(), GatewayError> {
+    classify_order_offer_result(offer_once(offer))
 }
 
 /// `CLOSED`, `MAX_POSITION_EXCEEDED`, `ERROR` and unknown codes are `SendError`: they mean this
@@ -392,12 +369,11 @@ impl VexGateway {
         }
 
         // Fail at startup rather than as an opaque handshake REJECT (only the core logs why).
-        if !config.gateway_authentication_key.is_empty()
-            && config.gateway_authentication_key.as_i32().is_none()
-        {
-            return Err(GatewayError::ConfigError(
-                "Gateway authentication key must be a signed 32-bit integer".to_string(),
-            ));
+        if !config.gateway_authentication_key.is_empty() {
+            config
+                .gateway_authentication_key
+                .check()
+                .map_err(GatewayError::ConfigError)?;
         }
 
         // Initialize Aeron context
@@ -419,9 +395,6 @@ impl VexGateway {
         Ok(Self {
             aeron,
             config,
-            state: Arc::new(RwLock::new(GatewayState::Disconnected)),
-            session_id: None,
-            encryption_key: None,
             core_publication: None,
             shutdown: Arc::new(AtomicBool::new(false)),
             polling_thread: None,
@@ -442,33 +415,23 @@ impl VexGateway {
             gateway_id = self.config.gateway_id
         );
 
-        // Update state to connecting
-        *self.state.write().unwrap() = GatewayState::Connecting;
-
         // Phase 1: Perform handshake with VEX Core
-        let (dedicated_port, dedicated_control_port, session_id) = self.perform_handshake()?;
+        let (dedicated_port, reply_port, session_id) = self.perform_handshake()?;
 
         debug!(
             target: "gateway_client",
             action = "handshake_success",
             gateway_id = self.config.gateway_id,
             data_port = dedicated_port,
-            control_port = dedicated_control_port,
+            reply_port,
             session = session_id
         );
 
         // Phase 2: Establish dedicated communication channel
-        let publication = self.establish_dedicated_channel(
-            dedicated_port,
-            dedicated_control_port,
-            session_id,
-            handler,
-        )?;
+        let publication =
+            self.establish_dedicated_channel(dedicated_port, reply_port, session_id, handler)?;
 
         let publisher = Publisher::new(publication, self.config.gateway_id);
-
-        // Update state to Connected
-        *self.state.write().unwrap() = GatewayState::Connected;
 
         info!(
             target: "gateway_client",
@@ -500,17 +463,12 @@ impl VexGateway {
         self.wait_for_channel_connections(&publication, &subscription, "handshake")?;
 
         let session_id = publication.session_id();
-        self.session_id = Some(session_id);
 
-        // An empty key means the core runs without authentication and ignores the credential;
-        // `new` has already rejected a malformed one.
-        let credential = self
-            .config
-            .gateway_authentication_key
-            .as_i32()
-            .unwrap_or_else(rand::random::<i32>);
+        // An empty key means the core runs without authentication and ignores the credential, but
+        // HELLO still needs one token; `new` has already rejected a malformed key.
+        let key = self.config.gateway_authentication_key.as_str();
+        let credential = if key.is_empty() { "-" } else { key };
         let encryption_key = rand::random::<i32>();
-        self.encryption_key = Some(encryption_key);
 
         debug!(
             target: "gateway_client",
@@ -529,13 +487,13 @@ impl VexGateway {
         match response {
             CoreResponse::Accept {
                 dedicated_port,
-                dedicated_control_port,
+                reply_port,
                 encrypted_session,
                 ..
             } => {
                 // Decrypt the session ID
                 let decrypted_session = encrypted_session ^ encryption_key;
-                Ok((dedicated_port, dedicated_control_port, decrypted_session))
+                Ok((dedicated_port, reply_port, decrypted_session))
             }
             CoreResponse::Reject { reason } => Err(GatewayError::CoreError(format!(
                 "Connection rejected: {reason}"
@@ -555,7 +513,7 @@ impl VexGateway {
     fn establish_dedicated_channel<AeronFragmentHandlerHandlerImpl>(
         &mut self,
         port: u16,
-        control_port: u16,
+        reply_port: u16,
         session_id: i32,
         handler: AeronFragmentHandlerHandlerImpl,
     ) -> Result<AeronPublication, GatewayError>
@@ -567,13 +525,15 @@ impl VexGateway {
             self.config.gateway_id, session_id
         );
 
-        // Create subscription for receiving core messages
-        let subscription = new_subscription_with_mdc_and_session(
+        // The core sends replies unicast to the host that sent HELLO, on the port it allocated.
+        let subscription = new_subscription_with_handlers_and_session(
             &self.aeron,
-            &self.config.core_address,
-            control_port,
+            "0.0.0.0",
+            reply_port,
             GATEWAY_CORE_STREAM_ID,
             session_id,
+            None::<&Handler<AeronAvailableImageLogger>>,
+            None::<&Handler<AeronUnavailableImageLogger>>,
         )?;
 
         // Create publication for sending messages to core
@@ -590,6 +550,7 @@ impl VexGateway {
 
         // Wait for connections
         self.wait_for_channel_connections(&publication, &subscription, "dedicated")?;
+        self.wait_for_session_ready(&subscription)?;
 
         debug!(
             target: "gateway_client",
@@ -691,6 +652,28 @@ impl VexGateway {
         Ok(())
     }
 
+    /// Reads the core's `SESSION_READY`, the first message on the reply channel. This side's image
+    /// can be up before the core's reply publication has heard from it, and a reply offered then is
+    /// dropped; the core sends READY only once its offers succeed, so every reply to an order sent
+    /// after this returns can be delivered. Aeron Cluster connects a client the same way.
+    fn wait_for_session_ready(&self, subscription: &AeronSubscription) -> Result<(), GatewayError> {
+        let start = Instant::now();
+        let mut ready = false;
+        loop {
+            // One fragment at a time: what follows READY belongs to the reply handler.
+            subscription.poll_once(|message, _| ready = message == SESSION_READY, 1)?;
+            if ready {
+                return Ok(());
+            }
+            if start.elapsed() > CONNECT_TIMEOUT {
+                return Err(GatewayError::Timeout(
+                    "Waiting for the core's READY on the reply channel".to_string(),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     /// Sends a message with automatic retries
     fn send_message_with_retries(
         &mut self,
@@ -704,15 +687,9 @@ impl VexGateway {
             bytes = text.len()
         );
 
+        // Not held to `max_message_size`, the OrderCommand size: a HELLO carrying a 64-character
+        // key is longer.
         let value = text.as_bytes();
-        if value.len() > self.config.max_message_size {
-            return Err(GatewayError::SendError(format!(
-                "Message too long: {} bytes (max: {})",
-                value.len(),
-                self.config.max_message_size
-            )));
-        }
-
         // Retry sending with exponential backoff
         for attempt in 0..MESSAGE_RETRY_COUNT {
             let result = publication.offer::<AeronReservedValueSupplierLogger>(value, None);
@@ -731,19 +708,9 @@ impl VexGateway {
         )))
     }
 
-    /// Gets current gateway state
-    pub fn state(&self) -> GatewayState {
-        self.state.read().unwrap().clone()
-    }
-
     /// Gets gateway configuration
     pub fn config(&self) -> &GatewayNetworkingConfig {
         &self.config
-    }
-
-    /// Checks if gateway is connected and authenticated
-    pub fn is_connected(&self) -> bool {
-        matches!(*self.state.read().unwrap(), GatewayState::Connected)
     }
 
     /// Gracefully shuts down the gateway
@@ -753,9 +720,6 @@ impl VexGateway {
             action = "shutdown_requested",
             gateway_id = self.config.gateway_id
         );
-
-        // Update state
-        *self.state.write().unwrap() = GatewayState::Disconnected;
 
         // Set shutdown flag
         self.shutdown.store(true, Ordering::SeqCst);
@@ -885,7 +849,7 @@ mod tests {
             response,
             CoreResponse::Accept {
                 dedicated_port: 40003,
-                dedicated_control_port: 40004,
+                reply_port: 40004,
                 encrypted_session: 98765,
                 gateway_id: 1,
             }
@@ -912,14 +876,17 @@ mod tests {
     #[test]
     fn hello_sends_the_session_mask_separately_from_the_credential() {
         assert_eq!(
-            hello_message(3, 123_456_789, -42),
-            "HELLO gateway-3 123456789 -42"
+            hello_message(3, "5f0c3a9e7d2b4816c4e1a7f39b0d2c6e", -42),
+            "HELLO gateway-3 5f0c3a9e7d2b4816c4e1a7f39b0d2c6e -42"
         );
     }
 
     #[test]
     fn malformed_authentication_key_is_rejected_before_aeron_starts() {
-        for key in ["not-a-number", "0x1234", "2147483648"] {
+        for (key, error) in [
+            ("123456789", "at least 32 characters"),
+            ("0123456789abcdef 0123456789abcdef", "whitespace"),
+        ] {
             let mut config = GatewayNetworkingConfig::test_defaults();
             config.gateway_authentication_key = key.into();
             // The context dir does not exist: reaching Aeron would fail with a different error.
@@ -927,8 +894,7 @@ mod tests {
 
             assert!(matches!(
                 VexGateway::new(config),
-                Err(GatewayError::ConfigError(message))
-                    if message == "Gateway authentication key must be a signed 32-bit integer"
+                Err(GatewayError::ConfigError(message)) if message.contains(error)
             ));
         }
     }

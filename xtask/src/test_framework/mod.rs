@@ -12,16 +12,39 @@ use self::client::TestClient;
 use self::kafka::KafkaVerifier;
 use self::types::*;
 use common::{CoreMarketSpecification, OrderCommand};
-use hashbrown::HashMap;
-use std::time::Duration;
 use tracing::{debug, info};
+
+/// Runs one scenario of a suite, `$run` (a future yielding `TestResult<()>`), and records its
+/// result in `$results`. At the first failure it returns `Ok($results)` from the calling suite:
+/// each scenario starts from the state the previous ones left.
+macro_rules! scenario {
+    ($results:ident, $name:literal, $run:expr) => {{
+        tracing::info!("Scenario: {}", $name);
+        let started = std::time::Instant::now();
+        match $run.await {
+            Ok(()) => $results.push($crate::test_framework::types::ScenarioResult::success(
+                $name.to_string(),
+                started.elapsed(),
+            )),
+            Err(e) => {
+                tracing::error!("Scenario {} failed: {e}", $name);
+                $results.push($crate::test_framework::types::ScenarioResult::failure(
+                    $name.to_string(),
+                    started.elapsed(),
+                    e,
+                ));
+                return Ok($results);
+            }
+        }
+    }};
+}
+pub(crate) use scenario;
 
 /// Main test context that orchestrates test execution
 ///
 /// The TestContext manages:
 /// - Test client for sending/receiving OrderCommands
 /// - Kafka verifier for state validation
-/// - User state tracking
 /// - Test configuration
 ///
 /// # Example
@@ -55,8 +78,6 @@ pub struct TestContext {
     pub quote_asset_id: u16,
     /// Market specification used by the development test server
     market_spec: CoreMarketSpecification,
-    /// User state tracker
-    users: HashMap<u64, UserState>,
     /// Test configuration
     config: TestConfig,
 }
@@ -75,7 +96,7 @@ impl TestContext {
         info!("  Quote asset: {}", config.quote_asset_id);
         info!("  Kafka: {}", config.kafka_brokers);
 
-        let client = TestClient::new(
+        let client = TestClient::connect(
             0,
             config.default_timeout,
             &config.core_address,
@@ -102,16 +123,8 @@ impl TestContext {
             base_asset_id: config.base_asset_id,
             quote_asset_id: config.quote_asset_id,
             market_spec,
-            users: HashMap::new(),
             config,
         })
-    }
-
-    /// Get or create user state
-    pub fn user(&mut self, user_id: u64) -> &mut UserState {
-        self.users
-            .entry(user_id)
-            .or_insert_with(|| UserState::new(user_id))
     }
 
     /// Execute an OrderCommand and return the response
@@ -124,19 +137,6 @@ impl TestContext {
             cmd.command, cmd.user_id
         );
         self.client.send_and_recv(cmd)
-    }
-
-    /// Execute an OrderCommand with custom timeout
-    pub fn execute_command_timeout(
-        &mut self,
-        cmd: OrderCommand,
-        timeout: Duration,
-    ) -> TestResult<OrderCommand> {
-        debug!(
-            "Executing command (timeout={:?}): {:?} for user {}",
-            timeout, cmd.command, cmd.user_id
-        );
-        self.client.send_and_recv_timeout(cmd, timeout)
     }
 
     /// Fund a user with a specific asset (send deposit command)
@@ -164,7 +164,12 @@ impl TestContext {
         // Wait for the balance to be published to Kafka
         let balance = self
             .kafka
-            .wait_for_balance_update(user_id, asset_id, self.config.event_timeout)
+            .wait_for_balance_after(
+                user_id,
+                asset_id,
+                response.timestamp,
+                self.config.event_timeout,
+            )
             .await?;
 
         if balance.total != amount {
@@ -175,10 +180,6 @@ impl TestContext {
                 ),
             });
         }
-
-        // Update expected state
-        self.user(user_id)
-            .set_expected_balance(asset_id, Balance::from_total(amount));
 
         debug!("User {} funded successfully", user_id);
         Ok(())
@@ -205,23 +206,37 @@ impl TestContext {
 
         debug!("Test context cleaned up successfully");
     }
+}
 
-    /// Verify system-wide invariants
-    ///
-    /// This checks that the system state is consistent across all users.
-    /// Should be called periodically during long-running tests.
-    pub async fn verify_invariants(&mut self) -> TestResult<()> {
-        debug!("Verifying system invariants");
+#[cfg(test)]
+mod tests {
+    use super::types::{ScenarioResult, TestError, TestResult};
 
-        // Verify balance invariants for all users
-        for user in self.users.values() {
-            for (&asset_id, _) in &user.expected_balances {
-                let balance = self.kafka.get_balance(user.user_id, asset_id).await?;
-                verify_balance_invariant(&balance)?;
+    async fn suite(first_fails: bool) -> TestResult<Vec<ScenarioResult>> {
+        let mut results = Vec::new();
+        scenario!(results, "first", async {
+            if first_fails {
+                return Err(TestError::Assertion {
+                    message: "failed".to_string(),
+                });
             }
-        }
+            Ok(())
+        });
+        scenario!(results, "second", async { Ok(()) });
+        Ok(results)
+    }
 
-        debug!("System invariants verified successfully");
-        Ok(())
+    #[tokio::test]
+    async fn a_failed_scenario_ends_the_suite() {
+        let outcomes = |results: Vec<ScenarioResult>| {
+            results
+                .into_iter()
+                .map(|r| (r.name, r.success))
+                .collect::<Vec<_>>()
+        };
+        let passed = outcomes(suite(false).await.unwrap());
+        assert_eq!(passed, [("first".into(), true), ("second".into(), true)]);
+        let failed = outcomes(suite(true).await.unwrap());
+        assert_eq!(failed, [("first".into(), false)]);
     }
 }

@@ -642,10 +642,13 @@ fn producer_config(brokers: &str) -> ClientConfig {
 }
 
 /// The producer's context: logs each delivery report, counts each acknowledged event off its
-/// command's [`Watermark`] entry, and aborts on a failed delivery of an event. Its callbacks run on
-/// the producer's polling thread, and on a thread that flushes it.
+/// command's [`Watermark`] entry, hands each acknowledged watermark record to `publications`, and
+/// aborts on a failed delivery of an event. Its callbacks run on the producer's polling thread,
+/// and on a thread that flushes it.
 struct DeliveryLog {
     shutdown: Shutdown,
+    /// Where an acknowledged W goes: the snapshot purge must never pass a W a restart may not read.
+    publications: Arc<Publications>,
     /// The failed deliveries of watermark records, and when one was last logged.
     watermark_failures: Mutex<StallLog>,
 }
@@ -696,12 +699,20 @@ impl ProducerContext for DeliveryLog {
 }
 
 impl DeliveryLog {
-    /// A watermark record's delivery report. A lost record leaves the previous watermark in
-    /// place, which only makes the next start re-publish more, so a failure is logged
-    /// (rate-limited) and otherwise ignored; it never aborts.
+    /// A watermark record's delivery report. An acknowledged record raises
+    /// [`Publications::delivered`]. A lost record leaves the previous watermark in place, both in
+    /// Kafka and in memory, which only makes the next start re-publish more, so a failure is
+    /// logged (rate-limited) and otherwise ignored; it never aborts.
     fn watermark_delivered(&self, result: &DeliveryResult<'_>) {
-        let Err((error, _)) = result else {
-            return;
+        let (error, _) = match result {
+            Ok(message) => {
+                // The payload is one `encode_watermark` wrote, so it always decodes.
+                if let Ok(delivered) = decode_watermark(message.payload()) {
+                    self.publications.set_delivered(delivered);
+                }
+                return;
+            }
+            Err(failed) => failed,
         };
         let mut failures = self
             .watermark_failures
@@ -723,10 +734,15 @@ impl DeliveryLog {
 
 type EventProducer = ThreadedProducer<DeliveryLog>;
 
-fn create_producer(config: &ClientConfig, shutdown: &Shutdown) -> EventProducer {
+fn create_producer(
+    config: &ClientConfig,
+    shutdown: &Shutdown,
+    publications: Arc<Publications>,
+) -> EventProducer {
     config
         .create_with_context(DeliveryLog {
             shutdown: shutdown.clone(),
+            publications,
             watermark_failures: Mutex::default(),
         })
         .expect("Producer creation failed")
@@ -843,6 +859,28 @@ async fn frame_with_schema(
         encoder.remove_errors_from_cache();
     }
     framed
+}
+
+/// Runs `frame` once per topic and message type, then frames later events of the pair itself.
+///
+/// The registry's frame is a prefix (magic byte, schema id, message index) that depends on nothing
+/// else, followed by the payload. Caching the prefix spares the one sender thread a registry
+/// lookup, a copy of the whole schema and several allocations per event. A failed framing is not
+/// cached, so it is asked again.
+fn framing_once_per_message_type(
+    mut frame: impl FnMut(&OutboundEvent) -> Result<Vec<u8>, SRCError>,
+) -> impl FnMut(&OutboundEvent) -> Result<Vec<u8>, SRCError> {
+    let mut prefixes: HashMap<(&'static str, &'static str), Vec<u8>> = HashMap::new();
+    move |event| {
+        let key = (event.topic, event.message_name);
+        if let Some(prefix) = prefixes.get(&key) {
+            return Ok([prefix.as_slice(), &event.payload].concat());
+        }
+        let framed = frame(event)?;
+        debug_assert!(framed.ends_with(&event.payload));
+        prefixes.insert(key, framed[..framed.len() - event.payload.len()].to_vec());
+        Ok(framed)
+    }
 }
 
 /// Enqueues one framed event on the producer, waiting out a refusal that can clear (a full queue,
@@ -1322,10 +1360,9 @@ fn final_maker_balances(
 ///   before the archive recorded the command (#197): the restart then neither replays that
 ///   command nor, on a host whose clock is behind, avoids stamping a new command with its
 ///   timestamp and id.
-/// - **A2: replay regenerates each command's events**, up to item 4. Not for market buys (#140):
-///   R1 reads the price cache while matching writes it, so a replayed market buy can lock a
-///   different price than the original run did, and its re-published events then differ from the
-///   copies that Kafka already holds.
+/// - **A2: replay regenerates each command's events**, up to item 4. It holds for every command:
+///   R1 decides on the settled ledger (`create_risk_handler!`), so a replay, which runs the
+///   journal back to back, takes every decision the live run took.
 ///
 /// Not covered:
 /// - A registry that rejects the schema (as incompatible, say) is retried like an outage, because
@@ -1367,9 +1404,14 @@ impl KafkaEventsHandler {
             Journaling::Enabled { production } => read_delivered(brokers, production, &rt)?,
         };
         let journaled = matches!(journaling, Journaling::Enabled { .. });
+        publications.set_delivered(delivered);
 
         let shutdown = Shutdown::with_grace(SHUTDOWN_GRACE);
-        let producer = create_producer(&producer_config(brokers), &shutdown);
+        let producer = create_producer(
+            &producer_config(brokers),
+            &shutdown,
+            Arc::clone(&publications),
+        );
         let encoder = schema_encoder(schema_registry_url);
         let schema = trading_schema();
 
@@ -1391,7 +1433,9 @@ impl KafkaEventsHandler {
                 events,
                 &shutdown,
                 &mut watermark,
-                |event| rt.block_on(frame_with_schema(&encoder, &schema, event)),
+                framing_once_per_message_type(|event| {
+                    rt.block_on(frame_with_schema(&encoder, &schema, event))
+                }),
                 |event, framed, tracking| enqueue(&producer, event, framed, tracking, &shutdown),
                 &mut persist,
             );
@@ -1431,59 +1475,25 @@ impl KafkaEventsHandler {
         });
     }
 
-    fn publish_balance_event(&self, user_id: u64, cmd: &OrderCommand, balance: &[UserBalance; 2]) {
-        let base_asset_id = base_asset(cmd.market_id);
-        let quote_asset_id = quote_asset(cmd.market_id);
-
-        for (balance, asset_id) in balance.iter().zip([base_asset_id, quote_asset_id]) {
-            let balance_event = trading_proto::BalanceEvent {
-                user_id,
-                asset_id: asset_id as u32,
-                available: balance.available(),
-                locked: balance.locked(),
-                total: balance.total(),
-                timestamp: cmd.timestamp(),
-            };
-
-            let topic_name = BALANCES;
-            let composite_key = format!("{}:{}", user_id, asset_id);
-            self.publish_proto(
-                cmd,
-                topic_name,
-                &composite_key,
-                "trading.BalanceEvent",
-                balance_event,
-            );
-            debug!(
-                target: "events",
-                component = "kafka_handler",
-                action = "balance_event_published",
-                user_id,
-                market_id = cmd.market_id(),
-                asset_id,
-                topic = %topic_name
-            );
-        }
-    }
-
-    fn publish_deposit_withdrawal_event(&self, cmd: &OrderCommand) {
-        let asset_id = cmd.market_id as u16;
-
+    fn publish_balance(
+        &self,
+        user_id: u64,
+        asset_id: u16,
+        balance: &UserBalance,
+        cmd: &OrderCommand,
+    ) {
         let balance_event = trading_proto::BalanceEvent {
-            user_id: cmd.user_id(),
-            asset_id: asset_id as u32,
-            available: cmd.balance[0].available(),
-            locked: cmd.balance[0].locked(),
-            total: cmd.balance[0].total(),
+            user_id,
+            asset_id: asset_id.into(),
+            available: balance.available(),
+            locked: balance.locked(),
+            total: balance.total(),
             timestamp: cmd.timestamp(),
         };
-
-        let topic_name = BALANCES;
-        let composite_key = format!("{}:{}", cmd.user_id(), asset_id);
         self.publish_proto(
             cmd,
-            topic_name,
-            &composite_key,
+            BALANCES,
+            &format!("{user_id}:{asset_id}"),
             "trading.BalanceEvent",
             balance_event,
         );
@@ -1491,11 +1501,23 @@ impl KafkaEventsHandler {
             target: "events",
             component = "kafka_handler",
             action = "balance_event_published",
-            user_id = cmd.user_id(),
+            user_id,
             market_id = cmd.market_id(),
             asset_id,
-            topic = %topic_name
+            topic = %BALANCES
         );
+    }
+
+    fn publish_balance_event(&self, user_id: u64, cmd: &OrderCommand, balance: &[UserBalance; 2]) {
+        let assets = [base_asset(cmd.market_id), quote_asset(cmd.market_id)];
+        for (balance, asset_id) in balance.iter().zip(assets) {
+            self.publish_balance(user_id, asset_id, balance, cmd);
+        }
+    }
+
+    fn publish_deposit_withdrawal_event(&self, cmd: &OrderCommand) {
+        // For deposits and withdrawals `market_id` carries the asset id.
+        self.publish_balance(cmd.user_id(), cmd.market_id as u16, &cmd.balance[0], cmd);
     }
 
     fn publish_order_event(&self, cmd: &OrderCommand, size: u64, filled_size: u64) {
@@ -1570,7 +1592,9 @@ impl KafkaEventsHandler {
             common::Side::Ask => trading_proto::Side::Ask,
         };
 
-        let status = if event.matched_order_completed {
+        let status = if event.size == 0 {
+            trading_proto::Status::Cancelled
+        } else if event.matched_order_completed {
             trading_proto::Status::Filled
         } else {
             trading_proto::Status::PartiallyFilled
@@ -1637,6 +1661,8 @@ impl KafkaEventsHandler {
             taker_order_id,
             taker_side: taker_side as i32,
             timestamp: cmd.timestamp(),
+            maker_fee: event.maker_fee,
+            taker_fee: event.taker_fee,
         };
 
         let topic_name = TRADES;
@@ -1661,6 +1687,7 @@ impl KafkaEventsHandler {
     }
 
     /// Publishes a trade and a maker-order event per fill, then ONE balance event per maker.
+    /// An STP cancel (size 0) publishes the maker's order as Cancelled and a cancel, no trade.
     ///
     /// A maker can be hit by several fills of one taker. Publishing a balance per fill would give
     /// that key several events with the same timestamp, and the intermediate ones would tie with
@@ -1674,8 +1701,13 @@ impl KafkaEventsHandler {
     ) {
         let mut curr_event = cmd.events();
         while let Some(event) = curr_event {
-            self.publish_trade_event(event, cmd, market_id, taker_id, taker_order_id);
-            self.publish_maker_order_event(event, cmd, market_id);
+            if event.size == 0 {
+                self.publish_maker_order_event(event, cmd, market_id);
+                self.publish_cancel_order_event(cmd, event.matched_order_id, event.maker_user_id);
+            } else {
+                self.publish_trade_event(event, cmd, market_id, taker_id, taker_order_id);
+                self.publish_maker_order_event(event, cmd, market_id);
+            }
             curr_event = event.next_event.as_deref();
         }
         for (maker_id, balance) in final_maker_balances(cmd.events(), taker_id) {
@@ -1683,11 +1715,11 @@ impl KafkaEventsHandler {
         }
     }
 
-    fn publish_cancel_order_event(&self, cmd: &OrderCommand) {
+    fn publish_cancel_order_event(&self, cmd: &OrderCommand, order_id: u64, user_id: u64) {
         let cancel_event = trading_proto::CancelOrderEvent {
-            order_id: cmd.order_id(),
+            order_id,
             market_id: cmd.market_id(),
-            user_id: cmd.user_id(),
+            user_id,
             timestamp: cmd.timestamp(),
         };
 
@@ -1695,7 +1727,7 @@ impl KafkaEventsHandler {
         self.publish_proto(
             cmd,
             topic_name,
-            &cmd.order_id().to_string(),
+            &order_id.to_string(),
             "trading.CancelOrderEvent",
             cancel_event,
         );
@@ -1703,7 +1735,7 @@ impl KafkaEventsHandler {
             target: "events",
             component = "kafka_handler",
             action = "cancel_event_published",
-            order_id = cmd.order_id(),
+            order_id,
             market_id = cmd.market_id(),
             topic = %topic_name
         );
@@ -1712,26 +1744,20 @@ impl KafkaEventsHandler {
     fn publish_orderbook_event(&self, cmd: &OrderCommand) {
         if let Some(snapshot) = &cmd.l2_data {
             let market_id = cmd.market_id();
-            let mut bids_vec = Vec::new();
-            for i in 0..snapshot.bid_depth() {
-                if snapshot.bid_prices[i] > 0 {
-                    bids_vec.push(JsonOrderbookLevel {
-                        price: snapshot.bid_prices[i],
-                        size: snapshot.bid_volumes[i],
-                    });
-                }
-            }
+            let (prices, sizes) = snapshot.bids();
+            let bids_vec: Vec<_> = prices
+                .iter()
+                .zip(sizes)
+                .map(|(&price, &size)| JsonOrderbookLevel { price, size })
+                .collect();
             let bids_json = serde_json::to_string(&bids_vec).unwrap_or_else(|_| "[]".to_string());
 
-            let mut asks_vec = Vec::new();
-            for i in 0..snapshot.ask_depth() {
-                if snapshot.ask_prices[i] > 0 {
-                    asks_vec.push(JsonOrderbookLevel {
-                        price: snapshot.ask_prices[i],
-                        size: snapshot.ask_volumes[i],
-                    });
-                }
-            }
+            let (prices, sizes) = snapshot.asks();
+            let asks_vec: Vec<_> = prices
+                .iter()
+                .zip(sizes)
+                .map(|(&price, &size)| JsonOrderbookLevel { price, size })
+                .collect();
             let asks_json = serde_json::to_string(&asks_vec).unwrap_or_else(|_| "[]".to_string());
 
             let orderbook_event = trading_proto::OrderbookEvent {
@@ -1878,6 +1904,10 @@ impl KafkaEventsHandler {
                     stage = "events",
                     handler = "kafka"
                 );
+                // A taker that rests unfilled can still have cancelled its own orders (STP).
+                if cmd.events().is_some() {
+                    self.publish_fills(cmd, market_id, taker_id, taker_order_id);
+                }
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
                 self.publish_order_event(cmd, cmd.size(), 0);
                 self.publish_orderbook_event(cmd);
@@ -1903,7 +1933,7 @@ impl KafkaEventsHandler {
                 }
 
                 self.publish_balance_event(taker_id, cmd, &cmd.balance);
-                self.publish_cancel_order_event(cmd);
+                self.publish_cancel_order_event(cmd, taker_order_id, taker_id);
                 self.publish_orderbook_event(cmd);
             }
             Status::PartiallyFilled | Status::Filled => {
@@ -1965,6 +1995,7 @@ impl EventsHandler for KafkaEventsHandler {
                     stage = "events",
                     handler = "kafka"
                 );
+                // Events first: a dropped reply is resolved from the read model.
                 self.publish_events(cmd);
                 self.publications.publish_response(cmd);
             }
@@ -2013,6 +2044,8 @@ mod tests {
             maker_balance: [UserBalance::new(available, 0), UserBalance::new(0, 0)],
             maker_remaining_size: 0,
             maker_original_size: 1,
+            maker_fee: 0,
+            taker_fee: 0,
         }
     }
 
@@ -2155,6 +2188,30 @@ mod tests {
         enqueued.iter().collect()
     }
 
+    /// The payloads that `commands` publish on `topic`, in order, decoded as `M`.
+    fn published_on<M: Message + Default>(
+        topic: &'static str,
+        commands: &mut [OrderCommand],
+    ) -> Vec<M> {
+        let (payloads_tx, payloads) = mpsc::channel();
+        // `_enqueued` stays alive: the recorder unwraps each send to it.
+        let (sender, _enqueued) = recording_sender(SENDER_CAPACITY, move |event| {
+            if event.topic == topic {
+                payloads_tx.send(event.payload.clone()).unwrap();
+            }
+            Ok(event.payload.clone())
+        });
+        let handler = handler_with(sender);
+        for cmd in commands {
+            handler.handle_processed_command(cmd);
+        }
+        drop(handler);
+        payloads
+            .try_iter()
+            .map(|payload: Vec<u8>| M::decode(payload.as_slice()).unwrap())
+            .collect()
+    }
+
     #[test]
     fn events_reach_the_producer_in_engine_order_whatever_each_encode_costs() {
         let mut framed = 0u64;
@@ -2279,7 +2336,11 @@ mod tests {
     #[test]
     fn a_shutdown_flush_is_bounded_and_counts_what_librdkafka_still_holds() {
         let shutdown = Shutdown::with_grace(Duration::from_millis(100));
-        let producer = create_producer(&producer_config(NO_BROKER), &shutdown);
+        let producer = create_producer(
+            &producer_config(NO_BROKER),
+            &shutdown,
+            Arc::new(Publications::new()),
+        );
         let mut watermark = Watermark::default();
         let discarded = watermark.track(1);
         enqueue(
@@ -2448,7 +2509,11 @@ mod tests {
         assert_eq!(config.get("enable.idempotence"), Some("true"));
         assert_eq!(config.get("acks"), Some("all"));
         // librdkafka refuses settings that conflict with idempotence when the producer is created.
-        let _producer = create_producer(&config, &Shutdown::with_grace(SHUTDOWN_GRACE));
+        let _producer = create_producer(
+            &config,
+            &Shutdown::with_grace(SHUTDOWN_GRACE),
+            Arc::new(Publications::new()),
+        );
     }
 
     /// A producer context that sends each failed delivery, as its key and error, to the test,
@@ -2697,6 +2762,35 @@ mod tests {
     }
 
     #[test]
+    fn the_registry_frames_each_topic_and_message_type_once() {
+        // The registry's frame: magic byte, schema id, message index, then the payload.
+        const PREFIX: [u8; 7] = [0, 0, 0, 0, 9, 2, 6];
+        let calls = std::cell::Cell::new(0);
+        let mut frame = framing_once_per_message_type(|event| {
+            calls.set(calls.get() + 1);
+            Ok([&PREFIX[..], &event.payload].concat())
+        });
+        let balance = |payload: &[u8]| OutboundEvent {
+            payload: payload.to_vec(),
+            ..outbound("k")
+        };
+
+        for payload in [&[1][..], &[2, 3], &[]] {
+            let framed = frame(&balance(payload)).unwrap();
+            assert_eq!(framed, [&PREFIX[..], payload].concat());
+        }
+        assert_eq!(calls.get(), 1);
+
+        let order = OutboundEvent {
+            topic: ORDERS,
+            message_name: "trading.OrderEvent",
+            ..balance(&[4])
+        };
+        frame(&order).unwrap();
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
     fn a_registry_error_is_retried_because_a_rejected_schema_looks_like_an_outage() {
         let rejected = frame_once(
             &fake_registry(&[(
@@ -2866,6 +2960,8 @@ mod tests {
             maker_balance: [UserBalance::default(); 2],
             maker_remaining_size: 0,
             maker_original_size: 50,
+            maker_fee: 0,
+            taker_fee: 0,
         };
         let trade1 = MatcherTradeEvent {
             active_order_completed: false,
@@ -2878,6 +2974,8 @@ mod tests {
             maker_balance: [UserBalance::default(); 2],
             maker_remaining_size: 50,
             maker_original_size: 200,
+            maker_fee: 0,
+            taker_fee: 0,
         };
         filled_cmd.attach_event(Box::new(trade1));
 
@@ -2896,6 +2994,87 @@ mod tests {
                 ("balances", format!("1004:{quote}")),
                 ("orders", "12348".to_string()),
             ]
+        );
+    }
+
+    /// A GTC bid that cancelled its user's own ask (STP_CANCEL_MAKER) and then rested.
+    #[test]
+    fn stp_cancel_publishes_a_cancelled_maker_row_and_no_trade() {
+        let mut cmd = OrderCommand::place_order(
+            common::TimeInForce::Gtc,
+            1001,
+            49_000,
+            3,
+            Side::Bid,
+            MARKET_ID,
+            2,
+        );
+        cmd.order_id = 2;
+        cmd.set_status(Status::Placed);
+        let mut stp = fill(1001, 0);
+        stp.matched_order_id = 1;
+        stp.price = 48_000;
+        stp.size = 0;
+        stp.maker_original_size = 5;
+        stp.maker_remaining_size = 3;
+        cmd.attach_event(Box::new(stp));
+
+        let (base, quote) = (base_asset(MARKET_ID), quote_asset(MARKET_ID));
+        assert_eq!(
+            published(&mut [cmd.clone()]),
+            [
+                ("orders", "1".to_string()),
+                ("cancels", "1".to_string()),
+                ("balances", format!("1001:{base}")),
+                ("balances", format!("1001:{quote}")),
+                ("orders", "2".to_string()),
+            ]
+        );
+        let orders: Vec<trading_proto::OrderEvent> = published_on(ORDERS, &mut [cmd]);
+        let maker = orders[0].order.as_ref().unwrap();
+        assert_eq!(
+            (maker.order_id, maker.status, maker.size, maker.filled_size),
+            (1, trading_proto::Status::Cancelled as i32, 5, 2)
+        );
+    }
+
+    /// A cancel's `orders` row carries the order's original size and what of it filled.
+    #[test]
+    fn a_cancel_publishes_its_orders_size_and_filled_size() {
+        let mut cmd = OrderCommand::cancel_order(7, 1001, Side::Ask, MARKET_ID);
+        cmd.set_status(Status::Cancelled);
+        cmd.original_size = 10;
+        cmd.size = 4;
+
+        let orders: Vec<trading_proto::OrderEvent> = published_on(ORDERS, &mut [cmd]);
+        let order = orders[0].order.as_ref().unwrap();
+        assert_eq!((order.order_id, order.size, order.filled_size), (7, 10, 6));
+    }
+
+    #[test]
+    fn a_trade_event_carries_both_fees() {
+        let mut cmd = OrderCommand::place_order(
+            common::TimeInForce::Gtc,
+            1001,
+            1000,
+            1,
+            Side::Bid,
+            MARKET_ID,
+            1,
+        );
+        cmd.set_status(Status::Filled);
+        let mut trade = fill(1003, 0);
+        trade.taker_fee = 20;
+        trade.maker_fee = 7;
+        cmd.attach_event(Box::new(trade));
+
+        let trades: Vec<trading_proto::TradeEvent> = published_on(TRADES, &mut [cmd]);
+        assert_eq!(
+            trades
+                .iter()
+                .map(|t| (t.taker_fee, t.maker_fee))
+                .collect::<Vec<_>>(),
+            [(20, 7)]
         );
     }
 
@@ -2954,9 +3133,10 @@ mod tests {
         cmd.order_id = 12349;
         cmd.set_status(Status::Placed);
         cmd.timestamp = 1006;
-        let mut book = L2MarketData::new();
-        book.bid_prices.push(1000);
-        book.bid_volumes.push(100);
+        let mut book = L2MarketData::default();
+        book.bid_prices[0] = 1000;
+        book.bid_volumes[0] = 100;
+        book.bid_depth = 1;
         cmd.l2_data = Some(book);
 
         let (orderbooks_tx, orderbooks) = mpsc::channel();
@@ -3055,7 +3235,11 @@ mod tests {
     #[test]
     fn a_discarded_event_never_counts_as_delivered() {
         let shutdown = Shutdown::with_grace(SHUTDOWN_GRACE);
-        let producer = create_producer(&producer_config(NO_BROKER), &shutdown);
+        let producer = create_producer(
+            &producer_config(NO_BROKER),
+            &shutdown,
+            Arc::new(Publications::new()),
+        );
         let mut watermark = Watermark::default();
         let tracking = watermark.track(10);
         enqueue(&producer, &outbound_at("k", 10), b"0", tracking, &shutdown).unwrap();
@@ -3166,9 +3350,11 @@ mod tests {
     #[test]
     fn a_failed_watermark_delivery_is_logged_and_never_aborts() {
         // No shutdown has begun, so a failed delivery of an event would abort the test process.
+        let publications = Arc::new(Publications::new());
         let producer = create_producer(
             &producer_config(NO_BROKER),
             &Shutdown::with_grace(SHUTDOWN_GRACE),
+            Arc::clone(&publications),
         );
         assert!(write_watermark(&producer, 7, &mut StallLog::default()));
         // As a lost record would, its delivery fails.
@@ -3186,6 +3372,11 @@ mod tests {
             assert!(Instant::now() < deadline, "the purge reports the record");
             thread::sleep(Duration::from_millis(10));
         }
+        assert_eq!(
+            publications.delivered(),
+            0,
+            "a record queued but never acknowledged does not raise W"
+        );
     }
 
     fn deposit_at(user_id: u64, timestamp: u64) -> OrderCommand {

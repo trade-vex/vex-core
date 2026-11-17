@@ -8,7 +8,7 @@ mod user_profile;
 
 pub use cmd::{
     FRAMESIZE, MatcherTradeEvent, MatcherTradeEventChain, ORDERCOMMANDSIZE, OrderCommand, Status,
-    decode_order_command, encode_order_command,
+    TradeFill, decode_order_command, encode_order_command,
 };
 pub use l2_market_data::L2MarketData;
 pub use market_specification::{

@@ -21,7 +21,11 @@
    ```
 
 2. **System Dependencies**
-   - **Aeron Media Driver** (with Archive support for journaling/replay)
+   - **Aeron Media Driver** (with Archive support for journaling/replay). One driver everywhere:
+     `aeron-all-1.49.0.jar` `ArchivingMediaDriver` (`xtask/tests/archive.Dockerfile`, `make
+     media-driver`); gateways run the same jar's `io.aeron.driver.MediaDriver`. The Rust binaries
+     load the Aeron C client rusteron builds (1.48.6 at rusteron 0.1.157); Aeron checks only the CnC
+     major version, so they attach to this driver. Bump the jar together with the rusteron pin.
    - **Kafka** broker for event streaming, with a Schema Registry, and the core's topics applied
      from `deploy/kafka/` (see [Kafka Topics](#kafka-topics))
    - Shared memory (`/dev/shm`) for Aeron IPC
@@ -63,7 +67,6 @@ Every start replays the journal first; see [Restart Service](#restart-service).
 | `VEX_ENV` | Environment: exactly `development`, `test` or `production`; any other value is a startup error | Required |
 | `VEX__KAFKA_BROKER` | Kafka broker address; overrides the configured `kafka_broker` like any `VEX__*` key | config `kafka_broker` (`localhost:9092` in the dev/test defaults) |
 | `VEX__SCHEMA_REGISTRY_URL` | Schema Registry URL for the events' protobuf schemas; overrides the configured `schema_registry_url` like any `VEX__*` key. Must be an `http://` or `https://` URL | config `schema_registry_url` (`http://localhost:8081` in the dev/test defaults) |
-| `ENABLE_CORE_PINNING` | Enable CPU core pinning for processor threads: `true` or `false`; any other value is a startup error | `false` (dev/test), `true` (prod) |
 | `RUST_LOG` | Log level (trace, debug, info, warn, error) | `info` |
 | `VEX__*` | Configuration overrides (e.g., `VEX__CORE_NETWORKING__CONTEXT_DIR`) | - |
 
@@ -71,9 +74,22 @@ Every start replays the journal first; see [Restart Service](#restart-service).
 
 | Environment | Initial Port | Control Port | Gateway Base Port | Aeron Archive |
 |-------------|--------------|--------------|-------------------|---------------|
-| Development | 40001 | 40002 | 50000 | localhost:8010 |
-| Test | 40001 | 40002 | 50000 | localhost:8010 |
-| Production | 3521 | 3522 | 50000 | localhost:8010 |
+| Development | 40001 | 40002 | 20000 | localhost:8010 |
+| Test | 40001 | 40002 | 20000 | localhost:8010 |
+| Production | 3521 | 3522 | 20000 | localhost:8010 |
+
+**Network**: the core's UDP ports (initial port, control port, and the gateway ports
+`base_gateway_port..base_gateway_port+63`) must be reachable from gateway hosts only. Each gateway
+gets a pair of ports in that range in ACCEPT: one the core listens on for its orders, and one the
+gateway listens on for its replies, which the core sends unicast to the host that sent HELLO. So
+gateway hosts must accept UDP `base_gateway_port..base_gateway_port+63` from the core, and there
+must be no NAT between gateway and core.
+
+The gateway ports must lie outside the ephemeral port range (`sysctl net.ipv4.ip_local_port_range`,
+32768-60999 by default) of the core's host and of every gateway host: a socket bound to port 0 can
+take one of them, and the session's bind then fails. The default base, 20000, lies below it. The
+core refuses to start when its own host's range overlaps the gateway ports (`gateway ports ...
+overlap the ephemeral port range`); gateway hosts need the same check by hand.
 
 ### Kafka Topics
 
@@ -123,18 +139,20 @@ environment: Test
 kafka_broker: "localhost:9092"
 schema_registry_url: "http://localhost:8081"
 
-logging:
-  level: "info"
-  format: "pretty"
-  output: "stdout"
-
 symbols:
+  # Every asset a market or preload names. native_scale = 10^decimals, and
+  # max_supply * native_scale must not exceed u64::MAX / 2 (ETH is held in gwei, not wei).
+  assets:
+    "1": { native_scale: 1000000, max_supply: 1000000000000 }   # USDT
+    "2": { native_scale: 100000000, max_supply: 21000000 }      # BTC
   symbols:
     65538:
       market_id: 65538
       base_asset: 2
       quote_asset: 1
       quote_scale_k: 1000000
+      base_native_scale: 100000000   # must equal assets.2.native_scale
+      quote_native_scale: 1000000    # must equal assets.1.native_scale
       maker_fee: 10
       taker_fee: 20
       slippage: 5
@@ -152,24 +170,20 @@ balance_preload:
         amount: 50000000
 ```
 
-Balance preload credits the engine only, at every start, before the replay. It is never journaled
-and never published to Kafka, so a read model shows a preloaded balance only after the key's first
-journaled command (#198 replaces it with journaled genesis deposits).
+Balance preload credits the engine only, at every start that loads no snapshot, before the
+replay; a snapshot holds the preloaded balances already, so a changed preload list applies only
+without one. It is never journaled and never published to Kafka, so a read model shows a preloaded
+balance only after the key's first journaled command (#198 replaces it with journaled genesis
+deposits).
 
 ### Configuration Precedence
 
 1. Environment-specific config file (based on `VEX_ENV`)
 2. Environment variables with `VEX__` prefix (nested keys use `__`, e.g., `VEX__CORE_NETWORKING__INITIAL_PORT`)
-3. Hardcoded overrides in `main.rs` (e.g., `context_dir`, `local_address`)
 
-### Note on main.rs Overrides
-
-The `main` function overrides these values at runtime:
-
-- `core_networking.local_address` → `0.0.0.0`
-- `core_networking.context_dir` → `/dev/shm/aeron`
-
-Ensure the **Aeron Media Driver uses the same `context_dir`** as vex-core (or the directory vex-core is configured to use).
+The Docker image sets `VEX__CORE_NETWORKING__LOCAL_ADDRESS=0.0.0.0` and
+`VEX__CORE_NETWORKING__CONTEXT_DIR=/dev/shm/aeron`; outside Docker the configured values apply.
+Ensure the **Aeron Media Driver uses the same `context_dir`** as vex-core.
 
 ---
 
@@ -195,8 +209,9 @@ VEX_ENV=development make server
 kill -TERM <pid>
 
 # vex-core handles Ctrl+C and performs graceful shutdown, with gateways connected or not:
-# it closes every gateway session, drains the pipeline, waits for the archive to record every
-# accepted command, then delivers the events still queued and writes the delivered watermark.
+# it stops ingress, drains the pipeline and answers every accepted command, waits for the archive
+# to record every accepted command, writes a snapshot (see Snapshots), closes every gateway
+# session, then delivers the events still queued and writes the delivered watermark.
 # It logs `flush_complete` once the brokers have acknowledged every event, or
 # `shutdown_with_undelivered_events` with the count of those the next start re-publishes.
 # A shutdown that delivers everything leaves the next start nothing to re-publish.
@@ -246,18 +261,44 @@ Every start, with journaling configured:
    longer, instead of failing. After a graceful stop, the driver frees the closed publication
    within two of its timer checks (draining, then lingering; `aeron.timer.interval`, 1 s by
    default), so a start right after it waits up to about 2 s.
-3. **Replays the journal**: the newest recording that holds commands, which the start then
-   extends. An empty archive holds nothing to replay, so the start is fresh. The replay
-   re-publishes the events of every command above the watermark, the events a previous run may
-   not have delivered, and answers no gateway. It takes as long as Kafka needs to accept them,
-   and fails only once 10 s pass without progress (`DrainError`).
-4. **Stamps every live command above the last journaled command** (`journal_tail_read`), so
+3. **Loads the newest snapshot at or below the watermark** (see [Snapshots](#snapshots)), logging
+   `snapshot_loaded`; a newer one logs `snapshot_ahead_of_watermark` and is skipped. Without one,
+   the engine starts empty.
+4. **Replays the journal** from the snapshot's position, or from its start without one: the
+   newest recording that holds commands, which the start then extends. An empty archive holds
+   nothing to replay, so the start is fresh; after a graceful stop that delivered everything, the
+   shutdown's snapshot leaves nothing to replay. The replay re-publishes the events of every
+   command above the watermark, the events a previous run may not have delivered, and answers no
+   gateway. It takes as long as Kafka needs to accept them, and fails only once 10 s pass without
+   progress (`DrainError`). It logs `completed` with its `start_position`, the `commands`
+   replayed and `elapsed_ms`.
+5. **Stamps every live command above the last journaled command** (`journal_tail_read`), so
    order ids and timestamps never repeat any the archive holds, even if this host's clock is
    behind. A start fails if it cannot read it.
 
 There is no start without replay: a new ledger is a [reset](#resetting-the-ledger). With
 journaling disabled there is no journal, nothing is replayed or re-published, and ids and
 timestamps follow the wall clock alone.
+
+### Snapshots
+
+With journaling configured, the core writes its state (every balance, the quote each open bid
+holds, every resting order) to `core_networking.snapshot_dir` (`VEX__CORE_NETWORKING__SNAPSHOT_DIR`,
+required with journaling) as `snapshot-<journal position>.bin`, checksummed:
+
+- every 5,000,000 commands, and at every graceful stop. Ingress pauses while the pipeline drains
+  and the state is serialized (milliseconds at launch scale, about 80 ms at 1M balances and 1M
+  resting orders); the file is written off the server thread. Logs `written` with `bytes` and
+  `pause_ms`; a failure logs `write_failed` and the next round tries again.
+- Two files are kept: a start can load only a snapshot whose last command is at or below the
+  delivered watermark, which the newest passes about 200 ms after it is taken, so the start falls
+  back to the one before. An unreadable file logs `snapshot_corrupt` and is skipped.
+- After each snapshot, the journal's segments below the previous snapshot are deleted
+  (`journal_purged`), once that snapshot is at or below the watermark. So the journal holds about
+  two intervals (about 1 GB), and a start replays at most about 5M commands.
+- `/dev/shm` (the development and test default, `/dev/shm/vex-snapshots`) does not survive a
+  reboot, like the journal there. Production uses a persistent disk (`/var/lib/vex/snapshots`),
+  next to the archive's.
 
 ### View Logs
 
@@ -296,6 +337,9 @@ ls -la config.dev.yaml config.test.yaml config.prod.yaml 2>/dev/null
 - `Kafka answered for topic <topic> with an error that waiting cannot clear` or `Kafka described no setting of topic <topic>`: usually a denied ACL (`Topic authorization failed`, or no DescribeConfigs); grant the ACLs in `deploy/kafka/README.md`
 - `the core may not read the watermark from topic vex-core.delivered`: grant the core Read on `vex-core.delivered` and Describe on the consumer group `vex-core.watermark-reader` (`deploy/kafka/README.md`, "ACLs")
 - The process runs but never accepts gateways, logging `waiting_for_kafka`: the configured `kafka_broker` (or `VEX__KAFKA_BROKER`) does not answer. The core waits for it before it starts
+- `the journal was purged below position <p> and no snapshot is at or below the delivered watermark`: see [No usable snapshot](#no-usable-snapshot)
+- `the snapshot at position <p> of recording <r> does not belong to the journal`: the snapshot directory holds another journal's snapshots, left by a partial reset; delete them (see [Resetting the ledger](#resetting-the-ledger)), or point `snapshot_dir` at this journal's
+- `the snapshot holds market <m>, which the config does not`: a market was removed from the config while orders rested in it. Restore it, cancel its orders, then remove it
 - `the journal (aeron:ipc stream 2001) is still held after ...`: a live recording of the journal, or a publication of it, outlasted the media driver's client liveness timeout and 5 s more. A killed core holds them only until that timeout passes and the archive has recorded the rest of its publication. So either another process is journaling to this media driver and archive (run one core per archive), or the archive is lagging: it is still recording a large backlog that the killed core's publication held unrecorded (its recording position still advances; start again once the recording has stopped). The error lists the recordings and the publications' session ids (`make aeron-stat` shows the publications)
 - A config file must set `schema_registry_url`, or `VEX__SCHEMA_REGISTRY_URL` must; only the built-in dev/test defaults, used when no file exists, supply one. A value that is not an `http://` or `https://` URL is rejected
 - Check that `/dev/shm` has sufficient space for Aeron
@@ -322,7 +366,7 @@ netstat -tuln | grep -E "40001|40002|3521|3522|8010"
 **Solutions**:
 - Start the media driver: `make media-driver`
 - Ensure vex-core and media driver use the **same** Aeron context directory
-- **Note**: `main.rs` hardcodes `context_dir` to `/dev/shm/aeron`; the Makefile media driver uses `/dev/shm/aeron-test-server` by default. Align these (e.g., set `AERON_DIR=/dev/shm/aeron` when starting the media driver, or update the Makefile `AERON_DIR`) so both use the same path
+- The development and test configs use `/dev/shm/aeron-test-server`, as the Makefile media driver does; the Docker image uses `/dev/shm/aeron`
 - Check that `request_control_channel` (default `localhost:8010`) matches the Archiving Media Driver
 - Verify no firewall blocking UDP ports 40001, 40002, 8010 (or production ports)
 
@@ -360,23 +404,28 @@ netstat -tuln | grep -E "40001|3521"
 # Verify the gateway's [core] section matches core
 # Gateway: core.address, core.port, core.control_port (override: APP__CORE__<KEY>)
 # Core: initial_port, initial_control_port (from config)
-
-# Check session ID limits
-# reserved_session_id_low/high in config
 ```
 
 **Solutions**:
 - Ensure vex-core is running and media driver is up
 - Verify the gateway's `[core]` `address`, `port` and `control_port` (`APP__CORE__ADDRESS`, `APP__CORE__PORT`, `APP__CORE__CONTROL_PORT`) match vex-core's address, `initial_port` and `initial_control_port`
-- Check `max_gateways` is not exceeded
+- At most 16 gateways (`gateway_id` 0-15) can be connected; the core opens UDP
+  `base_gateway_port..base_gateway_port+63` for them. `Core unavailable, retry after 10 seconds` on
+  the gateway means no pair of ports was free (each freed port waits 10 s before reuse), or the
+  core could not set up the session's channels (`handshake_setup_failed` in its log, such as a
+  gateway port another socket holds); the next attempt gets other ports
+- `Waiting for the core's READY on the reply channel` on the gateway: ACCEPT arrived, but the
+  core's replies to the gateway's reply port, or the gateway's status messages back to the core,
+  do not get through (see **Network** under Port Reference)
 - Gateway authentication (required in production, which refuses to start without both):
   `VEX__CORE_NETWORKING__ENABLE_AUTHENTICATION=true` and
-  `VEX__GATEWAY_NETWORKING__GATEWAY_AUTHENTICATION_KEY=<signed 32-bit integer>` on vex-core; every
-  gateway must be given the same value (vex-gateway `[core]` `auth_key`, or `APP__CORE__AUTH_KEY`). Without a key,
+  `VEX__CORE_NETWORKING__GATEWAY_AUTHENTICATION_KEY=<at least 32 characters; openssl rand -hex 32>`
+  on vex-core; every gateway must be given the same value (vex-gateway `[core]` `auth_key`, or `APP__CORE__AUTH_KEY`). Without a key,
   dev/test run the handshake unauthenticated. `Connection rejected: Handshake rejected` on the
   gateway together with `action="handshake_rejected"` and
   `reason=Authentication failed: Invalid credentials` in the vex-core log means
-  the keys differ. The key travels in cleartext in the HELLO message, so keep gateway ↔ core
+  the keys differ. Past 16 rejected handshakes a second the core neither answers nor logs them, so
+  during a flood of bad HELLOs a gateway with the wrong key times out instead. The key travels in cleartext in the HELLO message, so keep gateway ↔ core
   traffic on a trusted network segment
 
 ### Order Processing Delays or Backpressure
@@ -393,8 +442,7 @@ VEX_ENV=development RUST_LOG=debug ./target/release/vex-core 2>&1 | grep -E "dis
 ```
 
 **Solutions**:
-- Enable CPU core pinning in production: `ENABLE_CORE_PINNING=true`
-- Increase `buffer_size` in networking config if needed
+- Enable CPU core pinning in production: `VEX__CORE_NETWORKING__ENABLE_CORE_PINNING=true`
 - Ensure adequate CPU cores (journaling, 4 risk engines, 4 matching engines, events handler)
 - Profile with `perf` or `flamegraph` if persistent
 
@@ -417,6 +465,29 @@ VEX_ENV=development RUST_LOG=debug ./target/release/vex-core 2>&1 | grep -E "dis
 - Check `request_control_channel` and archive configuration
 - A `DrainError` means the pipeline stopped advancing for 10 s, usually because Kafka stopped accepting the re-published events: restore Kafka and start again. Each start re-publishes from the last watermark written, so restarts converge
 
+### No usable snapshot
+
+**Symptom**: the start fails with `the journal was purged below position <p> and no snapshot is at
+or below the delivered watermark; see RUNBOOK: No usable snapshot`.
+
+The journal below the older snapshot was deleted once the brokers had acknowledged a watermark
+past it, so the watermark read back is older than one they acknowledged: `vex-core.delivered` was
+emptied or re-created, or lost acknowledged records.
+
+**Fix**: take a snapshot's last command timestamp, bytes 24..32 of the file (little-endian). Use
+the newest snapshot whose last command's events are all present in Kafka or the read model; if the
+newest one's are not, take the older file. Writing a newer snapshot's timestamp drops the events
+of the commands it holds for good. Then, with the core stopped, write it as the watermark, an
+8-byte big-endian u64 under the key `w`, and start again:
+
+```bash
+ls <snapshot_dir>/snapshot-*.bin                             # oldest first
+file=<snapshot_dir>/snapshot-<chosen>.bin
+timestamp=$(od -A n -t u8 -j 24 -N 8 "$file" | tr -d ' ')   # on a little-endian host
+printf '%016x' "$timestamp" | xxd -r -p > w.bin
+kcat -b <brokers> -t vex-core.delivered -P -k w w.bin          # the file is one message
+```
+
 ### High Memory Usage
 
 **Symptom**: vex-core consumes excessive memory
@@ -428,7 +499,7 @@ top -p $(pgrep vex-core)
 ```
 
 **Solutions**:
-- Check disruptor `BUFFER_SIZE` (default 1024 in release)
+- Check disruptor `BUFFER_SIZE` (1024, `server/src/engine.rs`)
 - Review Kafka consumer buffers
 - Use `tikv-jemallocator` (already default) for allocator
 - Restart periodically if memory grows over time
@@ -456,6 +527,9 @@ top -p $(pgrep vex-core)
    tail -100 /var/log/vex/vex-core.log
    # Or wherever logs are configured
    ```
+   A `settlement_failed` error before the exit is a deliberate abort: a fill R1 admitted could not
+   settle, so the ledger or an asset's `max_supply` is wrong. Page; do not restart in a loop, as
+   the replay reaches the same command and aborts again.
 
 4. **Restart**
    ```bash
@@ -498,7 +572,7 @@ top -p $(pgrep vex-core)
 2. **Mitigation**
    - Restore Kafka or the Schema Registry; intake resumes by itself
    - A registry that rejects the schema (for example as incompatible with the subject's earlier versions) also shows up as a `protobuf_encoding_failed` stall. The client library reports it exactly like an outage. Fix the subject's compatibility setting or the deployed schema
-   - A topic deleted while the core runs shows up as a `producer_send_waiting` stall. Re-create it from `deploy/kafka/topics.toml` (see [Kafka Topics](#kafka-topics)). If it was `vex-core.delivered`, the next start re-publishes the whole journal
+   - A topic deleted while the core runs shows up as a `producer_send_waiting` stall. Re-create it from `deploy/kafka/topics.toml` (see [Kafka Topics](#kafka-topics)). If it was `vex-core.delivered`, the next start re-publishes the whole journal, or fails once snapshots have purged its start (see [No usable snapshot](#no-usable-snapshot))
    - After an abort, or a shutdown that reported undelivered events, start the core again: it re-publishes them
 
 ### Gateway Cannot Connect
@@ -517,7 +591,7 @@ top -p $(pgrep vex-core)
 
 3. **Check Config**
    - The gateway's `[core]` `address`, `port` and `control_port` must match vex-core
-   - Ensure `max_gateways` and session ID limits are not exceeded
+   - At most 16 gateways can be connected at once
 
 ### Need to Recover from Journal
 
@@ -532,7 +606,7 @@ new partition count for an event topic is a reset too (`deploy/kafka/README.md`)
 
 1. Stop the gateway, the core and the Kafka Connect connectors.
 2. Delete the archive's recordings (the journal), with the media driver stopped: the archive
-   directory (`aeron.archive.dir`).
+   directory (`aeron.archive.dir`), and the snapshot directory (`snapshot_dir`).
 3. Delete the seven event topics and `vex-core.delivered`, then re-create them with
    `cargo xtask kafka apply` (see [Kafka Topics](#kafka-topics)).
 4. Delete the connectors' consumer groups (`connect-<connector>`), so that they read the new
@@ -547,7 +621,9 @@ then either reset the connectors' offsets to the earliest, if the topics' retent
 the whole history, or make the core re-publish the whole journal. For the latter, stop the core,
 write a tombstone (a null value) for the key `w` on `vex-core.delivered`, and start it: a
 tombstone reads as watermark 0. The replay then re-publishes every journaled command, taking as
-long as Kafka needs.
+long as Kafka needs. That needs the whole journal: once snapshots have purged its start
+(`journal_purged`), the start fails instead (see [No usable snapshot](#no-usable-snapshot)), and
+the topics are the only source.
 
 ```bash
 # With the core stopped. kcat: -Z sends the empty value as null (a tombstone).

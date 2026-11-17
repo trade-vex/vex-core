@@ -122,7 +122,7 @@ impl ConfigLoader {
         };
 
         // The first existing file wins, as documented. Layering every existing file let a later
-        // search path (e.g. the shipped zero-fee `./config.dev.yaml`) silently override an
+        // search path (e.g. the shipped `./config.dev.yaml`) silently override an
         // operator's earlier file key by key.
         let mut builder = match search_paths.iter().find(|path| Path::new(path).exists()) {
             Some(path) => {
@@ -152,7 +152,7 @@ impl ConfigLoader {
                 // The defaults take the place of the file, so environment overrides and
                 // validation below apply to them exactly as they would to a file. They go in as
                 // a JSON document rather than `Config::try_from`, whose serializer drops empty
-                // maps (e.g. `logging.custom_fields`), which then fail to deserialize.
+                // maps, which then fail to deserialize.
                 let defaults =
                     serde_json::to_string(&VexConfig::new(env.clone())).map_err(|error| {
                         ConfigError::load(
@@ -169,16 +169,7 @@ impl ConfigLoader {
             }
         };
 
-        // Add environment-specific variables
         if let Some(prefix) = &self.env_prefix {
-            let env_prefix = format!("{}_{}", prefix, env.env_prefix());
-            builder = builder.add_source(
-                config::Environment::with_prefix(&env_prefix)
-                    .try_parsing(true)
-                    .separator("__"),
-            );
-
-            // Also add general VEX prefix
             builder = builder.add_source(
                 config::Environment::with_prefix(prefix)
                     .try_parsing(true)

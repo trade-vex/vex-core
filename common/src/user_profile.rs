@@ -1,7 +1,8 @@
 use ahash::AHashMap;
+use borsh::{BorshDeserialize, BorshSerialize};
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct UserBalance {
     pub available: u64,
     pub locked: u64,
@@ -23,16 +24,10 @@ impl UserBalance {
 }
 
 /// The key for the balances map. A user's balance is per-asset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, BorshSerialize, BorshDeserialize)]
 pub struct BalanceKey {
     user_id: u64,
     asset_id: u16,
-}
-
-impl BalanceKey {
-    pub fn new(user_id: u64, asset_id: u16) -> Self {
-        Self { user_id, asset_id }
-    }
 }
 
 /// The internal, non-thread-safe balance store.
@@ -66,18 +61,6 @@ impl BalanceStore {
         *self.balances.get(&key).unwrap_or(&UserBalance::default())
     }
 
-    pub fn try_get_balance(
-        &self,
-        user_id: u64,
-        asset_id: u16,
-    ) -> Result<UserBalance, BalanceError> {
-        let key = BalanceKey { user_id, asset_id };
-        self.balances
-            .get(&key)
-            .copied()
-            .ok_or(BalanceError::UserAssetNotFound(user_id, asset_id))
-    }
-
     pub fn get_balance_mut(
         &mut self,
         user_id: u64,
@@ -91,6 +74,15 @@ impl BalanceStore {
 
     pub fn set_balance(&mut self, user_id: u64, asset_id: u16, balance: UserBalance) {
         let key = BalanceKey { user_id, asset_id };
+        self.balances.insert(key, balance);
+    }
+
+    /// Every balance, in no particular order (a snapshot's export).
+    pub fn entries(&self) -> impl Iterator<Item = (BalanceKey, UserBalance)> + '_ {
+        self.balances.iter().map(|(key, balance)| (*key, *balance))
+    }
+
+    pub fn insert(&mut self, key: BalanceKey, balance: UserBalance) {
         self.balances.insert(key, balance);
     }
 
@@ -174,25 +166,6 @@ impl BalanceStore {
         } else {
             Err(BalanceError::InsufficientAvailableFunds {
                 available: balance.available,
-                needed: amount,
-            })
-        }
-    }
-
-    // Subtract from locked funds
-    pub fn subtract_locked_funds(
-        &mut self,
-        user_id: u64,
-        asset_id: u16,
-        amount: u64,
-    ) -> Result<UserBalance, BalanceError> {
-        let balance = self.get_balance_mut(user_id, asset_id)?;
-        if balance.locked >= amount {
-            balance.locked -= amount;
-            Ok(*balance)
-        } else {
-            Err(BalanceError::InsufficientLockedFunds {
-                locked: balance.locked,
                 needed: amount,
             })
         }

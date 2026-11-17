@@ -5,7 +5,7 @@
 # that is killed and restarted.
 FROM eclipse-temurin:21.0.13_9-jre
 
-# The Java build of the Aeron version that xtask/tests/bin holds (media-driver.Dockerfile).
+# The Aeron version every stack runs (RUNBOOK); the test client's image (Dockerfile) adds the same jar.
 # Readable by any user: CI's live recovery tests run this image as the runner's user (ci.yml), and
 # ADD from a URL leaves the file readable by root only. ADD gives the directory it creates the
 # same mode, so that mode must let anyone search it too.

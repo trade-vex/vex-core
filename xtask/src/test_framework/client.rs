@@ -6,10 +6,15 @@
 use crate::test_framework::types::*;
 use common::OrderCommand;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::time::Duration;
-use tracing::{debug, error};
+use std::time::{Duration, Instant};
+use tracing::{debug, error, info};
 use vex_config::GatewayNetworkingConfig;
 use vex_networking::client::{OrderCommandHandler, Publisher, VexGateway};
+
+/// How long the core gets to accept a gateway after a start: the topic check, after a `kill -9`
+/// the wait for the media driver to release the dead core's journal (up to its client liveness
+/// timeout, 10 s, and 5 s), the replay and its re-publication.
+pub(crate) const START_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Test client for interacting with VexCore
 ///
@@ -24,6 +29,33 @@ pub struct TestClient {
 }
 
 impl TestClient {
+    /// Connect a new test client, retrying until the core accepts a gateway, which it does once
+    /// it has started and replayed its journal. The arguments are [`TestClient::new`]'s.
+    pub fn connect(
+        client_id: u8,
+        timeout: Duration,
+        core_address: &str,
+        core_port: u16,
+        core_control_port: u16,
+    ) -> TestResult<Self> {
+        let start = Instant::now();
+        loop {
+            match Self::new(
+                client_id,
+                timeout,
+                core_address,
+                core_port,
+                core_control_port,
+            ) {
+                Err(e) if start.elapsed() < START_TIMEOUT => {
+                    info!("core not accepting gateways yet: {e}");
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+                result => return result,
+            }
+        }
+    }
+
     /// Create a new test client
     ///
     /// # Arguments
@@ -108,56 +140,10 @@ impl TestClient {
         }
     }
 
-    /// Receive with custom timeout
-    pub fn recv_timeout(&mut self, timeout: Duration) -> TestResult<OrderCommand> {
-        match self.receiver.recv_timeout(timeout) {
-            Ok(response) => {
-                debug!(
-                    "Client {} received response: order_id={}, status={:?}",
-                    self.client_id, response.order_id, response.status
-                );
-                Ok(response)
-            }
-            Err(RecvTimeoutError::Timeout) => {
-                error!(
-                    "Client {} receive timeout after {:?}",
-                    self.client_id, timeout
-                );
-                Err(TestError::Timeout { timeout })
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                error!("Client {} channel disconnected", self.client_id);
-                Err(TestError::Network(
-                    "Client channel disconnected".to_string(),
-                ))
-            }
-        }
-    }
-
     /// Send command and wait for response (convenience method)
     pub fn send_and_recv(&mut self, cmd: OrderCommand) -> TestResult<OrderCommand> {
         self.send(&cmd)?;
         self.recv()
-    }
-
-    /// Send command and wait for response with custom timeout
-    pub fn send_and_recv_timeout(
-        &mut self,
-        cmd: OrderCommand,
-        timeout: Duration,
-    ) -> TestResult<OrderCommand> {
-        self.send(&cmd)?;
-        self.recv_timeout(timeout)
-    }
-
-    /// Get the client ID
-    pub fn client_id(&self) -> u8 {
-        self.client_id
-    }
-
-    /// Set default timeout
-    pub fn set_timeout(&mut self, timeout: Duration) {
-        self.timeout = timeout;
     }
 
     /// Drain any pending responses (useful for cleanup between tests)
