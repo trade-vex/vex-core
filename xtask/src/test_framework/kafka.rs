@@ -259,15 +259,14 @@ impl KafkaVerifier {
     }
 
     /// The delivered watermark the core wrote last: the value of the last record of
-    /// `vex-core.delivered`, 8 bytes big-endian, which the core reads at every start
+    /// `vex-core.delivered`, 8 bytes big-endian, which the core reads at every start; 0 while the
+    /// topic holds none, as the core reads it
     pub fn delivered_watermark(&self) -> TestResult<u64> {
         let (low, high) = self
             .consumer
             .fetch_watermarks(DELIVERED_TOPIC, 0, BROKER_TIMEOUT)?;
         if high <= low {
-            return Err(TestError::Verification {
-                message: format!("topic {DELIVERED_TOPIC} holds no watermark"),
-            });
+            return Ok(0);
         }
         let reader: BaseConsumer = ClientConfig::new()
             .set("bootstrap.servers", &self.brokers)

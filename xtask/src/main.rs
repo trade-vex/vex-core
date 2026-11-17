@@ -5,8 +5,9 @@ use std::{
     collections::HashSet,
     env, fs,
     path::{Path, PathBuf},
-    process::Child,
-    time::Instant,
+    process::{Child, Output},
+    thread::JoinHandle,
+    time::{Duration, Instant},
 };
 use thiserror::Error;
 use tracing::{error, info};
@@ -15,7 +16,7 @@ use vex_config::GatewayNetworkingConfig;
 
 use xtask::kafka_topics::{self, KafkaTopics};
 use xtask::scenarios;
-use xtask::test_framework::types::{ScenarioResult, TestConfig, TestSuiteResult};
+use xtask::test_framework::types::{ScenarioResult, TestConfig, TestError, TestSuiteResult};
 use xtask::test_framework::{TestContext, stack};
 
 /// delay in network emulation in teste2e (high-latency scenario)
@@ -24,6 +25,11 @@ const NETWORK_DELAY_MS: u64 = 100;
 const PACKET_LOSS_PERCENT: u32 = 10;
 /// default number of messages each client sends in teste2e
 const DEFAULT_MSG_COUNT_PER_CLIENT: usize = 1000;
+/// Orders each client sends in gateway-crash: enough to keep every gateway sending while the
+/// first one dies.
+const CRASH_FLOOD: usize = 20_000;
+/// The first client's container (gateway 0), named after the compose project (`name: tests`).
+const FIRST_CLIENT: &str = "tests-vex-client-1";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -74,7 +80,7 @@ enum KafkaCommands {
 enum TestCommands {
     /// Docker-based network E2E tests
     E2e {
-        /// Test scenario to run (basic-connectivity, high-latency, packet-loss)
+        /// Test scenario to run (basic-connectivity, high-latency, packet-loss, gateway-crash)
         #[arg(short, long, default_value = "basic-connectivity")]
         scenario: String,
 
@@ -101,13 +107,6 @@ enum TestCommands {
     /// The core's outbox: re-publication after a kill or a shutdown past its grace, the wait
     /// for Kafka at start, and the startup topic check (Docker, with an Aeron archive)
     Outbox,
-
-    /// Performance benchmarks
-    Benchmark {
-        /// Number of clients (default: 1)
-        #[arg(short, long, default_value_t = 1)]
-        clients: u32,
-    },
 }
 
 #[derive(ValueEnum, Clone, Debug, Default)]
@@ -134,6 +133,9 @@ enum XTaskError {
 
     #[error("Integration test error: {0}")]
     IntegrationTest(String),
+
+    #[error(transparent)]
+    Stack(#[from] TestError),
 }
 
 #[derive(Error, Debug)]
@@ -157,7 +159,7 @@ async fn main() -> Result<(), XTaskError> {
                 all,
             } => {
                 if all {
-                    run_all_e2e_scenarios(project_root.into_boxed_path()).await
+                    run_all_e2e_scenarios(project_root.into_boxed_path(), clients).await
                 } else {
                     run_correctness_task(project_root.into_boxed_path(), &scenario, clients).await
                 }
@@ -166,9 +168,6 @@ async fn main() -> Result<(), XTaskError> {
                 run_integration_tests(&project_root, suite, verbose).await
             }
             TestCommands::Outbox => run_outbox_tests(&project_root).await,
-            TestCommands::Benchmark { clients } => {
-                run_benchmark(project_root.into_boxed_path(), clients).await
-            }
         },
 
         Commands::Kafka {
@@ -201,8 +200,13 @@ async fn apply_topics(
 }
 
 /// Run all E2E test scenarios sequentially
-async fn run_all_e2e_scenarios(project_root: Box<Path>) -> Result<(), XTaskError> {
-    let scenarios = ["basic-connectivity", "high-latency", "packet-loss"];
+async fn run_all_e2e_scenarios(project_root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
+    let scenarios = [
+        "basic-connectivity",
+        "high-latency",
+        "packet-loss",
+        "gateway-crash",
+    ];
     let mut failed_scenarios = Vec::new();
 
     for scenario in &scenarios {
@@ -210,7 +214,7 @@ async fn run_all_e2e_scenarios(project_root: Box<Path>) -> Result<(), XTaskError
         println!("Running E2E scenario: {}", scenario);
         println!("========================================\n");
 
-        if let Err(e) = run_correctness_task(project_root.clone(), scenario, 1).await {
+        if let Err(e) = run_correctness_task(project_root.clone(), scenario, clients).await {
             eprintln!("Scenario '{}' FAILED: {}", scenario, e);
             failed_scenarios.push(scenario.to_string());
         }
@@ -652,83 +656,45 @@ struct ComposeContainer {
     name: String,
 }
 
-// Helper function to apply network conditions
+/// Applies the scenario's netem rule to both directions: every client's egress, and the core's
+/// (its replies, and its traffic to Kafka).
 fn apply_scenario_conditions(root: &Path, scenario: &str, clients: u32) -> Result<(), XTaskError> {
-    if scenario == "basic-connectivity" {
-        return Ok(()); // No network conditions to apply for basic connectivity
-    }
-    for i in 1..=clients {
-        match scenario {
-            "high-latency" => {
-                println!("Applying {NETWORK_DELAY_MS}ms latency...");
-                // Apply latency to traffic leaving the client
-                cmd!(
-                    "docker",
-                    "compose",
-                    "exec",
-                    "--index",
-                    i.to_string(),
-                    "-T",
-                    "vex-client",
-                    "tc",
-                    "qdisc",
-                    "replace",
-                    "dev",
-                    "eth0",
-                    "root",
-                    "netem",
-                    "delay",
-                    format!("{NETWORK_DELAY_MS}ms")
-                )
-                .dir(root)
-                .run()?;
-                // Apply latency to traffic leaving the server
-                cmd!(
-                    "docker",
-                    "compose",
-                    "exec",
-                    "-T",
-                    "vex-server",
-                    "tc",
-                    "qdisc",
-                    "replace",
-                    "dev",
-                    "eth0",
-                    "root",
-                    "netem",
-                    "delay",
-                    format!("{NETWORK_DELAY_MS}ms")
-                )
-                .dir(root)
-                .run()?;
-            }
-            "packet-loss" => {
-                println!("Applying {PACKET_LOSS_PERCENT}% packet loss...");
-                cmd!(
-                    "docker",
-                    "compose",
-                    "exec",
-                    "--index",
-                    i.to_string(),
-                    "-T",
-                    "vex-client",
-                    "tc",
-                    "qdisc",
-                    "replace",
-                    "dev",
-                    "eth0",
-                    "root",
-                    "netem",
-                    "loss",
-                    format!("{PACKET_LOSS_PERCENT}%")
-                )
-                .dir(root)
-                .run()?;
-            }
-            _ => Err(XTaskError::Unexpected(format!(
+    let rule = match scenario {
+        "basic-connectivity" => return Ok(()),
+        "high-latency" => ["delay".to_string(), format!("{NETWORK_DELAY_MS}ms")],
+        "packet-loss" => ["loss".to_string(), format!("{PACKET_LOSS_PERCENT}%")],
+        _ => {
+            return Err(XTaskError::Unexpected(format!(
                 "Unknown scenario: {scenario}"
-            )))?,
+            )));
         }
+    };
+    println!("Applying netem {} {} both ways...", rule[0], rule[1]);
+    let netem = |service: &str, index: u32| {
+        cmd!(
+            "docker",
+            "compose",
+            "exec",
+            "--index",
+            index.to_string(),
+            "-T",
+            service,
+            "tc",
+            "qdisc",
+            "replace",
+            "dev",
+            "eth0",
+            "root",
+            "netem",
+            &rule[0],
+            &rule[1]
+        )
+        .dir(root)
+        .run()
+    };
+    netem("vex-server", 1)?;
+    for i in 1..=clients {
+        netem("vex-client", i)?;
     }
     Ok(())
 }
@@ -761,172 +727,111 @@ async fn run_correctness_task(
     // Wrap docker-compose commands in a struct with a Drop implementation for cleanup
     let _env = DockerComposeEnv::new(&project_root, clients).await?;
 
-    // --- Scenario-specific setup ---
-    apply_scenario_conditions(&project_root.join("xtask/tests"), scenario, clients)?;
-
-    let msg_count_per_client = DEFAULT_MSG_COUNT_PER_CLIENT;
-    let total_msg_count = msg_count_per_client * clients as usize;
-
-    println!("Executing {clients} clients to send {msg_count_per_client} messages each...");
-    let mut threads = Vec::new();
-    for i in 1..=clients {
-        let project_root = project_root.clone();
-        threads.push(std::thread::spawn(move || {
-            cmd!(
-                "docker",
-                "compose",
-                "exec",
-                "--index",
-                (i).to_string(),
-                "-T",
-                "vex-client",
-                "/usr/local/bin/test_client",
-                "--client-id",
-                (i - 1).to_string(),
-                "correctness",
-                "--count",
-                msg_count_per_client.to_string(),
-            )
-            .dir(project_root.join("xtask/tests"))
-            .run()
-        }));
-    }
-
-    for handle in threads {
-        handle.join().unwrap()?;
-    }
+    let sent = if scenario == "gateway-crash" {
+        gateway_crash(&project_root, clients)?
+    } else {
+        apply_scenario_conditions(&project_root.join("xtask/tests"), scenario, clients)?;
+        println!(
+            "Executing {clients} clients to send {DEFAULT_MSG_COUNT_PER_CLIENT} messages each..."
+        );
+        let threads: Vec<_> = (1..=clients)
+            .map(|i| spawn_client(&project_root, i, DEFAULT_MSG_COUNT_PER_CLIENT))
+            .collect();
+        for handle in threads {
+            handle.join().unwrap()?;
+        }
+        (0..clients)
+            .map(|client| (client, DEFAULT_MSG_COUNT_PER_CLIENT))
+            .collect()
+    };
     println!("All clients finished execution.");
 
-    println!("Client finished execution.");
-
-    // --- Verify Results ---
     println!("Verifying results...");
-
-    let received_ids = read_received_ids(&test_results_dir, clients)?;
-
-    // Assertion 1: Check for completeness
-    if received_ids.len() != total_msg_count {
-        return Err(XTaskError::Testing(TestingError::TestFailed(format!(
-            "Expected {} messages, but received {}.",
-            total_msg_count,
-            received_ids.len()
-        ))));
+    // Before the ids: a core that died mid-run would read as a lost reply, after it as a pass.
+    if !stack::is_running(stack::CORE)? {
+        return Err(XTaskError::Testing(TestingError::TestFailed(
+            "the core exited during the run".to_string(),
+        )));
     }
-
-    // Assertion 2: Check for gaps (read_received_ids rejects duplicates)
-    for c in 0..clients as u64 {
-        let id_offset = c * 1_000_000;
-        for i in 0..msg_count_per_client as u64 {
-            if !received_ids.contains(&(id_offset + i)) {
-                return Err(XTaskError::Testing(TestingError::TestFailed(format!(
-                    "Missing message ID: {i}"
-                ))));
-            }
-        }
-    }
+    check_received_ids(&test_results_dir, &sent)?;
 
     println!("Scenario '{scenario}' PASSED!");
     Ok(())
 }
 
-async fn run_benchmark(root: Box<Path>, clients: u32) -> Result<(), XTaskError> {
-    let test_results_dir = root.join("xtask/tests/test-results");
-    remove_received_ids(&test_results_dir)?;
-
-    // Wrap docker-compose commands in a struct with a Drop implementation for cleanup
-    let _env = DockerComposeEnv::new(&root, clients).await?;
-
-    // Fixed: Use actual message count, not hardcoded duration
-    let msg_count_per_client = 10000;
-    let total_expected_messages = msg_count_per_client * clients;
-
-    println!("Starting {clients} clients, each sending {msg_count_per_client} messages...");
-    println!("Total expected messages: {total_expected_messages}");
-
-    let mut threads = Vec::new();
-    for i in 1..=clients {
-        let project_root = root.clone();
-        threads.push(std::thread::spawn(move || {
-            let thread_start = Instant::now();
-            let result = cmd!(
-                "docker",
-                "compose",
-                "exec",
-                "--index",
-                (i).to_string(),
-                "-T",
-                "vex-client",
-                "sh",
-                "-c",
-                &format!("/usr/local/bin/test_client --client-id {} latency --samples {} | tee /proc/1/fd/1",
-                        i - 1, msg_count_per_client)
-            )
-            .dir(project_root.join("xtask/tests"))
-            .run();
-
-            (result, thread_start.elapsed())
-        }));
-    }
-
-    // Wait for all clients to complete and collect timing info
-    let mut client_durations = Vec::new();
-    let mut failed_clients = 0;
-
-    for (i, thread) in threads.into_iter().enumerate() {
-        match thread.join() {
-            Ok((result, duration)) => {
-                client_durations.push(duration);
-                if let Err(e) = result {
-                    eprintln!("Client {} failed: {}", i + 1, e);
-                    failed_clients += 1;
-                }
-            }
-            Err(_) => {
-                eprintln!("Client {} thread panicked", i + 1);
-                failed_clients += 1;
-            }
-        }
-    }
-
-    println!("All clients finished execution.");
-
-    // Read and analyze results.
-    let messages_received = read_received_ids(&test_results_dir, clients)?.len();
-
-    let success_rate = (messages_received as f64 / total_expected_messages as f64) * 100.0;
-
-    // Print comprehensive results
-    println!("\n╔════════════════════════════════════════════╗");
-    println!("║      THROUGHPUT BENCHMARK RESULTS          ║");
-    println!("╠════════════════════════════════════════════╣");
-    println!("║ Configuration:                             ║");
-    println!("║   Clients:              {clients:>18} ║");
-    println!("║   Messages per client:  {msg_count_per_client:>18} ║");
-    println!("║   Expected total:       {total_expected_messages:>18} ║");
-    println!("╠════════════════════════════════════════════╣");
-    println!("║ Results:                                   ║");
-    println!("║   Messages received:    {messages_received:>18} ║");
-    println!("║   Success rate:         {success_rate:>17.2}% ║");
-    println!("║   Failed clients:       {failed_clients:>18} ║");
-    println!("╠════════════════════════════════════════════╣");
-    println!("╚════════════════════════════════════════════╝");
-
-    // Determine test status
-    if messages_received == 0 {
-        println!("\nBenchmark FAILED: No messages received");
-        return Err(XTaskError::Unexpected("No messages received".to_string()));
-    } else if success_rate < 100.0 {
-        println!(
-            "\nBenchmark completed with message loss: {:.2}%",
-            100.0 - success_rate
-        );
-    } else {
-        println!("\n Benchmark completed successfully!");
-    }
-    Ok(())
+/// Runs `test_client correctness` in the `index`th client container, as gateway `index - 1`, on a
+/// thread of its own.
+fn spawn_client(root: &Path, index: u32, count: usize) -> JoinHandle<std::io::Result<Output>> {
+    let dir = root.join("xtask/tests");
+    std::thread::spawn(move || {
+        cmd!(
+            "docker",
+            "compose",
+            "exec",
+            "--index",
+            index.to_string(),
+            "-T",
+            "vex-client",
+            "/usr/local/bin/test_client",
+            "--client-id",
+            (index - 1).to_string(),
+            "correctness",
+            "--count",
+            count.to_string(),
+        )
+        .dir(dir)
+        .run()
+    })
 }
 
-/// Removes the ids a previous e2e or benchmark run's clients wrote, and keeps everything else
+/// gateway-crash: the first client's container dies, its media driver with it, as a gateway host
+/// does, while every client floods the core. The other gateways must be answered in full
+/// meanwhile, and the core must reap the dead session, so that gateway 0, restarted, connects
+/// again and is answered in full. Returns what each client's last run sent.
+fn gateway_crash(root: &Path, clients: u32) -> Result<Vec<(u32, usize)>, XTaskError> {
+    let started = stack::now();
+    // More than it can send before the kill, so replies to it are in flight when it dies.
+    let doomed = spawn_client(root, 1, 100 * CRASH_FLOOD);
+    let others: Vec<_> = (2..=clients)
+        .map(|i| spawn_client(root, i, CRASH_FLOOD))
+        .collect();
+    let ready = "action=\"gateway_ready\" gateway_id=0";
+    stack::wait_logged(stack::CORE, &started, ready, Duration::from_secs(30))?;
+    // shortcut: 0.5 s after READY is mid-flood here but can be mid-deposit on a slow runner, no
+    // reply in flight; wait for its first fill in the core log if CI must cover in-flight replies.
+    std::thread::sleep(Duration::from_millis(500));
+    let killed = stack::now();
+    stack::signal(FIRST_CLIENT, "KILL")?;
+    // Its `docker compose exec` fails with the container.
+    let _ = doomed.join();
+    for handle in others {
+        handle.join().unwrap()?;
+    }
+
+    // Every way a session is removed frees its ports: Aeron's image liveness timeout (10 s), or
+    // a second of undeliverable replies.
+    let freed = "action=\"ports_marked_freed\" gateway_id=0";
+    stack::wait_logged(stack::CORE, &killed, freed, Duration::from_secs(30))?;
+    let restarted = stack::now();
+    stack::start(FIRST_CLIENT)?;
+    let driver_ready = "Client container is ready";
+    stack::wait_logged(
+        FIRST_CLIENT,
+        &restarted,
+        driver_ready,
+        Duration::from_secs(30),
+    )?;
+    // A slot the dead session still held would answer REJECT, and the client exit with it.
+    spawn_client(root, 1, DEFAULT_MSG_COUNT_PER_CLIENT)
+        .join()
+        .unwrap()?;
+
+    Ok(std::iter::once((0, DEFAULT_MSG_COUNT_PER_CLIENT))
+        .chain((1..clients).map(|client| (client, CRASH_FLOOD)))
+        .collect())
+}
+
+/// Removes the ids a previous e2e run's clients wrote, and keeps everything else
 /// (the saved container logs).
 fn remove_received_ids(results_dir: &Path) -> std::io::Result<()> {
     fs::create_dir_all(results_dir)?;
@@ -942,12 +847,12 @@ fn remove_received_ids(results_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Read the ids each e2e or benchmark client wrote to `received_ids-<client id>.txt`
-/// (`write_received_ids` in `test_client`). An id written twice fails the run: the core answers
-/// each command once.
-fn read_received_ids(results_dir: &Path, clients: u32) -> Result<HashSet<u64>, XTaskError> {
-    let mut ids = HashSet::new();
-    for client_id in 0..clients {
+/// Checks the ids each e2e client wrote to `received_ids-<client id>.txt` (`write_received_ids`
+/// in `test_client`): every client of `sent`, `(client id, commands)`, must have had each of its
+/// commands answered exactly once.
+fn check_received_ids(results_dir: &Path, sent: &[(u32, usize)]) -> Result<(), XTaskError> {
+    let failed = |message: String| XTaskError::Testing(TestingError::TestFailed(message));
+    for &(client_id, count) in sent {
         let path = results_dir.join(format!("received_ids-{client_id}.txt"));
         let content = fs::read_to_string(&path).map_err(|e| {
             XTaskError::Unexpected(format!(
@@ -955,19 +860,31 @@ fn read_received_ids(results_dir: &Path, clients: u32) -> Result<HashSet<u64>, X
                 path.display()
             ))
         })?;
+        let mut ids = HashSet::new();
         for line in content.lines() {
-            let id = line.parse().map_err(|e| {
+            let id: u64 = line.parse().map_err(|e| {
                 XTaskError::Unexpected(format!("Invalid id {line:?} in {}: {e}", path.display()))
             })?;
             if !ids.insert(id) {
-                return Err(XTaskError::Testing(TestingError::TestFailed(format!(
+                return Err(failed(format!(
                     "duplicate response for id {id} in {}",
                     path.display()
-                ))));
+                )));
             }
         }
+        let offset = u64::from(client_id) * 1_000_000;
+        if let Some(missing) = (offset..offset + count as u64).find(|id| !ids.contains(id)) {
+            return Err(failed(format!("Missing message ID: {missing}")));
+        }
+        // Each one sent is there: the rest answer commands this client never sent.
+        if ids.len() != count {
+            return Err(failed(format!(
+                "Client {client_id} got {} answers to its {count} commands",
+                ids.len()
+            )));
+        }
     }
-    Ok(ids)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -989,17 +906,20 @@ mod tests {
     }
 
     #[test]
-    fn an_id_answered_twice_fails_the_run() {
+    fn each_client_must_be_answered_each_command_once() {
         let dir = env::temp_dir().join(format!("xtask-received-ids-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("received_ids-0.txt"), "1\n2\n").unwrap();
+        fs::write(dir.join("received_ids-0.txt"), "1\n0\n").unwrap();
         fs::write(dir.join("received_ids-1.txt"), "1000000\n1000000\n").unwrap();
+        let error = |sent: &[(u32, usize)]| check_received_ids(&dir, sent).unwrap_err().to_string();
 
-        assert_eq!(read_received_ids(&dir, 1).unwrap(), HashSet::from([1, 2]));
-        let error = read_received_ids(&dir, 2).unwrap_err().to_string();
+        check_received_ids(&dir, &[(0, 2)]).unwrap();
+        assert!(error(&[(0, 3)]).contains("Missing message ID: 2"));
+        assert!(error(&[(0, 1)]).contains("Client 0 got 2 answers to its 1 commands"));
+        let duplicate = error(&[(0, 2), (1, 1)]);
         assert!(
-            error.contains("duplicate response for id 1000000"),
-            "{error}"
+            duplicate.contains("duplicate response for id 1000000"),
+            "{duplicate}"
         );
         fs::remove_dir_all(&dir).unwrap();
     }

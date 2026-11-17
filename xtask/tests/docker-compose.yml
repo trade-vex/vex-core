@@ -1,3 +1,7 @@
+# The project name, which e2e's gateway-crash relies on to kill and restart a client container by
+# its name, tests-vex-client-<index>.
+name: tests
+
 services:
   redpanda:
     image: redpandadata/redpanda:v25.3.1
@@ -46,6 +50,10 @@ services:
       dockerfile: archive.Dockerfile
     image: vex-aeron-archive
     container_name: vex-aeron-archive
+    # The journal in 2 MiB terms and segments, not the 64 and 128 MiB defaults every other stack
+    # keeps: the journal is purged by whole segments below a snapshot, which the outbox suite fills.
+    environment:
+      - JAVA_TOOL_OPTIONS=-Daeron.ipc.term.buffer.length=2m -Daeron.archive.segment.file.length=2m
     healthcheck:
       test: ["CMD-SHELL", "test -f /dev/shm/aeron-test-server/cnc.dat"]
       interval: 2s
@@ -108,7 +116,9 @@ services:
       - VEX_SERVER_HOST=172.28.1.10
       - VEX_SERVER_PORT=3521
       - LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
-      - RUST_LOG=debug
+      # Not debug: each client would log every order and answer, tens of MB per e2e run, into
+      # xtask's output (the CI log). The core's own log, which the stack saves, stays at debug.
+      - RUST_LOG=info
     ipc: shareable
     privileged: true
     shm_size: '512m'

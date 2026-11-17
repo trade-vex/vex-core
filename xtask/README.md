@@ -1,6 +1,6 @@
 # Vex-Core `xtask` Automation
 
-This document provides instructions on how to use the `cargo xtask` command-line tool to build, test, and benchmark the `vex-core` project. This tool automates common development tasks, particularly integration tests.
+This document provides instructions on how to use the `cargo xtask` command-line tool to build and test the `vex-core` project. This tool automates common development tasks, particularly integration tests.
 
 ## Prerequisites
 
@@ -59,13 +59,12 @@ All tests are now run through the unified `cargo xtask test` command with subcom
 cargo xtask test
   ├── e2e [OPTIONS]           # Docker-based network E2E tests
   ├── integration [SUITE]     # Integration tests
-  ├── outbox                  # Re-publication, startup wait and topic check (Docker)
-  └── benchmark               # Performance benchmarks
+  └── outbox                  # Re-publication, startup wait and topic check (Docker)
 ```
 
 #### E2E Tests
 
-Runs end-to-end tests to verify network communication and message integrity between the server and clients. Supports simulating different network conditions.
+Runs end-to-end tests to verify network communication and message integrity between the server and clients. Supports simulating different network conditions, applied with `tc netem` to both directions: each client's egress and the core's (its replies, and its traffic to Kafka). Each client funds two traders and sends orders that cross one another, so matching, the events stage and Kafka run under the network conditions too: a fill is answered once, on the taker's gateway, and its maker (often another client's order) not at all. Every command must be answered exactly once, at least one order must fill, and the core must still be running at the end.
 
 **Usage:**
 ```sh
@@ -75,10 +74,15 @@ cargo xtask test e2e [OPTIONS]
 **Options:**
 * `--scenario <SCENARIO>`: Sets the network conditions for the test.
   * `basic-connectivity` (Default): No adverse network conditions.
-  * `high-latency`: Simulates a high-latency network (100ms RTT).
-  * `packet-loss`: Simulates a network with 10% packet loss.
+  * `high-latency`: 100 ms of delay each way (200 ms round trip).
+  * `packet-loss`: 10% packet loss each way.
+  * `gateway-crash`: the other clients send 20,000 orders each while the first client floods
+    until its container (its gateway and media driver) is killed. The others must be answered
+    in full meanwhile; the core must reap the dead session (Aeron's image liveness, about 10 s),
+    and gateway 0, restarted, must connect again and be answered in full. With one client, only
+    the reconnect is checked.
 * `--clients <COUNT>`: Specifies the number of clients to run concurrently. Defaults to `1`.
-* `--all`: Run all scenarios sequentially.
+* `--all`: Run all scenarios sequentially, each with `--clients` clients.
 
 **Examples:**
 ```sh
@@ -88,8 +92,8 @@ cargo xtask test e2e --scenario basic-connectivity --clients 1
 # Run a test with 5 clients under high latency conditions
 cargo xtask test e2e --scenario high-latency --clients 5
 
-# Run all scenarios
-cargo xtask test e2e --all
+# Run all scenarios with four gateways, as CI does
+cargo xtask test e2e --all --clients 4
 ```
 
 #### Integration Tests
@@ -131,8 +135,14 @@ release the killed core's journal), a graceful shutdown that runs out of its del
 the broker paused, a start while the broker does not answer, a clean restart, starts that must
 refuse a missing or non-compacted `vex-core.delivered`, a restart whose replay cannot
 re-publish (the registry paused) that must fail within a minute and recover on the next start,
-and a `kill -9` after a snapshot, whose restart must replay only the two orders journaled since
-and keep every resting order, each of which then cancels.
+a flood with the broker paused (paced below the ring's size until the queues behind the broker
+are full and the answers stop; then more than the ring holds, which must be answered Busy at once,
+and none of which may be executed or published: Kafka must take exactly the placed orders'
+events), clean stops that must purge the journal below the previous snapshot once the flood has
+filled a whole segment (the test archive journals in 2 MiB segments) and the start after, which
+loads its snapshot on the purged recording, and a `kill -9` after a snapshot, whose restart must
+replay only the two orders journaled since and keep every resting order, each of which then
+cancels.
 Every graceful shutdown keeps the test gateway connected, as gateways are in production; the clean
 one must deliver everything and write the watermark of the last command, so that the restart
 loads the shutdown's snapshot, replays nothing and re-publishes nothing. The oracle is the
@@ -147,29 +157,11 @@ live run did.
 cargo xtask test outbox
 ```
 
-#### Benchmarks
-
-Runs performance benchmarks to measure message throughput and latency.
-
-**Usage:**
-```sh
-cargo xtask test benchmark [OPTIONS]
-```
-
-**Options:**
-* `--clients <COUNT>`: Specifies the number of clients to run concurrently. Defaults to `1`.
-
-**Example:**
-```sh
-# Run a benchmark with 5 clients
-cargo xtask test benchmark --clients 5
-```
-
 ## Test Artifacts and Logs
 
-After running tests or benchmarks, the following artifacts are generated:
+After running tests, the following artifacts are generated:
 
-* **Test Results:** Raw data from tests is stored in `xtask/tests/test-results/`. Each e2e or benchmark client writes the ids it got a response for to `received_ids-<client id>.txt`, which the run reads back to check completeness.
+* **Test Results:** Raw data from tests is stored in `xtask/tests/test-results/`. Each e2e client writes the ids it got a response for to `received_ids-<client id>.txt`, which the run reads back to check completeness.
 * **Docker Logs:** Every stack saves each container's log to `xtask/tests/test-results/logs/<container>-<start time>.log` before its teardown. Runs never delete them; remove the directory to reclaim the space. CI uploads the directory as the `docker-suite-logs` artifact when the end-to-end job fails.
 
 The environment is automatically torn down after each run, but the artifacts are preserved for inspection.

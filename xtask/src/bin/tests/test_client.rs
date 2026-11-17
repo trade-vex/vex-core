@@ -1,7 +1,6 @@
 use clap::{Parser, Subcommand};
 use common::{OrderCommand, UserBalance};
-use common::{OrderCommandType, Side, TimeInForce};
-use hdrhistogram::Histogram;
+use common::{OrderCommandType, Side, Status, TimeInForce};
 use std::fs::File;
 use std::io::Write;
 use std::sync::mpsc::{self, Receiver};
@@ -21,15 +20,11 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Mode {
-    /// Send a fixed number of messages for correctness testing.
+    /// Fund two traders, then send `count` orders that cross one another, and record the id of
+    /// every answer.
     Correctness {
         #[arg(short, long, default_value_t = 100)]
         count: u64,
-    },
-    /// Measure round-trip latency for a number of samples.
-    Latency {
-        #[arg(short, long, default_value_t = 100)]
-        samples: u64,
     },
 }
 
@@ -54,20 +49,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = VexGateway::new(client_config)?;
     let (sx, mut rx) = mpsc::channel();
     let handler = OrderCommandHandler::new(client.gateway_id(), sx);
-    let publisher = client.start(handler).expect("Client should start");
-
-    // thread::sleep(Duration::from_secs(5)); // Give some time for the client to start
+    // A REJECT or UNAVAILABLE ends the run with the core's reason.
+    let publisher = client.start(handler)?;
 
     // The client's main loop to send commands
     match args.mode {
         Mode::Correctness { count } => {
             run_correctness_test(&publisher, &mut rx, count, args.client_id)?;
-        }
-        Mode::Latency { samples } => {
-            // For this to work, the client needs a way to receive acks.
-            // This is a conceptual implementation.
-            println!("NOTE: Latency test requires the client to be able to receive messages.");
-            run_latency_test(&publisher, &mut rx, samples, args.client_id)?;
         }
     }
     Ok(())
@@ -85,48 +73,80 @@ fn run_correctness_test(
     // Market ID: base asset in lower 16 bits, quote in upper 16
     let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
 
-    // Every response, duplicates included: xtask fails the run on an id answered twice.
-    let mut received_ids = Vec::new();
-
-    for i in 0..count {
-        let order_command = OrderCommand {
-            client_order_id: i,
-            command: OrderCommandType::PlaceOrder,
-            user_id: if (i % 2) == 0 { 1 } else { 2 },
-            size: 100,
-            time_in_force: TimeInForce::Gtc,
-            timestamp: 1,
-            side: if (i % 2) == 0 { Side::Bid } else { Side::Ask },
-            order_id: client_id * 1_000_000 + i,
-            market_id,
-            price: 150,
-            status: common::Status::Processing,
-            events: None,
-            balance: [UserBalance::default(); 2],
-            l2_data: None,
-            route_gateway_id: 0,
-            original_size: 0,
-        };
-        client.send_order_command(&order_command)?;
-    }
-    println!("Client-{client_id} finished sending, waiting for responses...");
-
-    // Wait for all responses with a timeout
-    let start = Instant::now();
-    let timeout = Duration::from_secs(30);
-
-    while received_ids.len() < count as usize && start.elapsed() < timeout {
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(response) => {
-                received_ids.push(response.client_order_id);
-                if received_ids.len() % 100 == 0 {
-                    println!(
-                        "Client-{client_id} received {}/{count} responses",
-                        received_ids.len()
-                    );
+    // Twice what the orders lock: count/2 bids of 100 at 150 (unscaled notional, above the cost
+    // on any market) and count/2 asks of 100. The acks are taken here: a deposit's
+    // client_order_id is 0, as the first order's is.
+    let started = Instant::now();
+    for deposit in [
+        OrderCommand::deposit_funds(1, count * 150 * 100, quote_asset_id),
+        OrderCommand::deposit_funds(2, count * 100, base_asset_id),
+    ] {
+        loop {
+            client.send_order_command(&deposit)?;
+            match rx.recv_timeout(Duration::from_secs(5))?.status {
+                Status::Processed => break,
+                // Another client's orders filled the ring, nothing executed; 30 s of it is a wedge.
+                Status::Busy if started.elapsed() < Duration::from_secs(30) => continue,
+                status => {
+                    return Err(format!(
+                        "Client-{client_id}: a deposit was answered {status:?} after {:?}",
+                        started.elapsed()
+                    )
+                    .into());
                 }
             }
-            Err(_) => continue,
+        }
+    }
+
+    // Every response, duplicates included: xtask fails the run on an id answered twice.
+    let mut received_ids = Vec::new();
+    let mut filled = 0;
+    let order = |i: u64| OrderCommand {
+        client_order_id: i,
+        command: OrderCommandType::PlaceOrder,
+        user_id: if i.is_multiple_of(2) { 1 } else { 2 },
+        size: 100,
+        time_in_force: TimeInForce::Gtc,
+        timestamp: 1,
+        side: if i.is_multiple_of(2) {
+            Side::Bid
+        } else {
+            Side::Ask
+        },
+        order_id: client_id * 1_000_000 + i,
+        market_id,
+        price: 150,
+        status: common::Status::Processing,
+        events: None,
+        balance: [UserBalance::default(); 2],
+        l2_data: None,
+        route_gateway_id: 0,
+        original_size: 0,
+    };
+
+    // At most WINDOW orders unanswered: the most gateways the core takes (16) stay well under its
+    // 1,024-slot ring, so no client's orders are all answered Busy.
+    const WINDOW: u64 = 32;
+    let mut sent = 0;
+    let mut last_answer = Instant::now();
+    while received_ids.len() < count as usize && last_answer.elapsed() < Duration::from_secs(30) {
+        if sent < count && sent.saturating_sub(received_ids.len() as u64) < WINDOW {
+            client.send_order_command(&order(sent))?;
+            sent += 1;
+            continue;
+        }
+        if let Ok(response) = rx.recv_timeout(Duration::from_millis(100)) {
+            last_answer = Instant::now();
+            if matches!(response.status, Status::Filled | Status::PartiallyFilled) {
+                filled += 1;
+            }
+            received_ids.push(response.client_order_id);
+            if received_ids.len() % 100 == 0 {
+                println!(
+                    "Client-{client_id} received {}/{count} responses",
+                    received_ids.len()
+                );
+            }
         }
     }
 
@@ -142,7 +162,11 @@ fn run_correctness_test(
 
     write_received_ids(client_id, received_ids)?;
 
-    println!("Client-{client_id} finished.");
+    // Orders that no longer match (all rejected, say) would pass the id check without a fill.
+    if filled == 0 {
+        return Err(format!("Client-{client_id}: no order was filled").into());
+    }
+    println!("Client-{client_id} finished, {filled} orders filled.");
     Ok(())
 }
 
@@ -158,58 +182,4 @@ fn write_received_ids(
         writeln!(file, "{}", client_id * 1_000_000 + id)?;
     }
     Ok(())
-}
-
-fn run_latency_test(
-    client: &Publisher,
-    rx: &mut Receiver<OrderCommand>,
-    samples: u64,
-    client_id: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut histogram = Histogram::<u64>::new(3).unwrap();
-    let base_asset_id = 2;
-    let quote_asset_id = 1;
-    // Market ID: base asset in lower 16 bits, quote in upper 16
-    let market_id = ((quote_asset_id as u32) << 16) | (base_asset_id as u32);
-    let mut received_ids = Vec::new();
-
-    for i in 0..samples {
-        let user_id = i + 1000;
-        let client_order_id = client_id * 1_000_000 + i;
-        let price = 150;
-        let size = 100;
-        let amount = price * size; // Assuming quote asset is in smallest units
-        let deposit_funds = OrderCommand::deposit_funds(user_id, amount, quote_asset_id);
-        client.send_order_command(&deposit_funds)?;
-        rx.recv_timeout(Duration::from_secs(5))?; // Wait for ack of deposit
-        let command = OrderCommand::place_order(
-            TimeInForce::Gtc,
-            user_id,
-            150,
-            100,
-            Side::Bid,
-            market_id,
-            client_order_id,
-        );
-        let start_time = Instant::now();
-        client.send_order_command(&command)?;
-        let ack = rx.recv_timeout(Duration::from_secs(5))?;
-        if ack.client_order_id == client_order_id {
-            println!("Client-{client_id} received ack for order_id: {client_order_id}");
-            let rtt = start_time.elapsed().as_micros() as u64;
-            histogram.record(rtt).unwrap();
-            received_ids.push(i);
-        }
-    }
-
-    println!("\n--- Latency Benchmark Results ---");
-    println!("Total Samples: {}", histogram.len());
-    println!("p50 (Median):  {} µs", histogram.value_at_percentile(50.0));
-    println!("p90:           {} µs", histogram.value_at_percentile(90.0));
-    println!("p99:           {} µs", histogram.value_at_percentile(99.0));
-    println!("p99.9:         {} µs", histogram.value_at_percentile(99.9));
-    println!("Max:           {} µs", histogram.max());
-    println!("---------------------------------\n");
-
-    write_received_ids(client_id, received_ids)
 }

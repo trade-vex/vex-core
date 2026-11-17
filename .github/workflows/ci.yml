@@ -227,7 +227,7 @@ jobs:
   xtask-tests:
     name: End-to-end tests
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     if: >-
       github.event_name != 'pull_request' ||
       github.base_ref == 'develop' ||
@@ -268,8 +268,9 @@ jobs:
       - name: Run xtask unit tests
         run: cargo test --package xtask --lib
 
+      # Four gateways on one core in every scenario, gateway-crash's dead one among them.
       - name: Run e2e tests
-        run: cargo xtask test e2e --all
+        run: cargo xtask test e2e --all --clients 4
 
       - name: Run integration tests
         run: cargo xtask test integration

@@ -12,8 +12,11 @@ pub const BROKER: &str = "vex-redpanda";
 /// IPC namespaces of the Aeron archive's container, so the journal outlives it.
 pub const CORE: &str = "vex-server";
 
+/// The Aeron archive, which holds the journal's segment files in `/var/lib/aeron-archive`.
+pub const ARCHIVE: &str = "vex-aeron-archive";
+
 /// Runs `docker args`, returning its output (both streams), or an error that carries it.
-fn docker(args: &[&str]) -> TestResult<String> {
+pub(crate) fn docker(args: &[&str]) -> TestResult<String> {
     let output = cmd("docker", args)
         .stderr_to_stdout()
         .stdout_capture()
@@ -88,6 +91,20 @@ pub fn wait_exited(container: &str, timeout: Duration) -> TestResult<i64> {
 /// The container's output, both streams, since `since` (see [`now`]).
 pub fn logs_since(container: &str, since: &str) -> TestResult<String> {
     docker(&["logs", "--since", since, container])
+}
+
+/// Waits until the container's output since `since` holds `text`.
+pub fn wait_logged(container: &str, since: &str, text: &str, timeout: Duration) -> TestResult<()> {
+    let start = Instant::now();
+    while !logs_since(container, since)?.contains(text) {
+        if start.elapsed() > timeout {
+            return Err(TestError::Assertion {
+                message: format!("{container} did not log {text:?} within {timeout:?}"),
+            });
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    Ok(())
 }
 
 /// A paused container, unpaused when this is dropped, whichever way the scenario ends.
