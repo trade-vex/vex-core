@@ -1477,12 +1477,14 @@ mod tests {
         )
         .unwrap();
 
-        // Two sessions, each with its reply channel and the gateway subscribed to it.
-        let reply_channel = |gateway_id: u8| {
+        // Two sessions, each with its reply channel and the gateway subscribed to it. A
+        // publication's limit moves only when the driver's conductor runs, so gateway 2 gets a
+        // window the test never fills: a starved conductor must not drop its replies.
+        let reply_channel = |gateway_id: u8, term_length: u32| {
             let stream_id = DUOLOGUE_STREAM_ID + 10 + i32::from(gateway_id);
             let publication = aeron
                 .add_publication(
-                    &"aeron:ipc?term-length=65536".into_c_string(),
+                    &format!("aeron:ipc?term-length={term_length}").into_c_string(),
                     stream_id,
                     DRAIN_TIMEOUT,
                 )
@@ -1505,8 +1507,8 @@ mod tests {
             (publication, subscription)
         };
         // Gateway 1 never reads its replies; gateway 2 reads each one.
-        let (slow_reply, _slow_gateway) = reply_channel(1);
-        let (_, gateway) = reply_channel(2);
+        let (slow_reply, _slow_gateway) = reply_channel(1, 64 * 1024);
+        let (_, gateway) = reply_channel(2, 4 * 1024 * 1024);
         let reply = |gateway_id: u8| OrderCommand {
             route_gateway_id: gateway_id,
             ..OrderCommand::default()
